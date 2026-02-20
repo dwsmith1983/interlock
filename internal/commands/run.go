@@ -1,13 +1,8 @@
 package commands
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"os/exec"
 	"time"
 
 	"github.com/fatih/color"
@@ -15,6 +10,7 @@ import (
 
 	"github.com/interlock-systems/interlock/internal/config"
 	"github.com/interlock-systems/interlock/internal/lifecycle"
+	"github.com/interlock-systems/interlock/internal/trigger"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
@@ -91,7 +87,7 @@ func runPipeline(pipelineName string) error {
 
 	color.Cyan("Triggering pipeline %s (run: %s)...\n", pipelineName, runID)
 
-	triggerErr := executeTrigger(ctx, pipeline.Trigger)
+	triggerErr := trigger.Execute(ctx, pipeline.Trigger)
 
 	// Step 5: Update final state
 	var finalStatus types.RunStatus
@@ -122,66 +118,4 @@ func runPipeline(pipelineName string) error {
 	}
 
 	return triggerErr
-}
-
-func executeTrigger(ctx context.Context, trigger *types.TriggerConfig) error {
-	if trigger == nil {
-		return fmt.Errorf("no trigger configured")
-	}
-
-	switch trigger.Type {
-	case types.TriggerCommand:
-		return executeCommandTrigger(ctx, trigger.Command)
-	case types.TriggerHTTP:
-		return executeHTTPTrigger(ctx, trigger)
-	default:
-		return fmt.Errorf("unknown trigger type: %s", trigger.Type)
-	}
-}
-
-func executeCommandTrigger(ctx context.Context, command string) error {
-	if command == "" {
-		return fmt.Errorf("trigger command is empty")
-	}
-
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func executeHTTPTrigger(ctx context.Context, trigger *types.TriggerConfig) error {
-	method := trigger.Method
-	if method == "" {
-		method = "POST"
-	}
-
-	var body io.Reader
-	if trigger.Body != "" {
-		body = bytes.NewBufferString(os.ExpandEnv(trigger.Body))
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, trigger.URL, body)
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range trigger.Headers {
-		req.Header.Set(k, os.ExpandEnv(v))
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("trigger request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("trigger returned status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	return nil
 }
