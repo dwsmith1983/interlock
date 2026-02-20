@@ -18,187 +18,11 @@ import (
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/evaluator"
 	"github.com/interlock-systems/interlock/internal/lifecycle"
+	"github.com/interlock-systems/interlock/internal/testutil"
 	"github.com/interlock-systems/interlock/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// ---------------------------------------------------------------------------
-// In-memory provider for integration tests (no Redis needed)
-// ---------------------------------------------------------------------------
-
-type memProvider struct {
-	mu        sync.Mutex
-	pipelines map[string]types.PipelineConfig
-	traits    map[string]types.TraitEvaluation
-	runs      map[string]types.RunState
-	runIndex  map[string][]string
-	readiness map[string]types.ReadinessResult
-	events    []types.Event
-}
-
-func newMemProvider() *memProvider {
-	return &memProvider{
-		pipelines: make(map[string]types.PipelineConfig),
-		traits:    make(map[string]types.TraitEvaluation),
-		runs:      make(map[string]types.RunState),
-		runIndex:  make(map[string][]string),
-		readiness: make(map[string]types.ReadinessResult),
-	}
-}
-
-func (m *memProvider) RegisterPipeline(_ context.Context, c types.PipelineConfig) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.pipelines[c.Name] = c
-	return nil
-}
-
-func (m *memProvider) GetPipeline(_ context.Context, id string) (*types.PipelineConfig, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	p, ok := m.pipelines[id]
-	if !ok {
-		return nil, fmt.Errorf("pipeline %q not found", id)
-	}
-	return &p, nil
-}
-
-func (m *memProvider) ListPipelines(_ context.Context) ([]types.PipelineConfig, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []types.PipelineConfig
-	for _, p := range m.pipelines {
-		out = append(out, p)
-	}
-	return out, nil
-}
-
-func (m *memProvider) DeletePipeline(_ context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.pipelines, id)
-	return nil
-}
-
-func (m *memProvider) PutTrait(_ context.Context, pid string, t types.TraitEvaluation, _ time.Duration) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.traits[pid+":"+t.TraitType] = t
-	return nil
-}
-
-func (m *memProvider) GetTraits(_ context.Context, pid string) ([]types.TraitEvaluation, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []types.TraitEvaluation
-	prefix := pid + ":"
-	for k, v := range m.traits {
-		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
-			out = append(out, v)
-		}
-	}
-	return out, nil
-}
-
-func (m *memProvider) GetTrait(_ context.Context, pid, tt string) (*types.TraitEvaluation, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	t, ok := m.traits[pid+":"+tt]
-	if !ok {
-		return nil, nil
-	}
-	return &t, nil
-}
-
-func (m *memProvider) PutRunState(_ context.Context, r types.RunState) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.runs[r.RunID] = r
-	m.runIndex[r.PipelineID] = append([]string{r.RunID}, m.runIndex[r.PipelineID]...)
-	return nil
-}
-
-func (m *memProvider) GetRunState(_ context.Context, id string) (*types.RunState, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r, ok := m.runs[id]
-	if !ok {
-		return nil, fmt.Errorf("run %q not found", id)
-	}
-	return &r, nil
-}
-
-func (m *memProvider) ListRuns(_ context.Context, pid string, limit int) ([]types.RunState, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ids := m.runIndex[pid]
-	if limit > len(ids) {
-		limit = len(ids)
-	}
-	var out []types.RunState
-	for _, id := range ids[:limit] {
-		out = append(out, m.runs[id])
-	}
-	return out, nil
-}
-
-func (m *memProvider) CompareAndSwapRunState(_ context.Context, id string, ver int, s types.RunState) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cur, ok := m.runs[id]
-	if !ok {
-		return false, nil
-	}
-	if cur.Version != ver {
-		return false, nil
-	}
-	m.runs[id] = s
-	return true, nil
-}
-
-func (m *memProvider) PutReadiness(_ context.Context, r types.ReadinessResult) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.readiness[r.PipelineID] = r
-	return nil
-}
-
-func (m *memProvider) GetReadiness(_ context.Context, pid string) (*types.ReadinessResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r, ok := m.readiness[pid]
-	if !ok {
-		return nil, nil
-	}
-	return &r, nil
-}
-
-func (m *memProvider) AppendEvent(_ context.Context, event types.Event) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.events = append(m.events, event)
-	return nil
-}
-
-func (m *memProvider) ListEvents(_ context.Context, pipelineID string, limit int) ([]types.Event, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result []types.Event
-	for _, e := range m.events {
-		if e.PipelineID == pipelineID {
-			result = append(result, e)
-			if len(result) >= limit {
-				break
-			}
-		}
-	}
-	return result, nil
-}
-
-func (m *memProvider) Start(_ context.Context) error { return nil }
-func (m *memProvider) Stop(_ context.Context) error  { return nil }
-func (m *memProvider) Ping(_ context.Context) error  { return nil }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -280,7 +104,7 @@ echo '{"status":"PASS","value":{"cpu_available":true}}'
 	}))
 
 	// Set up provider and register pipeline
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 	pipeline := types.PipelineConfig{
 		Name:      "daily-sales",
 		Archetype: "batch-ingestion",
@@ -409,7 +233,7 @@ echo '{"status":"PASS","value":{}}'
 		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
 	}))
 
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 	pipeline := types.PipelineConfig{
 		Name:      "blocked-pipeline",
 		Archetype: "batch-ingestion",
@@ -539,7 +363,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
 	}))
 
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 	pipeline := types.PipelineConfig{
 		Name:      "http-triggered",
 		Archetype: "simple",
@@ -627,7 +451,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 // ---------------------------------------------------------------------------
 
 func TestIntegration_CASRace_OneTriggerWins(t *testing.T) {
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 
 	run := types.RunState{
 		RunID:      "race-run",
@@ -692,7 +516,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
 	}))
 
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 	pipeline := types.PipelineConfig{
 		Name:      "stale-test",
 		Archetype: "two-trait",
@@ -718,9 +542,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 	assert.Equal(t, types.Ready, result.Status)
 
 	// Now manually delete trait-b to simulate TTL expiry
-	prov.mu.Lock()
-	delete(prov.traits, "stale-test:trait-b")
-	prov.mu.Unlock()
+	prov.DeleteTrait("stale-test", "trait-b")
 
 	// CheckReadiness (reads stored traits, doesn't re-evaluate)
 	staleResult, err := eng.CheckReadiness(ctx, "stale-test")
@@ -773,7 +595,7 @@ echo '{"status":"PASS","value":{"lagSeconds":42,"threshold":300,"source":"sales_
 		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
 	}))
 
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 	pipeline := types.PipelineConfig{
 		Name:      "kv-roundtrip-test",
 		Archetype: "kv-test-archetype",
@@ -904,7 +726,7 @@ echo '{"status":"PASS","value":{"upstream":"done"}}'
 		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
 	}))
 
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 	pipeline := types.PipelineConfig{
 		Name:      "event-test",
 		Archetype: "event-archetype",
@@ -1048,7 +870,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
 	}))
 
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 	pipeline := types.PipelineConfig{
 		Name:      "fail-cmd-test",
 		Archetype: "simple",
@@ -1131,7 +953,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 }
 
 func TestIntegration_RunFailure_CallbackReportsFailure(t *testing.T) {
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 	ctx := context.Background()
 
 	// Create a run that's in RUNNING state (awaiting callback)
@@ -1248,7 +1070,7 @@ func TestIntegration_RunFailure_HTTPTriggerError(t *testing.T) {
 }
 
 func TestIntegration_RunFailure_CASRejection(t *testing.T) {
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 	ctx := context.Background()
 
 	// Create a run already in RUNNING state at version 3
@@ -1312,7 +1134,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
 	}))
 
-	prov := newMemProvider()
+	prov := testutil.NewMockProvider()
 	pipeline := types.PipelineConfig{
 		Name:      "fail-event-test",
 		Archetype: "fail-event-archetype",
