@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/interlock-systems/interlock/internal/archetype"
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/provider"
 )
@@ -18,16 +19,18 @@ import (
 type Server struct {
 	engine   *engine.Engine
 	provider provider.Provider
+	registry *archetype.Registry
 	router   chi.Router
 	addr     string
 	srv      *http.Server
 }
 
 // New creates a new HTTP server.
-func New(addr string, eng *engine.Engine, prov provider.Provider) *Server {
+func New(addr string, eng *engine.Engine, prov provider.Provider, reg *archetype.Registry) *Server {
 	s := &Server{
 		engine:   eng,
 		provider: prov,
+		registry: reg,
 		addr:     addr,
 	}
 

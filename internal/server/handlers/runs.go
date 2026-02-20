@@ -165,6 +165,21 @@ func (h *Handlers) CompleteRun(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to append event", "pipeline", run.PipelineID, "event", "CALLBACK_RECEIVED", "error", err)
 	}
 
+	// Update RunLog to reflect completion
+	today := time.Now().Format("2006-01-02")
+	if runLog, err := h.provider.GetRunLog(r.Context(), run.PipelineID, today); err == nil && runLog != nil && runLog.RunID == runID {
+		now := time.Now()
+		runLog.Status = newStatus
+		runLog.CompletedAt = &now
+		runLog.UpdatedAt = now
+		if newStatus == types.RunFailed {
+			runLog.FailureMessage = "completed via callback with status: failed"
+		}
+		if err := h.provider.PutRunLog(r.Context(), *runLog); err != nil {
+			h.logger.Error("failed to update run log", "pipeline", run.PipelineID, "runID", runID, "error", err)
+		}
+	}
+
 	_ = json.NewEncoder(w).Encode(newRun)
 }
 

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -31,6 +32,13 @@ func (h *Handlers) RegisterPipeline(w http.ResponseWriter, r *http.Request) {
 	if config.Name == "" {
 		h.writeError(w, http.StatusBadRequest, "name is required", nil)
 		return
+	}
+
+	if config.Archetype != "" && h.registry != nil {
+		if _, err := h.registry.Get(config.Archetype); err != nil {
+			h.writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown archetype %q", config.Archetype), nil)
+			return
+		}
 	}
 
 	if err := h.provider.RegisterPipeline(r.Context(), config); err != nil {

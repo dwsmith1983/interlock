@@ -83,7 +83,7 @@ func runServe() error {
 	if cfg.Server != nil && cfg.Server.Addr != "" {
 		addr = cfg.Server.Addr
 	}
-	srv := server.New(addr, eng, prov)
+	srv := server.New(addr, eng, prov, reg)
 
 	// Start watcher
 	if w != nil {

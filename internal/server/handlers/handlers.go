@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/interlock-systems/interlock/internal/archetype"
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/provider"
 )
@@ -14,14 +15,16 @@ import (
 type Handlers struct {
 	engine   *engine.Engine
 	provider provider.Provider
+	registry *archetype.Registry
 	logger   *slog.Logger
 }
 
 // New creates a new Handlers instance.
-func New(eng *engine.Engine, prov provider.Provider) *Handlers {
+func New(eng *engine.Engine, prov provider.Provider, reg *archetype.Registry) *Handlers {
 	return &Handlers{
 		engine:   eng,
 		provider: prov,
+		registry: reg,
 		logger:   slog.Default(),
 	}
 }

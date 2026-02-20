@@ -6,7 +6,7 @@ import (
 )
 
 func (s *Server) registerRoutes(r chi.Router) {
-	h := handlers.New(s.engine, s.provider)
+	h := handlers.New(s.engine, s.provider, s.registry)
 
 	r.Route("/api", func(r chi.Router) {
 		// Health
