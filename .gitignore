@@ -17,9 +17,10 @@
 go.work
 go.work.sum
 
-# IDE
+# IDE / AI
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
