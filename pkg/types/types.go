@@ -64,6 +64,25 @@ const (
 	AlertFile    AlertType = "file"
 )
 
+// AlertLevel replaces string-typed alert levels with a proper enum.
+type AlertLevel string
+
+const (
+	AlertLevelError   AlertLevel = "error"
+	AlertLevelWarning AlertLevel = "warning"
+	AlertLevelInfo    AlertLevel = "info"
+)
+
+// FailureCategory classifies why a trait evaluation or trigger failed.
+type FailureCategory string
+
+const (
+	FailureTransient      FailureCategory = "TRANSIENT"
+	FailurePermanent      FailureCategory = "PERMANENT"
+	FailureTimeout        FailureCategory = "TIMEOUT"
+	FailureEvaluatorCrash FailureCategory = "EVALUATOR_CRASH"
+)
+
 // TraitDefinition defines a trait within an archetype.
 type TraitDefinition struct {
 	Type           string                 `yaml:"type" json:"type"`
@@ -115,6 +134,33 @@ type Extensions struct {
 	PostAction *PostActionConfig `yaml:"postAction,omitempty" json:"postAction,omitempty"`
 }
 
+// RetryPolicy configures automatic retry behavior.
+type RetryPolicy struct {
+	MaxAttempts       int               `yaml:"maxAttempts" json:"maxAttempts"`
+	BackoffSeconds    int               `yaml:"backoffSeconds" json:"backoffSeconds"`
+	BackoffMultiplier float64           `yaml:"backoffMultiplier,omitempty" json:"backoffMultiplier,omitempty"`
+	RetryableFailures []FailureCategory `yaml:"retryableFailures,omitempty" json:"retryableFailures,omitempty"`
+}
+
+// SLAConfig defines per-pipeline deadlines.
+type SLAConfig struct {
+	EvaluationDeadline string `yaml:"evaluationDeadline" json:"evaluationDeadline"`
+	CompletionDeadline string `yaml:"completionDeadline" json:"completionDeadline"`
+	Timezone           string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+}
+
+// WatcherConfig configures the reactive evaluation watcher.
+type WatcherConfig struct {
+	Enabled         bool   `yaml:"enabled" json:"enabled"`
+	DefaultInterval string `yaml:"defaultInterval" json:"defaultInterval"`
+}
+
+// PipelineWatchConfig overrides watcher settings per pipeline.
+type PipelineWatchConfig struct {
+	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
+	Enabled  *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+}
+
 // PipelineConfig is the full configuration for a registered pipeline.
 type PipelineConfig struct {
 	Name       string                 `yaml:"name" json:"name"`
@@ -123,17 +169,21 @@ type PipelineConfig struct {
 	Traits     map[string]TraitConfig `yaml:"traits,omitempty" json:"traits,omitempty"`
 	Extensions *Extensions            `yaml:"extensions,omitempty" json:"extensions,omitempty"`
 	Trigger    *TriggerConfig         `yaml:"trigger,omitempty" json:"trigger,omitempty"`
+	Retry      *RetryPolicy           `yaml:"retry,omitempty" json:"retry,omitempty"`
+	SLA        *SLAConfig             `yaml:"sla,omitempty" json:"sla,omitempty"`
+	Watch      *PipelineWatchConfig   `yaml:"watch,omitempty" json:"watch,omitempty"`
 }
 
 // TraitEvaluation is the result of evaluating a single trait.
 type TraitEvaluation struct {
-	PipelineID  string                 `json:"pipelineId"`
-	TraitType   string                 `json:"traitType"`
-	Status      TraitStatus            `json:"status"`
-	Value       map[string]interface{} `json:"value,omitempty"`
-	Reason      string                 `json:"reason,omitempty"`
-	EvaluatedAt time.Time              `json:"evaluatedAt"`
-	ExpiresAt   *time.Time             `json:"expiresAt,omitempty"`
+	PipelineID      string                 `json:"pipelineId"`
+	TraitType       string                 `json:"traitType"`
+	Status          TraitStatus            `json:"status"`
+	Value           map[string]interface{} `json:"value,omitempty"`
+	Reason          string                 `json:"reason,omitempty"`
+	FailureCategory FailureCategory        `json:"failureCategory,omitempty"`
+	EvaluatedAt     time.Time              `json:"evaluatedAt"`
+	ExpiresAt       *time.Time             `json:"expiresAt,omitempty"`
 }
 
 // ReadinessResult is the outcome of evaluating all traits for a pipeline.
@@ -165,9 +215,10 @@ type EvaluatorInput struct {
 
 // EvaluatorOutput is the JSON expected from an evaluator subprocess on stdout.
 type EvaluatorOutput struct {
-	Status TraitStatus            `json:"status"`
-	Value  map[string]interface{} `json:"value,omitempty"`
-	Reason string                 `json:"reason,omitempty"`
+	Status          TraitStatus            `json:"status"`
+	Value           map[string]interface{} `json:"value,omitempty"`
+	Reason          string                 `json:"reason,omitempty"`
+	FailureCategory FailureCategory        `json:"failureCategory,omitempty"`
 }
 
 // AlertConfig defines an alert sink configuration.
@@ -179,7 +230,7 @@ type AlertConfig struct {
 
 // Alert represents an alert event to be dispatched.
 type Alert struct {
-	Level      string                 `json:"level"`
+	Level      AlertLevel             `json:"level"`
 	PipelineID string                 `json:"pipelineId,omitempty"`
 	TraitType  string                 `json:"traitType,omitempty"`
 	Message    string                 `json:"message"`
@@ -199,7 +250,7 @@ type TraitChangeEvent struct {
 // SourceEvent represents activity on a monitored source.
 type SourceEvent struct {
 	Source    string    `json:"source"`
-	Type      string    `json:"type"`
+	Type     string    `json:"type"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
@@ -214,12 +265,16 @@ type EventKind string
 
 // EventKind values enumerate the categories of recorded events.
 const (
-	EventTraitEvaluated   EventKind = "TRAIT_EVALUATED"
-	EventReadinessChecked EventKind = "READINESS_CHECKED"
-	EventRunStateChanged  EventKind = "RUN_STATE_CHANGED"
-	EventTriggerFired     EventKind = "TRIGGER_FIRED"
-	EventTriggerFailed    EventKind = "TRIGGER_FAILED"
-	EventCallbackReceived EventKind = "CALLBACK_RECEIVED"
+	EventTraitEvaluated    EventKind = "TRAIT_EVALUATED"
+	EventReadinessChecked  EventKind = "READINESS_CHECKED"
+	EventRunStateChanged   EventKind = "RUN_STATE_CHANGED"
+	EventTriggerFired      EventKind = "TRIGGER_FIRED"
+	EventTriggerFailed     EventKind = "TRIGGER_FAILED"
+	EventCallbackReceived  EventKind = "CALLBACK_RECEIVED"
+	EventRetryScheduled    EventKind = "RETRY_SCHEDULED"
+	EventRetryExhausted    EventKind = "RETRY_EXHAUSTED"
+	EventSLABreached       EventKind = "SLA_BREACHED"
+	EventWatcherEvaluation EventKind = "WATCHER_EVALUATION"
 )
 
 // Event is an append-only audit log entry recording what happened and when.
@@ -234,15 +289,31 @@ type Event struct {
 	Timestamp  time.Time              `json:"timestamp"`
 }
 
+// RunLogEntry tracks durable per-pipeline-per-date run state.
+type RunLogEntry struct {
+	PipelineID      string          `json:"pipelineId"`
+	Date            string          `json:"date"`
+	Status          RunStatus       `json:"status"`
+	AttemptNumber   int             `json:"attemptNumber"`
+	RunID           string          `json:"runId"`
+	FailureMessage  string          `json:"failureMessage,omitempty"`
+	FailureCategory FailureCategory `json:"failureCategory,omitempty"`
+	AlertSent       bool            `json:"alertSent"`
+	StartedAt       time.Time       `json:"startedAt"`
+	CompletedAt     *time.Time      `json:"completedAt,omitempty"`
+	UpdatedAt       time.Time       `json:"updatedAt"`
+}
+
 // ProjectConfig represents the top-level interlock.yaml configuration.
 type ProjectConfig struct {
-	Provider      string        `yaml:"provider"`
-	Redis         *RedisConfig  `yaml:"redis,omitempty"`
-	Server        *ServerConfig `yaml:"server,omitempty"`
-	ArchetypeDirs []string      `yaml:"archetypeDirs"`
-	EvaluatorDirs []string      `yaml:"evaluatorDirs"`
-	PipelineDirs  []string      `yaml:"pipelineDirs"`
-	Alerts        []AlertConfig `yaml:"alerts,omitempty"`
+	Provider      string         `yaml:"provider"`
+	Redis         *RedisConfig   `yaml:"redis,omitempty"`
+	Server        *ServerConfig  `yaml:"server,omitempty"`
+	ArchetypeDirs []string       `yaml:"archetypeDirs"`
+	EvaluatorDirs []string       `yaml:"evaluatorDirs"`
+	PipelineDirs  []string       `yaml:"pipelineDirs"`
+	Alerts        []AlertConfig  `yaml:"alerts,omitempty"`
+	Watcher       *WatcherConfig `yaml:"watcher,omitempty"`
 }
 
 // RedisConfig holds Redis/Valkey connection settings.

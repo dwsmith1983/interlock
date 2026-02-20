@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/fatih/color"
+
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
@@ -22,9 +23,9 @@ func (s *ConsoleSink) Name() string { return "console" }
 func (s *ConsoleSink) Send(alert types.Alert) error {
 	var prefix string
 	switch alert.Level {
-	case "error":
+	case types.AlertLevelError:
 		prefix = color.RedString("[ERROR]")
-	case "warning":
+	case types.AlertLevelWarning:
 		prefix = color.YellowString("[WARN]")
 	default:
 		prefix = color.CyanString("[INFO]")

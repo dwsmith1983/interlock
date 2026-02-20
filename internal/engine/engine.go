@@ -89,7 +89,7 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 				allPass = false
 			}
 			e.fireAlert(types.Alert{
-				Level:      "error",
+				Level:      types.AlertLevelError,
 				PipelineID: pipelineID,
 				TraitType:  r.trait.Type,
 				Message:    fmt.Sprintf("Trait %s failed for %s: %v", r.trait.Type, pipelineID, r.err),
@@ -104,7 +104,7 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 			blocking = append(blocking, r.trait.Type)
 			allPass = false
 			e.fireAlert(types.Alert{
-				Level:      "warning",
+				Level:      types.AlertLevelWarning,
 				PipelineID: pipelineID,
 				TraitType:  r.trait.Type,
 				Message:    fmt.Sprintf("Trait %s failed for %s: %s", r.trait.Type, pipelineID, r.eval.Reason),
@@ -140,7 +140,7 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 
 	if status == types.NotReady {
 		e.fireAlert(types.Alert{
-			Level:      "warning",
+			Level:      types.AlertLevelWarning,
 			PipelineID: pipelineID,
 			Message:    fmt.Sprintf("Pipeline %s blocked by: %v", pipelineID, blocking),
 			Timestamp:  time.Now(),
