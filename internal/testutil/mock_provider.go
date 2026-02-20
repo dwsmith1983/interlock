@@ -19,6 +19,8 @@ type MockProvider struct {
 	runIndex  map[string][]string
 	readiness map[string]types.ReadinessResult
 	events    []types.Event
+	runLogs   map[string]types.RunLogEntry // key: "pipelineID:date"
+	locks     map[string]bool
 }
 
 // NewMockProvider creates a new in-memory mock provider.
@@ -29,6 +31,8 @@ func NewMockProvider() *MockProvider {
 		runs:      make(map[string]types.RunState),
 		runIndex:  make(map[string][]string),
 		readiness: make(map[string]types.ReadinessResult),
+		runLogs:   make(map[string]types.RunLogEntry),
+		locks:     make(map[string]bool),
 	}
 }
 
@@ -182,6 +186,56 @@ func (m *MockProvider) ListEvents(_ context.Context, pipelineID string, limit in
 		}
 	}
 	return result, nil
+}
+
+func (m *MockProvider) PutRunLog(_ context.Context, entry types.RunLogEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.runLogs[entry.PipelineID+":"+entry.Date] = entry
+	return nil
+}
+
+func (m *MockProvider) GetRunLog(_ context.Context, pipelineID, date string) (*types.RunLogEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.runLogs[pipelineID+":"+date]
+	if !ok {
+		return nil, nil
+	}
+	return &e, nil
+}
+
+func (m *MockProvider) ListRunLogs(_ context.Context, pipelineID string, limit int) ([]types.RunLogEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prefix := pipelineID + ":"
+	var entries []types.RunLogEntry
+	for k, v := range m.runLogs {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			entries = append(entries, v)
+			if len(entries) >= limit {
+				break
+			}
+		}
+	}
+	return entries, nil
+}
+
+func (m *MockProvider) AcquireLock(_ context.Context, key string, _ time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.locks[key] {
+		return false, nil
+	}
+	m.locks[key] = true
+	return true, nil
+}
+
+func (m *MockProvider) ReleaseLock(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.locks, key)
+	return nil
 }
 
 func (m *MockProvider) Start(_ context.Context) error { return nil }

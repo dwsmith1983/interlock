@@ -36,6 +36,15 @@ type Provider interface {
 	AppendEvent(ctx context.Context, event types.Event) error
 	ListEvents(ctx context.Context, pipelineID string, limit int) ([]types.Event, error)
 
+	// Run log — durable per-pipeline-per-date tracking
+	PutRunLog(ctx context.Context, entry types.RunLogEntry) error
+	GetRunLog(ctx context.Context, pipelineID, date string) (*types.RunLogEntry, error)
+	ListRunLogs(ctx context.Context, pipelineID string, limit int) ([]types.RunLogEntry, error)
+
+	// Distributed locking for watcher coordination
+	AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	ReleaseLock(ctx context.Context, key string) error
+
 	// Lifecycle
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error

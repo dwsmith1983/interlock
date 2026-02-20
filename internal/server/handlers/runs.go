@@ -167,3 +167,33 @@ func (h *Handlers) CompleteRun(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(newRun)
 }
+
+// ListRunLogs returns recent run log entries for a pipeline.
+func (h *Handlers) ListRunLogs(w http.ResponseWriter, r *http.Request) {
+	pipelineID := chi.URLParam(r, "pipelineID")
+	entries, err := h.provider.ListRunLogs(r.Context(), pipelineID, 20)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to list run logs", err)
+		return
+	}
+	if entries == nil {
+		entries = []types.RunLogEntry{}
+	}
+	_ = json.NewEncoder(w).Encode(entries)
+}
+
+// GetRunLog returns a single run log entry for a pipeline and date.
+func (h *Handlers) GetRunLog(w http.ResponseWriter, r *http.Request) {
+	pipelineID := chi.URLParam(r, "pipelineID")
+	date := chi.URLParam(r, "date")
+	entry, err := h.provider.GetRunLog(r.Context(), pipelineID, date)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to get run log", err)
+		return
+	}
+	if entry == nil {
+		h.writeError(w, http.StatusNotFound, "run log not found", nil)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(entry)
+}

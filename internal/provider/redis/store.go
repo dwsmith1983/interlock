@@ -253,6 +253,85 @@ func (p *RedisProvider) GetReadiness(ctx context.Context, pipelineID string) (*t
 	return &result, nil
 }
 
+func (p *RedisProvider) runLogKey(pipelineID, date string) string {
+	return p.prefix + "runlog:" + pipelineID + ":" + date
+}
+
+func (p *RedisProvider) runLogIndexKey(pipelineID string) string {
+	return p.prefix + "runlogs:" + pipelineID
+}
+
+func (p *RedisProvider) lockKey(key string) string {
+	return p.prefix + "lock:" + key
+}
+
+// PutRunLog stores a run log entry.
+func (p *RedisProvider) PutRunLog(ctx context.Context, entry types.RunLogEntry) error {
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+
+	pipe := p.client.Pipeline()
+	pipe.Set(ctx, p.runLogKey(entry.PipelineID, entry.Date), data, 0)
+	pipe.ZAdd(ctx, p.runLogIndexKey(entry.PipelineID), goredis.Z{
+		Score:  float64(entry.StartedAt.Unix()),
+		Member: entry.Date,
+	})
+	// Keep only last 100 entries in index
+	pipe.ZRemRangeByRank(ctx, p.runLogIndexKey(entry.PipelineID), 0, -101)
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+// GetRunLog retrieves a run log entry for a pipeline and date.
+func (p *RedisProvider) GetRunLog(ctx context.Context, pipelineID, date string) (*types.RunLogEntry, error) {
+	data, err := p.client.Get(ctx, p.runLogKey(pipelineID, date)).Bytes()
+	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var entry types.RunLogEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return nil, err
+	}
+	return &entry, nil
+}
+
+// ListRunLogs returns recent run log entries for a pipeline.
+func (p *RedisProvider) ListRunLogs(ctx context.Context, pipelineID string, limit int) ([]types.RunLogEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	dates, err := p.client.ZRevRange(ctx, p.runLogIndexKey(pipelineID), 0, int64(limit-1)).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []types.RunLogEntry
+	for _, date := range dates {
+		entry, err := p.GetRunLog(ctx, pipelineID, date)
+		if err != nil || entry == nil {
+			continue
+		}
+		entries = append(entries, *entry)
+	}
+	return entries, nil
+}
+
+// AcquireLock attempts to acquire a distributed lock with the given key and TTL.
+func (p *RedisProvider) AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	ok, err := p.client.SetNX(ctx, p.lockKey(key), "1", ttl).Result()
+	return ok, err
+}
+
+// ReleaseLock releases a distributed lock.
+func (p *RedisProvider) ReleaseLock(ctx context.Context, key string) error {
+	return p.client.Del(ctx, p.lockKey(key)).Err()
+}
+
 func (p *RedisProvider) eventStreamKey(pipelineID string) string {
 	return p.prefix + "events:" + pipelineID
 }

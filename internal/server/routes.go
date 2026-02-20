@@ -31,5 +31,9 @@ func (s *Server) registerRoutes(r chi.Router) {
 		r.Get("/pipelines/{pipelineID}/runs", h.ListRuns)
 		r.Get("/runs/{runID}", h.GetRun)
 		r.Post("/runs/{runID}/complete", h.CompleteRun)
+
+		// Run logs
+		r.Get("/pipelines/{pipelineID}/runlogs", h.ListRunLogs)
+		r.Get("/pipelines/{pipelineID}/runlogs/{date}", h.GetRunLog)
 	})
 }
