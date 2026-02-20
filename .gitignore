@@ -1,5 +1,5 @@
 # Binaries
-interlock
+/interlock
 /dist/
 *.exe
 *.exe~
