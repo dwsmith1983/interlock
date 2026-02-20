@@ -11,6 +11,8 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"log/slog"
+
 	"github.com/interlock-systems/interlock/internal/alert"
 	"github.com/interlock-systems/interlock/internal/archetype"
 	"github.com/interlock-systems/interlock/internal/config"
@@ -18,6 +20,7 @@ import (
 	"github.com/interlock-systems/interlock/internal/evaluator"
 	"github.com/interlock-systems/interlock/internal/provider/redis"
 	"github.com/interlock-systems/interlock/internal/server"
+	"github.com/interlock-systems/interlock/internal/watcher"
 )
 
 // NewServeCmd creates the serve command.
@@ -64,8 +67,16 @@ func runServe() error {
 	}
 
 	// Engine
+	logger := slog.Default()
 	runner := evaluator.NewRunner(cfg.EvaluatorDirs)
 	eng := engine.New(prov, reg, runner, dispatcher.AlertFunc())
+	eng.SetLogger(logger)
+
+	// Watcher
+	var w *watcher.Watcher
+	if cfg.Watcher != nil && cfg.Watcher.Enabled {
+		w = watcher.New(prov, eng, dispatcher.AlertFunc(), logger, *cfg.Watcher)
+	}
 
 	// Server
 	addr := ":3000"
@@ -73,6 +84,11 @@ func runServe() error {
 		addr = cfg.Server.Addr
 	}
 	srv := server.New(addr, eng, prov)
+
+	// Start watcher
+	if w != nil {
+		w.Start(ctx)
+	}
 
 	// Graceful shutdown
 	errCh := make(chan error, 1)
@@ -90,6 +106,9 @@ func runServe() error {
 		color.Yellow("\nReceived %s, shutting down...", sig)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if w != nil {
+			w.Stop(shutdownCtx)
+		}
 		if err := srv.Stop(shutdownCtx); err != nil {
 			return fmt.Errorf("server shutdown: %w", err)
 		}
