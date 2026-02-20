@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "permanent error" >&2
+exit 2

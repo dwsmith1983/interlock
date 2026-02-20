@@ -50,6 +50,7 @@ func TestRunnerTimeout(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, types.TraitFail, output.Status)
 	assert.Equal(t, "EVALUATOR_TIMEOUT", output.Reason)
+	assert.Equal(t, types.FailureTimeout, output.FailureCategory)
 }
 
 func TestRunnerExitError(t *testing.T) {
@@ -60,10 +61,40 @@ func TestRunnerExitError(t *testing.T) {
 		Config:     map[string]interface{}{},
 	}
 
+	// exit-error uses exit code 1 → transient
 	output, err := runner.Run(context.Background(), "../../testdata/evaluators/exit-error", input, 10*time.Second)
 	require.NoError(t, err)
 	assert.Equal(t, types.TraitFail, output.Status)
 	assert.Contains(t, output.Reason, "EVALUATOR_ERROR")
+	assert.Equal(t, types.FailureTransient, output.FailureCategory)
+}
+
+func TestRunnerExitCode2_Permanent(t *testing.T) {
+	runner := NewRunner(nil)
+	input := types.EvaluatorInput{
+		PipelineID: "test",
+		TraitType:  "freshness",
+		Config:     map[string]interface{}{},
+	}
+
+	output, err := runner.Run(context.Background(), "../../testdata/evaluators/exit-permanent", input, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, types.TraitFail, output.Status)
+	assert.Equal(t, types.FailurePermanent, output.FailureCategory)
+}
+
+func TestRunnerSignalKill_Crash(t *testing.T) {
+	runner := NewRunner(nil)
+	input := types.EvaluatorInput{
+		PipelineID: "test",
+		TraitType:  "freshness",
+		Config:     map[string]interface{}{},
+	}
+
+	output, err := runner.Run(context.Background(), "../../testdata/evaluators/exit-signal", input, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, types.TraitFail, output.Status)
+	assert.Equal(t, types.FailureEvaluatorCrash, output.FailureCategory)
 }
 
 func TestRunnerBadJSON(t *testing.T) {
@@ -78,4 +109,5 @@ func TestRunnerBadJSON(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, types.TraitFail, output.Status)
 	assert.Contains(t, output.Reason, "EVALUATOR_OUTPUT_INVALID")
+	assert.Equal(t, types.FailurePermanent, output.FailureCategory)
 }
