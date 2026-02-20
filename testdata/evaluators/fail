@@ -1,0 +1,2 @@
+#!/bin/bash
+echo '{"status":"FAIL","value":{"test":true},"reason":"deliberate test failure"}'

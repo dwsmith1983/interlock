@@ -1,0 +1,50 @@
+package commands
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/interlock-systems/interlock/pkg/types"
+	"gopkg.in/yaml.v3"
+)
+
+// loadPipelineDir loads all pipeline YAML files from a directory.
+func loadPipelineDir(dir string) ([]types.PipelineConfig, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var pipelines []types.PipelineConfig
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", name, err)
+		}
+
+		var p types.PipelineConfig
+		if err := yaml.Unmarshal(data, &p); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", name, err)
+		}
+
+		if p.Name == "" {
+			continue
+		}
+		pipelines = append(pipelines, p)
+	}
+
+	return pipelines, nil
+}

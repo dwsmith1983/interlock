@@ -1,0 +1,44 @@
+.PHONY: build test test-unit test-integration clean lint fmt vet
+
+BINARY := interlock
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS := -ldflags "-X main.version=$(VERSION)"
+PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+
+build:
+	go build $(LDFLAGS) -o $(BINARY) ./cmd/interlock
+
+test:
+	go test ./...
+
+test-unit:
+	go test ./internal/engine/... ./internal/archetype/... ./internal/lifecycle/... ./internal/evaluator/... ./internal/config/...
+
+test-integration:
+	go test ./internal/provider/redis/... -tags=integration
+
+fmt:
+	go fmt ./...
+
+vet:
+	go vet ./...
+
+lint: fmt vet
+	golangci-lint run ./...
+
+clean:
+	rm -f $(BINARY)
+	rm -rf dist/
+
+dist:
+	@mkdir -p dist
+	@for platform in $(PLATFORMS); do \
+		os=$${platform%/*}; \
+		arch=$${platform#*/}; \
+		output=dist/$(BINARY)-$$os-$$arch; \
+		if [ "$$os" = "windows" ]; then output=$$output.exe; fi; \
+		echo "Building $$output..."; \
+		GOOS=$$os GOARCH=$$arch go build $(LDFLAGS) -o $$output ./cmd/interlock; \
+	done
+
+.DEFAULT_GOAL := build

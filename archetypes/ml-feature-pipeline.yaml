@@ -1,0 +1,27 @@
+name: ml-feature-pipeline
+requiredTraits:
+  - type: source-freshness
+    description: "Training data is current"
+    defaultConfig:
+      maxLagSeconds: 3600
+    defaultTtl: 3600
+    defaultTimeout: 60
+  - type: upstream-dependency
+    description: "Upstream feature pipelines completed"
+    defaultTtl: 3600
+    defaultTimeout: 120
+  - type: resource-availability
+    description: "GPU/compute resources available"
+    defaultTtl: 300
+    defaultTimeout: 15
+  - type: model-registry
+    description: "Model registry accessible"
+    defaultTtl: 600
+    defaultTimeout: 30
+optionalTraits:
+  - type: data-drift-check
+    description: "Input data distribution within bounds"
+  - type: feature-store-health
+    description: "Feature store is healthy"
+readinessRule:
+  type: all-required-pass

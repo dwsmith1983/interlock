@@ -1,0 +1,17 @@
+name: test-archetype
+requiredTraits:
+  - type: freshness
+    description: "Data is fresh"
+    defaultConfig:
+      maxLagSeconds: 60
+    defaultTtl: 120
+    defaultTimeout: 10
+  - type: availability
+    description: "Resource is available"
+    defaultTtl: 60
+    defaultTimeout: 5
+optionalTraits:
+  - type: quality
+    description: "Data quality check"
+readinessRule:
+  type: all-required-pass

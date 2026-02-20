@@ -1,0 +1,21 @@
+name: streaming-enrichment
+requiredTraits:
+  - type: source-freshness
+    description: "Stream is active and producing"
+    defaultConfig:
+      maxLagSeconds: 60
+    defaultTtl: 60
+    defaultTimeout: 10
+  - type: enrichment-source
+    description: "Enrichment data source available"
+    defaultTtl: 300
+    defaultTimeout: 30
+  - type: resource-availability
+    description: "Compute and memory available"
+    defaultTtl: 60
+    defaultTimeout: 10
+optionalTraits:
+  - type: schema-contract
+    description: "Schema compatibility verified"
+readinessRule:
+  type: all-required-pass

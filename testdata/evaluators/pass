@@ -1,0 +1,2 @@
+#!/bin/bash
+echo '{"status":"PASS","value":{"test":true}}'

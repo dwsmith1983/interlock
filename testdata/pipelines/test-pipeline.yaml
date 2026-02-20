@@ -1,0 +1,15 @@
+name: test-pipeline
+archetype: test-archetype
+tier: 2
+
+traits:
+  freshness:
+    evaluator: ./testdata/evaluators/pass
+    config:
+      maxLagSeconds: 30
+    ttl: 60
+    timeout: 5
+
+trigger:
+  type: command
+  command: "echo test-complete"
