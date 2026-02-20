@@ -4,6 +4,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ type Engine struct {
 	registry *archetype.Registry
 	runner   *evaluator.Runner
 	alertFn  func(types.Alert)
+	logger   *slog.Logger
 }
 
 // New creates a new Engine.
@@ -29,6 +31,14 @@ func New(p provider.Provider, reg *archetype.Registry, runner *evaluator.Runner,
 		registry: reg,
 		runner:   runner,
 		alertFn:  alertFn,
+		logger:   slog.Default(),
+	}
+}
+
+// SetLogger overrides the default logger.
+func (e *Engine) SetLogger(l *slog.Logger) {
+	if l != nil {
+		e.logger = l
 	}
 }
 
@@ -130,13 +140,15 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 		return result, fmt.Errorf("storing readiness result: %w", err)
 	}
 
-	_ = e.provider.AppendEvent(ctx, types.Event{
+	if err := e.provider.AppendEvent(ctx, types.Event{
 		Kind:       types.EventReadinessChecked,
 		PipelineID: pipelineID,
 		Status:     string(status),
 		Details:    map[string]interface{}{"blocking": blocking},
 		Timestamp:  time.Now(),
-	})
+	}); err != nil {
+		e.logger.Error("failed to append event", "pipeline", pipelineID, "event", "READINESS_CHECKED", "error", err)
+	}
 
 	if status == types.NotReady {
 		e.fireAlert(types.Alert{
@@ -238,12 +250,13 @@ func (e *Engine) evaluateTrait(ctx context.Context, pipelineID string, trait arc
 
 	now := time.Now()
 	te := &types.TraitEvaluation{
-		PipelineID:  pipelineID,
-		TraitType:   trait.Type,
-		Status:      output.Status,
-		Value:       output.Value,
-		Reason:      output.Reason,
-		EvaluatedAt: now,
+		PipelineID:      pipelineID,
+		TraitType:       trait.Type,
+		Status:          output.Status,
+		Value:           output.Value,
+		Reason:          output.Reason,
+		FailureCategory: output.FailureCategory,
+		EvaluatedAt:     now,
 	}
 
 	ttl := time.Duration(trait.TTL) * time.Second
@@ -256,7 +269,7 @@ func (e *Engine) evaluateTrait(ctx context.Context, pipelineID string, trait arc
 		return te, fmt.Errorf("storing trait result: %w", err)
 	}
 
-	_ = e.provider.AppendEvent(ctx, types.Event{
+	if err := e.provider.AppendEvent(ctx, types.Event{
 		Kind:       types.EventTraitEvaluated,
 		PipelineID: pipelineID,
 		TraitType:  trait.Type,
@@ -264,7 +277,9 @@ func (e *Engine) evaluateTrait(ctx context.Context, pipelineID string, trait arc
 		Message:    output.Reason,
 		Details:    output.Value,
 		Timestamp:  now,
-	})
+	}); err != nil {
+		e.logger.Error("failed to append event", "pipeline", pipelineID, "trait", trait.Type, "event", "TRAIT_EVALUATED", "error", err)
+	}
 
 	return te, nil
 }

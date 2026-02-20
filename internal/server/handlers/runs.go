@@ -17,18 +17,16 @@ func (h *Handlers) RunPipeline(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.engine.Evaluate(r.Context(), pipelineID)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.writeError(w, http.StatusInternalServerError, "evaluation failed", err)
 		return
 	}
 
 	if result.Status != types.Ready {
 		w.WriteHeader(http.StatusPreconditionFailed)
-		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":   "NOT_READY",
 			"blocking": result.Blocking,
-		}); err != nil {
-			http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
-		}
+		})
 		return
 	}
 
@@ -43,18 +41,20 @@ func (h *Handlers) RunPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.provider.PutRunState(r.Context(), run); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.writeError(w, http.StatusInternalServerError, "failed to create run", err)
 		return
 	}
 
-	_ = h.provider.AppendEvent(r.Context(), types.Event{
+	if err := h.provider.AppendEvent(r.Context(), types.Event{
 		Kind:       types.EventRunStateChanged,
 		PipelineID: pipelineID,
 		RunID:      runID,
 		Status:     string(types.RunPending),
 		Message:    "run created",
 		Timestamp:  time.Now(),
-	})
+	}); err != nil {
+		h.logger.Error("failed to append event", "pipeline", pipelineID, "event", "RUN_STATE_CHANGED", "error", err)
+	}
 
 	// CAS to TRIGGERING
 	run.Status = types.RunTriggering
@@ -62,24 +62,23 @@ func (h *Handlers) RunPipeline(w http.ResponseWriter, r *http.Request) {
 	run.UpdatedAt = time.Now()
 	ok, err := h.provider.CompareAndSwapRunState(r.Context(), runID, 1, run)
 	if err != nil || !ok {
-		http.Error(w, `{"error":"failed to acquire trigger lock"}`, http.StatusConflict)
+		h.writeError(w, http.StatusConflict, "failed to acquire trigger lock", err)
 		return
 	}
 
-	_ = h.provider.AppendEvent(r.Context(), types.Event{
+	if err := h.provider.AppendEvent(r.Context(), types.Event{
 		Kind:       types.EventRunStateChanged,
 		PipelineID: pipelineID,
 		RunID:      runID,
 		Status:     string(types.RunTriggering),
 		Message:    "trigger lock acquired",
 		Timestamp:  time.Now(),
-	})
+	}); err != nil {
+		h.logger.Error("failed to append event", "pipeline", pipelineID, "event", "RUN_STATE_CHANGED", "error", err)
+	}
 
 	w.WriteHeader(http.StatusAccepted)
-	if err := json.NewEncoder(w).Encode(run); err != nil {
-		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
-		return
-	}
+	_ = json.NewEncoder(w).Encode(run)
 }
 
 // ListRuns returns recent runs for a pipeline.
@@ -87,16 +86,13 @@ func (h *Handlers) ListRuns(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "pipelineID")
 	runs, err := h.provider.ListRuns(r.Context(), pipelineID, 20)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.writeError(w, http.StatusInternalServerError, "failed to list runs", err)
 		return
 	}
 	if runs == nil {
 		runs = []types.RunState{}
 	}
-	if err := json.NewEncoder(w).Encode(runs); err != nil {
-		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
-		return
-	}
+	_ = json.NewEncoder(w).Encode(runs)
 }
 
 // GetRun returns a single run state.
@@ -104,13 +100,10 @@ func (h *Handlers) GetRun(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "runID")
 	run, err := h.provider.GetRunState(r.Context(), runID)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusNotFound)
+		h.writeError(w, http.StatusNotFound, "run not found", err)
 		return
 	}
-	if err := json.NewEncoder(w).Encode(run); err != nil {
-		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
-		return
-	}
+	_ = json.NewEncoder(w).Encode(run)
 }
 
 // CompleteRun handles orchestrator completion callbacks.
@@ -122,13 +115,13 @@ func (h *Handlers) CompleteRun(w http.ResponseWriter, r *http.Request) {
 		Metadata map[string]interface{} `json:"metadata,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		h.writeError(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 
 	run, err := h.provider.GetRunState(r.Context(), runID)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusNotFound)
+		h.writeError(w, http.StatusNotFound, "run not found", err)
 		return
 	}
 
@@ -139,12 +132,12 @@ func (h *Handlers) CompleteRun(w http.ResponseWriter, r *http.Request) {
 	case "failed":
 		newStatus = types.RunFailed
 	default:
-		http.Error(w, `{"error":"status must be 'success' or 'failed'"}`, http.StatusBadRequest)
+		h.writeError(w, http.StatusBadRequest, "status must be 'success' or 'failed'", nil)
 		return
 	}
 
 	if err := lifecycle.Transition(run.Status, newStatus); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusConflict)
+		h.writeError(w, http.StatusConflict, "invalid state transition", err)
 		return
 	}
 
@@ -156,11 +149,11 @@ func (h *Handlers) CompleteRun(w http.ResponseWriter, r *http.Request) {
 
 	ok, err := h.provider.CompareAndSwapRunState(r.Context(), runID, run.Version, newRun)
 	if err != nil || !ok {
-		http.Error(w, `{"error":"concurrent update conflict"}`, http.StatusConflict)
+		h.writeError(w, http.StatusConflict, "concurrent update conflict", err)
 		return
 	}
 
-	_ = h.provider.AppendEvent(r.Context(), types.Event{
+	if err := h.provider.AppendEvent(r.Context(), types.Event{
 		Kind:       types.EventCallbackReceived,
 		PipelineID: run.PipelineID,
 		RunID:      runID,
@@ -168,10 +161,9 @@ func (h *Handlers) CompleteRun(w http.ResponseWriter, r *http.Request) {
 		Message:    fmt.Sprintf("callback received: %s", body.Status),
 		Details:    body.Metadata,
 		Timestamp:  time.Now(),
-	})
-
-	if err := json.NewEncoder(w).Encode(newRun); err != nil {
-		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
-		return
+	}); err != nil {
+		h.logger.Error("failed to append event", "pipeline", run.PipelineID, "event", "CALLBACK_RECEIVED", "error", err)
 	}
+
+	_ = json.NewEncoder(w).Encode(newRun)
 }

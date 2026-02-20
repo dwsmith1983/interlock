@@ -32,6 +32,7 @@ func New(addr string, eng *engine.Engine, prov provider.Provider) *Server {
 	}
 
 	r := chi.NewRouter()
+	r.Use(RequestIDMiddleware)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.SetHeader("Content-Type", "application/json"))
