@@ -1,0 +1,20 @@
+provider: redis
+redis:
+  addr: redis:6379
+  keyPrefix: "interlock:"
+  readinessTtl: "5m"
+  runIndexLimit: 100
+  eventStreamMax: 10000
+server:
+  addr: ":3000"
+archetypeDirs:
+  - /app/archetypes
+evaluatorDirs:
+  - /app/evaluators
+pipelineDirs:
+  - /app/pipelines
+alerts:
+  - type: console
+watcher:
+  enabled: true
+  defaultInterval: "15s"

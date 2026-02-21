@@ -1,0 +1,4 @@
+#!/bin/bash
+# Always-fail evaluator: reads stdin (required) and returns FAIL
+cat > /dev/null
+echo '{"status":"FAIL","value":{"demo":true},"reason":"always fails"}'

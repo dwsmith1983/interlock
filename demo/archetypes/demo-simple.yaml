@@ -1,0 +1,9 @@
+name: demo-simple
+requiredTraits:
+  - type: data-check
+    description: "Basic data readiness check"
+    defaultConfig: {}
+    defaultTtl: 60
+    defaultTimeout: 10
+readinessRule:
+  type: all-required-pass

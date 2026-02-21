@@ -1,0 +1,4 @@
+#!/bin/bash
+# Always-pass evaluator: reads stdin (required) and returns PASS
+cat > /dev/null
+echo '{"status":"PASS","value":{"demo":true},"reason":"always passes"}'

@@ -1,0 +1,10 @@
+apiVersion: 1
+
+datasources:
+  - name: Interlock
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    isDefault: true
+    jsonData:
+      global_queries: []
+    editable: true

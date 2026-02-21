@@ -1,0 +1,84 @@
+services:
+  # ── Redis store ──────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Airflow (standalone mode, SQLite) ────────────────────
+  airflow:
+    image: apache/airflow:2.10.4-python3.11
+    command: >
+      bash -c 'airflow db init
+      && airflow users create --role Admin --username admin --password admin --firstname Admin --lastname User --email admin@example.com || true
+      && airflow scheduler &
+      exec airflow webserver'
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/api/v1/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 90s
+
+  # ── Interlock server + watcher ───────────────────────────
+  interlock:
+    build:
+      context: ..
+      dockerfile: demo/Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── Seed: register pipelines + callback server ───────────
+  seed:
+    build:
+      context: scripts
+      dockerfile: Dockerfile
+    ports:
+      - "8888:8888"
+    depends_on:
+      interlock:
+        condition: service_healthy
+      airflow:
+        condition: service_healthy
+    environment:
+      INTERLOCK_URL: http://interlock:3000
+      AIRFLOW_URL: http://airflow:8080
+
+  # ── Grafana with Infinity datasource ─────────────────────
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      - "3001:3000"
+    environment:
+      GF_INSTALL_PLUGINS: yesoreyeram-infinity-datasource
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/interlock-demo.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      interlock:
+        condition: service_healthy

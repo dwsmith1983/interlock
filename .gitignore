@@ -36,3 +36,4 @@ Thumbs.db
 # Build
 /build/
 /bin/
+demo/airflow/dags/__pycache__/
