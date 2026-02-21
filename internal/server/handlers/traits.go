@@ -12,11 +12,11 @@ func (h *Handlers) GetTraits(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "pipelineID")
 	traits, err := h.provider.GetTraits(r.Context(), id)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.writeError(w, http.StatusInternalServerError, "failed to get traits", err)
 		return
 	}
 	if err := json.NewEncoder(w).Encode(traits); err != nil {
-		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+		h.writeError(w, http.StatusInternalServerError, "failed to encode response", err)
 		return
 	}
 }
@@ -28,15 +28,15 @@ func (h *Handlers) GetTrait(w http.ResponseWriter, r *http.Request) {
 
 	trait, err := h.provider.GetTrait(r.Context(), pipelineID, traitType)
 	if err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.writeError(w, http.StatusInternalServerError, "failed to get trait", err)
 		return
 	}
 	if trait == nil {
-		http.Error(w, `{"error":"trait not found or expired"}`, http.StatusNotFound)
+		h.writeError(w, http.StatusNotFound, "trait not found or expired", nil)
 		return
 	}
 	if err := json.NewEncoder(w).Encode(trait); err != nil {
-		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+		h.writeError(w, http.StatusInternalServerError, "failed to encode response", err)
 		return
 	}
 }

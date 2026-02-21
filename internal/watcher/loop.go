@@ -6,9 +6,30 @@ import (
 	"time"
 
 	"github.com/interlock-systems/interlock/internal/lifecycle"
+	"github.com/interlock-systems/interlock/internal/metrics"
 	"github.com/interlock-systems/interlock/internal/trigger"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
+
+// computeLockTTL calculates a lock TTL based on the number and timeout of traits.
+func computeLockTTL(pipeline types.PipelineConfig, fallback time.Duration) time.Duration {
+	maxTimeout := 30 // seconds, default
+	count := 0
+	for _, tc := range pipeline.Traits {
+		count++
+		if tc.Timeout > maxTimeout {
+			maxTimeout = tc.Timeout
+		}
+	}
+	if count == 0 {
+		count = 1
+	}
+	computed := time.Duration(maxTimeout*count+30) * time.Second
+	if computed < fallback*2 {
+		return fallback * 2
+	}
+	return computed
+}
 
 // tick processes a single pipeline evaluation cycle.
 func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, interval time.Duration) {
@@ -17,7 +38,7 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 	today := now.Format("2006-01-02")
 
 	// Step 1: Acquire lock to prevent double-evaluation
-	acquired, err := w.provider.AcquireLock(ctx, lockKey, interval*2)
+	acquired, err := w.provider.AcquireLock(ctx, lockKey, computeLockTTL(pipeline, interval))
 	if err != nil {
 		w.logger.Error("failed to acquire lock", "pipeline", pipeline.Name, "error", err)
 		return
@@ -75,7 +96,9 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 				})
 				runLog.AlertSent = true
 				runLog.UpdatedAt = now
-				_ = w.provider.PutRunLog(ctx, *runLog)
+				if err := w.provider.PutRunLog(ctx, *runLog); err != nil {
+					w.logger.Error("failed to persist run log", "pipeline", pipeline.Name, "error", err)
+				}
 			}
 			return
 		}
@@ -91,7 +114,9 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 				})
 				runLog.AlertSent = true
 				runLog.UpdatedAt = now
-				_ = w.provider.PutRunLog(ctx, *runLog)
+				if err := w.provider.PutRunLog(ctx, *runLog); err != nil {
+					w.logger.Error("failed to persist run log", "pipeline", pipeline.Name, "error", err)
+				}
 			}
 			return
 		}
@@ -167,9 +192,11 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 	}
 
 	// Execute trigger
+	metrics.TriggersTotal.Add(1)
 	triggerErr := trigger.Execute(ctx, pipeline.Trigger)
 
 	if triggerErr != nil {
+		metrics.TriggersFailed.Add(1)
 		fc := trigger.ClassifyFailure(triggerErr)
 		entry.Status = types.RunFailed
 		entry.FailureMessage = triggerErr.Error()
@@ -179,7 +206,9 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 		completedAt := time.Now()
 		entry.CompletedAt = &completedAt
 
-		_ = w.provider.PutRunLog(ctx, entry)
+		if err := w.provider.PutRunLog(ctx, entry); err != nil {
+		w.logger.Error("failed to persist run log", "pipeline", pipeline.Name, "error", err)
+	}
 
 		// Update run state to FAILED
 		run.Status = types.RunFailed
@@ -197,6 +226,7 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 		})
 
 		if IsRetryable(retryPolicy, fc) && attemptNum < retryPolicy.MaxAttempts {
+			metrics.RetriesScheduled.Add(1)
 			w.appendEvent(ctx, types.Event{
 				Kind:       types.EventRetryScheduled,
 				PipelineID: pipeline.Name,
@@ -230,7 +260,9 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 	}
 
 	entry.UpdatedAt = time.Now()
-	_ = w.provider.PutRunLog(ctx, entry)
+	if err := w.provider.PutRunLog(ctx, entry); err != nil {
+		w.logger.Error("failed to persist run log", "pipeline", pipeline.Name, "error", err)
+	}
 
 	w.appendEvent(ctx, types.Event{
 		Kind:       types.EventTriggerFired,
@@ -258,6 +290,7 @@ func (w *Watcher) checkEvaluationSLA(ctx context.Context, pipeline types.Pipelin
 	}
 
 	if IsBreached(deadline, now) {
+		metrics.SLABreaches.Add(1)
 		w.fireAlert(types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,
@@ -289,6 +322,7 @@ func (w *Watcher) checkCompletionSLA(ctx context.Context, pipeline types.Pipelin
 	}
 
 	if IsBreached(deadline, now) {
+		metrics.SLABreaches.Add(1)
 		w.fireAlert(types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,

@@ -170,7 +170,7 @@ func (p *RedisProvider) PutRunState(ctx context.Context, run types.RunState) err
 	pipe := p.client.Pipeline()
 	pipe.Set(ctx, p.runKey(run.RunID), data, 0)
 	pipe.LPush(ctx, p.runIndexKey(run.PipelineID), run.RunID)
-	pipe.LTrim(ctx, p.runIndexKey(run.PipelineID), 0, 99) // keep last 100
+	pipe.LTrim(ctx, p.runIndexKey(run.PipelineID), 0, p.runIndexLimit-1)
 	_, err = pipe.Exec(ctx)
 	return err
 }
@@ -233,7 +233,7 @@ func (p *RedisProvider) PutReadiness(ctx context.Context, result types.Readiness
 	if err != nil {
 		return err
 	}
-	return p.client.Set(ctx, p.readinessKey(result.PipelineID), data, 5*time.Minute).Err()
+	return p.client.Set(ctx, p.readinessKey(result.PipelineID), data, p.readinessTTL).Err()
 }
 
 // GetReadiness retrieves a cached readiness result.
@@ -344,7 +344,7 @@ func (p *RedisProvider) AppendEvent(ctx context.Context, event types.Event) erro
 	}
 	return p.client.XAdd(ctx, &goredis.XAddArgs{
 		Stream: p.eventStreamKey(event.PipelineID),
-		MaxLen: 10000,
+		MaxLen: p.eventStreamMax,
 		Approx: true,
 		Values: map[string]interface{}{
 			"kind": string(event.Kind),

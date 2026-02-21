@@ -65,7 +65,11 @@ func ExecuteHTTP(ctx context.Context, cfg *types.TriggerConfig) error {
 		req.Header.Set(k, os.ExpandEnv(v))
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	timeout := 30 * time.Second
+	if cfg.Timeout > 0 {
+		timeout = time.Duration(cfg.Timeout) * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("trigger request failed: %w", err)

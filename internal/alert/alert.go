@@ -3,7 +3,9 @@ package alert
 
 import (
 	"fmt"
+	"log/slog"
 
+	"github.com/interlock-systems/interlock/internal/metrics"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
@@ -15,12 +17,17 @@ type Sink interface {
 
 // Dispatcher routes alerts to configured sinks.
 type Dispatcher struct {
-	sinks []Sink
+	sinks  []Sink
+	logger *slog.Logger
 }
 
 // NewDispatcher creates a dispatcher from alert configs.
-func NewDispatcher(configs []types.AlertConfig) (*Dispatcher, error) {
-	d := &Dispatcher{}
+// If logger is nil, slog.Default() is used.
+func NewDispatcher(configs []types.AlertConfig, logger *slog.Logger) (*Dispatcher, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	d := &Dispatcher{logger: logger}
 	for _, cfg := range configs {
 		sink, err := newSink(cfg)
 		if err != nil {
@@ -35,7 +42,10 @@ func NewDispatcher(configs []types.AlertConfig) (*Dispatcher, error) {
 func (d *Dispatcher) Dispatch(alert types.Alert) {
 	for _, sink := range d.sinks {
 		if err := sink.Send(alert); err != nil {
-			fmt.Printf("[alert] error sending to %s: %v\n", sink.Name(), err)
+			metrics.AlertsFailed.Add(1)
+			d.logger.Error("alert dispatch failed", "sink", sink.Name(), "error", err)
+		} else {
+			metrics.AlertsDispatched.Add(1)
 		}
 	}
 }

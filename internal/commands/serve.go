@@ -60,17 +60,24 @@ func runServe() error {
 		return err
 	}
 
+	// Logger
+	logger := slog.Default()
+
 	// Alerts
-	dispatcher, err := alert.NewDispatcher(cfg.Alerts)
+	dispatcher, err := alert.NewDispatcher(cfg.Alerts, logger)
 	if err != nil {
 		return fmt.Errorf("creating alert dispatcher: %w", err)
 	}
 
 	// Engine
-	logger := slog.Default()
 	runner := evaluator.NewRunner(cfg.EvaluatorDirs)
 	eng := engine.New(prov, reg, runner, dispatcher.AlertFunc())
 	eng.SetLogger(logger)
+	if cfg.Engine != nil && cfg.Engine.DefaultTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Engine.DefaultTimeout); err == nil {
+			eng.SetDefaultTimeout(d)
+		}
+	}
 
 	// Watcher
 	var w *watcher.Watcher
@@ -80,10 +87,16 @@ func runServe() error {
 
 	// Server
 	addr := ":3000"
-	if cfg.Server != nil && cfg.Server.Addr != "" {
-		addr = cfg.Server.Addr
+	var apiKey string
+	var maxBody int64
+	if cfg.Server != nil {
+		if cfg.Server.Addr != "" {
+			addr = cfg.Server.Addr
+		}
+		apiKey = cfg.Server.APIKey
+		maxBody = cfg.Server.MaxRequestBody
 	}
-	srv := server.New(addr, eng, prov, reg)
+	srv := server.New(addr, eng, prov, reg, apiKey, maxBody)
 
 	// Start watcher
 	if w != nil {

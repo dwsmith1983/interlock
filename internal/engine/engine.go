@@ -10,6 +10,7 @@ import (
 
 	"github.com/interlock-systems/interlock/internal/archetype"
 	"github.com/interlock-systems/interlock/internal/evaluator"
+	"github.com/interlock-systems/interlock/internal/metrics"
 	"github.com/interlock-systems/interlock/internal/provider"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
@@ -17,21 +18,23 @@ import (
 // Engine is the core readiness evaluation engine. It resolves archetypes,
 // runs evaluators, stores results, and determines pipeline readiness.
 type Engine struct {
-	provider provider.Provider
-	registry *archetype.Registry
-	runner   *evaluator.Runner
-	alertFn  func(types.Alert)
-	logger   *slog.Logger
+	provider       provider.Provider
+	registry       *archetype.Registry
+	runner         *evaluator.Runner
+	alertFn        func(types.Alert)
+	logger         *slog.Logger
+	defaultTimeout time.Duration
 }
 
 // New creates a new Engine.
 func New(p provider.Provider, reg *archetype.Registry, runner *evaluator.Runner, alertFn func(types.Alert)) *Engine {
 	return &Engine{
-		provider: p,
-		registry: reg,
-		runner:   runner,
-		alertFn:  alertFn,
-		logger:   slog.Default(),
+		provider:       p,
+		registry:       reg,
+		runner:         runner,
+		alertFn:        alertFn,
+		logger:         slog.Default(),
+		defaultTimeout: 30 * time.Second,
 	}
 }
 
@@ -42,10 +45,19 @@ func (e *Engine) SetLogger(l *slog.Logger) {
 	}
 }
 
+// SetDefaultTimeout overrides the default evaluator timeout.
+func (e *Engine) SetDefaultTimeout(d time.Duration) {
+	if d > 0 {
+		e.defaultTimeout = d
+	}
+}
+
 // Evaluate runs all trait evaluators for a pipeline and determines readiness.
 func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.ReadinessResult, error) {
+	metrics.EvaluationsTotal.Add(1)
 	pipeline, err := e.provider.GetPipeline(ctx, pipelineID)
 	if err != nil {
+		metrics.EvaluationErrors.Add(1)
 		return nil, fmt.Errorf("loading pipeline %q: %w", pipelineID, err)
 	}
 
@@ -86,6 +98,7 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 
 	for _, r := range results {
 		if r.err != nil {
+			metrics.EvaluationErrors.Add(1)
 			te := types.TraitEvaluation{
 				PipelineID:  pipelineID,
 				TraitType:   r.trait.Type,
@@ -240,7 +253,7 @@ func (e *Engine) evaluateTrait(ctx context.Context, pipelineID string, trait arc
 
 	timeout := time.Duration(trait.Timeout) * time.Second
 	if timeout == 0 {
-		timeout = 30 * time.Second
+		timeout = e.defaultTimeout
 	}
 
 	output, err := e.runner.Run(ctx, trait.Evaluator, input, timeout)

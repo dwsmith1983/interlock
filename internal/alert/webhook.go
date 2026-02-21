@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 type WebhookSink struct {
 	url    string
 	client *http.Client
+	logger *slog.Logger
 }
 
 // NewWebhookSink creates a new webhook alert sink.
@@ -23,6 +25,7 @@ func NewWebhookSink(url string) *WebhookSink {
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		logger: slog.Default(),
 	}
 }
 
@@ -30,12 +33,26 @@ func NewWebhookSink(url string) *WebhookSink {
 func (s *WebhookSink) Name() string { return "webhook" }
 
 // Send posts the alert as JSON to the configured webhook URL.
+// On failure, it retries once after a 2-second delay.
 func (s *WebhookSink) Send(alert types.Alert) error {
 	data, err := json.Marshal(alert)
 	if err != nil {
 		return err
 	}
 
+	err = s.doPost(data)
+	if err != nil {
+		s.logger.Warn("webhook first attempt failed, retrying", "url", s.url, "error", err)
+		time.Sleep(2 * time.Second)
+		err = s.doPost(data)
+		if err != nil {
+			return fmt.Errorf("webhook POST failed after retry: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *WebhookSink) doPost(data []byte) error {
 	resp, err := s.client.Post(s.url, "application/json", bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("webhook POST failed: %w", err)

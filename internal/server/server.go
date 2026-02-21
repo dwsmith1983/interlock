@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"expvar"
 	"fmt"
 	"net/http"
 	"time"
@@ -26,7 +27,7 @@ type Server struct {
 }
 
 // New creates a new HTTP server.
-func New(addr string, eng *engine.Engine, prov provider.Provider, reg *archetype.Registry) *Server {
+func New(addr string, eng *engine.Engine, prov provider.Provider, reg *archetype.Registry, apiKey string, maxBody int64) *Server {
 	s := &Server{
 		engine:   eng,
 		provider: prov,
@@ -34,11 +35,20 @@ func New(addr string, eng *engine.Engine, prov provider.Provider, reg *archetype
 		addr:     addr,
 	}
 
+	if maxBody <= 0 {
+		maxBody = 1 << 20 // 1MB default
+	}
+
 	r := chi.NewRouter()
+	r.Use(MaxBodyMiddleware(maxBody))
+	r.Use(APIKeyMiddleware(apiKey))
 	r.Use(RequestIDMiddleware)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.SetHeader("Content-Type", "application/json"))
+
+	// Expose expvar metrics at /debug/vars
+	r.Handle("/debug/vars", expvar.Handler())
 
 	s.router = r
 	s.registerRoutes(r)

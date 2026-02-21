@@ -11,7 +11,6 @@ const (
 	TraitPass    TraitStatus = "PASS"
 	TraitFail    TraitStatus = "FAIL"
 	TraitStale   TraitStatus = "STALE"
-	TraitPending TraitStatus = "PENDING"
 )
 
 // ReadinessStatus represents whether a pipeline is ready to execute.
@@ -121,18 +120,9 @@ type TriggerConfig struct {
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	Body    string            `yaml:"body,omitempty" json:"body,omitempty"`
 	Command string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Timeout int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 }
 
-// PostActionConfig defines post-run monitoring behavior.
-type PostActionConfig struct {
-	Policy string                 `yaml:"policy,omitempty" json:"policy,omitempty"`
-	Config map[string]interface{} `yaml:"config,omitempty" json:"config,omitempty"`
-}
-
-// Extensions holds pipeline extension configurations.
-type Extensions struct {
-	PostAction *PostActionConfig `yaml:"postAction,omitempty" json:"postAction,omitempty"`
-}
 
 // RetryPolicy configures automatic retry behavior.
 type RetryPolicy struct {
@@ -167,7 +157,6 @@ type PipelineConfig struct {
 	Archetype  string                 `yaml:"archetype" json:"archetype"`
 	Tier       int                    `yaml:"tier,omitempty" json:"tier,omitempty"`
 	Traits     map[string]TraitConfig `yaml:"traits,omitempty" json:"traits,omitempty"`
-	Extensions *Extensions            `yaml:"extensions,omitempty" json:"extensions,omitempty"`
 	Trigger    *TriggerConfig         `yaml:"trigger,omitempty" json:"trigger,omitempty"`
 	Retry      *RetryPolicy           `yaml:"retry,omitempty" json:"retry,omitempty"`
 	SLA        *SLAConfig             `yaml:"sla,omitempty" json:"sla,omitempty"`
@@ -247,19 +236,6 @@ type TraitChangeEvent struct {
 	Timestamp  time.Time   `json:"timestamp"`
 }
 
-// SourceEvent represents activity on a monitored source.
-type SourceEvent struct {
-	Source    string    `json:"source"`
-	Type     string    `json:"type"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-// SourceMonitorConfig configures source activity monitoring.
-type SourceMonitorConfig struct {
-	Source string `json:"source"`
-	Type   string `json:"type"`
-}
-
 // EventKind classifies the type of audit event.
 type EventKind string
 
@@ -304,11 +280,17 @@ type RunLogEntry struct {
 	UpdatedAt       time.Time       `json:"updatedAt"`
 }
 
+// EngineConfig holds engine-level settings.
+type EngineConfig struct {
+	DefaultTimeout string `yaml:"defaultTimeout,omitempty" json:"defaultTimeout,omitempty"`
+}
+
 // ProjectConfig represents the top-level interlock.yaml configuration.
 type ProjectConfig struct {
 	Provider      string         `yaml:"provider"`
 	Redis         *RedisConfig   `yaml:"redis,omitempty"`
 	Server        *ServerConfig  `yaml:"server,omitempty"`
+	Engine        *EngineConfig  `yaml:"engine,omitempty"`
 	ArchetypeDirs []string       `yaml:"archetypeDirs"`
 	EvaluatorDirs []string       `yaml:"evaluatorDirs"`
 	PipelineDirs  []string       `yaml:"pipelineDirs"`
@@ -318,13 +300,18 @@ type ProjectConfig struct {
 
 // RedisConfig holds Redis/Valkey connection settings.
 type RedisConfig struct {
-	Addr      string `yaml:"addr"`
-	Password  string `yaml:"password,omitempty"`
-	DB        int    `yaml:"db,omitempty"`
-	KeyPrefix string `yaml:"keyPrefix"`
+	Addr           string `yaml:"addr"`
+	Password       string `yaml:"password,omitempty"`
+	DB             int    `yaml:"db,omitempty"`
+	KeyPrefix      string `yaml:"keyPrefix"`
+	ReadinessTTL   string `yaml:"readinessTtl,omitempty" json:"readinessTtl,omitempty"`
+	RunIndexLimit  int    `yaml:"runIndexLimit,omitempty" json:"runIndexLimit,omitempty"`
+	EventStreamMax int64  `yaml:"eventStreamMax,omitempty" json:"eventStreamMax,omitempty"`
 }
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Addr string `yaml:"addr"`
+	Addr           string `yaml:"addr"`
+	APIKey         string `yaml:"apiKey,omitempty" json:"apiKey,omitempty"`
+	MaxRequestBody int64  `yaml:"maxRequestBody,omitempty" json:"maxRequestBody,omitempty"`
 }

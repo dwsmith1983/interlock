@@ -3,7 +3,6 @@ package redis
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -69,7 +68,3 @@ func (p *RedisProvider) SubscribeTraitChanges(ctx context.Context, handler func(
 	}
 }
 
-// SubscribeSourceActivity is a placeholder for Phase 1 — source monitoring via file watching or polling.
-func (p *RedisProvider) SubscribeSourceActivity(_ context.Context, _ types.SourceMonitorConfig, _ func(types.SourceEvent)) error {
-	return fmt.Errorf("source activity monitoring not yet implemented")
-}

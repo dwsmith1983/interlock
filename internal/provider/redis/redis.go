@@ -4,6 +4,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"time"
 
 	goredis "github.com/redis/go-redis/v9"
 
@@ -13,9 +14,12 @@ import (
 
 // RedisProvider implements the Provider interface backed by Redis/Valkey.
 type RedisProvider struct {
-	client    *goredis.Client
-	prefix    string
-	casScript *goredis.Script
+	client         *goredis.Client
+	prefix         string
+	casScript      *goredis.Script
+	readinessTTL   time.Duration
+	runIndexLimit  int64
+	eventStreamMax int64
 }
 
 // New creates a new RedisProvider.
@@ -31,10 +35,28 @@ func New(cfg *types.RedisConfig) *RedisProvider {
 		prefix = "interlock:"
 	}
 
+	readinessTTL := 5 * time.Minute
+	if cfg.ReadinessTTL != "" {
+		if d, err := time.ParseDuration(cfg.ReadinessTTL); err == nil && d > 0 {
+			readinessTTL = d
+		}
+	}
+	runIndexLimit := int64(100)
+	if cfg.RunIndexLimit > 0 {
+		runIndexLimit = int64(cfg.RunIndexLimit)
+	}
+	eventStreamMax := int64(10000)
+	if cfg.EventStreamMax > 0 {
+		eventStreamMax = cfg.EventStreamMax
+	}
+
 	return &RedisProvider{
-		client:    client,
-		prefix:    prefix,
-		casScript: goredis.NewScript(luascripts.CompareAndSwap),
+		client:         client,
+		prefix:         prefix,
+		casScript:      goredis.NewScript(luascripts.CompareAndSwap),
+		readinessTTL:   readinessTTL,
+		runIndexLimit:  runIndexLimit,
+		eventStreamMax: eventStreamMax,
 	}
 }
 
@@ -44,9 +66,12 @@ func NewFromClient(client *goredis.Client, prefix string) *RedisProvider {
 		prefix = "interlock:"
 	}
 	return &RedisProvider{
-		client:    client,
-		prefix:    prefix,
-		casScript: goredis.NewScript(luascripts.CompareAndSwap),
+		client:         client,
+		prefix:         prefix,
+		casScript:      goredis.NewScript(luascripts.CompareAndSwap),
+		readinessTTL:   5 * time.Minute,
+		runIndexLimit:  100,
+		eventStreamMax: 10000,
 	}
 }
 

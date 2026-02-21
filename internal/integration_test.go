@@ -125,7 +125,7 @@ echo '{"status":"PASS","value":{"cpu_available":true}}'
 	dispatcher, err := alert.NewDispatcher([]types.AlertConfig{
 		{Type: types.AlertConsole},
 		{Type: types.AlertFile, Path: alertLog},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Build engine
@@ -248,7 +248,7 @@ echo '{"status":"PASS","value":{}}'
 	dispatcher, err := alert.NewDispatcher([]types.AlertConfig{
 		{Type: types.AlertConsole},
 		{Type: types.AlertFile, Path: alertLog},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	runner := evaluator.NewRunner([]string{evalDir})
@@ -529,7 +529,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 
 	dispatcher, err := alert.NewDispatcher([]types.AlertConfig{
 		{Type: types.AlertFile, Path: alertLog},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	runner := evaluator.NewRunner([]string{evalDir})
@@ -886,7 +886,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 
 	dispatcher, err := alert.NewDispatcher([]types.AlertConfig{
 		{Type: types.AlertFile, Path: alertLog},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	runner := evaluator.NewRunner([]string{evalDir})

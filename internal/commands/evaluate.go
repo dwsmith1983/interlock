@@ -77,7 +77,7 @@ func buildEngine(cfg *types.ProjectConfig) (*engine.Engine, *redis.RedisProvider
 	}
 
 	// Alert dispatcher
-	dispatcher, err := alert.NewDispatcher(cfg.Alerts)
+	dispatcher, err := alert.NewDispatcher(cfg.Alerts, nil)
 	if err != nil {
 		_ = prov.Stop(ctx)
 		return nil, nil, nil, fmt.Errorf("creating alert dispatcher: %w", err)

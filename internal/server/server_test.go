@@ -32,7 +32,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, *testutil.MockProvider) {
 
 	runner := evaluator.NewRunner(nil)
 	eng := engine.New(prov, reg, runner, nil)
-	srv := New(":0", eng, prov, reg)
+	srv := New(":0", eng, prov, reg, "", 0)
 
 	ts := httptest.NewServer(srv.router)
 	t.Cleanup(ts.Close)

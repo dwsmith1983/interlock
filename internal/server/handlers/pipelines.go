@@ -34,6 +34,11 @@ func (h *Handlers) RegisterPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if config.Trigger != nil && config.Trigger.Type == types.TriggerCommand {
+		h.writeError(w, http.StatusBadRequest, "command triggers cannot be registered via API", nil)
+		return
+	}
+
 	if config.Archetype != "" && h.registry != nil {
 		if _, err := h.registry.Get(config.Archetype); err != nil {
 			h.writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown archetype %q", config.Archetype), nil)
