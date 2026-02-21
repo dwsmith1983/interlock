@@ -334,7 +334,12 @@ func (p *RedisProvider) ListRunLogs(ctx context.Context, pipelineID string, limi
 	if limit <= 0 {
 		limit = 20
 	}
-	members, err := p.client.ZRevRange(ctx, p.runLogIndexKey(pipelineID), 0, int64(limit-1)).Result()
+	members, err := p.client.ZRangeArgs(ctx, goredis.ZRangeArgs{
+		Key:   p.runLogIndexKey(pipelineID),
+		Start: 0,
+		Stop:  int64(limit - 1),
+		Rev:   true,
+	}).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -435,7 +440,12 @@ func (p *RedisProvider) ListReruns(ctx context.Context, pipelineID string, limit
 	if limit <= 0 {
 		limit = 20
 	}
-	ids, err := p.client.ZRevRange(ctx, p.rerunIndexKey(pipelineID), 0, int64(limit-1)).Result()
+	ids, err := p.client.ZRangeArgs(ctx, goredis.ZRangeArgs{
+		Key:   p.rerunIndexKey(pipelineID),
+		Start: 0,
+		Stop:  int64(limit - 1),
+		Rev:   true,
+	}).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -447,7 +457,12 @@ func (p *RedisProvider) ListAllReruns(ctx context.Context, limit int) ([]types.R
 	if limit <= 0 {
 		limit = 50
 	}
-	ids, err := p.client.ZRevRange(ctx, p.rerunGlobalIndexKey(), 0, int64(limit-1)).Result()
+	ids, err := p.client.ZRangeArgs(ctx, goredis.ZRangeArgs{
+		Key:   p.rerunGlobalIndexKey(),
+		Start: 0,
+		Stop:  int64(limit - 1),
+		Rev:   true,
+	}).Result()
 	if err != nil {
 		return nil, err
 	}

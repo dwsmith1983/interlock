@@ -87,7 +87,7 @@ func (s *Store) InsertEvents(ctx context.Context, records []types.EventRecord) e
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	for _, rec := range records {
 		ev := rec.Event

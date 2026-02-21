@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/interlock-systems/interlock/pkg/types"
@@ -22,6 +23,8 @@ type MockProvider struct {
 	runLogs   map[string]types.RunLogEntry // key: "pipelineID:date:scheduleID"
 	locks     map[string]bool
 	reruns    map[string]types.RerunRecord
+
+	pollCount atomic.Int64 // incremented on each ListPipelines call
 }
 
 // NewMockProvider creates a new in-memory mock provider.
@@ -56,6 +59,7 @@ func (m *MockProvider) GetPipeline(_ context.Context, id string) (*types.Pipelin
 }
 
 func (m *MockProvider) ListPipelines(_ context.Context) ([]types.PipelineConfig, error) {
+	m.pollCount.Add(1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var result []types.PipelineConfig
@@ -63,6 +67,12 @@ func (m *MockProvider) ListPipelines(_ context.Context) ([]types.PipelineConfig,
 		result = append(result, p)
 	}
 	return result, nil
+}
+
+// PollCount returns the number of times ListPipelines has been called.
+// Useful for waiting until the watcher has completed at least N poll cycles.
+func (m *MockProvider) PollCount() int64 {
+	return m.pollCount.Load()
 }
 
 func (m *MockProvider) DeletePipeline(_ context.Context, id string) error {

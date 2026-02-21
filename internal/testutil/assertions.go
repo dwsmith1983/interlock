@@ -63,3 +63,12 @@ func WaitForEvent(t *testing.T, prov *MockProvider, pipelineID string, kind type
 		return false
 	}, "event "+string(kind)+" for "+pipelineID)
 }
+
+// WaitForPollCount polls until the provider's ListPipelines has been called
+// at least n times, indicating the watcher has completed that many poll cycles.
+func WaitForPollCount(t *testing.T, prov *MockProvider, n int64, timeout time.Duration) {
+	t.Helper()
+	WaitFor(t, timeout, func() bool {
+		return prov.PollCount() >= n
+	}, "watcher poll count >= target")
+}

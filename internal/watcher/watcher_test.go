@@ -163,7 +163,7 @@ func TestWatcher_ActiveRun_SkipsTrigger(t *testing.T) {
 
 	w, _ := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+	testutil.WaitForPollCount(t, prov, 3, pollTimeout)
 	w.Stop(context.Background())
 
 	runs, err := prov.ListRuns(ctx, "active-run-test", 10)
@@ -192,7 +192,7 @@ func TestWatcher_AlreadySucceeded_Skips(t *testing.T) {
 
 	w, _ := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+	testutil.WaitForPollCount(t, prov, 3, pollTimeout)
 	w.Stop(context.Background())
 
 	runs, err := prov.ListRuns(ctx, "succeeded-test", 10)
@@ -294,7 +294,7 @@ func TestWatcher_LockPreventsDoubleEval(t *testing.T) {
 
 	w, _ := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+	testutil.WaitForPollCount(t, prov, 3, pollTimeout)
 	w.Stop(context.Background())
 
 	runs, err := prov.ListRuns(ctx, "lock-test", 10)
@@ -705,8 +705,9 @@ func TestWatcher_MultiSchedule_InactiveSkipped(t *testing.T) {
 	// Wait for at least one run
 	testutil.WaitForRunStatus(t, prov, "inactive-sched-test", types.RunCompleted, pollTimeout)
 
-	// Let watcher run a few more ticks
-	time.Sleep(300 * time.Millisecond)
+	// Let watcher run a few more cycles to confirm no extra triggers
+	baseline := prov.PollCount()
+	testutil.WaitForPollCount(t, prov, baseline+3, pollTimeout)
 	w.Stop(context.Background())
 
 	runs, err := prov.ListRuns(ctx, "inactive-sched-test", 10)
@@ -806,7 +807,7 @@ func TestWatcher_ExcludedDay_NothingFires(t *testing.T) {
 
 	w, ac := setupWatcherWithCalendar(t, prov, calReg)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+	testutil.WaitForPollCount(t, prov, 3, pollTimeout)
 	w.Stop(context.Background())
 
 	// No runs should have been created
@@ -898,7 +899,7 @@ func TestWatcher_ExcludedDay_SLANotChecked(t *testing.T) {
 
 	w, ac := setupWatcherWithCalendar(t, prov, calReg)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+	testutil.WaitForPollCount(t, prov, 3, pollTimeout)
 	w.Stop(context.Background())
 
 	// No SLA breach alerts should fire — exclusion suppresses all evaluation
@@ -956,7 +957,7 @@ func TestWatcher_ExcludedDay_ActiveRunIgnored(t *testing.T) {
 
 	w, ac := setupWatcherWithCalendar(t, prov, calReg)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+	testutil.WaitForPollCount(t, prov, 3, pollTimeout)
 	w.Stop(context.Background())
 
 	// No completion SLA alerts — excluded day means handleActiveRun never runs
