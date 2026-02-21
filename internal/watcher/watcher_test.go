@@ -379,3 +379,260 @@ func TestWatcher_CompletionSLABreach(t *testing.T) {
 	}
 	assert.True(t, hasSLAAlert, "expected completion SLA breach alert")
 }
+
+func monitoringPipeline(name string) types.PipelineConfig {
+	enabled := true
+	return types.PipelineConfig{
+		Name:      name,
+		Archetype: "batch-ingestion",
+		Traits: map[string]types.TraitConfig{
+			"freshness": {Evaluator: "../../testdata/evaluators/pass", Timeout: 5},
+		},
+		Trigger: &types.TriggerConfig{
+			Type:    types.TriggerCommand,
+			Command: "true",
+		},
+		Watch: &types.PipelineWatchConfig{
+			Enabled: &enabled,
+			Monitoring: &types.MonitoringConfig{
+				Enabled:  true,
+				Duration: "1h",
+			},
+		},
+	}
+}
+
+func setupWatcherWithInterval(t *testing.T, prov *testutil.MockProvider, interval string) (*watcher.Watcher, *[]types.Alert) {
+	t.Helper()
+
+	reg := archetype.NewRegistry()
+	require.NoError(t, reg.Register(&types.Archetype{
+		Name: "batch-ingestion",
+		RequiredTraits: []types.TraitDefinition{
+			{Type: "freshness", DefaultTimeout: 5},
+		},
+		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
+	}))
+
+	runner := evaluator.NewRunner(nil)
+	eng := engine.New(prov, reg, runner, nil)
+
+	alerts := &[]types.Alert{}
+	alertFn := func(a types.Alert) {
+		*alerts = append(*alerts, a)
+	}
+
+	cfg := types.WatcherConfig{
+		Enabled:         true,
+		DefaultInterval: interval,
+	}
+
+	w := watcher.New(prov, eng, alertFn, slog.Default(), cfg)
+	return w, alerts
+}
+
+func TestWatcher_MonitoringEnabled_TransitionsToMonitoring(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	pipeline := monitoringPipeline("monitor-transition-test")
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	// Use a long interval so only the initial immediate poll fires (trigger),
+	// preventing rapid re-evaluations that can cause subprocess flakiness.
+	w, _ := setupWatcherWithInterval(t, prov, "10s")
+	w.Start(ctx)
+	time.Sleep(500 * time.Millisecond)
+	w.Stop(context.Background())
+
+	// Should have created a run in COMPLETED_MONITORING status
+	runs, err := prov.ListRuns(ctx, "monitor-transition-test", 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, runs, "expected at least one run")
+	assert.Equal(t, types.RunCompletedMonitoring, runs[0].Status, "expected COMPLETED_MONITORING status")
+
+	// Should have monitoringStartedAt metadata
+	_, hasMonitoringStart := runs[0].Metadata["monitoringStartedAt"]
+	assert.True(t, hasMonitoringStart, "expected monitoringStartedAt in metadata")
+
+	// Should have MONITORING_STARTED event
+	events := prov.Events()
+	hasMonitoringEvent := false
+	for _, e := range events {
+		if e.Kind == types.EventMonitoringStarted {
+			hasMonitoringEvent = true
+		}
+	}
+	assert.True(t, hasMonitoringEvent, "expected MONITORING_STARTED event")
+}
+
+func TestWatcher_MonitoringExpires_TransitionsToCompleted(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	pipeline := monitoringPipeline("monitor-expire-test")
+	pipeline.Watch.Monitoring.Duration = "1ms" // expires immediately
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	// Create a run in COMPLETED_MONITORING with a past monitoring start
+	pastStart := time.Now().Add(-1 * time.Hour)
+	require.NoError(t, prov.PutRunState(ctx, types.RunState{
+		RunID:      "monitor-run",
+		PipelineID: "monitor-expire-test",
+		Status:     types.RunCompletedMonitoring,
+		Version:    3,
+		CreatedAt:  pastStart,
+		UpdatedAt:  pastStart,
+		Metadata: map[string]interface{}{
+			"monitoringStartedAt": pastStart.Format(time.RFC3339),
+		},
+	}))
+
+	// Add a run log entry
+	today := time.Now().Format("2006-01-02")
+	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
+		PipelineID:    "monitor-expire-test",
+		Date:          today,
+		Status:        types.RunCompletedMonitoring,
+		AttemptNumber: 1,
+		RunID:         "monitor-run",
+		StartedAt:     pastStart,
+		UpdatedAt:     pastStart,
+	}))
+
+	w, _ := setupWatcher(t, prov)
+	w.Start(ctx)
+	time.Sleep(500 * time.Millisecond)
+	w.Stop(context.Background())
+
+	// Run should now be COMPLETED
+	runs, err := prov.ListRuns(ctx, "monitor-expire-test", 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, runs)
+	assert.Equal(t, types.RunCompleted, runs[0].Status, "expected COMPLETED after monitoring window expires")
+
+	// Should have MONITORING_COMPLETED event
+	events := prov.Events()
+	hasCompletedEvent := false
+	for _, e := range events {
+		if e.Kind == types.EventMonitoringCompleted {
+			hasCompletedEvent = true
+		}
+	}
+	assert.True(t, hasCompletedEvent, "expected MONITORING_COMPLETED event")
+}
+
+func TestWatcher_MonitoringDrift_CreatesRerun(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	// Pipeline with monitoring enabled and a FAIL evaluator (simulates drift)
+	enabled := true
+	pipeline := types.PipelineConfig{
+		Name:      "monitor-drift-test",
+		Archetype: "batch-ingestion",
+		Traits: map[string]types.TraitConfig{
+			"freshness": {Evaluator: "../../testdata/evaluators/fail", Timeout: 5},
+		},
+		Trigger: &types.TriggerConfig{
+			Type:    types.TriggerCommand,
+			Command: "true",
+		},
+		Watch: &types.PipelineWatchConfig{
+			Enabled: &enabled,
+			Monitoring: &types.MonitoringConfig{
+				Enabled:  true,
+				Duration: "1h",
+			},
+		},
+	}
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	// Create a run in COMPLETED_MONITORING with a recent start (still within window)
+	recentStart := time.Now().Add(-5 * time.Minute)
+	require.NoError(t, prov.PutRunState(ctx, types.RunState{
+		RunID:      "drift-run",
+		PipelineID: "monitor-drift-test",
+		Status:     types.RunCompletedMonitoring,
+		Version:    3,
+		CreatedAt:  recentStart,
+		UpdatedAt:  recentStart,
+		Metadata: map[string]interface{}{
+			"monitoringStartedAt": recentStart.Format(time.RFC3339),
+		},
+	}))
+
+	today := time.Now().Format("2006-01-02")
+	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
+		PipelineID:    "monitor-drift-test",
+		Date:          today,
+		Status:        types.RunCompletedMonitoring,
+		AttemptNumber: 1,
+		RunID:         "drift-run",
+		StartedAt:     recentStart,
+		UpdatedAt:     recentStart,
+	}))
+
+	w, alerts := setupWatcher(t, prov)
+	w.Start(ctx)
+	time.Sleep(500 * time.Millisecond)
+	w.Stop(context.Background())
+
+	// Run should transition to COMPLETED (monitoring duty done)
+	runs, err := prov.ListRuns(ctx, "monitor-drift-test", 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, runs)
+	assert.Equal(t, types.RunCompleted, runs[0].Status, "expected COMPLETED after drift detection")
+
+	// Should have created a rerun record
+	reruns := prov.Reruns()
+	require.NotEmpty(t, reruns, "expected a rerun record for drift")
+	assert.Equal(t, "monitoring_drift_detected", reruns[0].Reason)
+	assert.Equal(t, "monitor-drift-test", reruns[0].PipelineID)
+	assert.Equal(t, "drift-run", reruns[0].OriginalRunID)
+
+	// Should have MONITORING_DRIFT_DETECTED event
+	events := prov.Events()
+	hasDriftEvent := false
+	for _, e := range events {
+		if e.Kind == types.EventMonitoringDrift {
+			hasDriftEvent = true
+		}
+	}
+	assert.True(t, hasDriftEvent, "expected MONITORING_DRIFT_DETECTED event")
+
+	// Should have fired a warning alert
+	hasWarningAlert := false
+	for _, a := range *alerts {
+		if a.Level == types.AlertLevelWarning {
+			hasWarningAlert = true
+		}
+	}
+	assert.True(t, hasWarningAlert, "expected warning alert for drift")
+}
+
+func TestWatcher_MonitoringDisabled_NormalCompletion(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	// Use readyPipeline — no monitoring config
+	pipeline := readyPipeline("no-monitor-test")
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	w, _ := setupWatcher(t, prov)
+	w.Start(ctx)
+	time.Sleep(500 * time.Millisecond)
+	w.Stop(context.Background())
+
+	// Should have created a run in COMPLETED status (not COMPLETED_MONITORING)
+	runs, err := prov.ListRuns(ctx, "no-monitor-test", 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, runs, "expected at least one run")
+	assert.Equal(t, types.RunCompleted, runs[0].Status, "expected COMPLETED status without monitoring")
+
+	// Should NOT have MONITORING_STARTED event
+	events := prov.Events()
+	for _, e := range events {
+		assert.NotEqual(t, types.EventMonitoringStarted, e.Kind, "unexpected MONITORING_STARTED event")
+	}
+}

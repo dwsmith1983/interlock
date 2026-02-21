@@ -332,6 +332,94 @@ func (p *RedisProvider) ReleaseLock(ctx context.Context, key string) error {
 	return p.client.Del(ctx, p.lockKey(key)).Err()
 }
 
+func (p *RedisProvider) rerunKey(rerunID string) string {
+	return p.prefix + "rerun:" + rerunID
+}
+
+func (p *RedisProvider) rerunIndexKey(pipelineID string) string {
+	return p.prefix + "reruns:" + pipelineID
+}
+
+func (p *RedisProvider) rerunGlobalIndexKey() string {
+	return p.prefix + "reruns:all"
+}
+
+// PutRerun stores a rerun record.
+func (p *RedisProvider) PutRerun(ctx context.Context, record types.RerunRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+
+	pipe := p.client.Pipeline()
+	pipe.Set(ctx, p.rerunKey(record.RerunID), data, 0)
+	pipe.ZAdd(ctx, p.rerunIndexKey(record.PipelineID), goredis.Z{
+		Score:  float64(record.RequestedAt.Unix()),
+		Member: record.RerunID,
+	})
+	pipe.ZAdd(ctx, p.rerunGlobalIndexKey(), goredis.Z{
+		Score:  float64(record.RequestedAt.Unix()),
+		Member: record.RerunID,
+	})
+	// Keep indices bounded
+	pipe.ZRemRangeByRank(ctx, p.rerunIndexKey(record.PipelineID), 0, -101)
+	pipe.ZRemRangeByRank(ctx, p.rerunGlobalIndexKey(), 0, -501)
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+// GetRerun retrieves a rerun record.
+func (p *RedisProvider) GetRerun(ctx context.Context, rerunID string) (*types.RerunRecord, error) {
+	data, err := p.client.Get(ctx, p.rerunKey(rerunID)).Bytes()
+	if errors.Is(err, goredis.Nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var record types.RerunRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+// ListReruns returns recent rerun records for a pipeline.
+func (p *RedisProvider) ListReruns(ctx context.Context, pipelineID string, limit int) ([]types.RerunRecord, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	ids, err := p.client.ZRevRange(ctx, p.rerunIndexKey(pipelineID), 0, int64(limit-1)).Result()
+	if err != nil {
+		return nil, err
+	}
+	return p.fetchReruns(ctx, ids)
+}
+
+// ListAllReruns returns recent rerun records across all pipelines.
+func (p *RedisProvider) ListAllReruns(ctx context.Context, limit int) ([]types.RerunRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	ids, err := p.client.ZRevRange(ctx, p.rerunGlobalIndexKey(), 0, int64(limit-1)).Result()
+	if err != nil {
+		return nil, err
+	}
+	return p.fetchReruns(ctx, ids)
+}
+
+func (p *RedisProvider) fetchReruns(ctx context.Context, ids []string) ([]types.RerunRecord, error) {
+	var records []types.RerunRecord
+	for _, id := range ids {
+		rec, err := p.GetRerun(ctx, id)
+		if err != nil || rec == nil {
+			continue
+		}
+		records = append(records, *rec)
+	}
+	return records, nil
+}
+
 func (p *RedisProvider) eventStreamKey(pipelineID string) string {
 	return p.prefix + "events:" + pipelineID
 }

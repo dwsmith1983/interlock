@@ -21,6 +21,7 @@ type MockProvider struct {
 	events    []types.Event
 	runLogs   map[string]types.RunLogEntry // key: "pipelineID:date"
 	locks     map[string]bool
+	reruns    map[string]types.RerunRecord
 }
 
 // NewMockProvider creates a new in-memory mock provider.
@@ -33,6 +34,7 @@ func NewMockProvider() *MockProvider {
 		readiness: make(map[string]types.ReadinessResult),
 		runLogs:   make(map[string]types.RunLogEntry),
 		locks:     make(map[string]bool),
+		reruns:    make(map[string]types.RerunRecord),
 	}
 }
 
@@ -238,6 +240,51 @@ func (m *MockProvider) ReleaseLock(_ context.Context, key string) error {
 	return nil
 }
 
+func (m *MockProvider) PutRerun(_ context.Context, record types.RerunRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reruns[record.RerunID] = record
+	return nil
+}
+
+func (m *MockProvider) GetRerun(_ context.Context, rerunID string) (*types.RerunRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.reruns[rerunID]
+	if !ok {
+		return nil, nil
+	}
+	return &r, nil
+}
+
+func (m *MockProvider) ListReruns(_ context.Context, pipelineID string, limit int) ([]types.RerunRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []types.RerunRecord
+	for _, r := range m.reruns {
+		if r.PipelineID == pipelineID {
+			result = append(result, r)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func (m *MockProvider) ListAllReruns(_ context.Context, limit int) ([]types.RerunRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []types.RerunRecord
+	for _, r := range m.reruns {
+		result = append(result, r)
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
+}
+
 func (m *MockProvider) Start(_ context.Context) error { return nil }
 func (m *MockProvider) Stop(_ context.Context) error  { return nil }
 func (m *MockProvider) Ping(_ context.Context) error  { return nil }
@@ -248,6 +295,17 @@ func (m *MockProvider) Events() []types.Event {
 	defer m.mu.Unlock()
 	out := make([]types.Event, len(m.events))
 	copy(out, m.events)
+	return out
+}
+
+// Reruns returns a copy of all stored rerun records (test helper).
+func (m *MockProvider) Reruns() []types.RerunRecord {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []types.RerunRecord
+	for _, r := range m.reruns {
+		out = append(out, r)
+	}
 	return out
 }
 

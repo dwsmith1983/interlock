@@ -25,6 +25,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 		// Traits
 		r.Get("/pipelines/{pipelineID}/traits", h.GetTraits)
 		r.Get("/pipelines/{pipelineID}/traits/{traitType}", h.GetTrait)
+		r.Post("/pipelines/{pipelineID}/traits/{traitType}", h.PushTrait)
 
 		// Runs
 		r.Post("/pipelines/{pipelineID}/run", h.RunPipeline)
@@ -35,5 +36,14 @@ func (s *Server) registerRoutes(r chi.Router) {
 		// Run logs
 		r.Get("/pipelines/{pipelineID}/runlogs", h.ListRunLogs)
 		r.Get("/pipelines/{pipelineID}/runlogs/{date}", h.GetRunLog)
+
+		// Events
+		r.Get("/pipelines/{pipelineID}/events", h.ListEvents)
+
+		// Reruns
+		r.Post("/pipelines/{pipelineID}/rerun", h.RequestRerun)
+		r.Get("/pipelines/{pipelineID}/reruns", h.ListReruns)
+		r.Get("/reruns", h.ListAllReruns)
+		r.Post("/reruns/{rerunID}/complete", h.CompleteRerun)
 	})
 }

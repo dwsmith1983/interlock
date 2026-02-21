@@ -128,7 +128,13 @@ func (h *Handlers) CompleteRun(w http.ResponseWriter, r *http.Request) {
 	var newStatus types.RunStatus
 	switch body.Status {
 	case "success":
-		newStatus = types.RunCompleted
+		pipeline, pErr := h.provider.GetPipeline(r.Context(), run.PipelineID)
+		if pErr == nil && pipeline.Watch != nil &&
+			pipeline.Watch.Monitoring != nil && pipeline.Watch.Monitoring.Enabled {
+			newStatus = types.RunCompletedMonitoring
+		} else {
+			newStatus = types.RunCompleted
+		}
 	case "failed":
 		newStatus = types.RunFailed
 	default:
@@ -146,6 +152,12 @@ func (h *Handlers) CompleteRun(w http.ResponseWriter, r *http.Request) {
 	newRun.Version = run.Version + 1
 	newRun.UpdatedAt = time.Now()
 	newRun.Metadata = body.Metadata
+	if newStatus == types.RunCompletedMonitoring {
+		if newRun.Metadata == nil {
+			newRun.Metadata = make(map[string]interface{})
+		}
+		newRun.Metadata["monitoringStartedAt"] = time.Now().Format(time.RFC3339)
+	}
 
 	ok, err := h.provider.CompareAndSwapRunState(r.Context(), runID, run.Version, newRun)
 	if err != nil || !ok {
@@ -165,12 +177,26 @@ func (h *Handlers) CompleteRun(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to append event", "pipeline", run.PipelineID, "event", "CALLBACK_RECEIVED", "error", err)
 	}
 
+	if newStatus == types.RunCompletedMonitoring {
+		if err := h.provider.AppendEvent(r.Context(), types.Event{
+			Kind:       types.EventMonitoringStarted,
+			PipelineID: run.PipelineID,
+			RunID:      runID,
+			Message:    "post-completion monitoring started via callback",
+			Timestamp:  time.Now(),
+		}); err != nil {
+			h.logger.Error("failed to append monitoring event", "pipeline", run.PipelineID, "error", err)
+		}
+	}
+
 	// Update RunLog to reflect completion
 	today := time.Now().Format("2006-01-02")
 	if runLog, err := h.provider.GetRunLog(r.Context(), run.PipelineID, today); err == nil && runLog != nil && runLog.RunID == runID {
 		now := time.Now()
 		runLog.Status = newStatus
-		runLog.CompletedAt = &now
+		if newStatus != types.RunCompletedMonitoring {
+			runLog.CompletedAt = &now
+		}
 		runLog.UpdatedAt = now
 		if newStatus == types.RunFailed {
 			runLog.FailureMessage = "completed via callback with status: failed"

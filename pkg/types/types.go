@@ -148,10 +148,17 @@ type WatcherConfig struct {
 	DefaultInterval string `yaml:"defaultInterval" json:"defaultInterval"`
 }
 
+// MonitoringConfig configures post-completion trait drift detection.
+type MonitoringConfig struct {
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+	Duration string `yaml:"duration" json:"duration"` // e.g. "2h", "30m"
+}
+
 // PipelineWatchConfig overrides watcher settings per pipeline.
 type PipelineWatchConfig struct {
-	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
-	Enabled  *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Interval   string           `yaml:"interval,omitempty" json:"interval,omitempty"`
+	Enabled    *bool            `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Monitoring *MonitoringConfig `yaml:"monitoring,omitempty" json:"monitoring,omitempty"`
 }
 
 // PipelineConfig is the full configuration for a registered pipeline.
@@ -254,6 +261,12 @@ const (
 	EventRetryExhausted    EventKind = "RETRY_EXHAUSTED"
 	EventSLABreached       EventKind = "SLA_BREACHED"
 	EventWatcherEvaluation EventKind = "WATCHER_EVALUATION"
+	EventTraitPushed          EventKind = "TRAIT_PUSHED"
+	EventRerunRequested       EventKind = "RERUN_REQUESTED"
+	EventRerunCompleted       EventKind = "RERUN_COMPLETED"
+	EventMonitoringStarted    EventKind = "MONITORING_STARTED"
+	EventMonitoringDrift      EventKind = "MONITORING_DRIFT_DETECTED"
+	EventMonitoringCompleted  EventKind = "MONITORING_COMPLETED"
 )
 
 // Event is an append-only audit log entry recording what happened and when.
@@ -310,6 +323,22 @@ type RedisConfig struct {
 	ReadinessTTL   string `yaml:"readinessTtl,omitempty" json:"readinessTtl,omitempty"`
 	RunIndexLimit  int    `yaml:"runIndexLimit,omitempty" json:"runIndexLimit,omitempty"`
 	EventStreamMax int64  `yaml:"eventStreamMax,omitempty" json:"eventStreamMax,omitempty"`
+}
+
+// RerunRecord tracks a pipeline rerun triggered by late-arriving data or corrections.
+// It is a separate ledger from RunLog — the original run record is never modified.
+type RerunRecord struct {
+	RerunID       string                 `json:"rerunId"`
+	PipelineID    string                 `json:"pipelineId"`
+	OriginalDate  string                 `json:"originalDate"`
+	OriginalRunID string                 `json:"originalRunId,omitempty"`
+	Reason        string                 `json:"reason"`
+	Description   string                 `json:"description,omitempty"`
+	Status        RunStatus              `json:"status"`
+	RerunRunID    string                 `json:"rerunRunId,omitempty"`
+	RequestedAt   time.Time              `json:"requestedAt"`
+	CompletedAt   *time.Time             `json:"completedAt,omitempty"`
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // ServerConfig holds HTTP server settings.

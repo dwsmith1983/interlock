@@ -41,6 +41,12 @@ type Provider interface {
 	GetRunLog(ctx context.Context, pipelineID, date string) (*types.RunLogEntry, error)
 	ListRunLogs(ctx context.Context, pipelineID string, limit int) ([]types.RunLogEntry, error)
 
+	// Rerun ledger — tracks reruns triggered by late data or corrections
+	PutRerun(ctx context.Context, record types.RerunRecord) error
+	GetRerun(ctx context.Context, rerunID string) (*types.RerunRecord, error)
+	ListReruns(ctx context.Context, pipelineID string, limit int) ([]types.RerunRecord, error)
+	ListAllReruns(ctx context.Context, limit int) ([]types.RerunRecord, error)
+
 	// Distributed locking for watcher coordination
 	AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error)
 	ReleaseLock(ctx context.Context, key string) error

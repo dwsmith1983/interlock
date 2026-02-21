@@ -59,9 +59,12 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 		return
 	}
 	if len(runs) > 0 && !lifecycle.IsTerminal(runs[0].Status) {
-		// Active run exists — check Airflow status if applicable, then completion SLA
-		w.checkAirflowRun(ctx, pipeline, runs[0], now)
-		w.checkCompletionSLA(ctx, pipeline, runs[0], now)
+		if runs[0].Status == types.RunCompletedMonitoring {
+			w.checkMonitoring(ctx, pipeline, runs[0], now)
+		} else {
+			w.checkAirflowRun(ctx, pipeline, runs[0], now)
+			w.checkCompletionSLA(ctx, pipeline, runs[0], now)
+		}
 		return
 	}
 
@@ -252,14 +255,27 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 	}
 
 	if pipeline.Trigger != nil && pipeline.Trigger.Type == types.TriggerCommand {
-		entry.Status = types.RunCompleted
-		completedAt := time.Now()
-		entry.CompletedAt = &completedAt
+		if monitoringEnabled(pipeline) {
+			entry.Status = types.RunCompletedMonitoring
+			if run.Metadata == nil {
+				run.Metadata = make(map[string]interface{})
+			}
+			run.Metadata["monitoringStartedAt"] = time.Now().Format(time.RFC3339)
 
-		run.Status = types.RunCompleted
-		run.Version = 3
-		run.UpdatedAt = time.Now()
-		_, _ = w.provider.CompareAndSwapRunState(ctx, runID, 2, run)
+			run.Status = types.RunCompletedMonitoring
+			run.Version = 3
+			run.UpdatedAt = time.Now()
+			_, _ = w.provider.CompareAndSwapRunState(ctx, runID, 2, run)
+		} else {
+			entry.Status = types.RunCompleted
+			completedAt := time.Now()
+			entry.CompletedAt = &completedAt
+
+			run.Status = types.RunCompleted
+			run.Version = 3
+			run.UpdatedAt = time.Now()
+			_, _ = w.provider.CompareAndSwapRunState(ctx, runID, 2, run)
+		}
 	} else {
 		entry.Status = types.RunRunning
 
@@ -281,6 +297,16 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 		Status:     string(entry.Status),
 		Timestamp:  time.Now(),
 	})
+
+	if entry.Status == types.RunCompletedMonitoring {
+		w.appendEvent(ctx, types.Event{
+			Kind:       types.EventMonitoringStarted,
+			PipelineID: pipeline.Name,
+			RunID:      runID,
+			Message:    fmt.Sprintf("post-completion monitoring started (duration: %s)", monitoringDuration(pipeline)),
+			Timestamp:  time.Now(),
+		})
+	}
 
 	w.logger.Info("trigger succeeded", "pipeline", pipeline.Name, "run", runID, "attempt", attemptNum)
 }
@@ -311,18 +337,31 @@ func (w *Watcher) checkAirflowRun(ctx context.Context, pipeline types.PipelineCo
 
 	switch state {
 	case "success":
+		targetStatus := types.RunCompleted
+		if monitoringEnabled(pipeline) {
+			targetStatus = types.RunCompletedMonitoring
+		}
+
 		newRun := run
-		newRun.Status = types.RunCompleted
+		newRun.Status = targetStatus
 		newRun.Version = run.Version + 1
 		newRun.UpdatedAt = now
+		if monitoringEnabled(pipeline) {
+			if newRun.Metadata == nil {
+				newRun.Metadata = make(map[string]interface{})
+			}
+			newRun.Metadata["monitoringStartedAt"] = now.Format(time.RFC3339)
+		}
 		ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, run.Version, newRun)
 		if err != nil || !ok {
-			w.logger.Error("failed to CAS airflow run to COMPLETED", "pipeline", pipeline.Name, "run", run.RunID, "error", err)
+			w.logger.Error("failed to CAS airflow run to target status", "pipeline", pipeline.Name, "run", run.RunID, "targetStatus", targetStatus, "error", err)
 			return
 		}
 		if runLog, err := w.provider.GetRunLog(ctx, pipeline.Name, today); err == nil && runLog != nil && runLog.RunID == run.RunID {
-			runLog.Status = types.RunCompleted
-			runLog.CompletedAt = &now
+			runLog.Status = targetStatus
+			if targetStatus == types.RunCompleted {
+				runLog.CompletedAt = &now
+			}
 			runLog.UpdatedAt = now
 			_ = w.provider.PutRunLog(ctx, *runLog)
 		}
@@ -330,10 +369,19 @@ func (w *Watcher) checkAirflowRun(ctx context.Context, pipeline types.PipelineCo
 			Kind:       types.EventCallbackReceived,
 			PipelineID: pipeline.Name,
 			RunID:      run.RunID,
-			Status:     string(types.RunCompleted),
+			Status:     string(targetStatus),
 			Message:    "airflow dag run completed successfully",
 			Timestamp:  now,
 		})
+		if targetStatus == types.RunCompletedMonitoring {
+			w.appendEvent(ctx, types.Event{
+				Kind:       types.EventMonitoringStarted,
+				PipelineID: pipeline.Name,
+				RunID:      run.RunID,
+				Message:    fmt.Sprintf("post-completion monitoring started (duration: %s)", monitoringDuration(pipeline)),
+				Timestamp:  now,
+			})
+		}
 		w.logger.Info("airflow dag run completed", "pipeline", pipeline.Name, "run", run.RunID, "dagRunID", dagRunID)
 
 	case "failed":
@@ -444,8 +492,139 @@ func (w *Watcher) retryPolicyFor(pipeline types.PipelineConfig) types.RetryPolic
 	return DefaultRetryPolicy()
 }
 
+func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineConfig, run types.RunState, now time.Time) {
+	duration := monitoringDuration(pipeline)
+
+	startStr, _ := run.Metadata["monitoringStartedAt"].(string)
+	start, err := time.Parse(time.RFC3339, startStr)
+	if err != nil {
+		w.logger.Error("invalid monitoringStartedAt", "pipeline", pipeline.Name, "run", run.RunID, "value", startStr)
+		return
+	}
+
+	today := now.Format("2006-01-02")
+
+	// Check if monitoring window has expired
+	if now.After(start.Add(duration)) {
+		newRun := run
+		newRun.Status = types.RunCompleted
+		newRun.Version = run.Version + 1
+		newRun.UpdatedAt = now
+		ok, casErr := w.provider.CompareAndSwapRunState(ctx, run.RunID, run.Version, newRun)
+		if casErr != nil || !ok {
+			w.logger.Error("failed to CAS monitoring run to COMPLETED", "pipeline", pipeline.Name, "run", run.RunID, "error", casErr)
+			return
+		}
+		if runLog, logErr := w.provider.GetRunLog(ctx, pipeline.Name, today); logErr == nil && runLog != nil && runLog.RunID == run.RunID {
+			runLog.Status = types.RunCompleted
+			completedAt := now
+			runLog.CompletedAt = &completedAt
+			runLog.UpdatedAt = now
+			_ = w.provider.PutRunLog(ctx, *runLog)
+		}
+		w.appendEvent(ctx, types.Event{
+			Kind:       types.EventMonitoringCompleted,
+			PipelineID: pipeline.Name,
+			RunID:      run.RunID,
+			Status:     string(types.RunCompleted),
+			Message:    "monitoring window expired with no drift detected",
+			Timestamp:  now,
+		})
+		w.logger.Info("monitoring completed, no drift", "pipeline", pipeline.Name, "run", run.RunID)
+		return
+	}
+
+	// Re-evaluate traits
+	result, err := w.engine.Evaluate(ctx, pipeline.Name)
+	if err != nil {
+		w.logger.Error("monitoring evaluation failed", "pipeline", pipeline.Name, "error", err)
+		return
+	}
+
+	// No drift — traits still pass
+	if result.Status == types.Ready {
+		return
+	}
+
+	// Drift detected
+	metrics.MonitoringDriftDetected.Add(1)
+
+	rerunID := fmt.Sprintf("rerun-%s-%d", pipeline.Name, now.UnixNano())
+	rerun := types.RerunRecord{
+		RerunID:       rerunID,
+		PipelineID:    pipeline.Name,
+		OriginalDate:  today,
+		OriginalRunID: run.RunID,
+		Reason:        "monitoring_drift_detected",
+		Description:   fmt.Sprintf("trait drift detected during post-completion monitoring: blocking traits %v", result.Blocking),
+		Status:        types.RunPending,
+		RequestedAt:   now,
+		Metadata: map[string]interface{}{
+			"blockingTraits": result.Blocking,
+		},
+	}
+	if err := w.provider.PutRerun(ctx, rerun); err != nil {
+		w.logger.Error("failed to store rerun record", "pipeline", pipeline.Name, "rerunID", rerunID, "error", err)
+	}
+
+	w.appendEvent(ctx, types.Event{
+		Kind:       types.EventMonitoringDrift,
+		PipelineID: pipeline.Name,
+		RunID:      run.RunID,
+		Message:    fmt.Sprintf("trait drift detected, rerun %s created", rerunID),
+		Details: map[string]interface{}{
+			"rerunId":        rerunID,
+			"blockingTraits": result.Blocking,
+		},
+		Timestamp: now,
+	})
+
+	w.fireAlert(types.Alert{
+		Level:      types.AlertLevelWarning,
+		PipelineID: pipeline.Name,
+		Message:    fmt.Sprintf("Pipeline %s: trait drift detected during monitoring, rerun %s requested", pipeline.Name, rerunID),
+		Details: map[string]interface{}{
+			"rerunId":        rerunID,
+			"blockingTraits": result.Blocking,
+		},
+		Timestamp: now,
+	})
+
+	// Transition run to COMPLETED — monitoring duty done; rerun is a separate lifecycle
+	newRun := run
+	newRun.Status = types.RunCompleted
+	newRun.Version = run.Version + 1
+	newRun.UpdatedAt = now
+	ok, casErr := w.provider.CompareAndSwapRunState(ctx, run.RunID, run.Version, newRun)
+	if casErr != nil || !ok {
+		w.logger.Error("failed to CAS monitoring run to COMPLETED after drift", "pipeline", pipeline.Name, "run", run.RunID, "error", casErr)
+	}
+	if runLog, logErr := w.provider.GetRunLog(ctx, pipeline.Name, today); logErr == nil && runLog != nil && runLog.RunID == run.RunID {
+		runLog.Status = types.RunCompleted
+		completedAt := now
+		runLog.CompletedAt = &completedAt
+		runLog.UpdatedAt = now
+		_ = w.provider.PutRunLog(ctx, *runLog)
+	}
+
+	w.logger.Info("monitoring drift detected, rerun created", "pipeline", pipeline.Name, "run", run.RunID, "rerunID", rerunID)
+}
+
 func (w *Watcher) appendEvent(ctx context.Context, event types.Event) {
 	if err := w.provider.AppendEvent(ctx, event); err != nil {
 		w.logger.Error("failed to append event", "pipeline", event.PipelineID, "event", string(event.Kind), "error", err)
 	}
+}
+
+func monitoringEnabled(p types.PipelineConfig) bool {
+	return p.Watch != nil && p.Watch.Monitoring != nil && p.Watch.Monitoring.Enabled
+}
+
+func monitoringDuration(p types.PipelineConfig) time.Duration {
+	if p.Watch != nil && p.Watch.Monitoring != nil && p.Watch.Monitoring.Duration != "" {
+		if d, err := time.ParseDuration(p.Watch.Monitoring.Duration); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 2 * time.Hour // default
 }
