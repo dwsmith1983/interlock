@@ -62,7 +62,7 @@ func setupWatcher(t *testing.T, prov *testutil.MockProvider) (*watcher.Watcher, 
 		DefaultInterval: "100ms",
 	}
 
-	w := watcher.New(prov, eng, nil, ac.collect, slog.Default(), cfg)
+	w := watcher.New(prov, eng, nil, nil, ac.collect, slog.Default(), cfg)
 	return w, ac
 }
 
@@ -438,7 +438,7 @@ func setupWatcherWithInterval(t *testing.T, prov *testutil.MockProvider, interva
 		DefaultInterval: interval,
 	}
 
-	w := watcher.New(prov, eng, nil, ac.collect, slog.Default(), cfg)
+	w := watcher.New(prov, eng, nil, nil, ac.collect, slog.Default(), cfg)
 	return w, ac
 }
 
@@ -770,7 +770,7 @@ func setupWatcherWithCalendar(t *testing.T, prov *testutil.MockProvider, calReg 
 		DefaultInterval: "100ms",
 	}
 
-	w := watcher.New(prov, eng, calReg, ac.collect, slog.Default(), cfg)
+	w := watcher.New(prov, eng, calReg, nil, ac.collect, slog.Default(), cfg)
 	return w, ac
 }
 

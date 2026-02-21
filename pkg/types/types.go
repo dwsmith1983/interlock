@@ -69,9 +69,14 @@ type TriggerType string
 
 // TriggerType values enumerate the supported pipeline trigger mechanisms.
 const (
-	TriggerHTTP    TriggerType = "http"
-	TriggerCommand TriggerType = "command"
-	TriggerAirflow TriggerType = "airflow"
+	TriggerHTTP          TriggerType = "http"
+	TriggerCommand       TriggerType = "command"
+	TriggerAirflow       TriggerType = "airflow"
+	TriggerGlue          TriggerType = "glue"
+	TriggerEMR           TriggerType = "emr"
+	TriggerEMRServerless TriggerType = "emr-serverless"
+	TriggerDatabricks    TriggerType = "databricks"
+	TriggerStepFunction  TriggerType = "step-function"
 )
 
 // AlertType defines the alert sink type.
@@ -142,8 +147,14 @@ type TriggerConfig struct {
 	Body         string            `yaml:"body,omitempty" json:"body,omitempty"`
 	Command      string            `yaml:"command,omitempty" json:"command,omitempty"`
 	Timeout      int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
-	DagID        string            `yaml:"dagID,omitempty" json:"dagID,omitempty"`
-	PollInterval string            `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty"`
+	DagID           string            `yaml:"dagID,omitempty" json:"dagID,omitempty"`
+	PollInterval    string            `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty"`
+	JobName         string            `yaml:"jobName,omitempty" json:"jobName,omitempty"`
+	ClusterID       string            `yaml:"clusterId,omitempty" json:"clusterId,omitempty"`
+	ApplicationID   string            `yaml:"applicationId,omitempty" json:"applicationId,omitempty"`
+	WorkspaceURL    string            `yaml:"workspaceUrl,omitempty" json:"workspaceUrl,omitempty"`
+	StateMachineARN string            `yaml:"stateMachineArn,omitempty" json:"stateMachineArn,omitempty"`
+	Arguments       map[string]string `yaml:"arguments,omitempty" json:"arguments,omitempty"`
 }
 
 

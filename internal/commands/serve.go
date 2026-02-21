@@ -95,7 +95,7 @@ func runServe() error {
 	// Watcher
 	var w *watcher.Watcher
 	if cfg.Watcher != nil && cfg.Watcher.Enabled {
-		w = watcher.New(prov, eng, calReg, dispatcher.AlertFunc(), logger, *cfg.Watcher)
+		w = watcher.New(prov, eng, calReg, nil, dispatcher.AlertFunc(), logger, *cfg.Watcher)
 	}
 
 	// Server

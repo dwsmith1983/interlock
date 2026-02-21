@@ -20,23 +20,17 @@ const defaultTriggerTimeout = 30 * time.Second
 // defaultHTTPClient is shared across HTTP and Airflow triggers to reuse connections.
 var defaultHTTPClient = &http.Client{Timeout: defaultTriggerTimeout}
 
-// Execute runs the appropriate trigger based on configuration.
-// It returns optional metadata (e.g. Airflow dag_run_id) and an error.
-func Execute(ctx context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error) {
-	if cfg == nil {
-		return nil, fmt.Errorf("no trigger configured")
-	}
+// defaultRunner provides backward-compatible package-level functions.
+var defaultRunner = NewRunner()
 
-	switch cfg.Type {
-	case types.TriggerCommand:
-		return nil, ExecuteCommand(ctx, cfg.Command)
-	case types.TriggerHTTP:
-		return nil, ExecuteHTTP(ctx, cfg)
-	case types.TriggerAirflow:
-		return ExecuteAirflow(ctx, cfg)
-	default:
-		return nil, fmt.Errorf("unknown trigger type: %s", cfg.Type)
-	}
+// Execute runs the appropriate trigger via the default Runner.
+func Execute(ctx context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error) {
+	return defaultRunner.Execute(ctx, cfg)
+}
+
+// CheckStatus checks the status of an active run via the default Runner.
+func CheckStatus(ctx context.Context, triggerType types.TriggerType, metadata map[string]interface{}, headers map[string]string) (StatusResult, error) {
+	return defaultRunner.CheckStatus(ctx, triggerType, metadata, headers)
 }
 
 // ExecuteCommand runs a shell command trigger.

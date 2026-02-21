@@ -10,6 +10,7 @@ import (
 	"github.com/interlock-systems/interlock/internal/calendar"
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/provider"
+	"github.com/interlock-systems/interlock/internal/trigger"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
@@ -18,6 +19,7 @@ type Watcher struct {
 	provider    provider.Provider
 	engine      *engine.Engine
 	calendarReg *calendar.Registry
+	runner      *trigger.Runner
 	alertFn     func(types.Alert)
 	logger      *slog.Logger
 	config      types.WatcherConfig
@@ -27,14 +29,18 @@ type Watcher struct {
 }
 
 // New creates a new Watcher.
-func New(prov provider.Provider, eng *engine.Engine, calReg *calendar.Registry, alertFn func(types.Alert), logger *slog.Logger, cfg types.WatcherConfig) *Watcher {
+func New(prov provider.Provider, eng *engine.Engine, calReg *calendar.Registry, runner *trigger.Runner, alertFn func(types.Alert), logger *slog.Logger, cfg types.WatcherConfig) *Watcher {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if runner == nil {
+		runner = trigger.NewRunner()
 	}
 	return &Watcher{
 		provider:    prov,
 		engine:      eng,
 		calendarReg: calReg,
+		runner:      runner,
 		alertFn:     alertFn,
 		logger:      logger,
 		config:      cfg,
