@@ -87,7 +87,17 @@ func runPipeline(pipelineName string) error {
 
 	color.Cyan("Triggering pipeline %s (run: %s)...\n", pipelineName, runID)
 
-	triggerErr := trigger.Execute(ctx, pipeline.Trigger)
+	triggerMeta, triggerErr := trigger.Execute(ctx, pipeline.Trigger)
+
+	// Merge trigger metadata into run state
+	if triggerMeta != nil {
+		if run.Metadata == nil {
+			run.Metadata = make(map[string]interface{})
+		}
+		for k, v := range triggerMeta {
+			run.Metadata[k] = v
+		}
+	}
 
 	// Step 5: Update final state
 	var finalStatus types.RunStatus

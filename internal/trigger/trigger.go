@@ -16,18 +16,21 @@ import (
 )
 
 // Execute runs the appropriate trigger based on configuration.
-func Execute(ctx context.Context, cfg *types.TriggerConfig) error {
+// It returns optional metadata (e.g. Airflow dag_run_id) and an error.
+func Execute(ctx context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error) {
 	if cfg == nil {
-		return fmt.Errorf("no trigger configured")
+		return nil, fmt.Errorf("no trigger configured")
 	}
 
 	switch cfg.Type {
 	case types.TriggerCommand:
-		return ExecuteCommand(ctx, cfg.Command)
+		return nil, ExecuteCommand(ctx, cfg.Command)
 	case types.TriggerHTTP:
-		return ExecuteHTTP(ctx, cfg)
+		return nil, ExecuteHTTP(ctx, cfg)
+	case types.TriggerAirflow:
+		return ExecuteAirflow(ctx, cfg)
 	default:
-		return fmt.Errorf("unknown trigger type: %s", cfg.Type)
+		return nil, fmt.Errorf("unknown trigger type: %s", cfg.Type)
 	}
 }
 

@@ -51,6 +51,7 @@ type TriggerType string
 const (
 	TriggerHTTP    TriggerType = "http"
 	TriggerCommand TriggerType = "command"
+	TriggerAirflow TriggerType = "airflow"
 )
 
 // AlertType defines the alert sink type.
@@ -114,13 +115,15 @@ type TraitConfig struct {
 
 // TriggerConfig defines how to trigger a pipeline.
 type TriggerConfig struct {
-	Type    TriggerType       `yaml:"type" json:"type"`
-	Method  string            `yaml:"method,omitempty" json:"method,omitempty"`
-	URL     string            `yaml:"url,omitempty" json:"url,omitempty"`
-	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
-	Body    string            `yaml:"body,omitempty" json:"body,omitempty"`
-	Command string            `yaml:"command,omitempty" json:"command,omitempty"`
-	Timeout int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Type         TriggerType       `yaml:"type" json:"type"`
+	Method       string            `yaml:"method,omitempty" json:"method,omitempty"`
+	URL          string            `yaml:"url,omitempty" json:"url,omitempty"`
+	Headers      map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Body         string            `yaml:"body,omitempty" json:"body,omitempty"`
+	Command      string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Timeout      int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	DagID        string            `yaml:"dagID,omitempty" json:"dagID,omitempty"`
+	PollInterval string            `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty"`
 }
 
 

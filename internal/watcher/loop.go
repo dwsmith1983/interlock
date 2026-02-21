@@ -59,7 +59,8 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 		return
 	}
 	if len(runs) > 0 && !lifecycle.IsTerminal(runs[0].Status) {
-		// Active run exists — only check completion SLA
+		// Active run exists — check Airflow status if applicable, then completion SLA
+		w.checkAirflowRun(ctx, pipeline, runs[0], now)
 		w.checkCompletionSLA(ctx, pipeline, runs[0], now)
 		return
 	}
@@ -193,7 +194,7 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 
 	// Execute trigger
 	metrics.TriggersTotal.Add(1)
-	triggerErr := trigger.Execute(ctx, pipeline.Trigger)
+	triggerMeta, triggerErr := trigger.Execute(ctx, pipeline.Trigger)
 
 	if triggerErr != nil {
 		metrics.TriggersFailed.Add(1)
@@ -240,7 +241,16 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 		return
 	}
 
-	// Trigger succeeded
+	// Trigger succeeded — merge metadata from trigger into run
+	if triggerMeta != nil {
+		if run.Metadata == nil {
+			run.Metadata = make(map[string]interface{})
+		}
+		for k, v := range triggerMeta {
+			run.Metadata[k] = v
+		}
+	}
+
 	if pipeline.Trigger != nil && pipeline.Trigger.Type == types.TriggerCommand {
 		entry.Status = types.RunCompleted
 		completedAt := time.Now()
@@ -273,6 +283,92 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 	})
 
 	w.logger.Info("trigger succeeded", "pipeline", pipeline.Name, "run", runID, "attempt", attemptNum)
+}
+
+func (w *Watcher) checkAirflowRun(ctx context.Context, pipeline types.PipelineConfig, run types.RunState, now time.Time) {
+	dagRunID, _ := run.Metadata["airflow_dag_run_id"].(string)
+	if dagRunID == "" {
+		return
+	}
+	airflowURL, _ := run.Metadata["airflow_url"].(string)
+	dagID, _ := run.Metadata["airflow_dag_id"].(string)
+	if airflowURL == "" || dagID == "" {
+		return
+	}
+
+	var headers map[string]string
+	if pipeline.Trigger != nil {
+		headers = pipeline.Trigger.Headers
+	}
+
+	state, err := trigger.CheckAirflowStatus(ctx, airflowURL, dagID, dagRunID, headers)
+	if err != nil {
+		w.logger.Error("failed to check airflow status", "pipeline", pipeline.Name, "run", run.RunID, "error", err)
+		return
+	}
+
+	today := now.Format("2006-01-02")
+
+	switch state {
+	case "success":
+		newRun := run
+		newRun.Status = types.RunCompleted
+		newRun.Version = run.Version + 1
+		newRun.UpdatedAt = now
+		ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, run.Version, newRun)
+		if err != nil || !ok {
+			w.logger.Error("failed to CAS airflow run to COMPLETED", "pipeline", pipeline.Name, "run", run.RunID, "error", err)
+			return
+		}
+		if runLog, err := w.provider.GetRunLog(ctx, pipeline.Name, today); err == nil && runLog != nil && runLog.RunID == run.RunID {
+			runLog.Status = types.RunCompleted
+			runLog.CompletedAt = &now
+			runLog.UpdatedAt = now
+			_ = w.provider.PutRunLog(ctx, *runLog)
+		}
+		w.appendEvent(ctx, types.Event{
+			Kind:       types.EventCallbackReceived,
+			PipelineID: pipeline.Name,
+			RunID:      run.RunID,
+			Status:     string(types.RunCompleted),
+			Message:    "airflow dag run completed successfully",
+			Timestamp:  now,
+		})
+		w.logger.Info("airflow dag run completed", "pipeline", pipeline.Name, "run", run.RunID, "dagRunID", dagRunID)
+
+	case "failed":
+		newRun := run
+		newRun.Status = types.RunFailed
+		newRun.Version = run.Version + 1
+		newRun.UpdatedAt = now
+		ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, run.Version, newRun)
+		if err != nil || !ok {
+			w.logger.Error("failed to CAS airflow run to FAILED", "pipeline", pipeline.Name, "run", run.RunID, "error", err)
+			return
+		}
+		if runLog, err := w.provider.GetRunLog(ctx, pipeline.Name, today); err == nil && runLog != nil && runLog.RunID == run.RunID {
+			runLog.Status = types.RunFailed
+			runLog.FailureMessage = "airflow dag run failed"
+			runLog.CompletedAt = &now
+			runLog.UpdatedAt = now
+			_ = w.provider.PutRunLog(ctx, *runLog)
+		}
+		w.fireAlert(types.Alert{
+			Level:      types.AlertLevelError,
+			PipelineID: pipeline.Name,
+			Message:    fmt.Sprintf("Airflow DAG run %s failed for pipeline %s", dagRunID, pipeline.Name),
+			Timestamp:  now,
+		})
+		w.appendEvent(ctx, types.Event{
+			Kind:       types.EventCallbackReceived,
+			PipelineID: pipeline.Name,
+			RunID:      run.RunID,
+			Status:     string(types.RunFailed),
+			Message:    "airflow dag run failed",
+			Timestamp:  now,
+		})
+		w.logger.Warn("airflow dag run failed", "pipeline", pipeline.Name, "run", run.RunID, "dagRunID", dagRunID)
+	}
 }
 
 func (w *Watcher) checkEvaluationSLA(ctx context.Context, pipeline types.PipelineConfig, result *types.ReadinessResult, now time.Time) {
