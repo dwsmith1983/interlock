@@ -6,9 +6,24 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/interlock-systems/interlock/internal/provider"
+	ddbprov "github.com/interlock-systems/interlock/internal/provider/dynamodb"
+	"github.com/interlock-systems/interlock/internal/provider/redis"
 	"github.com/interlock-systems/interlock/pkg/types"
 	"gopkg.in/yaml.v3"
 )
+
+// newProvider creates the configured storage provider.
+func newProvider(cfg *types.ProjectConfig) (provider.Provider, error) {
+	switch cfg.Provider {
+	case "redis":
+		return redis.New(cfg.Redis), nil
+	case "dynamodb":
+		return ddbprov.New(cfg.DynamoDB)
+	default:
+		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
+	}
+}
 
 // loadPipelineDir loads all pipeline YAML files from a directory.
 func loadPipelineDir(dir string) ([]types.PipelineConfig, error) {

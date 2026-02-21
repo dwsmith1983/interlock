@@ -10,7 +10,6 @@ import (
 
 	"github.com/interlock-systems/interlock/internal/config"
 	"github.com/interlock-systems/interlock/internal/provider"
-	"github.com/interlock-systems/interlock/internal/provider/redis"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
@@ -38,12 +37,15 @@ func runStatus(pipelineName string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	prov := redis.New(cfg.Redis)
+	prov, err := newProvider(cfg)
+	if err != nil {
+		return fmt.Errorf("creating provider: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := prov.Start(ctx); err != nil {
-		return fmt.Errorf("connecting to Redis: %w", err)
+		return fmt.Errorf("connecting to provider: %w", err)
 	}
 	defer func() { _ = prov.Stop(ctx) }()
 

@@ -14,7 +14,6 @@ import (
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/evaluator"
 	"github.com/interlock-systems/interlock/internal/provider"
-	"github.com/interlock-systems/interlock/internal/provider/redis"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
@@ -55,11 +54,14 @@ func runEvaluate(pipelineName string) error {
 }
 
 func buildEngine(cfg *types.ProjectConfig) (*engine.Engine, provider.Provider, func(), error) {
-	prov := redis.New(cfg.Redis)
+	prov, err := newProvider(cfg)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("creating provider: %w", err)
+	}
 	ctx := context.Background()
 
 	if err := prov.Start(ctx); err != nil {
-		return nil, nil, nil, fmt.Errorf("connecting to Redis: %w", err)
+		return nil, nil, nil, fmt.Errorf("connecting to provider: %w", err)
 	}
 
 	// Load archetypes

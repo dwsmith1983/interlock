@@ -12,7 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/interlock-systems/interlock/internal/config"
-	"github.com/interlock-systems/interlock/internal/provider/redis"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
@@ -80,13 +79,16 @@ func runAddPipeline(name, archetypeName string, tier int, triggerType, triggerCo
 		return fmt.Errorf("writing pipeline file: %w", err)
 	}
 
-	// Register in Redis
-	prov := redis.New(cfg.Redis)
+	// Register in provider
+	prov, err := newProvider(cfg)
+	if err != nil {
+		return fmt.Errorf("creating provider: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := prov.Start(ctx); err != nil {
-		return fmt.Errorf("connecting to Redis: %w", err)
+		return fmt.Errorf("connecting to provider: %w", err)
 	}
 	defer func() { _ = prov.Stop(ctx) }()
 

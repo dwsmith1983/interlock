@@ -40,6 +40,12 @@ func validate(cfg *types.ProjectConfig) error {
 	if cfg.Redis != nil && cfg.Redis.Addr == "" {
 		return fmt.Errorf("redis.addr is required")
 	}
+	if cfg.Provider == "dynamodb" && cfg.DynamoDB == nil {
+		return fmt.Errorf("dynamodb config is required when provider is dynamodb")
+	}
+	if cfg.DynamoDB != nil && cfg.DynamoDB.TableName == "" {
+		return fmt.Errorf("dynamodb.tableName is required")
+	}
 	if len(cfg.ArchetypeDirs) == 0 {
 		return fmt.Errorf("at least one archetypeDir is required")
 	}

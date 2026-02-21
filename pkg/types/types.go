@@ -342,6 +342,7 @@ type EngineConfig struct {
 type ProjectConfig struct {
 	Provider      string          `yaml:"provider"`
 	Redis         *RedisConfig    `yaml:"redis,omitempty"`
+	DynamoDB      *DynamoDBConfig `yaml:"dynamodb,omitempty"`
 	Server        *ServerConfig   `yaml:"server,omitempty"`
 	Engine        *EngineConfig   `yaml:"engine,omitempty"`
 	ArchetypeDirs []string        `yaml:"archetypeDirs"`
@@ -363,6 +364,16 @@ type RedisConfig struct {
 	RetentionTTL   string `yaml:"retentionTtl,omitempty" json:"retentionTtl,omitempty"` // default "168h" (7 days)
 	RunIndexLimit  int    `yaml:"runIndexLimit,omitempty" json:"runIndexLimit,omitempty"`
 	EventStreamMax int64  `yaml:"eventStreamMax,omitempty" json:"eventStreamMax,omitempty"`
+}
+
+// DynamoDBConfig holds DynamoDB connection and table settings.
+type DynamoDBConfig struct {
+	TableName    string `yaml:"tableName" json:"tableName"`
+	Region       string `yaml:"region" json:"region"`
+	Endpoint     string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	ReadinessTTL string `yaml:"readinessTtl,omitempty" json:"readinessTtl,omitempty"`
+	RetentionTTL string `yaml:"retentionTtl,omitempty" json:"retentionTtl,omitempty"`
+	CreateTable  bool   `yaml:"createTable,omitempty" json:"createTable,omitempty"`
 }
 
 // RerunRecord tracks a pipeline rerun triggered by late-arriving data or corrections.

@@ -21,7 +21,6 @@ import (
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/evaluator"
 	pgstore "github.com/interlock-systems/interlock/internal/provider/postgres"
-	"github.com/interlock-systems/interlock/internal/provider/redis"
 	"github.com/interlock-systems/interlock/internal/server"
 	"github.com/interlock-systems/interlock/internal/watcher"
 )
@@ -44,10 +43,13 @@ func runServe() error {
 	}
 
 	// Provider
-	prov := redis.New(cfg.Redis)
+	prov, err := newProvider(cfg)
+	if err != nil {
+		return fmt.Errorf("creating provider: %w", err)
+	}
 	ctx := context.Background()
 	if err := prov.Start(ctx); err != nil {
-		return fmt.Errorf("connecting to Redis: %w", err)
+		return fmt.Errorf("connecting to provider: %w", err)
 	}
 
 	// Archetypes
