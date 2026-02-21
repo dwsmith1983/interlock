@@ -141,13 +141,24 @@ func TestWatcher_ActiveRun_SkipsTrigger(t *testing.T) {
 	pipeline := readyPipeline("active-run-test")
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
+	now := time.Now()
 	require.NoError(t, prov.PutRunState(ctx, types.RunState{
 		RunID:      "active-run",
 		PipelineID: "active-run-test",
 		Status:     types.RunRunning,
 		Version:    3,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}))
+	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
+		PipelineID:    "active-run-test",
+		Date:          now.Format("2006-01-02"),
+		ScheduleID:    "daily",
+		Status:        types.RunRunning,
+		AttemptNumber: 1,
+		RunID:         "active-run",
+		StartedAt:     now,
+		UpdatedAt:     now,
 	}))
 
 	w, _ := setupWatcher(t, prov)
@@ -340,13 +351,25 @@ func TestWatcher_CompletionSLABreach(t *testing.T) {
 	}
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
+	now := time.Now()
+	pastStart := now.Add(-1 * time.Hour)
 	require.NoError(t, prov.PutRunState(ctx, types.RunState{
 		RunID:      "running-sla",
 		PipelineID: "sla-complete-test",
 		Status:     types.RunRunning,
 		Version:    3,
-		CreatedAt:  time.Now().Add(-1 * time.Hour),
-		UpdatedAt:  time.Now().Add(-1 * time.Hour),
+		CreatedAt:  pastStart,
+		UpdatedAt:  pastStart,
+	}))
+	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
+		PipelineID:    "sla-complete-test",
+		Date:          now.Format("2006-01-02"),
+		ScheduleID:    "daily",
+		Status:        types.RunRunning,
+		AttemptNumber: 1,
+		RunID:         "running-sla",
+		StartedAt:     pastStart,
+		UpdatedAt:     pastStart,
 	}))
 
 	w, ac := setupWatcher(t, prov)

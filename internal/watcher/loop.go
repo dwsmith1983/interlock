@@ -166,29 +166,38 @@ func (w *Watcher) releaseLock(ctx context.Context, pipeline types.PipelineConfig
 
 // handleActiveRun checks for active (non-terminal) runs for this schedule and handles them.
 // Returns true if an active run was found (caller should return).
+//
+// Uses RunLog lookups (today + yesterday) to find the active RunID in O(1) per
+// date, then fetches a single RunState by ID. This avoids the previous approach
+// of scanning up to 20 recent runs with ListRuns.
 func (w *Watcher) handleActiveRun(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, now time.Time) bool {
-	runs, err := w.provider.ListRuns(ctx, pipeline.Name, 20)
-	if err != nil {
-		w.logger.Error("failed to list runs", "pipeline", pipeline.Name, "error", err)
-		return true
-	}
-	// Find the most recent non-terminal run for this schedule
-	for _, run := range runs {
-		if lifecycle.IsTerminal(run.Status) {
+	today := now.Format("2006-01-02")
+	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
+
+	for _, date := range []string{today, yesterday} {
+		runLog, err := w.provider.GetRunLog(ctx, pipeline.Name, date, sched.Name)
+		if err != nil {
+			w.logger.Error("failed to get run log", "pipeline", pipeline.Name, "date", date, "schedule", sched.Name, "error", err)
 			continue
 		}
-		runSched, _ := run.Metadata["scheduleId"].(string)
-		if runSched == "" {
-			runSched = types.DefaultScheduleID
-		}
-		if runSched != sched.Name {
+		if runLog == nil || runLog.RunID == "" || lifecycle.IsTerminal(runLog.Status) {
 			continue
 		}
+
+		run, err := w.provider.GetRunState(ctx, runLog.RunID)
+		if err != nil {
+			w.logger.Error("failed to get run state", "pipeline", pipeline.Name, "runID", runLog.RunID, "error", err)
+			continue
+		}
+		if run == nil || lifecycle.IsTerminal(run.Status) {
+			continue
+		}
+
 		if run.Status == types.RunCompletedMonitoring {
-			w.checkMonitoring(ctx, pipeline, sched, run, now)
+			w.checkMonitoring(ctx, pipeline, sched, *run, now)
 		} else {
-			w.checkAirflowRun(ctx, pipeline, sched, run, now)
-			w.checkCompletionSLA(ctx, pipeline, sched, run, now)
+			w.checkAirflowRun(ctx, pipeline, sched, *run, now)
+			w.checkCompletionSLA(ctx, pipeline, sched, *run, now)
 		}
 		return true
 	}
