@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/interlock-systems/interlock/internal/calendar"
 	"github.com/interlock-systems/interlock/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,7 +12,7 @@ import (
 
 func TestIsScheduleActive_NoAfter(t *testing.T) {
 	sched := types.ScheduleConfig{Name: "daily"}
-	assert.True(t, isScheduleActive(sched, time.Now()), "schedule with no After should always be active")
+	assert.True(t, isScheduleActive(sched, time.Now(), nil), "schedule with no After should always be active")
 }
 
 func TestIsScheduleActive_BeforeAfterTime(t *testing.T) {
@@ -21,7 +22,7 @@ func TestIsScheduleActive_BeforeAfterTime(t *testing.T) {
 		Name:  "morning",
 		After: "08:00",
 	}
-	assert.False(t, isScheduleActive(sched, now), "schedule should not be active before After time")
+	assert.False(t, isScheduleActive(sched, now, nil), "schedule should not be active before After time")
 }
 
 func TestIsScheduleActive_AfterAfterTime(t *testing.T) {
@@ -31,7 +32,7 @@ func TestIsScheduleActive_AfterAfterTime(t *testing.T) {
 		Name:  "morning",
 		After: "08:00",
 	}
-	assert.True(t, isScheduleActive(sched, now), "schedule should be active after After time")
+	assert.True(t, isScheduleActive(sched, now, nil), "schedule should be active after After time")
 }
 
 func TestIsScheduleActive_ExactTime(t *testing.T) {
@@ -40,7 +41,7 @@ func TestIsScheduleActive_ExactTime(t *testing.T) {
 		Name:  "morning",
 		After: "08:00",
 	}
-	assert.True(t, isScheduleActive(sched, now), "schedule should be active at exact After time")
+	assert.True(t, isScheduleActive(sched, now, nil), "schedule should be active at exact After time")
 }
 
 func TestIsScheduleActive_WithTimezone(t *testing.T) {
@@ -51,11 +52,11 @@ func TestIsScheduleActive_WithTimezone(t *testing.T) {
 		After:    "08:00",
 		Timezone: "America/New_York",
 	}
-	assert.True(t, isScheduleActive(sched, now), "should be active: 09:00 ET > 08:00 ET")
+	assert.True(t, isScheduleActive(sched, now, nil), "should be active: 09:00 ET > 08:00 ET")
 
 	// 11:00 UTC = 07:00 America/New_York (EDT)
 	earlyNow := time.Date(2025, 6, 15, 11, 0, 0, 0, time.UTC)
-	assert.False(t, isScheduleActive(sched, earlyNow), "should not be active: 07:00 ET < 08:00 ET")
+	assert.False(t, isScheduleActive(sched, earlyNow, nil), "should not be active: 07:00 ET < 08:00 ET")
 }
 
 func TestIsScheduleActive_InvalidAfter(t *testing.T) {
@@ -64,7 +65,7 @@ func TestIsScheduleActive_InvalidAfter(t *testing.T) {
 		After: "not-a-time",
 	}
 	// Fail-open: invalid After should allow activation
-	assert.True(t, isScheduleActive(sched, time.Now()), "invalid After should fail-open")
+	assert.True(t, isScheduleActive(sched, time.Now(), nil), "invalid After should fail-open")
 }
 
 func TestParseTimeOfDay(t *testing.T) {
@@ -163,4 +164,127 @@ func TestResolveSchedules_Explicit(t *testing.T) {
 	require.Len(t, scheds, 2)
 	assert.Equal(t, "morning", scheds[0].Name)
 	assert.Equal(t, "evening", scheds[1].Name)
+}
+
+// --- isExcluded tests ---
+
+func TestIsExcluded_Weekend(t *testing.T) {
+	// Saturday June 14 2025
+	now := time.Date(2025, 6, 14, 10, 0, 0, 0, time.UTC)
+
+	calReg := calendar.NewRegistry()
+	require.NoError(t, calReg.Register(&types.Calendar{
+		Name: "us-business",
+		Days: []string{"saturday", "sunday"},
+	}))
+
+	pipeline := types.PipelineConfig{
+		Name: "test",
+		Exclusions: &types.ExclusionConfig{
+			Calendar: "us-business",
+		},
+	}
+
+	assert.True(t, isExcluded(pipeline, calReg, now), "Saturday should be excluded")
+}
+
+func TestIsExcluded_Holiday(t *testing.T) {
+	// Christmas 2025 is a Thursday
+	now := time.Date(2025, 12, 25, 10, 0, 0, 0, time.UTC)
+
+	calReg := calendar.NewRegistry()
+	require.NoError(t, calReg.Register(&types.Calendar{
+		Name:  "us-business",
+		Dates: []string{"2025-12-25"},
+	}))
+
+	pipeline := types.PipelineConfig{
+		Name: "test",
+		Exclusions: &types.ExclusionConfig{
+			Calendar: "us-business",
+		},
+	}
+
+	assert.True(t, isExcluded(pipeline, calReg, now), "Christmas should be excluded")
+}
+
+func TestIsExcluded_NotExcluded(t *testing.T) {
+	// Monday June 16 2025
+	now := time.Date(2025, 6, 16, 10, 0, 0, 0, time.UTC)
+
+	calReg := calendar.NewRegistry()
+	require.NoError(t, calReg.Register(&types.Calendar{
+		Name: "us-business",
+		Days: []string{"saturday", "sunday"},
+	}))
+
+	pipeline := types.PipelineConfig{
+		Name: "test",
+		Exclusions: &types.ExclusionConfig{
+			Calendar: "us-business",
+		},
+	}
+
+	assert.False(t, isExcluded(pipeline, calReg, now), "Monday should not be excluded")
+}
+
+func TestIsExcluded_NilConfig(t *testing.T) {
+	now := time.Date(2025, 6, 14, 10, 0, 0, 0, time.UTC) // Saturday
+	pipeline := types.PipelineConfig{Name: "test"}
+
+	assert.False(t, isExcluded(pipeline, nil, now), "no Exclusions config should not be excluded")
+}
+
+func TestIsExcluded_CaseInsensitive(t *testing.T) {
+	// Saturday June 14 2025
+	now := time.Date(2025, 6, 14, 10, 0, 0, 0, time.UTC)
+
+	pipeline := types.PipelineConfig{
+		Name: "test",
+		Exclusions: &types.ExclusionConfig{
+			Days: []string{"Saturday", "SUNDAY"},
+		},
+	}
+
+	assert.True(t, isExcluded(pipeline, nil, now), "Saturday (case-insensitive) should be excluded")
+}
+
+func TestIsExcluded_CalendarMergedWithInline(t *testing.T) {
+	// Friday Nov 28 2025
+	now := time.Date(2025, 11, 28, 10, 0, 0, 0, time.UTC)
+
+	calReg := calendar.NewRegistry()
+	require.NoError(t, calReg.Register(&types.Calendar{
+		Name: "us-business",
+		Days: []string{"saturday", "sunday"},
+	}))
+
+	pipeline := types.PipelineConfig{
+		Name: "test",
+		Exclusions: &types.ExclusionConfig{
+			Calendar: "us-business",
+			Dates:    []string{"2025-11-28"}, // pipeline-specific addition
+		},
+	}
+
+	assert.True(t, isExcluded(pipeline, calReg, now), "inline date should also exclude")
+
+	// Saturday should also be excluded via calendar
+	sat := time.Date(2025, 11, 29, 10, 0, 0, 0, time.UTC)
+	assert.True(t, isExcluded(pipeline, calReg, sat), "calendar weekend should also exclude")
+}
+
+func TestIsExcluded_NoCalendarRegistry(t *testing.T) {
+	// Saturday June 14 2025
+	now := time.Date(2025, 6, 14, 10, 0, 0, 0, time.UTC)
+
+	pipeline := types.PipelineConfig{
+		Name: "test",
+		Exclusions: &types.ExclusionConfig{
+			Calendar: "nonexistent",             // references a calendar but registry is nil
+			Days:     []string{"saturday"},       // inline should still work
+		},
+	}
+
+	assert.True(t, isExcluded(pipeline, nil, now), "inline exclusions should work even with nil registry")
 }

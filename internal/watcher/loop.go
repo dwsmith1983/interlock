@@ -137,7 +137,7 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 		return
 	}
 
-	result, ok := w.evaluateReadiness(ctx, pipeline, now)
+	result, ok := w.evaluateReadiness(ctx, pipeline, sched, now)
 	if !ok || result.Status != types.Ready {
 		return
 	}
@@ -188,7 +188,7 @@ func (w *Watcher) handleActiveRun(ctx context.Context, pipeline types.PipelineCo
 			w.checkMonitoring(ctx, pipeline, sched, run, now)
 		} else {
 			w.checkAirflowRun(ctx, pipeline, sched, run, now)
-			w.checkCompletionSLA(ctx, pipeline, run, now)
+			w.checkCompletionSLA(ctx, pipeline, sched, run, now)
 		}
 		return true
 	}
@@ -268,7 +268,7 @@ func (w *Watcher) checkRunLog(ctx context.Context, pipeline types.PipelineConfig
 }
 
 // evaluateReadiness evaluates the pipeline and checks SLA. Returns the result and whether evaluation succeeded.
-func (w *Watcher) evaluateReadiness(ctx context.Context, pipeline types.PipelineConfig, now time.Time) (*types.ReadinessResult, bool) {
+func (w *Watcher) evaluateReadiness(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, now time.Time) (*types.ReadinessResult, bool) {
 	result, err := w.engine.Evaluate(ctx, pipeline.Name)
 	if err != nil {
 		w.logger.Error("evaluation failed", "pipeline", pipeline.Name, "error", err)
@@ -282,7 +282,7 @@ func (w *Watcher) evaluateReadiness(ctx context.Context, pipeline types.Pipeline
 		Timestamp:  now,
 	})
 
-	w.checkEvaluationSLA(ctx, pipeline, result, now)
+	w.checkEvaluationSLA(ctx, pipeline, sched, result, now)
 	return result, true
 }
 
@@ -576,18 +576,42 @@ func (w *Watcher) checkAirflowRun(ctx context.Context, pipeline types.PipelineCo
 
 // checkEvaluationSLA fires an alert and event if the pipeline's evaluation
 // deadline has passed without all traits becoming ready.
-func (w *Watcher) checkEvaluationSLA(ctx context.Context, pipeline types.PipelineConfig, result *types.ReadinessResult, now time.Time) {
-	if pipeline.SLA == nil || pipeline.SLA.EvaluationDeadline == "" {
-		return
-	}
+// If the schedule has a Deadline, it is used as the evaluation SLA; otherwise
+// the pipeline-level EvaluationDeadline is used.
+func (w *Watcher) checkEvaluationSLA(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, result *types.ReadinessResult, now time.Time) {
 	if result.Status == types.Ready {
 		return
 	}
 
-	deadline, err := ParseSLADeadline(pipeline.SLA.EvaluationDeadline, pipeline.SLA.Timezone, now)
-	if err != nil {
-		w.logger.Error("invalid SLA deadline", "pipeline", pipeline.Name, "error", err)
-		return
+	var deadline time.Time
+	var deadlineLabel string
+
+	// Prefer schedule-level deadline
+	if sched.Deadline != "" {
+		loc := time.UTC
+		if sched.Timezone != "" {
+			if l, err := time.LoadLocation(sched.Timezone); err == nil {
+				loc = l
+			}
+		}
+		if t, err := parseTimeOfDay(sched.Deadline, now, loc); err == nil {
+			deadline = t
+			deadlineLabel = sched.Deadline
+		}
+	}
+
+	// Fall back to pipeline SLA evaluation deadline
+	if deadline.IsZero() {
+		if pipeline.SLA == nil || pipeline.SLA.EvaluationDeadline == "" {
+			return
+		}
+		t, err := ParseSLADeadline(pipeline.SLA.EvaluationDeadline, pipeline.SLA.Timezone, now)
+		if err != nil {
+			w.logger.Error("invalid SLA deadline", "pipeline", pipeline.Name, "error", err)
+			return
+		}
+		deadline = t
+		deadlineLabel = pipeline.SLA.EvaluationDeadline
 	}
 
 	if IsBreached(deadline, now) {
@@ -595,14 +619,14 @@ func (w *Watcher) checkEvaluationSLA(ctx context.Context, pipeline types.Pipelin
 		w.fireAlert(types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,
-			Message:    fmt.Sprintf("Pipeline %s evaluation SLA breached: not ready by %s", pipeline.Name, pipeline.SLA.EvaluationDeadline),
+			Message:    fmt.Sprintf("Pipeline %s evaluation SLA breached: not ready by %s", pipeline.Name, deadlineLabel),
 			Timestamp:  now,
 		})
 		w.appendEvent(ctx, types.Event{
 			Kind:       types.EventSLABreached,
 			PipelineID: pipeline.Name,
 			Status:     string(result.Status),
-			Message:    fmt.Sprintf("evaluation deadline %s breached", pipeline.SLA.EvaluationDeadline),
+			Message:    fmt.Sprintf("evaluation deadline %s breached", deadlineLabel),
 			Timestamp:  now,
 		})
 	}
@@ -610,18 +634,26 @@ func (w *Watcher) checkEvaluationSLA(ctx context.Context, pipeline types.Pipelin
 
 // checkCompletionSLA fires an alert and event if an active run has exceeded the
 // pipeline's completion deadline.
-func (w *Watcher) checkCompletionSLA(ctx context.Context, pipeline types.PipelineConfig, run types.RunState, now time.Time) {
-	if pipeline.SLA == nil || pipeline.SLA.CompletionDeadline == "" {
-		return
-	}
+// If the schedule has a Deadline, it is used; otherwise the pipeline-level
+// CompletionDeadline is used.
+func (w *Watcher) checkCompletionSLA(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, run types.RunState, now time.Time) {
 	if lifecycle.IsTerminal(run.Status) {
 		return
 	}
 
-	deadline, err := ParseSLADeadline(pipeline.SLA.CompletionDeadline, pipeline.SLA.Timezone, now)
-	if err != nil {
-		w.logger.Error("invalid SLA deadline", "pipeline", pipeline.Name, "error", err)
-		return
+	var deadline time.Time
+	var deadlineLabel string
+
+	// Prefer schedule-level deadline (via scheduleDeadline helper)
+	if t, ok := scheduleDeadline(sched, pipeline, now); ok {
+		deadline = t
+		if sched.Deadline != "" {
+			deadlineLabel = sched.Deadline
+		} else if pipeline.SLA != nil {
+			deadlineLabel = pipeline.SLA.CompletionDeadline
+		}
+	} else {
+		return // no deadline configured at any level
 	}
 
 	if IsBreached(deadline, now) {
@@ -629,7 +661,7 @@ func (w *Watcher) checkCompletionSLA(ctx context.Context, pipeline types.Pipelin
 		w.fireAlert(types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,
-			Message:    fmt.Sprintf("Pipeline %s completion SLA breached: run %s still %s past %s", pipeline.Name, run.RunID, run.Status, pipeline.SLA.CompletionDeadline),
+			Message:    fmt.Sprintf("Pipeline %s completion SLA breached: run %s still %s past %s", pipeline.Name, run.RunID, run.Status, deadlineLabel),
 			Timestamp:  now,
 		})
 		w.appendEvent(ctx, types.Event{
@@ -637,7 +669,7 @@ func (w *Watcher) checkCompletionSLA(ctx context.Context, pipeline types.Pipelin
 			PipelineID: pipeline.Name,
 			RunID:      run.RunID,
 			Status:     string(run.Status),
-			Message:    fmt.Sprintf("completion deadline %s breached", pipeline.SLA.CompletionDeadline),
+			Message:    fmt.Sprintf("completion deadline %s breached", deadlineLabel),
 			Timestamp:  now,
 		})
 	}

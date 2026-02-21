@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/interlock-systems/interlock/internal/calendar"
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/provider"
 	"github.com/interlock-systems/interlock/pkg/types"
@@ -14,27 +15,29 @@ import (
 
 // Watcher periodically evaluates pipelines and triggers them when ready.
 type Watcher struct {
-	provider provider.Provider
-	engine   *engine.Engine
-	alertFn  func(types.Alert)
-	logger   *slog.Logger
-	config   types.WatcherConfig
+	provider    provider.Provider
+	engine      *engine.Engine
+	calendarReg *calendar.Registry
+	alertFn     func(types.Alert)
+	logger      *slog.Logger
+	config      types.WatcherConfig
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
 // New creates a new Watcher.
-func New(prov provider.Provider, eng *engine.Engine, alertFn func(types.Alert), logger *slog.Logger, cfg types.WatcherConfig) *Watcher {
+func New(prov provider.Provider, eng *engine.Engine, calReg *calendar.Registry, alertFn func(types.Alert), logger *slog.Logger, cfg types.WatcherConfig) *Watcher {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Watcher{
-		provider: prov,
-		engine:   eng,
-		alertFn:  alertFn,
-		logger:   logger,
-		config:   cfg,
+		provider:    prov,
+		engine:      eng,
+		calendarReg: calReg,
+		alertFn:     alertFn,
+		logger:      logger,
+		config:      cfg,
 	}
 }
 
@@ -113,6 +116,11 @@ func (w *Watcher) poll(ctx context.Context, defaultInterval time.Duration) {
 			continue
 		}
 
+		// Excluded day — pipeline completely dormant
+		if isExcluded(pipeline, w.calendarReg, now) {
+			continue
+		}
+
 		interval := defaultInterval
 		if pipeline.Watch != nil && pipeline.Watch.Interval != "" {
 			if d, err := time.ParseDuration(pipeline.Watch.Interval); err == nil && d > 0 {
@@ -124,7 +132,7 @@ func (w *Watcher) poll(ctx context.Context, defaultInterval time.Duration) {
 			if ctx.Err() != nil {
 				return
 			}
-			if !isScheduleActive(sched, now) {
+			if !isScheduleActive(sched, now, w.logger) {
 				w.logger.Debug("schedule not yet active", "pipeline", pipeline.Name, "schedule", sched.Name)
 				continue
 			}

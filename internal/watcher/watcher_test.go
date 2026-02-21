@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/interlock-systems/interlock/internal/archetype"
+	"github.com/interlock-systems/interlock/internal/calendar"
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/evaluator"
 	"github.com/interlock-systems/interlock/internal/testutil"
@@ -61,7 +62,7 @@ func setupWatcher(t *testing.T, prov *testutil.MockProvider) (*watcher.Watcher, 
 		DefaultInterval: "100ms",
 	}
 
-	w := watcher.New(prov, eng, ac.collect, slog.Default(), cfg)
+	w := watcher.New(prov, eng, nil, ac.collect, slog.Default(), cfg)
 	return w, ac
 }
 
@@ -414,7 +415,7 @@ func setupWatcherWithInterval(t *testing.T, prov *testutil.MockProvider, interva
 		DefaultInterval: interval,
 	}
 
-	w := watcher.New(prov, eng, ac.collect, slog.Default(), cfg)
+	w := watcher.New(prov, eng, nil, ac.collect, slog.Default(), cfg)
 	return w, ac
 }
 
@@ -721,4 +722,225 @@ func TestWatcher_DefaultSchedule_BackwardCompatible(t *testing.T) {
 	if runLog != nil {
 		assert.Equal(t, "daily", runLog.ScheduleID)
 	}
+}
+
+func setupWatcherWithCalendar(t *testing.T, prov *testutil.MockProvider, calReg *calendar.Registry) (*watcher.Watcher, *alertCollector) {
+	t.Helper()
+
+	reg := archetype.NewRegistry()
+	require.NoError(t, reg.Register(&types.Archetype{
+		Name: "batch-ingestion",
+		RequiredTraits: []types.TraitDefinition{
+			{Type: "freshness", DefaultTimeout: 5},
+		},
+		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
+	}))
+
+	runner := evaluator.NewRunner()
+	eng := engine.New(prov, reg, runner, nil)
+
+	ac := &alertCollector{}
+
+	cfg := types.WatcherConfig{
+		Enabled:         true,
+		DefaultInterval: "100ms",
+	}
+
+	w := watcher.New(prov, eng, calReg, ac.collect, slog.Default(), cfg)
+	return w, ac
+}
+
+func TestWatcher_ExcludedDay_NothingFires(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	// Build a calendar that excludes every day of the week
+	calReg := calendar.NewRegistry()
+	require.NoError(t, calReg.Register(&types.Calendar{
+		Name: "always-excluded",
+		Days: []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"},
+	}))
+
+	enabled := true
+	pipeline := types.PipelineConfig{
+		Name:      "excluded-test",
+		Archetype: "batch-ingestion",
+		Traits: map[string]types.TraitConfig{
+			"freshness": {Evaluator: "../../testdata/evaluators/pass", Timeout: 5},
+		},
+		Trigger: &types.TriggerConfig{
+			Type:    types.TriggerCommand,
+			Command: "true",
+		},
+		Watch: &types.PipelineWatchConfig{
+			Enabled: &enabled,
+		},
+		Exclusions: &types.ExclusionConfig{
+			Calendar: "always-excluded",
+		},
+	}
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	w, ac := setupWatcherWithCalendar(t, prov, calReg)
+	w.Start(ctx)
+	time.Sleep(500 * time.Millisecond)
+	w.Stop(context.Background())
+
+	// No runs should have been created
+	runs, err := prov.ListRuns(ctx, "excluded-test", 10)
+	require.NoError(t, err)
+	assert.Empty(t, runs, "expected no runs on excluded day")
+
+	// No events should have been created
+	events := prov.Events()
+	for _, e := range events {
+		assert.NotEqual(t, "excluded-test", e.PipelineID, "expected no events for excluded pipeline")
+	}
+
+	// No alerts
+	assert.Empty(t, ac.get(), "expected no alerts on excluded day")
+}
+
+func TestWatcher_PerScheduleSLA_UsesScheduleDeadline(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	enabled := true
+	pipeline := types.PipelineConfig{
+		Name:      "sched-sla-test",
+		Archetype: "batch-ingestion",
+		Traits: map[string]types.TraitConfig{
+			"freshness": {Evaluator: "../../testdata/evaluators/fail", Timeout: 5},
+		},
+		Trigger: &types.TriggerConfig{
+			Type:    types.TriggerCommand,
+			Command: "true",
+		},
+		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
+		Schedules: []types.ScheduleConfig{
+			{
+				Name:     "morning",
+				Deadline: "00:01", // very early deadline — should breach immediately
+			},
+		},
+	}
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	w, ac := setupWatcher(t, prov)
+	w.Start(ctx)
+
+	testutil.WaitForEvent(t, prov, "sched-sla-test", types.EventSLABreached, pollTimeout)
+	w.Stop(context.Background())
+
+	hasSLAAlert := false
+	for _, a := range ac.get() {
+		if a.Level == types.AlertLevelError {
+			hasSLAAlert = true
+		}
+	}
+	assert.True(t, hasSLAAlert, "expected SLA breach alert from schedule deadline")
+}
+
+func TestWatcher_ExcludedDay_SLANotChecked(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	// Calendar that excludes every day
+	calReg := calendar.NewRegistry()
+	require.NoError(t, calReg.Register(&types.Calendar{
+		Name: "always-excluded",
+		Days: []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"},
+	}))
+
+	enabled := true
+	pipeline := types.PipelineConfig{
+		Name:      "excluded-sla-test",
+		Archetype: "batch-ingestion",
+		Traits: map[string]types.TraitConfig{
+			"freshness": {Evaluator: "../../testdata/evaluators/fail", Timeout: 5},
+		},
+		Trigger: &types.TriggerConfig{
+			Type:    types.TriggerCommand,
+			Command: "true",
+		},
+		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
+		SLA: &types.SLAConfig{
+			EvaluationDeadline: "00:01", // would breach immediately if evaluated
+		},
+		Exclusions: &types.ExclusionConfig{
+			Calendar: "always-excluded",
+		},
+	}
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	w, ac := setupWatcherWithCalendar(t, prov, calReg)
+	w.Start(ctx)
+	time.Sleep(500 * time.Millisecond)
+	w.Stop(context.Background())
+
+	// No SLA breach alerts should fire — exclusion suppresses all evaluation
+	assert.Empty(t, ac.get(), "expected no SLA alerts on excluded day")
+
+	// No SLA_BREACHED events
+	for _, e := range prov.Events() {
+		if e.PipelineID == "excluded-sla-test" {
+			assert.NotEqual(t, types.EventSLABreached, e.Kind, "expected no SLA_BREACHED event on excluded day")
+		}
+	}
+}
+
+func TestWatcher_ExcludedDay_ActiveRunIgnored(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	// Calendar that excludes every day
+	calReg := calendar.NewRegistry()
+	require.NoError(t, calReg.Register(&types.Calendar{
+		Name: "always-excluded",
+		Days: []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"},
+	}))
+
+	enabled := true
+	pipeline := types.PipelineConfig{
+		Name:      "excluded-active-test",
+		Archetype: "batch-ingestion",
+		Traits: map[string]types.TraitConfig{
+			"freshness": {Evaluator: "../../testdata/evaluators/pass", Timeout: 5},
+		},
+		Trigger: &types.TriggerConfig{
+			Type:    types.TriggerCommand,
+			Command: "true",
+		},
+		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
+		SLA: &types.SLAConfig{
+			CompletionDeadline: "00:01", // would breach immediately if checked
+		},
+		Exclusions: &types.ExclusionConfig{
+			Calendar: "always-excluded",
+		},
+	}
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	// Seed an active run that would normally trigger completion SLA breach
+	require.NoError(t, prov.PutRunState(ctx, types.RunState{
+		RunID:      "active-excluded-run",
+		PipelineID: "excluded-active-test",
+		Status:     types.RunRunning,
+		Version:    3,
+		CreatedAt:  time.Now().Add(-2 * time.Hour),
+		UpdatedAt:  time.Now().Add(-2 * time.Hour),
+	}))
+
+	w, ac := setupWatcherWithCalendar(t, prov, calReg)
+	w.Start(ctx)
+	time.Sleep(500 * time.Millisecond)
+	w.Stop(context.Background())
+
+	// No completion SLA alerts — excluded day means handleActiveRun never runs
+	assert.Empty(t, ac.get(), "expected no completion SLA alerts on excluded day")
+
+	// Run state should be unchanged
+	run, err := prov.GetRunState(ctx, "active-excluded-run")
+	require.NoError(t, err)
+	assert.Equal(t, types.RunRunning, run.Status, "active run should be untouched on excluded day")
 }

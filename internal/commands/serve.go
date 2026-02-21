@@ -16,6 +16,7 @@ import (
 	"github.com/interlock-systems/interlock/internal/alert"
 	"github.com/interlock-systems/interlock/internal/archetype"
 	"github.com/interlock-systems/interlock/internal/archiver"
+	"github.com/interlock-systems/interlock/internal/calendar"
 	"github.com/interlock-systems/interlock/internal/config"
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/evaluator"
@@ -57,6 +58,14 @@ func runServe() error {
 		}
 	}
 
+	// Calendars
+	calReg := calendar.NewRegistry()
+	for _, dir := range cfg.CalendarDirs {
+		if err := calReg.LoadDir(dir); err != nil {
+			return fmt.Errorf("loading calendars from %s: %w", dir, err)
+		}
+	}
+
 	// Load pipelines
 	if err := loadPipelines(ctx, cfg, prov); err != nil {
 		return err
@@ -84,7 +93,7 @@ func runServe() error {
 	// Watcher
 	var w *watcher.Watcher
 	if cfg.Watcher != nil && cfg.Watcher.Enabled {
-		w = watcher.New(prov, eng, dispatcher.AlertFunc(), logger, *cfg.Watcher)
+		w = watcher.New(prov, eng, calReg, dispatcher.AlertFunc(), logger, *cfg.Watcher)
 	}
 
 	// Server

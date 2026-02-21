@@ -181,6 +181,20 @@ type PipelineWatchConfig struct {
 	Monitoring *MonitoringConfig `yaml:"monitoring,omitempty" json:"monitoring,omitempty"`
 }
 
+// Calendar defines a named set of exclusion days and dates.
+type Calendar struct {
+	Name  string   `yaml:"name" json:"name"`
+	Days  []string `yaml:"days,omitempty" json:"days,omitempty"`   // "saturday", "sunday"
+	Dates []string `yaml:"dates,omitempty" json:"dates,omitempty"` // "2025-12-25"
+}
+
+// ExclusionConfig defines when a pipeline should be dormant.
+type ExclusionConfig struct {
+	Calendar string   `yaml:"calendar,omitempty" json:"calendar,omitempty"` // reference to named Calendar
+	Days     []string `yaml:"days,omitempty" json:"days,omitempty"`         // inline day overrides
+	Dates    []string `yaml:"dates,omitempty" json:"dates,omitempty"`       // inline date overrides
+}
+
 // PipelineConfig is the full configuration for a registered pipeline.
 type PipelineConfig struct {
 	Name       string                 `yaml:"name" json:"name"`
@@ -192,6 +206,7 @@ type PipelineConfig struct {
 	SLA        *SLAConfig             `yaml:"sla,omitempty" json:"sla,omitempty"`
 	Watch      *PipelineWatchConfig   `yaml:"watch,omitempty" json:"watch,omitempty"`
 	Schedules  []ScheduleConfig       `yaml:"schedules,omitempty" json:"schedules,omitempty"`
+	Exclusions *ExclusionConfig       `yaml:"exclusions,omitempty" json:"exclusions,omitempty"`
 }
 
 // TraitEvaluation is the result of evaluating a single trait.
@@ -332,6 +347,7 @@ type ProjectConfig struct {
 	ArchetypeDirs []string        `yaml:"archetypeDirs"`
 	EvaluatorDirs []string        `yaml:"evaluatorDirs"`
 	PipelineDirs  []string        `yaml:"pipelineDirs"`
+	CalendarDirs  []string        `yaml:"calendarDirs,omitempty"`
 	Alerts        []AlertConfig   `yaml:"alerts,omitempty"`
 	Watcher       *WatcherConfig  `yaml:"watcher,omitempty"`
 	Archiver      *ArchiverConfig `yaml:"archiver,omitempty"`
