@@ -349,6 +349,7 @@ func (w *Watcher) checkAirflowRun(ctx context.Context, pipeline types.PipelineCo
 		if runLog, err := w.provider.GetRunLog(ctx, pipeline.Name, today); err == nil && runLog != nil && runLog.RunID == run.RunID {
 			runLog.Status = types.RunFailed
 			runLog.FailureMessage = "airflow dag run failed"
+			runLog.FailureCategory = types.FailureTransient
 			runLog.CompletedAt = &now
 			runLog.UpdatedAt = now
 			_ = w.provider.PutRunLog(ctx, *runLog)
