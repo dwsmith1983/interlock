@@ -41,7 +41,7 @@ type EventStore interface {
 // RunLogStore handles run log storage.
 type RunLogStore interface {
 	PutRunLog(ctx context.Context, entry types.RunLogEntry) error
-	GetRunLog(ctx context.Context, pipelineID, date string) (*types.RunLogEntry, error)
+	GetRunLog(ctx context.Context, pipelineID, date, scheduleID string) (*types.RunLogEntry, error)
 	ListRunLogs(ctx context.Context, pipelineID string, limit int) ([]types.RunLogEntry, error)
 }
 

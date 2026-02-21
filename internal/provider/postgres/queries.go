@@ -37,7 +37,7 @@ func (s *Store) QueryRunHistory(ctx context.Context, pipelineID string, limit in
 		limit = 20
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT pipeline_id, date, status, attempt_number, run_id,
+		SELECT pipeline_id, date, COALESCE(schedule_id, 'daily'), status, attempt_number, run_id,
 			COALESCE(failure_message, ''), COALESCE(failure_category, ''),
 			alert_sent, started_at, completed_at, updated_at
 		FROM run_logs
@@ -54,7 +54,7 @@ func (s *Store) QueryRunHistory(ctx context.Context, pipelineID string, limit in
 	for rows.Next() {
 		var e types.RunLogEntry
 		var failCat string
-		if err := rows.Scan(&e.PipelineID, &e.Date, &e.Status, &e.AttemptNumber,
+		if err := rows.Scan(&e.PipelineID, &e.Date, &e.ScheduleID, &e.Status, &e.AttemptNumber,
 			&e.RunID, &e.FailureMessage, &failCat, &e.AlertSent,
 			&e.StartedAt, &e.CompletedAt, &e.UpdatedAt); err != nil {
 			return nil, err

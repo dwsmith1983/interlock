@@ -63,6 +63,7 @@ func (w *Watcher) transitionRun(ctx context.Context, t runTransition) (bool, err
 type runLogUpdate struct {
 	PipelineID      string
 	Date            string
+	ScheduleID      string
 	RunID           string
 	Status          types.RunStatus
 	FailureMessage  string
@@ -73,7 +74,11 @@ type runLogUpdate struct {
 
 // updateRunLog fetches the run log, checks RunID match, and updates fields.
 func (w *Watcher) updateRunLog(ctx context.Context, u runLogUpdate) {
-	runLog, err := w.provider.GetRunLog(ctx, u.PipelineID, u.Date)
+	scheduleID := u.ScheduleID
+	if scheduleID == "" {
+		scheduleID = types.DefaultScheduleID
+	}
+	runLog, err := w.provider.GetRunLog(ctx, u.PipelineID, u.Date, scheduleID)
 	if err != nil || runLog == nil || runLog.RunID != u.RunID {
 		return
 	}
@@ -114,20 +119,20 @@ func computeLockTTL(pipeline types.PipelineConfig, fallback time.Duration) time.
 	return computed
 }
 
-// tick processes a single pipeline evaluation cycle.
-func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, interval time.Duration) {
+// tick processes a single pipeline evaluation cycle for a specific schedule.
+func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, interval time.Duration, sched types.ScheduleConfig) {
 	now := time.Now()
 
-	if !w.acquireLock(ctx, pipeline, interval) {
+	if !w.acquireLock(ctx, pipeline, sched, interval) {
 		return
 	}
-	defer w.releaseLock(ctx, pipeline)
+	defer w.releaseLock(ctx, pipeline, sched)
 
-	if w.handleActiveRun(ctx, pipeline, now) {
+	if w.handleActiveRun(ctx, pipeline, sched, now) {
 		return
 	}
 
-	runLog, proceed := w.checkRunLog(ctx, pipeline, now)
+	runLog, proceed := w.checkRunLog(ctx, pipeline, sched, now)
 	if !proceed {
 		return
 	}
@@ -137,55 +142,66 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 		return
 	}
 
-	w.triggerPipeline(ctx, pipeline, runLog, now)
+	w.triggerPipeline(ctx, pipeline, sched, runLog, now)
 }
 
-// acquireLock attempts to acquire the evaluation lock for the pipeline.
-func (w *Watcher) acquireLock(ctx context.Context, pipeline types.PipelineConfig, interval time.Duration) bool {
-	lockKey := "eval:" + pipeline.Name
+// acquireLock attempts to acquire the evaluation lock for the pipeline and schedule.
+func (w *Watcher) acquireLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, interval time.Duration) bool {
+	lockKey := "eval:" + pipeline.Name + ":" + sched.Name
 	acquired, err := w.provider.AcquireLock(ctx, lockKey, computeLockTTL(pipeline, interval))
 	if err != nil {
-		w.logger.Error("failed to acquire lock", "pipeline", pipeline.Name, "error", err)
+		w.logger.Error("failed to acquire lock", "pipeline", pipeline.Name, "schedule", sched.Name, "error", err)
 		return false
 	}
 	return acquired
 }
 
-// releaseLock releases the evaluation lock for the pipeline.
-func (w *Watcher) releaseLock(ctx context.Context, pipeline types.PipelineConfig) {
-	lockKey := "eval:" + pipeline.Name
+// releaseLock releases the evaluation lock for the pipeline and schedule.
+func (w *Watcher) releaseLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig) {
+	lockKey := "eval:" + pipeline.Name + ":" + sched.Name
 	if err := w.provider.ReleaseLock(ctx, lockKey); err != nil {
-		w.logger.Error("failed to release lock", "pipeline", pipeline.Name, "error", err)
+		w.logger.Error("failed to release lock", "pipeline", pipeline.Name, "schedule", sched.Name, "error", err)
 	}
 }
 
-// handleActiveRun checks for active (non-terminal) runs and handles them.
+// handleActiveRun checks for active (non-terminal) runs for this schedule and handles them.
 // Returns true if an active run was found (caller should return).
-func (w *Watcher) handleActiveRun(ctx context.Context, pipeline types.PipelineConfig, now time.Time) bool {
-	runs, err := w.provider.ListRuns(ctx, pipeline.Name, 1)
+func (w *Watcher) handleActiveRun(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, now time.Time) bool {
+	runs, err := w.provider.ListRuns(ctx, pipeline.Name, 20)
 	if err != nil {
 		w.logger.Error("failed to list runs", "pipeline", pipeline.Name, "error", err)
 		return true
 	}
-	if len(runs) == 0 || lifecycle.IsTerminal(runs[0].Status) {
-		return false
+	// Find the most recent non-terminal run for this schedule
+	for _, run := range runs {
+		if lifecycle.IsTerminal(run.Status) {
+			continue
+		}
+		runSched, _ := run.Metadata["scheduleId"].(string)
+		if runSched == "" {
+			runSched = types.DefaultScheduleID
+		}
+		if runSched != sched.Name {
+			continue
+		}
+		if run.Status == types.RunCompletedMonitoring {
+			w.checkMonitoring(ctx, pipeline, sched, run, now)
+		} else {
+			w.checkAirflowRun(ctx, pipeline, sched, run, now)
+			w.checkCompletionSLA(ctx, pipeline, run, now)
+		}
+		return true
 	}
-	if runs[0].Status == types.RunCompletedMonitoring {
-		w.checkMonitoring(ctx, pipeline, runs[0], now)
-	} else {
-		w.checkAirflowRun(ctx, pipeline, runs[0], now)
-		w.checkCompletionSLA(ctx, pipeline, runs[0], now)
-	}
-	return true
+	return false
 }
 
-// checkRunLog examines today's run log and decides whether to proceed with evaluation.
+// checkRunLog examines today's run log for the schedule and decides whether to proceed.
 // Returns the run log (may be nil) and whether to proceed.
-func (w *Watcher) checkRunLog(ctx context.Context, pipeline types.PipelineConfig, now time.Time) (*types.RunLogEntry, bool) {
+func (w *Watcher) checkRunLog(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, now time.Time) (*types.RunLogEntry, bool) {
 	today := now.Format("2006-01-02")
-	runLog, err := w.provider.GetRunLog(ctx, pipeline.Name, today)
+	runLog, err := w.provider.GetRunLog(ctx, pipeline.Name, today, sched.Name)
 	if err != nil {
-		w.logger.Error("failed to get run log", "pipeline", pipeline.Name, "error", err)
+		w.logger.Error("failed to get run log", "pipeline", pipeline.Name, "schedule", sched.Name, "error", err)
 		return nil, false
 	}
 
@@ -271,7 +287,7 @@ func (w *Watcher) evaluateReadiness(ctx context.Context, pipeline types.Pipeline
 }
 
 // triggerPipeline creates a run, executes the trigger, and handles the outcome.
-func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineConfig, runLog *types.RunLogEntry, now time.Time) {
+func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, runLog *types.RunLogEntry, now time.Time) {
 	today := now.Format("2006-01-02")
 	retryPolicy := w.retryPolicyFor(pipeline)
 
@@ -288,6 +304,9 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 		Version:    1,
 		CreatedAt:  now,
 		UpdatedAt:  now,
+		Metadata: map[string]interface{}{
+			"scheduleId": sched.Name,
+		},
 	}
 	if err := w.provider.PutRunState(ctx, run); err != nil {
 		w.logger.Error("failed to create run", "pipeline", pipeline.Name, "error", err)
@@ -308,6 +327,7 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 	entry := types.RunLogEntry{
 		PipelineID:    pipeline.Name,
 		Date:          today,
+		ScheduleID:    sched.Name,
 		Status:        types.RunTriggering,
 		AttemptNumber: attemptNum,
 		RunID:         runID,
@@ -442,7 +462,7 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 // checkAirflowRun polls an Airflow DAG run for completion and transitions the
 // run state accordingly. On success it moves to COMPLETED (or COMPLETED_MONITORING),
 // on failure it marks FAILED with the Airflow state as failure message.
-func (w *Watcher) checkAirflowRun(ctx context.Context, pipeline types.PipelineConfig, run types.RunState, now time.Time) {
+func (w *Watcher) checkAirflowRun(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, run types.RunState, now time.Time) {
 	dagRunID, _ := run.Metadata["airflow_dag_run_id"].(string)
 	if dagRunID == "" {
 		return
@@ -490,6 +510,7 @@ func (w *Watcher) checkAirflowRun(ctx context.Context, pipeline types.PipelineCo
 		w.updateRunLog(ctx, runLogUpdate{
 			PipelineID:     pipeline.Name,
 			Date:           today,
+			ScheduleID:     sched.Name,
 			RunID:          run.RunID,
 			Status:         targetStatus,
 			SetCompletedAt: targetStatus == types.RunCompleted,
@@ -527,6 +548,7 @@ func (w *Watcher) checkAirflowRun(ctx context.Context, pipeline types.PipelineCo
 		w.updateRunLog(ctx, runLogUpdate{
 			PipelineID:      pipeline.Name,
 			Date:            today,
+			ScheduleID:      sched.Name,
 			RunID:           run.RunID,
 			Status:          types.RunFailed,
 			FailureMessage:  "airflow dag run failed",
@@ -631,7 +653,7 @@ func (w *Watcher) retryPolicyFor(pipeline types.PipelineConfig) types.RetryPolic
 // checkMonitoring re-evaluates traits during the post-completion monitoring window.
 // If drift is detected it creates a rerun record and alerts; otherwise, once the
 // monitoring duration expires it transitions the run to COMPLETED.
-func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineConfig, run types.RunState, now time.Time) {
+func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, run types.RunState, now time.Time) {
 	duration := monitoringDuration(pipeline)
 
 	startStr, _ := run.Metadata["monitoringStartedAt"].(string)
@@ -657,6 +679,7 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 		w.updateRunLog(ctx, runLogUpdate{
 			PipelineID:     pipeline.Name,
 			Date:           today,
+			ScheduleID:     sched.Name,
 			RunID:          run.RunID,
 			Status:         types.RunCompleted,
 			SetCompletedAt: true,
@@ -742,6 +765,7 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 	w.updateRunLog(ctx, runLogUpdate{
 		PipelineID:     pipeline.Name,
 		Date:           today,
+		ScheduleID:     sched.Name,
 		RunID:          run.RunID,
 		Status:         types.RunCompleted,
 		SetCompletedAt: true,

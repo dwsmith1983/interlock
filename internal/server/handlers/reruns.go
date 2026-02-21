@@ -42,8 +42,12 @@ func (h *Handlers) RequestRerun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Look up original run log for reference (optional — may not exist)
+	scheduleID := types.DefaultScheduleID
+	if sid, _ := body.Metadata["scheduleId"].(string); sid != "" {
+		scheduleID = sid
+	}
 	var originalRunID string
-	if runLog, err := h.provider.GetRunLog(r.Context(), pipelineID, body.OriginalDate); err == nil && runLog != nil {
+	if runLog, err := h.provider.GetRunLog(r.Context(), pipelineID, body.OriginalDate, scheduleID); err == nil && runLog != nil {
 		originalRunID = runLog.RunID
 	}
 

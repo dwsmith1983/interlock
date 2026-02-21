@@ -276,7 +276,7 @@ func TestWatcher_LockPreventsDoubleEval(t *testing.T) {
 	pipeline := readyPipeline("lock-test")
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	acquired, err := prov.AcquireLock(ctx, "eval:lock-test", 10*time.Second)
+	acquired, err := prov.AcquireLock(ctx, "eval:lock-test:daily", 10*time.Second)
 	require.NoError(t, err)
 	require.True(t, acquired)
 
@@ -573,5 +573,152 @@ func TestWatcher_MonitoringDisabled_NormalCompletion(t *testing.T) {
 	events := prov.Events()
 	for _, e := range events {
 		assert.NotEqual(t, types.EventMonitoringStarted, e.Kind, "unexpected MONITORING_STARTED event")
+	}
+}
+
+func TestWatcher_MultiSchedule_IndependentTriggers(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	enabled := true
+	pipeline := types.PipelineConfig{
+		Name:      "multi-sched-test",
+		Archetype: "batch-ingestion",
+		Traits: map[string]types.TraitConfig{
+			"freshness": {Evaluator: "../../testdata/evaluators/pass", Timeout: 5},
+		},
+		Trigger: &types.TriggerConfig{
+			Type:    types.TriggerCommand,
+			Command: "true",
+		},
+		Watch: &types.PipelineWatchConfig{
+			Enabled: &enabled,
+		},
+		Schedules: []types.ScheduleConfig{
+			{Name: "morning"},
+			{Name: "evening"},
+		},
+	}
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	w, _ := setupWatcher(t, prov)
+	w.Start(ctx)
+
+	// Wait for at least two completed runs (one per schedule)
+	testutil.WaitFor(t, 5*time.Second, func() bool {
+		runs, _ := prov.ListRuns(ctx, "multi-sched-test", 10)
+		completed := 0
+		for _, run := range runs {
+			if run.Status == types.RunCompleted {
+				completed++
+			}
+		}
+		return completed >= 2
+	}, "expected at least 2 completed runs (one per schedule)")
+
+	w.Stop(context.Background())
+
+	runs, err := prov.ListRuns(ctx, "multi-sched-test", 10)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(runs), 2)
+
+	// Verify both runs have scheduleId metadata and they differ
+	scheduleIDs := make(map[string]bool)
+	for _, run := range runs {
+		sid, _ := run.Metadata["scheduleId"].(string)
+		if sid != "" && run.Status == types.RunCompleted {
+			scheduleIDs[sid] = true
+		}
+	}
+	assert.True(t, scheduleIDs["morning"], "expected a completed run for 'morning' schedule")
+	assert.True(t, scheduleIDs["evening"], "expected a completed run for 'evening' schedule")
+
+	// Verify independent run logs
+	today := time.Now().Format("2006-01-02")
+	morningLog, err := prov.GetRunLog(ctx, "multi-sched-test", today, "morning")
+	require.NoError(t, err)
+	assert.NotNil(t, morningLog, "expected run log for morning schedule")
+	if morningLog != nil {
+		assert.Equal(t, "morning", morningLog.ScheduleID)
+	}
+
+	eveningLog, err := prov.GetRunLog(ctx, "multi-sched-test", today, "evening")
+	require.NoError(t, err)
+	assert.NotNil(t, eveningLog, "expected run log for evening schedule")
+	if eveningLog != nil {
+		assert.Equal(t, "evening", eveningLog.ScheduleID)
+	}
+}
+
+func TestWatcher_MultiSchedule_InactiveSkipped(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	enabled := true
+	pipeline := types.PipelineConfig{
+		Name:      "inactive-sched-test",
+		Archetype: "batch-ingestion",
+		Traits: map[string]types.TraitConfig{
+			"freshness": {Evaluator: "../../testdata/evaluators/pass", Timeout: 5},
+		},
+		Trigger: &types.TriggerConfig{
+			Type:    types.TriggerCommand,
+			Command: "true",
+		},
+		Watch: &types.PipelineWatchConfig{
+			Enabled: &enabled,
+		},
+		Schedules: []types.ScheduleConfig{
+			{Name: "morning"},
+			{Name: "late-night", After: "23:59"}, // almost never active
+		},
+	}
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	w, _ := setupWatcher(t, prov)
+	w.Start(ctx)
+
+	// Wait for at least one run
+	testutil.WaitForRunStatus(t, prov, "inactive-sched-test", types.RunCompleted, pollTimeout)
+
+	// Let watcher run a few more ticks
+	time.Sleep(300 * time.Millisecond)
+	w.Stop(context.Background())
+
+	runs, err := prov.ListRuns(ctx, "inactive-sched-test", 10)
+	require.NoError(t, err)
+
+	// Only runs with "morning" schedule should exist (unless running right at 23:59)
+	for _, run := range runs {
+		sid, _ := run.Metadata["scheduleId"].(string)
+		assert.Equal(t, "morning", sid, "only morning schedule should trigger")
+	}
+}
+
+func TestWatcher_DefaultSchedule_BackwardCompatible(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	// Pipeline with NO schedules field — should get implicit "daily"
+	pipeline := readyPipeline("compat-test")
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	w, _ := setupWatcher(t, prov)
+	w.Start(ctx)
+	defer w.Stop(context.Background())
+
+	run := testutil.WaitForRunStatus(t, prov, "compat-test", types.RunCompleted, pollTimeout)
+
+	// Run should have scheduleId="daily" in metadata
+	sid, _ := run.Metadata["scheduleId"].(string)
+	assert.Equal(t, "daily", sid, "default schedule should be 'daily'")
+
+	// Run log should be keyed by "daily" schedule
+	today := time.Now().Format("2006-01-02")
+	runLog, err := prov.GetRunLog(ctx, "compat-test", today, "daily")
+	require.NoError(t, err)
+	assert.NotNil(t, runLog)
+	if runLog != nil {
+		assert.Equal(t, "daily", runLog.ScheduleID)
 	}
 }

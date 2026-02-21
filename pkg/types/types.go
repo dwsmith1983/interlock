@@ -3,6 +3,26 @@ package types
 
 import "time"
 
+// DefaultScheduleID is the implicit schedule name for pipelines without explicit schedules.
+const DefaultScheduleID = "daily"
+
+// ScheduleConfig defines a named schedule window for a pipeline.
+type ScheduleConfig struct {
+	Name     string `yaml:"name" json:"name"`
+	After    string `yaml:"after,omitempty" json:"after,omitempty"`       // "HH:MM" - eligible after this time
+	Deadline string `yaml:"deadline,omitempty" json:"deadline,omitempty"` // "HH:MM" - SLA deadline for window
+	Timezone string `yaml:"timezone,omitempty" json:"timezone,omitempty"` // e.g. "America/New_York"
+}
+
+// ResolveSchedules returns the explicit schedules for a pipeline, or a default
+// single "daily" schedule if none are configured.
+func ResolveSchedules(p PipelineConfig) []ScheduleConfig {
+	if len(p.Schedules) > 0 {
+		return p.Schedules
+	}
+	return []ScheduleConfig{{Name: DefaultScheduleID}}
+}
+
 // TraitStatus represents the evaluation outcome of a trait.
 type TraitStatus string
 
@@ -171,6 +191,7 @@ type PipelineConfig struct {
 	Retry      *RetryPolicy           `yaml:"retry,omitempty" json:"retry,omitempty"`
 	SLA        *SLAConfig             `yaml:"sla,omitempty" json:"sla,omitempty"`
 	Watch      *PipelineWatchConfig   `yaml:"watch,omitempty" json:"watch,omitempty"`
+	Schedules  []ScheduleConfig       `yaml:"schedules,omitempty" json:"schedules,omitempty"`
 }
 
 // TraitEvaluation is the result of evaluating a single trait.
@@ -281,10 +302,11 @@ type Event struct {
 	Timestamp  time.Time              `json:"timestamp"`
 }
 
-// RunLogEntry tracks durable per-pipeline-per-date run state.
+// RunLogEntry tracks durable per-pipeline-per-date-per-schedule run state.
 type RunLogEntry struct {
 	PipelineID      string          `json:"pipelineId"`
 	Date            string          `json:"date"`
+	ScheduleID      string          `json:"scheduleId"`
 	Status          RunStatus       `json:"status"`
 	AttemptNumber   int             `json:"attemptNumber"`
 	RunID           string          `json:"runId"`

@@ -19,7 +19,7 @@ type MockProvider struct {
 	runIndex  map[string][]string
 	readiness map[string]types.ReadinessResult
 	events    []types.Event
-	runLogs   map[string]types.RunLogEntry // key: "pipelineID:date"
+	runLogs   map[string]types.RunLogEntry // key: "pipelineID:date:scheduleID"
 	locks     map[string]bool
 	reruns    map[string]types.RerunRecord
 }
@@ -220,17 +220,32 @@ func (m *MockProvider) ReadEventsSince(_ context.Context, pipelineID string, sin
 	return records, nil
 }
 
+func (m *MockProvider) runLogKey(entry types.RunLogEntry) string {
+	sid := entry.ScheduleID
+	if sid == "" {
+		sid = types.DefaultScheduleID
+	}
+	return entry.PipelineID + ":" + entry.Date + ":" + sid
+}
+
 func (m *MockProvider) PutRunLog(_ context.Context, entry types.RunLogEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.runLogs[entry.PipelineID+":"+entry.Date] = entry
+	if entry.ScheduleID == "" {
+		entry.ScheduleID = types.DefaultScheduleID
+	}
+	m.runLogs[m.runLogKey(entry)] = entry
 	return nil
 }
 
-func (m *MockProvider) GetRunLog(_ context.Context, pipelineID, date string) (*types.RunLogEntry, error) {
+func (m *MockProvider) GetRunLog(_ context.Context, pipelineID, date, scheduleID string) (*types.RunLogEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	e, ok := m.runLogs[pipelineID+":"+date]
+	if scheduleID == "" {
+		scheduleID = types.DefaultScheduleID
+	}
+	key := pipelineID + ":" + date + ":" + scheduleID
+	e, ok := m.runLogs[key]
 	if !ok {
 		return nil, nil
 	}
@@ -243,7 +258,7 @@ func (m *MockProvider) ListRunLogs(_ context.Context, pipelineID string, limit i
 	prefix := pipelineID + ":"
 	var entries []types.RunLogEntry
 	for k, v := range m.runLogs {
-		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			entries = append(entries, v)
 			if limit > 0 && len(entries) >= limit {
 				break

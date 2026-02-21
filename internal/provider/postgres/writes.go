@@ -30,11 +30,15 @@ func (s *Store) UpsertRun(ctx context.Context, run types.RunState) error {
 
 // UpsertRunLog upserts a run log entry.
 func (s *Store) UpsertRunLog(ctx context.Context, entry types.RunLogEntry) error {
+	scheduleID := entry.ScheduleID
+	if scheduleID == "" {
+		scheduleID = types.DefaultScheduleID
+	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO run_logs (pipeline_id, date, status, attempt_number, run_id,
+		INSERT INTO run_logs (pipeline_id, date, schedule_id, status, attempt_number, run_id,
 			failure_message, failure_category, alert_sent, started_at, completed_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		ON CONFLICT (pipeline_id, date) DO UPDATE SET
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (pipeline_id, date, schedule_id) DO UPDATE SET
 			status           = EXCLUDED.status,
 			attempt_number   = EXCLUDED.attempt_number,
 			run_id           = EXCLUDED.run_id,
@@ -44,7 +48,7 @@ func (s *Store) UpsertRunLog(ctx context.Context, entry types.RunLogEntry) error
 			completed_at     = EXCLUDED.completed_at,
 			updated_at       = EXCLUDED.updated_at,
 			archived_at      = NOW()
-	`, entry.PipelineID, entry.Date, string(entry.Status), entry.AttemptNumber, entry.RunID,
+	`, entry.PipelineID, entry.Date, scheduleID, string(entry.Status), entry.AttemptNumber, entry.RunID,
 		entry.FailureMessage, string(entry.FailureCategory), entry.AlertSent,
 		entry.StartedAt, entry.CompletedAt, entry.UpdatedAt)
 	return err

@@ -191,7 +191,11 @@ func (h *Handlers) CompleteRun(w http.ResponseWriter, r *http.Request) {
 
 	// Update RunLog to reflect completion
 	today := time.Now().Format("2006-01-02")
-	if runLog, err := h.provider.GetRunLog(r.Context(), run.PipelineID, today); err == nil && runLog != nil && runLog.RunID == runID {
+	scheduleID := types.DefaultScheduleID
+	if sid, ok := run.Metadata["scheduleId"].(string); ok && sid != "" {
+		scheduleID = sid
+	}
+	if runLog, err := h.provider.GetRunLog(r.Context(), run.PipelineID, today, scheduleID); err == nil && runLog != nil && runLog.RunID == runID {
 		now := time.Now()
 		runLog.Status = newStatus
 		if newStatus != types.RunCompletedMonitoring {
@@ -227,7 +231,11 @@ func (h *Handlers) ListRunLogs(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) GetRunLog(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "pipelineID")
 	date := chi.URLParam(r, "date")
-	entry, err := h.provider.GetRunLog(r.Context(), pipelineID, date)
+	scheduleID := r.URL.Query().Get("schedule")
+	if scheduleID == "" {
+		scheduleID = types.DefaultScheduleID
+	}
+	entry, err := h.provider.GetRunLog(r.Context(), pipelineID, date, scheduleID)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, "failed to get run log", err)
 		return

@@ -276,8 +276,11 @@ func (p *RedisProvider) GetReadiness(ctx context.Context, pipelineID string) (*t
 	return &result, nil
 }
 
-func (p *RedisProvider) runLogKey(pipelineID, date string) string {
-	return p.prefix + "runlog:" + pipelineID + ":" + date
+func (p *RedisProvider) runLogKey(pipelineID, date, scheduleID string) string {
+	if scheduleID == "" {
+		scheduleID = types.DefaultScheduleID
+	}
+	return p.prefix + "runlog:" + pipelineID + ":" + date + ":" + scheduleID
 }
 
 func (p *RedisProvider) runLogIndexKey(pipelineID string) string {
@@ -290,25 +293,29 @@ func (p *RedisProvider) lockKey(key string) string {
 
 // PutRunLog stores a run log entry.
 func (p *RedisProvider) PutRunLog(ctx context.Context, entry types.RunLogEntry) error {
+	if entry.ScheduleID == "" {
+		entry.ScheduleID = types.DefaultScheduleID
+	}
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
 
+	indexMember := entry.Date + ":" + entry.ScheduleID
 	pipe := p.client.Pipeline()
-	pipe.Set(ctx, p.runLogKey(entry.PipelineID, entry.Date), data, p.retentionTTL)
+	pipe.Set(ctx, p.runLogKey(entry.PipelineID, entry.Date, entry.ScheduleID), data, p.retentionTTL)
 	pipe.ZAdd(ctx, p.runLogIndexKey(entry.PipelineID), goredis.Z{
 		Score:  float64(entry.StartedAt.Unix()),
-		Member: entry.Date,
+		Member: indexMember,
 	})
 	pipe.ZRemRangeByRank(ctx, p.runLogIndexKey(entry.PipelineID), 0, -(defaultRunLogIndexMax + 1))
 	_, err = pipe.Exec(ctx)
 	return err
 }
 
-// GetRunLog retrieves a run log entry for a pipeline and date.
-func (p *RedisProvider) GetRunLog(ctx context.Context, pipelineID, date string) (*types.RunLogEntry, error) {
-	data, err := p.client.Get(ctx, p.runLogKey(pipelineID, date)).Bytes()
+// GetRunLog retrieves a run log entry for a pipeline, date, and schedule.
+func (p *RedisProvider) GetRunLog(ctx context.Context, pipelineID, date, scheduleID string) (*types.RunLogEntry, error) {
+	data, err := p.client.Get(ctx, p.runLogKey(pipelineID, date, scheduleID)).Bytes()
 	if err != nil {
 		if errors.Is(err, goredis.Nil) {
 			return nil, nil
@@ -327,23 +334,38 @@ func (p *RedisProvider) ListRunLogs(ctx context.Context, pipelineID string, limi
 	if limit <= 0 {
 		limit = 20
 	}
-	dates, err := p.client.ZRevRange(ctx, p.runLogIndexKey(pipelineID), 0, int64(limit-1)).Result()
+	members, err := p.client.ZRevRange(ctx, p.runLogIndexKey(pipelineID), 0, int64(limit-1)).Result()
 	if err != nil {
 		return nil, err
 	}
 
 	var entries []types.RunLogEntry
-	for _, date := range dates {
-		entry, err := p.GetRunLog(ctx, pipelineID, date)
+	for _, member := range members {
+		// member format: "date:scheduleID"
+		date, scheduleID := member, types.DefaultScheduleID
+		if idx := lastColon(member); idx > 0 {
+			date, scheduleID = member[:idx], member[idx+1:]
+		}
+		entry, err := p.GetRunLog(ctx, pipelineID, date, scheduleID)
 		if err != nil || entry == nil {
 			if err != nil {
-				p.logger.Warn("skipping unreadable run log", "pipeline", pipelineID, "date", date, "error", err)
+				p.logger.Warn("skipping unreadable run log", "pipeline", pipelineID, "member", member, "error", err)
 			}
 			continue
 		}
 		entries = append(entries, *entry)
 	}
 	return entries, nil
+}
+
+// lastColon returns the index of the last ':' in s, or -1 if not found.
+func lastColon(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == ':' {
+			return i
+		}
+	}
+	return -1
 }
 
 // AcquireLock attempts to acquire a distributed lock with the given key and TTL.

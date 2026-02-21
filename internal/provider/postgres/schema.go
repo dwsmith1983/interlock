@@ -18,6 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs (created_at);
 CREATE TABLE IF NOT EXISTS run_logs (
     pipeline_id      TEXT NOT NULL,
     date             TEXT NOT NULL,
+    schedule_id      TEXT NOT NULL DEFAULT 'daily',
     status           TEXT NOT NULL,
     attempt_number   INTEGER NOT NULL,
     run_id           TEXT NOT NULL,
@@ -28,7 +29,7 @@ CREATE TABLE IF NOT EXISTS run_logs (
     completed_at     TIMESTAMPTZ,
     updated_at       TIMESTAMPTZ NOT NULL,
     archived_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (pipeline_id, date)
+    PRIMARY KEY (pipeline_id, date, schedule_id)
 );
 CREATE INDEX IF NOT EXISTS idx_run_logs_status ON run_logs (status);
 CREATE INDEX IF NOT EXISTS idx_run_logs_date ON run_logs (date);

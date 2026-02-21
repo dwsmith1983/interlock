@@ -97,6 +97,7 @@ func (w *Watcher) poll(ctx context.Context, defaultInterval time.Duration) {
 		return
 	}
 
+	now := time.Now()
 	for _, pipeline := range pipelines {
 		if ctx.Err() != nil {
 			return
@@ -119,7 +120,16 @@ func (w *Watcher) poll(ctx context.Context, defaultInterval time.Duration) {
 			}
 		}
 
-		w.tick(ctx, pipeline, interval)
+		for _, sched := range types.ResolveSchedules(pipeline) {
+			if ctx.Err() != nil {
+				return
+			}
+			if !isScheduleActive(sched, now) {
+				w.logger.Debug("schedule not yet active", "pipeline", pipeline.Name, "schedule", sched.Name)
+				continue
+			}
+			w.tick(ctx, pipeline, interval, sched)
+		}
 	}
 }
 
