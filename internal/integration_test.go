@@ -129,7 +129,7 @@ echo '{"status":"PASS","value":{"cpu_available":true}}'
 	require.NoError(t, err)
 
 	// Build engine
-	runner := evaluator.NewRunner([]string{evalDir})
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, dispatcher.AlertFunc())
 
 	ctx := context.Background()
@@ -251,7 +251,7 @@ echo '{"status":"PASS","value":{}}'
 	}, nil)
 	require.NoError(t, err)
 
-	runner := evaluator.NewRunner([]string{evalDir})
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, dispatcher.AlertFunc())
 
 	// Evaluate
@@ -382,7 +382,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
 
-	runner := evaluator.NewRunner([]string{evalDir})
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, nil)
 
 	ctx := context.Background()
@@ -532,7 +532,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 	}, nil)
 	require.NoError(t, err)
 
-	runner := evaluator.NewRunner([]string{evalDir})
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, dispatcher.AlertFunc())
 	ctx := context.Background()
 
@@ -605,7 +605,7 @@ echo '{"status":"PASS","value":{"lagSeconds":42,"threshold":300,"source":"sales_
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
 
-	runner := evaluator.NewRunner([]string{evalDir})
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, nil)
 	ctx := context.Background()
 	beforeEval := time.Now()
@@ -737,7 +737,7 @@ echo '{"status":"PASS","value":{"upstream":"done"}}'
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
 
-	runner := evaluator.NewRunner([]string{evalDir})
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, nil)
 	ctx := context.Background()
 
@@ -889,7 +889,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 	}, nil)
 	require.NoError(t, err)
 
-	runner := evaluator.NewRunner([]string{evalDir})
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, dispatcher.AlertFunc())
 	ctx := context.Background()
 
@@ -1153,7 +1153,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 		capturedAlerts = append(capturedAlerts, a)
 	}
 
-	runner := evaluator.NewRunner([]string{evalDir})
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, alertFn)
 	ctx := context.Background()
 

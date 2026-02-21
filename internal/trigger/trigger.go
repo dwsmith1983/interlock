@@ -15,6 +15,11 @@ import (
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
+const defaultTriggerTimeout = 30 * time.Second
+
+// defaultHTTPClient is shared across HTTP and Airflow triggers to reuse connections.
+var defaultHTTPClient = &http.Client{Timeout: defaultTriggerTimeout}
+
 // Execute runs the appropriate trigger based on configuration.
 // It returns optional metadata (e.g. Airflow dag_run_id) and an error.
 func Execute(ctx context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error) {
@@ -68,11 +73,13 @@ func ExecuteHTTP(ctx context.Context, cfg *types.TriggerConfig) error {
 		req.Header.Set(k, os.ExpandEnv(v))
 	}
 
-	timeout := 30 * time.Second
+	client := defaultHTTPClient
 	if cfg.Timeout > 0 {
-		timeout = time.Duration(cfg.Timeout) * time.Second
+		timeout := time.Duration(cfg.Timeout) * time.Second
+		if timeout != defaultTriggerTimeout {
+			client = &http.Client{Timeout: timeout}
+		}
 	}
-	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("trigger request failed: %w", err)

@@ -47,7 +47,7 @@ func runPipeline(pipelineName string) error {
 		return fmt.Errorf("evaluation failed: %w", err)
 	}
 
-	printReadinessResult(result, prov)
+	printReadinessResult(result)
 
 	if result.Status != types.Ready {
 		return fmt.Errorf("pipeline %s is not ready", pipelineName)

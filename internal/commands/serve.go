@@ -15,9 +15,11 @@ import (
 
 	"github.com/interlock-systems/interlock/internal/alert"
 	"github.com/interlock-systems/interlock/internal/archetype"
+	"github.com/interlock-systems/interlock/internal/archiver"
 	"github.com/interlock-systems/interlock/internal/config"
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/evaluator"
+	pgstore "github.com/interlock-systems/interlock/internal/provider/postgres"
 	"github.com/interlock-systems/interlock/internal/provider/redis"
 	"github.com/interlock-systems/interlock/internal/server"
 	"github.com/interlock-systems/interlock/internal/watcher"
@@ -70,7 +72,7 @@ func runServe() error {
 	}
 
 	// Engine
-	runner := evaluator.NewRunner(cfg.EvaluatorDirs)
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, dispatcher.AlertFunc())
 	eng.SetLogger(logger)
 	if cfg.Engine != nil && cfg.Engine.DefaultTimeout != "" {
@@ -103,6 +105,27 @@ func runServe() error {
 		w.Start(ctx)
 	}
 
+	// Archiver
+	var arc *archiver.Archiver
+	if cfg.Archiver != nil && cfg.Archiver.Enabled {
+		pg, err := pgstore.New(ctx, cfg.Archiver.DSN)
+		if err != nil {
+			return fmt.Errorf("connecting to Postgres: %w", err)
+		}
+		if err := pg.Migrate(ctx); err != nil {
+			pg.Close()
+			return fmt.Errorf("migrating Postgres: %w", err)
+		}
+		interval := 5 * time.Minute
+		if cfg.Archiver.Interval != "" {
+			if d, err := time.ParseDuration(cfg.Archiver.Interval); err == nil && d > 0 {
+				interval = d
+			}
+		}
+		arc = archiver.New(prov, pg, interval, logger)
+		arc.Start(ctx)
+	}
+
 	// Graceful shutdown
 	errCh := make(chan error, 1)
 	go func() {
@@ -119,6 +142,9 @@ func runServe() error {
 		color.Yellow("\nReceived %s, shutting down...", sig)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if arc != nil {
+			arc.Stop(shutdownCtx)
+		}
 		if w != nil {
 			w.Stop(shutdownCtx)
 		}

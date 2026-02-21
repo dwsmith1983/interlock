@@ -4,6 +4,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -12,12 +13,22 @@ import (
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
+// Redis storage defaults.
+const (
+	defaultReadinessTTL    = 5 * time.Minute
+	defaultRetentionTTL    = 7 * 24 * time.Hour // 7 days
+	defaultRunIndexLimit   = 100
+	defaultEventStreamMax  = 10000
+)
+
 // RedisProvider implements the Provider interface backed by Redis/Valkey.
 type RedisProvider struct {
 	client         *goredis.Client
 	prefix         string
 	casScript      *goredis.Script
+	logger         *slog.Logger
 	readinessTTL   time.Duration
+	retentionTTL   time.Duration
 	runIndexLimit  int64
 	eventStreamMax int64
 }
@@ -35,17 +46,23 @@ func New(cfg *types.RedisConfig) *RedisProvider {
 		prefix = "interlock:"
 	}
 
-	readinessTTL := 5 * time.Minute
+	readinessTTL := defaultReadinessTTL
 	if cfg.ReadinessTTL != "" {
 		if d, err := time.ParseDuration(cfg.ReadinessTTL); err == nil && d > 0 {
 			readinessTTL = d
 		}
 	}
-	runIndexLimit := int64(100)
+	retentionTTL := defaultRetentionTTL
+	if cfg.RetentionTTL != "" {
+		if d, err := time.ParseDuration(cfg.RetentionTTL); err == nil && d > 0 {
+			retentionTTL = d
+		}
+	}
+	runIndexLimit := int64(defaultRunIndexLimit)
 	if cfg.RunIndexLimit > 0 {
 		runIndexLimit = int64(cfg.RunIndexLimit)
 	}
-	eventStreamMax := int64(10000)
+	eventStreamMax := int64(defaultEventStreamMax)
 	if cfg.EventStreamMax > 0 {
 		eventStreamMax = cfg.EventStreamMax
 	}
@@ -54,7 +71,9 @@ func New(cfg *types.RedisConfig) *RedisProvider {
 		client:         client,
 		prefix:         prefix,
 		casScript:      goredis.NewScript(luascripts.CompareAndSwap),
+		logger:         slog.Default(),
 		readinessTTL:   readinessTTL,
+		retentionTTL:   retentionTTL,
 		runIndexLimit:  runIndexLimit,
 		eventStreamMax: eventStreamMax,
 	}
@@ -69,9 +88,11 @@ func NewFromClient(client *goredis.Client, prefix string) *RedisProvider {
 		client:         client,
 		prefix:         prefix,
 		casScript:      goredis.NewScript(luascripts.CompareAndSwap),
-		readinessTTL:   5 * time.Minute,
-		runIndexLimit:  100,
-		eventStreamMax: 10000,
+		logger:         slog.Default(),
+		readinessTTL:   defaultReadinessTTL,
+		retentionTTL:   defaultRetentionTTL,
+		runIndexLimit:  defaultRunIndexLimit,
+		eventStreamMax: defaultEventStreamMax,
 	}
 }
 

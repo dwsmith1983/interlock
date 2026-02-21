@@ -34,7 +34,7 @@ func TestEngine_EvaluateAllPass(t *testing.T) {
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
 
-	runner := evaluator.NewRunner(nil)
+	runner := evaluator.NewRunner()
 	var alerts []types.Alert
 	eng := New(prov, reg, runner, func(a types.Alert) { alerts = append(alerts, a) })
 
@@ -68,7 +68,7 @@ func TestEngine_EvaluateWithFailure(t *testing.T) {
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
 
-	runner := evaluator.NewRunner(nil)
+	runner := evaluator.NewRunner()
 	eng := New(prov, reg, runner, nil)
 
 	result, err := eng.Evaluate(context.Background(), "test-pipe")
@@ -97,7 +97,7 @@ func TestEngine_EvaluateNoEvaluator(t *testing.T) {
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
 
-	runner := evaluator.NewRunner(nil)
+	runner := evaluator.NewRunner()
 	eng := New(prov, reg, runner, nil)
 
 	result, err := eng.Evaluate(context.Background(), "test-pipe")
@@ -125,7 +125,7 @@ func TestEngine_CheckReadiness_StaleTrait(t *testing.T) {
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
 
-	runner := evaluator.NewRunner(nil)
+	runner := evaluator.NewRunner()
 	eng := New(prov, reg, runner, nil)
 
 	// No trait stored = STALE

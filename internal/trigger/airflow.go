@@ -49,11 +49,13 @@ func ExecuteAirflow(ctx context.Context, cfg *types.TriggerConfig) (map[string]i
 		req.Header.Set(k, os.ExpandEnv(v))
 	}
 
-	timeout := 30 * time.Second
+	client := defaultHTTPClient
 	if cfg.Timeout > 0 {
-		timeout = time.Duration(cfg.Timeout) * time.Second
+		timeout := time.Duration(cfg.Timeout) * time.Second
+		if timeout != defaultTriggerTimeout {
+			client = &http.Client{Timeout: timeout}
+		}
 	}
-	client := &http.Client{Timeout: timeout}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -103,8 +105,7 @@ func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string,
 		req.Header.Set(k, os.ExpandEnv(v))
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("airflow status: request failed: %w", err)
 	}

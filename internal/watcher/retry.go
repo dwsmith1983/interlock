@@ -7,6 +7,8 @@ import (
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
+const maxBackoffSeconds = 3600
+
 // DefaultRetryPolicy returns the default retry configuration.
 func DefaultRetryPolicy() types.RetryPolicy {
 	return types.RetryPolicy{
@@ -31,9 +33,8 @@ func CalculateBackoff(policy types.RetryPolicy, attempt int) time.Duration {
 		multiplier = 2.0
 	}
 	backoff := float64(policy.BackoffSeconds) * math.Pow(multiplier, float64(attempt-1))
-	// Cap at 1 hour
-	if backoff > 3600 {
-		backoff = 3600
+	if backoff > maxBackoffSeconds {
+		backoff = maxBackoffSeconds
 	}
 	return time.Duration(backoff) * time.Second
 }

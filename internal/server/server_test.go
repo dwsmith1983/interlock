@@ -20,6 +20,11 @@ import (
 
 func setupTestServer(t *testing.T) (*httptest.Server, *testutil.MockProvider) {
 	t.Helper()
+	return setupTestServerWithOpts(t, "", 0)
+}
+
+func setupTestServerWithOpts(t *testing.T, apiKey string, maxBody int64) (*httptest.Server, *testutil.MockProvider) {
+	t.Helper()
 	prov := testutil.NewMockProvider()
 	reg := archetype.NewRegistry()
 	require.NoError(t, reg.Register(&types.Archetype{
@@ -30,9 +35,9 @@ func setupTestServer(t *testing.T) (*httptest.Server, *testutil.MockProvider) {
 		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
 	}))
 
-	runner := evaluator.NewRunner(nil)
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, nil)
-	srv := New(":0", eng, prov, reg, "", 0)
+	srv := New(":0", eng, prov, reg, apiKey, maxBody)
 
 	ts := httptest.NewServer(srv.router)
 	t.Cleanup(ts.Close)
@@ -327,4 +332,303 @@ func TestCompleteRunEndpoint(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&updated))
 	assert.Equal(t, types.RunCompleted, updated.Status)
 	assert.Equal(t, 4, updated.Version)
+}
+
+// --- Handler Tests (Phase 5c) ---
+
+func TestPushTrait_Success(t *testing.T) {
+	ts, prov := setupTestServer(t)
+	ctx := context.Background()
+	require.NoError(t, prov.RegisterPipeline(ctx, types.PipelineConfig{Name: "trait-test", Archetype: "batch-ingestion"}))
+
+	resp, err := http.Post(
+		ts.URL+"/api/pipelines/trait-test/traits/freshness",
+		"application/json",
+		strings.NewReader(`{"status":"PASS","value":{"age_hours":1},"reason":"fresh data"}`),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	trait, err := prov.GetTrait(ctx, "trait-test", "freshness")
+	require.NoError(t, err)
+	require.NotNil(t, trait)
+	assert.Equal(t, types.TraitPass, trait.Status)
+}
+
+func TestPushTrait_InvalidStatus(t *testing.T) {
+	ts, prov := setupTestServer(t)
+	ctx := context.Background()
+	require.NoError(t, prov.RegisterPipeline(ctx, types.PipelineConfig{Name: "trait-bad", Archetype: "batch-ingestion"}))
+
+	resp, err := http.Post(
+		ts.URL+"/api/pipelines/trait-bad/traits/freshness",
+		"application/json",
+		strings.NewReader(`{"status":"INVALID"}`),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestPushTrait_PipelineNotFound(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	resp, err := http.Post(
+		ts.URL+"/api/pipelines/nonexistent/traits/freshness",
+		"application/json",
+		strings.NewReader(`{"status":"PASS"}`),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestListEvents_Success(t *testing.T) {
+	ts, prov := setupTestServer(t)
+	ctx := context.Background()
+
+	require.NoError(t, prov.AppendEvent(ctx, types.Event{
+		Kind: types.EventTraitEvaluated, PipelineID: "events-pipe", Timestamp: time.Now(),
+	}))
+	require.NoError(t, prov.AppendEvent(ctx, types.Event{
+		Kind: types.EventReadinessChecked, PipelineID: "events-pipe", Timestamp: time.Now(),
+	}))
+
+	resp, err := http.Get(ts.URL + "/api/pipelines/events-pipe/events")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var events []types.Event
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&events))
+	assert.Len(t, events, 2)
+}
+
+func TestListEvents_WithLimit(t *testing.T) {
+	ts, prov := setupTestServer(t)
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		require.NoError(t, prov.AppendEvent(ctx, types.Event{
+			Kind: types.EventTraitEvaluated, PipelineID: "limit-pipe", Timestamp: time.Now(),
+		}))
+	}
+
+	resp, err := http.Get(ts.URL + "/api/pipelines/limit-pipe/events?limit=2")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var events []types.Event
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&events))
+	assert.Len(t, events, 2)
+}
+
+func TestRequestRerun_Success(t *testing.T) {
+	ts, prov := setupTestServer(t)
+	ctx := context.Background()
+
+	pipeline := types.PipelineConfig{
+		Name:      "rerun-test",
+		Archetype: "batch-ingestion",
+		Traits:    map[string]types.TraitConfig{"freshness": {Evaluator: "../../testdata/evaluators/pass", Timeout: 5}},
+	}
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	resp, err := http.Post(
+		ts.URL+"/api/pipelines/rerun-test/rerun",
+		"application/json",
+		strings.NewReader(`{"originalDate":"2026-02-20","reason":"late data"}`),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+}
+
+func TestRequestRerun_MissingFields(t *testing.T) {
+	ts, prov := setupTestServer(t)
+	ctx := context.Background()
+	require.NoError(t, prov.RegisterPipeline(ctx, types.PipelineConfig{Name: "rerun-missing", Archetype: "batch-ingestion"}))
+
+	// Missing reason
+	resp, err := http.Post(
+		ts.URL+"/api/pipelines/rerun-missing/rerun",
+		"application/json",
+		strings.NewReader(`{"originalDate":"2026-02-20"}`),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	// Missing originalDate
+	resp2, err := http.Post(
+		ts.URL+"/api/pipelines/rerun-missing/rerun",
+		"application/json",
+		strings.NewReader(`{"reason":"late data"}`),
+	)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp2.StatusCode)
+}
+
+func TestRequestRerun_NotReady(t *testing.T) {
+	ts, prov := setupTestServer(t)
+	ctx := context.Background()
+
+	pipeline := types.PipelineConfig{
+		Name:      "rerun-not-ready",
+		Archetype: "batch-ingestion",
+		Traits:    map[string]types.TraitConfig{"freshness": {Evaluator: "../../testdata/evaluators/fail", Timeout: 5}},
+	}
+	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
+
+	resp, err := http.Post(
+		ts.URL+"/api/pipelines/rerun-not-ready/rerun",
+		"application/json",
+		strings.NewReader(`{"originalDate":"2026-02-20","reason":"late data"}`),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusPreconditionFailed, resp.StatusCode)
+}
+
+func TestCompleteRerun_Success(t *testing.T) {
+	ts, prov := setupTestServer(t)
+	ctx := context.Background()
+
+	require.NoError(t, prov.PutRerun(ctx, types.RerunRecord{
+		RerunID:    "rerun-complete-1",
+		PipelineID: "test",
+		Status:     types.RunRunning,
+		RerunRunID: "run-1",
+	}))
+
+	resp, err := http.Post(
+		ts.URL+"/api/reruns/rerun-complete-1/complete",
+		"application/json",
+		strings.NewReader(`{"status":"success"}`),
+	)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var record types.RerunRecord
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&record))
+	assert.Equal(t, types.RunCompleted, record.Status)
+}
+
+func TestListReruns_Success(t *testing.T) {
+	ts, prov := setupTestServer(t)
+	ctx := context.Background()
+
+	require.NoError(t, prov.PutRerun(ctx, types.RerunRecord{
+		RerunID: "rr-1", PipelineID: "reruns-pipe", Status: types.RunPending,
+	}))
+
+	resp, err := http.Get(ts.URL + "/api/pipelines/reruns-pipe/reruns")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var records []types.RerunRecord
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&records))
+	assert.Len(t, records, 1)
+}
+
+func TestListAllReruns_Success(t *testing.T) {
+	ts, prov := setupTestServer(t)
+	ctx := context.Background()
+
+	require.NoError(t, prov.PutRerun(ctx, types.RerunRecord{
+		RerunID: "rr-all-1", PipelineID: "pipe-a", Status: types.RunPending,
+	}))
+	require.NoError(t, prov.PutRerun(ctx, types.RerunRecord{
+		RerunID: "rr-all-2", PipelineID: "pipe-b", Status: types.RunPending,
+	}))
+
+	resp, err := http.Get(ts.URL + "/api/reruns")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var records []types.RerunRecord
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&records))
+	assert.Len(t, records, 2)
+}
+
+func TestPipelineNameValidation(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	tests := []struct {
+		name string
+		code int
+	}{
+		{`{"name":"a","archetype":"batch-ingestion"}`, http.StatusBadRequest},            // too short (1 char)
+		{`{"name":"ab","archetype":"batch-ingestion"}`, http.StatusCreated},               // minimum valid (2 chars)
+		{`{"name":"UPPER","archetype":"batch-ingestion"}`, http.StatusBadRequest},          // uppercase
+		{`{"name":"has space","archetype":"batch-ingestion"}`, http.StatusBadRequest},      // space
+		{`{"name":"my.pipeline-v2","archetype":"batch-ingestion"}`, http.StatusCreated},    // dots and dashes
+		{`{"name":"../../etc","archetype":"batch-ingestion"}`, http.StatusBadRequest},      // path traversal
+		{`{"name":"key:injection","archetype":"batch-ingestion"}`, http.StatusBadRequest},  // colon
+	}
+
+	for _, tt := range tests {
+		resp, err := http.Post(ts.URL+"/api/pipelines", "application/json", strings.NewReader(tt.name))
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, tt.code, resp.StatusCode, "for body: %s", tt.name)
+	}
+}
+
+// --- Middleware Tests (Phase 5d) ---
+
+func TestAPIKeyAuth_Valid(t *testing.T) {
+	ts, _ := setupTestServerWithOpts(t, "test-secret", 0)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/pipelines", nil)
+	req.Header.Set("X-API-Key", "test-secret")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestAPIKeyAuth_Invalid(t *testing.T) {
+	ts, _ := setupTestServerWithOpts(t, "test-secret", 0)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/pipelines", nil)
+	req.Header.Set("X-API-Key", "wrong-key")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestAPIKeyAuth_Missing(t *testing.T) {
+	ts, _ := setupTestServerWithOpts(t, "test-secret", 0)
+
+	resp, err := http.Get(ts.URL + "/api/pipelines")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestAPIKeyAuth_HealthBypass(t *testing.T) {
+	ts, _ := setupTestServerWithOpts(t, "test-secret", 0)
+
+	resp, err := http.Get(ts.URL + "/api/health")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestMaxBody_Enforced(t *testing.T) {
+	ts, _ := setupTestServerWithOpts(t, "", 50) // 50 bytes max
+
+	bigBody := strings.Repeat("x", 200)
+	resp, err := http.Post(ts.URL+"/api/pipelines", "application/json", strings.NewReader(bigBody))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }

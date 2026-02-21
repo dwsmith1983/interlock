@@ -30,14 +30,6 @@ func RequestIDMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// RequestIDFromContext extracts the request ID from the context.
-func RequestIDFromContext(ctx context.Context) string {
-	if id, ok := ctx.Value(requestIDKey).(string); ok {
-		return id
-	}
-	return ""
-}
-
 // APIKeyMiddleware returns middleware that validates the X-API-Key header.
 // If apiKey is empty, no authentication is required (passthrough).
 // GET /api/health is always exempt from authentication.

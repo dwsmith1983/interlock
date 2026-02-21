@@ -10,6 +10,21 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── Postgres for archival ────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: interlock
+      POSTGRES_USER: interlock
+      POSTGRES_PASSWORD: interlock
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U interlock"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # ── Airflow (standalone mode, SQLite) ────────────────────
   airflow:
     image: apache/airflow:2.10.4-python3.11
@@ -42,6 +57,8 @@ services:
       - "3000:3000"
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]

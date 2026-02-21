@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/interlock-systems/interlock/internal/config"
+	"github.com/interlock-systems/interlock/internal/provider"
 	"github.com/interlock-systems/interlock/internal/provider/redis"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
@@ -52,7 +53,7 @@ func runStatus(pipelineName string) error {
 	return showAllPipelines(ctx, prov)
 }
 
-func showAllPipelines(ctx context.Context, prov *redis.RedisProvider) error {
+func showAllPipelines(ctx context.Context, prov provider.Provider) error {
 	pipelines, err := prov.ListPipelines(ctx)
 	if err != nil {
 		return fmt.Errorf("listing pipelines: %w", err)
@@ -85,7 +86,7 @@ func showAllPipelines(ctx context.Context, prov *redis.RedisProvider) error {
 	return nil
 }
 
-func showPipelineStatus(ctx context.Context, prov *redis.RedisProvider, name string) error {
+func showPipelineStatus(ctx context.Context, prov provider.Provider, name string) error {
 	pipeline, err := prov.GetPipeline(ctx, name)
 	if err != nil {
 		return fmt.Errorf("pipeline not found: %w", err)

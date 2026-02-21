@@ -3,6 +3,7 @@ redis:
   addr: redis:6379
   keyPrefix: "interlock:"
   readinessTtl: "5m"
+  retentionTtl: "168h"
   runIndexLimit: 100
   eventStreamMax: 10000
 server:
@@ -18,3 +19,7 @@ alerts:
 watcher:
   enabled: true
   defaultInterval: "15s"
+archiver:
+  enabled: true
+  interval: "2m"
+  dsn: "postgres://interlock:interlock@postgres:5432/interlock?sslmode=disable"

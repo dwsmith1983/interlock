@@ -110,20 +110,7 @@ func ResolveTraits(arch *types.Archetype, pipeline *types.PipelineConfig) []Reso
 
 		if pipeline != nil && pipeline.Traits != nil {
 			if override, ok := pipeline.Traits[traitDef.Type]; ok {
-				if override.Evaluator != "" {
-					rt.Evaluator = override.Evaluator
-				}
-				if override.Config != nil {
-					for k, v := range override.Config {
-						rt.Config[k] = v
-					}
-				}
-				if override.TTL > 0 {
-					rt.TTL = override.TTL
-				}
-				if override.Timeout > 0 {
-					rt.Timeout = override.Timeout
-				}
+				applyOverrides(&rt, override)
 			}
 		}
 
@@ -147,26 +134,29 @@ func ResolveTraits(arch *types.Archetype, pipeline *types.PipelineConfig) []Reso
 			Timeout:     traitDef.DefaultTimeout,
 		}
 
-		override := pipeline.Traits[traitDef.Type]
-		if override.Evaluator != "" {
-			rt.Evaluator = override.Evaluator
-		}
-		if override.Config != nil {
-			for k, v := range override.Config {
-				rt.Config[k] = v
-			}
-		}
-		if override.TTL > 0 {
-			rt.TTL = override.TTL
-		}
-		if override.Timeout > 0 {
-			rt.Timeout = override.Timeout
-		}
-
+		applyOverrides(&rt, pipeline.Traits[traitDef.Type])
 		resolved = append(resolved, rt)
 	}
 
 	return resolved
+}
+
+// applyOverrides merges pipeline-level trait config overrides onto a resolved trait.
+func applyOverrides(rt *ResolvedTrait, override types.TraitConfig) {
+	if override.Evaluator != "" {
+		rt.Evaluator = override.Evaluator
+	}
+	if override.Config != nil {
+		for k, v := range override.Config {
+			rt.Config[k] = v
+		}
+	}
+	if override.TTL > 0 {
+		rt.TTL = override.TTL
+	}
+	if override.Timeout > 0 {
+		rt.Timeout = override.Timeout
+	}
 }
 
 // ResolvedTrait is a fully-resolved trait with archetype defaults and pipeline overrides merged.

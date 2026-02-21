@@ -11,6 +11,12 @@ import (
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
+// Webhook HTTP delivery defaults.
+const (
+	webhookTimeout    = 10 * time.Second
+	webhookRetryDelay = 2 * time.Second
+)
+
 // WebhookSink sends alerts as JSON POST requests to a URL.
 type WebhookSink struct {
 	url    string
@@ -23,7 +29,7 @@ func NewWebhookSink(url string) *WebhookSink {
 	return &WebhookSink{
 		url: url,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: webhookTimeout,
 		},
 		logger: slog.Default(),
 	}
@@ -43,7 +49,7 @@ func (s *WebhookSink) Send(alert types.Alert) error {
 	err = s.doPost(data)
 	if err != nil {
 		s.logger.Warn("webhook first attempt failed, retrying", "url", s.url, "error", err)
-		time.Sleep(2 * time.Second)
+		time.Sleep(webhookRetryDelay)
 		err = s.doPost(data)
 		if err != nil {
 			return fmt.Errorf("webhook POST failed after retry: %w", err)

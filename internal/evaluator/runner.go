@@ -14,13 +14,11 @@ import (
 )
 
 // Runner executes evaluator subprocesses.
-type Runner struct {
-	baseDirs []string
-}
+type Runner struct{}
 
-// NewRunner creates a new evaluator runner that resolves evaluators from the given directories.
-func NewRunner(baseDirs []string) *Runner {
-	return &Runner{baseDirs: baseDirs}
+// NewRunner creates a new evaluator runner.
+func NewRunner() *Runner {
+	return &Runner{}
 }
 
 // Run executes an evaluator subprocess with the given input and timeout.

@@ -13,6 +13,7 @@ import (
 	"github.com/interlock-systems/interlock/internal/config"
 	"github.com/interlock-systems/interlock/internal/engine"
 	"github.com/interlock-systems/interlock/internal/evaluator"
+	"github.com/interlock-systems/interlock/internal/provider"
 	"github.com/interlock-systems/interlock/internal/provider/redis"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
@@ -35,7 +36,7 @@ func runEvaluate(pipelineName string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	eng, prov, cleanup, err := buildEngine(cfg)
+	eng, _, cleanup, err := buildEngine(cfg)
 	if err != nil {
 		return err
 	}
@@ -49,11 +50,11 @@ func runEvaluate(pipelineName string) error {
 		return fmt.Errorf("evaluation failed: %w", err)
 	}
 
-	printReadinessResult(result, prov)
+	printReadinessResult(result)
 	return nil
 }
 
-func buildEngine(cfg *types.ProjectConfig) (*engine.Engine, *redis.RedisProvider, func(), error) {
+func buildEngine(cfg *types.ProjectConfig) (*engine.Engine, provider.Provider, func(), error) {
 	prov := redis.New(cfg.Redis)
 	ctx := context.Background()
 
@@ -83,7 +84,7 @@ func buildEngine(cfg *types.ProjectConfig) (*engine.Engine, *redis.RedisProvider
 		return nil, nil, nil, fmt.Errorf("creating alert dispatcher: %w", err)
 	}
 
-	runner := evaluator.NewRunner(cfg.EvaluatorDirs)
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, dispatcher.AlertFunc())
 
 	cleanup := func() {
@@ -93,7 +94,7 @@ func buildEngine(cfg *types.ProjectConfig) (*engine.Engine, *redis.RedisProvider
 	return eng, prov, cleanup, nil
 }
 
-func loadPipelines(ctx context.Context, cfg *types.ProjectConfig, prov *redis.RedisProvider) error {
+func loadPipelines(ctx context.Context, cfg *types.ProjectConfig, prov provider.Provider) error {
 	for _, dir := range cfg.PipelineDirs {
 		pipelines, err := loadPipelineDir(dir)
 		if err != nil {
@@ -108,7 +109,7 @@ func loadPipelines(ctx context.Context, cfg *types.ProjectConfig, prov *redis.Re
 	return nil
 }
 
-func printReadinessResult(result *types.ReadinessResult, prov *redis.RedisProvider) {
+func printReadinessResult(result *types.ReadinessResult) {
 	bold := color.New(color.Bold)
 
 	_, _ = bold.Printf("\nPipeline: %s\n", result.PipelineID)
@@ -139,5 +140,4 @@ func printReadinessResult(result *types.ReadinessResult, prov *redis.RedisProvid
 		}
 	}
 	fmt.Println()
-	_ = prov // available for future use
 }

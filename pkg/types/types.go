@@ -303,15 +303,16 @@ type EngineConfig struct {
 
 // ProjectConfig represents the top-level interlock.yaml configuration.
 type ProjectConfig struct {
-	Provider      string         `yaml:"provider"`
-	Redis         *RedisConfig   `yaml:"redis,omitempty"`
-	Server        *ServerConfig  `yaml:"server,omitempty"`
-	Engine        *EngineConfig  `yaml:"engine,omitempty"`
-	ArchetypeDirs []string       `yaml:"archetypeDirs"`
-	EvaluatorDirs []string       `yaml:"evaluatorDirs"`
-	PipelineDirs  []string       `yaml:"pipelineDirs"`
-	Alerts        []AlertConfig  `yaml:"alerts,omitempty"`
-	Watcher       *WatcherConfig `yaml:"watcher,omitempty"`
+	Provider      string          `yaml:"provider"`
+	Redis         *RedisConfig    `yaml:"redis,omitempty"`
+	Server        *ServerConfig   `yaml:"server,omitempty"`
+	Engine        *EngineConfig   `yaml:"engine,omitempty"`
+	ArchetypeDirs []string        `yaml:"archetypeDirs"`
+	EvaluatorDirs []string        `yaml:"evaluatorDirs"`
+	PipelineDirs  []string        `yaml:"pipelineDirs"`
+	Alerts        []AlertConfig   `yaml:"alerts,omitempty"`
+	Watcher       *WatcherConfig  `yaml:"watcher,omitempty"`
+	Archiver      *ArchiverConfig `yaml:"archiver,omitempty"`
 }
 
 // RedisConfig holds Redis/Valkey connection settings.
@@ -321,6 +322,7 @@ type RedisConfig struct {
 	DB             int    `yaml:"db,omitempty"`
 	KeyPrefix      string `yaml:"keyPrefix"`
 	ReadinessTTL   string `yaml:"readinessTtl,omitempty" json:"readinessTtl,omitempty"`
+	RetentionTTL   string `yaml:"retentionTtl,omitempty" json:"retentionTtl,omitempty"` // default "168h" (7 days)
 	RunIndexLimit  int    `yaml:"runIndexLimit,omitempty" json:"runIndexLimit,omitempty"`
 	EventStreamMax int64  `yaml:"eventStreamMax,omitempty" json:"eventStreamMax,omitempty"`
 }
@@ -339,6 +341,19 @@ type RerunRecord struct {
 	RequestedAt   time.Time              `json:"requestedAt"`
 	CompletedAt   *time.Time             `json:"completedAt,omitempty"`
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// ArchiverConfig configures the background Postgres archiver.
+type ArchiverConfig struct {
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+	Interval string `yaml:"interval" json:"interval"` // e.g. "5m"
+	DSN      string `yaml:"dsn" json:"dsn"`
+}
+
+// EventRecord pairs a Redis stream ID with an event for cursor-based reading.
+type EventRecord struct {
+	StreamID string `json:"streamId"`
+	Event    Event  `json:"event"`
 }
 
 // ServerConfig holds HTTP server settings.

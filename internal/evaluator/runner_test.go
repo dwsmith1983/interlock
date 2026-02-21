@@ -11,7 +11,7 @@ import (
 )
 
 func TestRunnerPass(t *testing.T) {
-	runner := NewRunner(nil)
+	runner := NewRunner()
 	input := types.EvaluatorInput{
 		PipelineID: "test",
 		TraitType:  "freshness",
@@ -25,7 +25,7 @@ func TestRunnerPass(t *testing.T) {
 }
 
 func TestRunnerFail(t *testing.T) {
-	runner := NewRunner(nil)
+	runner := NewRunner()
 	input := types.EvaluatorInput{
 		PipelineID: "test",
 		TraitType:  "freshness",
@@ -39,7 +39,7 @@ func TestRunnerFail(t *testing.T) {
 }
 
 func TestRunnerTimeout(t *testing.T) {
-	runner := NewRunner(nil)
+	runner := NewRunner()
 	input := types.EvaluatorInput{
 		PipelineID: "test",
 		TraitType:  "freshness",
@@ -54,7 +54,7 @@ func TestRunnerTimeout(t *testing.T) {
 }
 
 func TestRunnerExitError(t *testing.T) {
-	runner := NewRunner(nil)
+	runner := NewRunner()
 	input := types.EvaluatorInput{
 		PipelineID: "test",
 		TraitType:  "freshness",
@@ -70,7 +70,7 @@ func TestRunnerExitError(t *testing.T) {
 }
 
 func TestRunnerExitCode2_Permanent(t *testing.T) {
-	runner := NewRunner(nil)
+	runner := NewRunner()
 	input := types.EvaluatorInput{
 		PipelineID: "test",
 		TraitType:  "freshness",
@@ -84,7 +84,7 @@ func TestRunnerExitCode2_Permanent(t *testing.T) {
 }
 
 func TestRunnerSignalKill_Crash(t *testing.T) {
-	runner := NewRunner(nil)
+	runner := NewRunner()
 	input := types.EvaluatorInput{
 		PipelineID: "test",
 		TraitType:  "freshness",
@@ -98,7 +98,7 @@ func TestRunnerSignalKill_Crash(t *testing.T) {
 }
 
 func TestRunnerBadJSON(t *testing.T) {
-	runner := NewRunner(nil)
+	runner := NewRunner()
 	input := types.EvaluatorInput{
 		PipelineID: "test",
 		TraitType:  "freshness",

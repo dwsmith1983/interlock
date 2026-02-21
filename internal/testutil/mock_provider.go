@@ -127,7 +127,7 @@ func (m *MockProvider) ListRuns(_ context.Context, pipelineID string, limit int)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ids := m.runIndex[pipelineID]
-	if limit > len(ids) {
+	if limit <= 0 || limit > len(ids) {
 		limit = len(ids)
 	}
 	var out []types.RunState
@@ -190,6 +190,36 @@ func (m *MockProvider) ListEvents(_ context.Context, pipelineID string, limit in
 	return result, nil
 }
 
+func (m *MockProvider) ReadEventsSince(_ context.Context, pipelineID string, sinceID string, count int64) ([]types.EventRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// sinceID is a 1-based index formatted as "<idx>-0"; "0-0" means start from beginning
+	startIdx := 0
+	if sinceID != "" && sinceID != "0-0" {
+		fmt.Sscanf(sinceID, "%d-", &startIdx)
+	}
+
+	var records []types.EventRecord
+	idx := 0
+	for _, e := range m.events {
+		if e.PipelineID == pipelineID {
+			idx++
+			if idx <= startIdx {
+				continue
+			}
+			records = append(records, types.EventRecord{
+				StreamID: fmt.Sprintf("%d-0", idx),
+				Event:    e,
+			})
+			if int64(len(records)) >= count {
+				break
+			}
+		}
+	}
+	return records, nil
+}
+
 func (m *MockProvider) PutRunLog(_ context.Context, entry types.RunLogEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -215,7 +245,7 @@ func (m *MockProvider) ListRunLogs(_ context.Context, pipelineID string, limit i
 	for k, v := range m.runLogs {
 		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
 			entries = append(entries, v)
-			if len(entries) >= limit {
+			if limit > 0 && len(entries) >= limit {
 				break
 			}
 		}
@@ -264,7 +294,7 @@ func (m *MockProvider) ListReruns(_ context.Context, pipelineID string, limit in
 	for _, r := range m.reruns {
 		if r.PipelineID == pipelineID {
 			result = append(result, r)
-			if len(result) >= limit {
+			if limit > 0 && len(result) >= limit {
 				break
 			}
 		}
@@ -278,7 +308,7 @@ func (m *MockProvider) ListAllReruns(_ context.Context, limit int) ([]types.Reru
 	var result []types.RerunRecord
 	for _, r := range m.reruns {
 		result = append(result, r)
-		if len(result) >= limit {
+		if limit > 0 && len(result) >= limit {
 			break
 		}
 	}

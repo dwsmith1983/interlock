@@ -16,6 +16,14 @@ import (
 	"github.com/interlock-systems/interlock/internal/provider"
 )
 
+// HTTP server defaults.
+const (
+	defaultMaxRequestBody = 1 << 20 // 1MB
+	httpReadTimeout       = 30 * time.Second
+	httpWriteTimeout      = 60 * time.Second
+	httpIdleTimeout       = 120 * time.Second
+)
+
 // Server is the Interlock HTTP API server.
 type Server struct {
 	engine   *engine.Engine
@@ -36,7 +44,7 @@ func New(addr string, eng *engine.Engine, prov provider.Provider, reg *archetype
 	}
 
 	if maxBody <= 0 {
-		maxBody = 1 << 20 // 1MB default
+		maxBody = defaultMaxRequestBody
 	}
 
 	r := chi.NewRouter()
@@ -60,9 +68,9 @@ func (s *Server) Start() error {
 	s.srv = &http.Server{
 		Addr:         s.addr,
 		Handler:      s.router,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		ReadTimeout:  httpReadTimeout,
+		WriteTimeout: httpWriteTimeout,
+		IdleTimeout:  httpIdleTimeout,
 	}
 	fmt.Printf("Interlock server listening on %s\n", s.addr)
 	return s.srv.ListenAndServe()

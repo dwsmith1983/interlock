@@ -3,6 +3,7 @@ package watcher_test
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,7 +17,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupWatcher(t *testing.T, prov *testutil.MockProvider) (*watcher.Watcher, *[]types.Alert) {
+// alertCollector is a goroutine-safe alert collector for tests.
+type alertCollector struct {
+	mu     sync.Mutex
+	alerts []types.Alert
+}
+
+func (a *alertCollector) collect(alert types.Alert) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.alerts = append(a.alerts, alert)
+}
+
+func (a *alertCollector) get() []types.Alert {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cp := make([]types.Alert, len(a.alerts))
+	copy(cp, a.alerts)
+	return cp
+}
+
+const pollTimeout = 2 * time.Second
+
+func setupWatcher(t *testing.T, prov *testutil.MockProvider) (*watcher.Watcher, *alertCollector) {
 	t.Helper()
 
 	reg := archetype.NewRegistry()
@@ -28,21 +51,18 @@ func setupWatcher(t *testing.T, prov *testutil.MockProvider) (*watcher.Watcher, 
 		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
 	}))
 
-	runner := evaluator.NewRunner(nil)
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, nil)
 
-	alerts := &[]types.Alert{}
-	alertFn := func(a types.Alert) {
-		*alerts = append(*alerts, a)
-	}
+	ac := &alertCollector{}
 
 	cfg := types.WatcherConfig{
 		Enabled:         true,
 		DefaultInterval: "100ms",
 	}
 
-	w := watcher.New(prov, eng, alertFn, slog.Default(), cfg)
-	return w, alerts
+	w := watcher.New(prov, eng, ac.collect, slog.Default(), cfg)
+	return w, ac
 }
 
 func readyPipeline(name string) types.PipelineConfig {
@@ -72,40 +92,18 @@ func TestWatcher_ReadyPipeline_Triggers(t *testing.T) {
 
 	w, _ := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
-	w.Stop(context.Background())
+	defer w.Stop(context.Background())
 
-	// Should have created a run
-	runs, err := prov.ListRuns(ctx, "trigger-test", 10)
-	require.NoError(t, err)
-	assert.NotEmpty(t, runs, "expected at least one run to be created")
+	testutil.WaitForRunStatus(t, prov, "trigger-test", types.RunCompleted, pollTimeout)
 
-	// For command triggers, the run should be completed
-	if len(runs) > 0 {
-		assert.Equal(t, types.RunCompleted, runs[0].Status)
-	}
-
-	// Should have trigger events
-	events := prov.Events()
-	hasEvalEvent := false
-	hasTriggerEvent := false
-	for _, e := range events {
-		if e.Kind == types.EventWatcherEvaluation {
-			hasEvalEvent = true
-		}
-		if e.Kind == types.EventTriggerFired {
-			hasTriggerEvent = true
-		}
-	}
-	assert.True(t, hasEvalEvent, "expected watcher evaluation event")
-	assert.True(t, hasTriggerEvent, "expected trigger fired event")
+	testutil.WaitForEvent(t, prov, "trigger-test", types.EventWatcherEvaluation, pollTimeout)
+	testutil.WaitForEvent(t, prov, "trigger-test", types.EventTriggerFired, pollTimeout)
 }
 
 func TestWatcher_NotReady_NoTrigger(t *testing.T) {
 	prov := testutil.NewMockProvider()
 	ctx := context.Background()
 
-	// Pipeline with no trait data — will evaluate as NOT_READY
 	enabled := true
 	pipeline := types.PipelineConfig{
 		Name:      "not-ready-test",
@@ -125,7 +123,9 @@ func TestWatcher_NotReady_NoTrigger(t *testing.T) {
 
 	w, _ := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+
+	// Wait for at least one evaluation to complete
+	testutil.WaitForEvent(t, prov, "not-ready-test", types.EventWatcherEvaluation, pollTimeout)
 	w.Stop(context.Background())
 
 	runs, err := prov.ListRuns(ctx, "not-ready-test", 10)
@@ -140,7 +140,6 @@ func TestWatcher_ActiveRun_SkipsTrigger(t *testing.T) {
 	pipeline := readyPipeline("active-run-test")
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	// Create an active (non-terminal) run
 	require.NoError(t, prov.PutRunState(ctx, types.RunState{
 		RunID:      "active-run",
 		PipelineID: "active-run-test",
@@ -155,7 +154,6 @@ func TestWatcher_ActiveRun_SkipsTrigger(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	w.Stop(context.Background())
 
-	// Should still only have the 1 run we created
 	runs, err := prov.ListRuns(ctx, "active-run-test", 10)
 	require.NoError(t, err)
 	assert.Len(t, runs, 1, "expected no new runs when active run exists")
@@ -169,7 +167,6 @@ func TestWatcher_AlreadySucceeded_Skips(t *testing.T) {
 	pipeline := readyPipeline("succeeded-test")
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	// Mark today as already succeeded
 	today := time.Now().Format("2006-01-02")
 	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
 		PipelineID:    "succeeded-test",
@@ -186,7 +183,6 @@ func TestWatcher_AlreadySucceeded_Skips(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	w.Stop(context.Background())
 
-	// Should not create new runs
 	runs, err := prov.ListRuns(ctx, "succeeded-test", 10)
 	require.NoError(t, err)
 	assert.Empty(t, runs, "expected no new runs when already succeeded today")
@@ -205,7 +201,6 @@ func TestWatcher_MaxRetriesExhausted(t *testing.T) {
 	}
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	// Mark as failed with max attempts reached
 	today := time.Now().Format("2006-01-02")
 	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
 		PipelineID:      "exhausted-test",
@@ -219,21 +214,23 @@ func TestWatcher_MaxRetriesExhausted(t *testing.T) {
 		UpdatedAt:       time.Now().Add(-5 * time.Minute),
 	}))
 
-	w, alerts := setupWatcher(t, prov)
+	w, ac := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+
+	testutil.WaitFor(t, pollTimeout, func() bool {
+		return len(ac.get()) > 0
+	}, "alert fired for exhausted retries")
 	w.Stop(context.Background())
 
-	// Should not create new runs
 	runs, err := prov.ListRuns(ctx, "exhausted-test", 10)
 	require.NoError(t, err)
 	assert.Empty(t, runs, "expected no new runs after retries exhausted")
 
-	// Should have fired an alert
-	assert.NotEmpty(t, *alerts, "expected alert when retries exhausted")
-	if len(*alerts) > 0 {
-		assert.Equal(t, types.AlertLevelError, (*alerts)[0].Level)
-		assert.Contains(t, (*alerts)[0].Message, "exhausted")
+	alerts := ac.get()
+	assert.NotEmpty(t, alerts, "expected alert when retries exhausted")
+	if len(alerts) > 0 {
+		assert.Equal(t, types.AlertLevelError, alerts[0].Level)
+		assert.Contains(t, alerts[0].Message, "exhausted")
 	}
 }
 
@@ -244,7 +241,6 @@ func TestWatcher_PermanentFailure_NoRetry(t *testing.T) {
 	pipeline := readyPipeline("permanent-test")
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	// Mark as failed with permanent category
 	today := time.Now().Format("2006-01-02")
 	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
 		PipelineID:      "permanent-test",
@@ -258,18 +254,19 @@ func TestWatcher_PermanentFailure_NoRetry(t *testing.T) {
 		UpdatedAt:       time.Now().Add(-5 * time.Minute),
 	}))
 
-	w, alerts := setupWatcher(t, prov)
+	w, ac := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+
+	testutil.WaitFor(t, pollTimeout, func() bool {
+		return len(ac.get()) > 0
+	}, "alert fired for permanent failure")
 	w.Stop(context.Background())
 
-	// Should not create new runs
 	runs, err := prov.ListRuns(ctx, "permanent-test", 10)
 	require.NoError(t, err)
 	assert.Empty(t, runs, "expected no retry for permanent failure")
 
-	// Should alert about non-retryable error
-	assert.NotEmpty(t, *alerts, "expected alert for non-retryable failure")
+	assert.NotEmpty(t, ac.get(), "expected alert for non-retryable failure")
 }
 
 func TestWatcher_LockPreventsDoubleEval(t *testing.T) {
@@ -279,7 +276,6 @@ func TestWatcher_LockPreventsDoubleEval(t *testing.T) {
 	pipeline := readyPipeline("lock-test")
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	// Pre-acquire the lock
 	acquired, err := prov.AcquireLock(ctx, "eval:lock-test", 10*time.Second)
 	require.NoError(t, err)
 	require.True(t, acquired)
@@ -289,7 +285,6 @@ func TestWatcher_LockPreventsDoubleEval(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	w.Stop(context.Background())
 
-	// Should not have created any runs (lock was held)
 	runs, err := prov.ListRuns(ctx, "lock-test", 10)
 	require.NoError(t, err)
 	assert.Empty(t, runs, "expected no runs when lock is held")
@@ -299,7 +294,6 @@ func TestWatcher_EvaluationSLABreach(t *testing.T) {
 	prov := testutil.NewMockProvider()
 	ctx := context.Background()
 
-	// Pipeline with an SLA deadline in the past
 	enabled := true
 	pipeline := types.PipelineConfig{
 		Name:      "sla-eval-test",
@@ -313,34 +307,24 @@ func TestWatcher_EvaluationSLABreach(t *testing.T) {
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 		SLA: &types.SLAConfig{
-			EvaluationDeadline: "00:01", // 00:01 AM — almost certainly past
+			EvaluationDeadline: "00:01",
 		},
 	}
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	w, alerts := setupWatcher(t, prov)
+	w, ac := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+
+	testutil.WaitForEvent(t, prov, "sla-eval-test", types.EventSLABreached, pollTimeout)
 	w.Stop(context.Background())
 
-	// Should fire SLA breach alert
 	hasSLAAlert := false
-	for _, a := range *alerts {
+	for _, a := range ac.get() {
 		if a.Level == types.AlertLevelError {
 			hasSLAAlert = true
 		}
 	}
 	assert.True(t, hasSLAAlert, "expected SLA breach alert")
-
-	// Should have SLA_BREACHED event
-	events := prov.Events()
-	hasSLAEvent := false
-	for _, e := range events {
-		if e.Kind == types.EventSLABreached {
-			hasSLAEvent = true
-		}
-	}
-	assert.True(t, hasSLAEvent, "expected SLA_BREACHED event")
 }
 
 func TestWatcher_CompletionSLABreach(t *testing.T) {
@@ -351,11 +335,10 @@ func TestWatcher_CompletionSLABreach(t *testing.T) {
 	pipeline := readyPipeline("sla-complete-test")
 	pipeline.Watch = &types.PipelineWatchConfig{Enabled: &enabled}
 	pipeline.SLA = &types.SLAConfig{
-		CompletionDeadline: "00:01", // past
+		CompletionDeadline: "00:01",
 	}
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	// Create an active run (still RUNNING)
 	require.NoError(t, prov.PutRunState(ctx, types.RunState{
 		RunID:      "running-sla",
 		PipelineID: "sla-complete-test",
@@ -365,14 +348,21 @@ func TestWatcher_CompletionSLABreach(t *testing.T) {
 		UpdatedAt:  time.Now().Add(-1 * time.Hour),
 	}))
 
-	w, alerts := setupWatcher(t, prov)
+	w, ac := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+
+	testutil.WaitFor(t, pollTimeout, func() bool {
+		for _, a := range ac.get() {
+			if a.Level == types.AlertLevelError {
+				return true
+			}
+		}
+		return false
+	}, "completion SLA breach alert")
 	w.Stop(context.Background())
 
-	// Should fire completion SLA breach alert
 	hasSLAAlert := false
-	for _, a := range *alerts {
+	for _, a := range ac.get() {
 		if a.Level == types.AlertLevelError {
 			hasSLAAlert = true
 		}
@@ -402,7 +392,7 @@ func monitoringPipeline(name string) types.PipelineConfig {
 	}
 }
 
-func setupWatcherWithInterval(t *testing.T, prov *testutil.MockProvider, interval string) (*watcher.Watcher, *[]types.Alert) {
+func setupWatcherWithInterval(t *testing.T, prov *testutil.MockProvider, interval string) (*watcher.Watcher, *alertCollector) {
 	t.Helper()
 
 	reg := archetype.NewRegistry()
@@ -414,21 +404,18 @@ func setupWatcherWithInterval(t *testing.T, prov *testutil.MockProvider, interva
 		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
 	}))
 
-	runner := evaluator.NewRunner(nil)
+	runner := evaluator.NewRunner()
 	eng := engine.New(prov, reg, runner, nil)
 
-	alerts := &[]types.Alert{}
-	alertFn := func(a types.Alert) {
-		*alerts = append(*alerts, a)
-	}
+	ac := &alertCollector{}
 
 	cfg := types.WatcherConfig{
 		Enabled:         true,
 		DefaultInterval: interval,
 	}
 
-	w := watcher.New(prov, eng, alertFn, slog.Default(), cfg)
-	return w, alerts
+	w := watcher.New(prov, eng, ac.collect, slog.Default(), cfg)
+	return w, ac
 }
 
 func TestWatcher_MonitoringEnabled_TransitionsToMonitoring(t *testing.T) {
@@ -438,32 +425,16 @@ func TestWatcher_MonitoringEnabled_TransitionsToMonitoring(t *testing.T) {
 	pipeline := monitoringPipeline("monitor-transition-test")
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	// Use a long interval so only the initial immediate poll fires (trigger),
-	// preventing rapid re-evaluations that can cause subprocess flakiness.
 	w, _ := setupWatcherWithInterval(t, prov, "10s")
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
-	w.Stop(context.Background())
+	defer w.Stop(context.Background())
 
-	// Should have created a run in COMPLETED_MONITORING status
-	runs, err := prov.ListRuns(ctx, "monitor-transition-test", 10)
-	require.NoError(t, err)
-	require.NotEmpty(t, runs, "expected at least one run")
-	assert.Equal(t, types.RunCompletedMonitoring, runs[0].Status, "expected COMPLETED_MONITORING status")
+	run := testutil.WaitForRunStatus(t, prov, "monitor-transition-test", types.RunCompletedMonitoring, pollTimeout)
 
-	// Should have monitoringStartedAt metadata
-	_, hasMonitoringStart := runs[0].Metadata["monitoringStartedAt"]
+	_, hasMonitoringStart := run.Metadata["monitoringStartedAt"]
 	assert.True(t, hasMonitoringStart, "expected monitoringStartedAt in metadata")
 
-	// Should have MONITORING_STARTED event
-	events := prov.Events()
-	hasMonitoringEvent := false
-	for _, e := range events {
-		if e.Kind == types.EventMonitoringStarted {
-			hasMonitoringEvent = true
-		}
-	}
-	assert.True(t, hasMonitoringEvent, "expected MONITORING_STARTED event")
+	testutil.WaitForEvent(t, prov, "monitor-transition-test", types.EventMonitoringStarted, pollTimeout)
 }
 
 func TestWatcher_MonitoringExpires_TransitionsToCompleted(t *testing.T) {
@@ -471,10 +442,9 @@ func TestWatcher_MonitoringExpires_TransitionsToCompleted(t *testing.T) {
 	ctx := context.Background()
 
 	pipeline := monitoringPipeline("monitor-expire-test")
-	pipeline.Watch.Monitoring.Duration = "1ms" // expires immediately
+	pipeline.Watch.Monitoring.Duration = "1ms"
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	// Create a run in COMPLETED_MONITORING with a past monitoring start
 	pastStart := time.Now().Add(-1 * time.Hour)
 	require.NoError(t, prov.PutRunState(ctx, types.RunState{
 		RunID:      "monitor-run",
@@ -488,7 +458,6 @@ func TestWatcher_MonitoringExpires_TransitionsToCompleted(t *testing.T) {
 		},
 	}))
 
-	// Add a run log entry
 	today := time.Now().Format("2006-01-02")
 	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
 		PipelineID:    "monitor-expire-test",
@@ -502,31 +471,20 @@ func TestWatcher_MonitoringExpires_TransitionsToCompleted(t *testing.T) {
 
 	w, _ := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+
+	testutil.WaitForEvent(t, prov, "monitor-expire-test", types.EventMonitoringCompleted, pollTimeout)
 	w.Stop(context.Background())
 
-	// Run should now be COMPLETED
 	runs, err := prov.ListRuns(ctx, "monitor-expire-test", 10)
 	require.NoError(t, err)
 	require.NotEmpty(t, runs)
 	assert.Equal(t, types.RunCompleted, runs[0].Status, "expected COMPLETED after monitoring window expires")
-
-	// Should have MONITORING_COMPLETED event
-	events := prov.Events()
-	hasCompletedEvent := false
-	for _, e := range events {
-		if e.Kind == types.EventMonitoringCompleted {
-			hasCompletedEvent = true
-		}
-	}
-	assert.True(t, hasCompletedEvent, "expected MONITORING_COMPLETED event")
 }
 
 func TestWatcher_MonitoringDrift_CreatesRerun(t *testing.T) {
 	prov := testutil.NewMockProvider()
 	ctx := context.Background()
 
-	// Pipeline with monitoring enabled and a FAIL evaluator (simulates drift)
 	enabled := true
 	pipeline := types.PipelineConfig{
 		Name:      "monitor-drift-test",
@@ -548,7 +506,6 @@ func TestWatcher_MonitoringDrift_CreatesRerun(t *testing.T) {
 	}
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	// Create a run in COMPLETED_MONITORING with a recent start (still within window)
 	recentStart := time.Now().Add(-5 * time.Minute)
 	require.NoError(t, prov.PutRunState(ctx, types.RunState{
 		RunID:      "drift-run",
@@ -573,37 +530,25 @@ func TestWatcher_MonitoringDrift_CreatesRerun(t *testing.T) {
 		UpdatedAt:     recentStart,
 	}))
 
-	w, alerts := setupWatcher(t, prov)
+	w, ac := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
+
+	testutil.WaitForEvent(t, prov, "monitor-drift-test", types.EventMonitoringDrift, pollTimeout)
 	w.Stop(context.Background())
 
-	// Run should transition to COMPLETED (monitoring duty done)
 	runs, err := prov.ListRuns(ctx, "monitor-drift-test", 10)
 	require.NoError(t, err)
 	require.NotEmpty(t, runs)
 	assert.Equal(t, types.RunCompleted, runs[0].Status, "expected COMPLETED after drift detection")
 
-	// Should have created a rerun record
 	reruns := prov.Reruns()
 	require.NotEmpty(t, reruns, "expected a rerun record for drift")
 	assert.Equal(t, "monitoring_drift_detected", reruns[0].Reason)
 	assert.Equal(t, "monitor-drift-test", reruns[0].PipelineID)
 	assert.Equal(t, "drift-run", reruns[0].OriginalRunID)
 
-	// Should have MONITORING_DRIFT_DETECTED event
-	events := prov.Events()
-	hasDriftEvent := false
-	for _, e := range events {
-		if e.Kind == types.EventMonitoringDrift {
-			hasDriftEvent = true
-		}
-	}
-	assert.True(t, hasDriftEvent, "expected MONITORING_DRIFT_DETECTED event")
-
-	// Should have fired a warning alert
 	hasWarningAlert := false
-	for _, a := range *alerts {
+	for _, a := range ac.get() {
 		if a.Level == types.AlertLevelWarning {
 			hasWarningAlert = true
 		}
@@ -615,20 +560,14 @@ func TestWatcher_MonitoringDisabled_NormalCompletion(t *testing.T) {
 	prov := testutil.NewMockProvider()
 	ctx := context.Background()
 
-	// Use readyPipeline — no monitoring config
 	pipeline := readyPipeline("no-monitor-test")
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
 	w, _ := setupWatcher(t, prov)
 	w.Start(ctx)
-	time.Sleep(500 * time.Millisecond)
-	w.Stop(context.Background())
+	defer w.Stop(context.Background())
 
-	// Should have created a run in COMPLETED status (not COMPLETED_MONITORING)
-	runs, err := prov.ListRuns(ctx, "no-monitor-test", 10)
-	require.NoError(t, err)
-	require.NotEmpty(t, runs, "expected at least one run")
-	assert.Equal(t, types.RunCompleted, runs[0].Status, "expected COMPLETED status without monitoring")
+	testutil.WaitForRunStatus(t, prov, "no-monitor-test", types.RunCompleted, pollTimeout)
 
 	// Should NOT have MONITORING_STARTED event
 	events := prov.Events()

@@ -9,25 +9,34 @@ import (
 	"time"
 
 	"github.com/interlock-systems/interlock/internal/archetype"
-	"github.com/interlock-systems/interlock/internal/evaluator"
 	"github.com/interlock-systems/interlock/internal/metrics"
 	"github.com/interlock-systems/interlock/internal/provider"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
 
+// ArchetypeResolver resolves archetype definitions by name.
+type ArchetypeResolver interface {
+	Get(name string) (*types.Archetype, error)
+}
+
+// TraitRunner executes evaluator subprocesses.
+type TraitRunner interface {
+	Run(ctx context.Context, path string, input types.EvaluatorInput, timeout time.Duration) (*types.EvaluatorOutput, error)
+}
+
 // Engine is the core readiness evaluation engine. It resolves archetypes,
 // runs evaluators, stores results, and determines pipeline readiness.
 type Engine struct {
 	provider       provider.Provider
-	registry       *archetype.Registry
-	runner         *evaluator.Runner
+	registry       ArchetypeResolver
+	runner         TraitRunner
 	alertFn        func(types.Alert)
 	logger         *slog.Logger
 	defaultTimeout time.Duration
 }
 
 // New creates a new Engine.
-func New(p provider.Provider, reg *archetype.Registry, runner *evaluator.Runner, alertFn func(types.Alert)) *Engine {
+func New(p provider.Provider, reg ArchetypeResolver, runner TraitRunner, alertFn func(types.Alert)) *Engine {
 	return &Engine{
 		provider:       p,
 		registry:       reg,

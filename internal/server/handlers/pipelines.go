@@ -4,10 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/interlock-systems/interlock/pkg/types"
 )
+
+// validPipelineName constrains pipeline names to lowercase alphanumeric with dots,
+// hyphens, and underscores (2-255 chars). Prevents Redis key injection and path traversal.
+var validPipelineName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,253}[a-z0-9]$`)
 
 // ListPipelines returns all registered pipelines.
 func (h *Handlers) ListPipelines(w http.ResponseWriter, r *http.Request) {
@@ -31,6 +36,10 @@ func (h *Handlers) RegisterPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 	if config.Name == "" {
 		h.writeError(w, http.StatusBadRequest, "name is required", nil)
+		return
+	}
+	if !validPipelineName.MatchString(config.Name) {
+		h.writeError(w, http.StatusBadRequest, "invalid pipeline name: must match [a-z0-9][a-z0-9._-]{0,253}[a-z0-9]", nil)
 		return
 	}
 
