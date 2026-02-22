@@ -116,15 +116,15 @@ func attributeStr(item map[string]ddbtypes.AttributeValue, key string) (string, 
 	return s, nil
 }
 
-// attributeInt extracts an integer attribute from a DynamoDB item.
-func attributeInt(item map[string]ddbtypes.AttributeValue, key string) (int64, error) {
-	av, ok := item[key]
+// attributeInt extracts the "ttl" integer attribute from a DynamoDB item.
+func attributeInt(item map[string]ddbtypes.AttributeValue) (int64, error) {
+	av, ok := item["ttl"]
 	if !ok {
 		return 0, nil
 	}
 	var n int64
 	if err := attributevalue.Unmarshal(av, &n); err != nil {
-		return 0, fmt.Errorf("unmarshaling %q: %w", key, err)
+		return 0, fmt.Errorf("unmarshaling %q: %w", "ttl", err)
 	}
 	return n, nil
 }

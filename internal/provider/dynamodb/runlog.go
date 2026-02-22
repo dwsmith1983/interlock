@@ -54,7 +54,7 @@ func (p *DynamoDBProvider) GetRunLog(ctx context.Context, pipelineID, date, sche
 		return nil, nil
 	}
 
-	ttlVal, _ := attributeInt(out.Item, "ttl")
+	ttlVal, _ := attributeInt(out.Item)
 	if isExpired(ttlVal) {
 		return nil, nil
 	}
@@ -92,7 +92,7 @@ func (p *DynamoDBProvider) ListRunLogs(ctx context.Context, pipelineID string, l
 
 	var entries []types.RunLogEntry
 	for _, item := range out.Items {
-		ttlVal, _ := attributeInt(item, "ttl")
+		ttlVal, _ := attributeInt(item)
 		if isExpired(ttlVal) {
 			continue
 		}

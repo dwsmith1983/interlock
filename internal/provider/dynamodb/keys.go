@@ -23,14 +23,14 @@ const (
 	skLock      = "LOCK"
 )
 
-func pipelinePK(id string) string  { return prefixPipeline + id }
-func runPK(runID string) string    { return prefixRun + runID }
+func pipelinePK(id string) string   { return prefixPipeline + id }
+func runPK(runID string) string     { return prefixRun + runID }
 func rerunPK(rerunID string) string { return prefixRerun + rerunID }
-func lockPK(key string) string     { return prefixLock + key }
+func lockPK(key string) string      { return prefixLock + key }
 
-func configSK() string                        { return skConfig }
-func traitSK(traitType string) string          { return prefixTrait + traitType }
-func readinessSK() string                      { return skReadiness }
+func configSK() string                { return skConfig }
+func traitSK(traitType string) string { return prefixTrait + traitType }
+func readinessSK() string             { return skReadiness }
 
 func runListSK(createdAt time.Time, runID string) string {
 	return prefixRun + createdAt.UTC().Format(time.RFC3339Nano) + "#" + runID
@@ -50,7 +50,7 @@ func eventSK(ts time.Time) string {
 }
 
 func rerunSK(rerunID string) string { return prefixRerun + rerunID }
-func lockSK() string               { return skLock }
+func lockSK() string                { return skLock }
 
 func ttlEpoch(d time.Duration) int64 {
 	return time.Now().Add(d).Unix()

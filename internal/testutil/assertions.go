@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func WaitForRun(t *testing.T, prov *MockProvider, pipelineID string, timeout tim
 	t.Helper()
 	var run types.RunState
 	WaitFor(t, timeout, func() bool {
-		runs, err := prov.ListRuns(nil, pipelineID, 1)
+		runs, err := prov.ListRuns(context.TODO(), pipelineID, 1)
 		if err != nil || len(runs) == 0 {
 			return false
 		}
@@ -40,7 +41,7 @@ func WaitForRunStatus(t *testing.T, prov *MockProvider, pipelineID string, statu
 	t.Helper()
 	var run types.RunState
 	WaitFor(t, timeout, func() bool {
-		runs, err := prov.ListRuns(nil, pipelineID, 1)
+		runs, err := prov.ListRuns(context.TODO(), pipelineID, 1)
 		if err != nil || len(runs) == 0 {
 			return false
 		}

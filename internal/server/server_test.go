@@ -86,7 +86,7 @@ func TestPipelineEndpoints(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// Delete pipeline
-	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/pipelines/test", nil)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/pipelines/test", http.NoBody)
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -142,7 +142,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 		strings.NewReader(`{"name":"e2e-pipeline","archetype":"batch-ingestion","traits":{"freshness":{"evaluator":"../../testdata/evaluators/pass","timeout":5}},"trigger":{"type":"http","url":"`+mockOrchestrator.URL+`"}}`),
 	)
 	require.NoError(t, err)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	// Step 2: Evaluate → READY
@@ -150,7 +150,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	var evalResult types.ReadinessResult
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&evalResult))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, types.Ready, evalResult.Status)
 	for _, trait := range evalResult.Traits {
@@ -162,7 +162,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	var readiness types.ReadinessResult
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&readiness))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	assert.Equal(t, types.Ready, readiness.Status)
 
 	// Step 4: Run → 202, TRIGGERING
@@ -171,7 +171,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 	var run types.RunState
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&run))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	assert.Equal(t, types.RunTriggering, run.Status)
 	runID := run.RunID
 	require.NotEmpty(t, runID)
@@ -181,7 +181,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	var fetchedRun types.RunState
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&fetchedRun))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	assert.Equal(t, types.RunTriggering, fetchedRun.Status)
 
 	// Advance to RUNNING (simulating what the watcher does)
@@ -203,7 +203,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	var completedRun types.RunState
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&completedRun))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	assert.Equal(t, types.RunCompleted, completedRun.Status)
 
 	// Step 7: Verify run → COMPLETED with metadata
@@ -211,7 +211,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	var finalRun types.RunState
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&finalRun))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	assert.Equal(t, types.RunCompleted, finalRun.Status)
 	assert.Equal(t, float64(5000), finalRun.Metadata["rows"])
 
@@ -242,7 +242,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	var vars map[string]interface{}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&vars))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	evalTotal, ok := vars["evaluations_total"].(float64)
 	assert.True(t, ok)
 	assert.Greater(t, evalTotal, float64(0))
@@ -277,7 +277,7 @@ func TestE2E_NotReady_BlocksRun(t *testing.T) {
 	// Run → 412 Precondition Failed
 	resp, err := http.Post(ts.URL+"/api/pipelines/not-ready-pipeline/run", "application/json", nil)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusPreconditionFailed, resp.StatusCode)
 
 	var body map[string]interface{}
@@ -296,7 +296,7 @@ func TestE2E_CommandTrigger_BlockedViaAPI(t *testing.T) {
 		strings.NewReader(`{"name":"cmd-pipeline","archetype":"batch-ingestion","trigger":{"type":"command","command":"echo hello"}}`),
 	)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	var body map[string]string
@@ -347,7 +347,7 @@ func TestPushTrait_Success(t *testing.T) {
 		strings.NewReader(`{"status":"PASS","value":{"age_hours":1},"reason":"fresh data"}`),
 	)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	trait, err := prov.GetTrait(ctx, "trait-test", "freshness")
@@ -367,7 +367,7 @@ func TestPushTrait_InvalidStatus(t *testing.T) {
 		strings.NewReader(`{"status":"INVALID"}`),
 	)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
@@ -380,7 +380,7 @@ func TestPushTrait_PipelineNotFound(t *testing.T) {
 		strings.NewReader(`{"status":"PASS"}`),
 	)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
@@ -397,7 +397,7 @@ func TestListEvents_Success(t *testing.T) {
 
 	resp, err := http.Get(ts.URL + "/api/pipelines/events-pipe/events")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var events []types.Event
@@ -417,7 +417,7 @@ func TestListEvents_WithLimit(t *testing.T) {
 
 	resp, err := http.Get(ts.URL + "/api/pipelines/limit-pipe/events?limit=2")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var events []types.Event
@@ -442,7 +442,7 @@ func TestRequestRerun_Success(t *testing.T) {
 		strings.NewReader(`{"originalDate":"2026-02-20","reason":"late data"}`),
 	)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 }
 
@@ -458,7 +458,7 @@ func TestRequestRerun_MissingFields(t *testing.T) {
 		strings.NewReader(`{"originalDate":"2026-02-20"}`),
 	)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	// Missing originalDate
@@ -468,7 +468,7 @@ func TestRequestRerun_MissingFields(t *testing.T) {
 		strings.NewReader(`{"reason":"late data"}`),
 	)
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp2.StatusCode)
 }
 
@@ -489,7 +489,7 @@ func TestRequestRerun_NotReady(t *testing.T) {
 		strings.NewReader(`{"originalDate":"2026-02-20","reason":"late data"}`),
 	)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusPreconditionFailed, resp.StatusCode)
 }
 
@@ -510,7 +510,7 @@ func TestCompleteRerun_Success(t *testing.T) {
 		strings.NewReader(`{"status":"success"}`),
 	)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var record types.RerunRecord
@@ -528,7 +528,7 @@ func TestListReruns_Success(t *testing.T) {
 
 	resp, err := http.Get(ts.URL + "/api/pipelines/reruns-pipe/reruns")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var records []types.RerunRecord
@@ -549,7 +549,7 @@ func TestListAllReruns_Success(t *testing.T) {
 
 	resp, err := http.Get(ts.URL + "/api/reruns")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var records []types.RerunRecord
@@ -564,19 +564,19 @@ func TestPipelineNameValidation(t *testing.T) {
 		name string
 		code int
 	}{
-		{`{"name":"a","archetype":"batch-ingestion"}`, http.StatusBadRequest},            // too short (1 char)
+		{`{"name":"a","archetype":"batch-ingestion"}`, http.StatusBadRequest},             // too short (1 char)
 		{`{"name":"ab","archetype":"batch-ingestion"}`, http.StatusCreated},               // minimum valid (2 chars)
-		{`{"name":"UPPER","archetype":"batch-ingestion"}`, http.StatusBadRequest},          // uppercase
-		{`{"name":"has space","archetype":"batch-ingestion"}`, http.StatusBadRequest},      // space
-		{`{"name":"my.pipeline-v2","archetype":"batch-ingestion"}`, http.StatusCreated},    // dots and dashes
-		{`{"name":"../../etc","archetype":"batch-ingestion"}`, http.StatusBadRequest},      // path traversal
-		{`{"name":"key:injection","archetype":"batch-ingestion"}`, http.StatusBadRequest},  // colon
+		{`{"name":"UPPER","archetype":"batch-ingestion"}`, http.StatusBadRequest},         // uppercase
+		{`{"name":"has space","archetype":"batch-ingestion"}`, http.StatusBadRequest},     // space
+		{`{"name":"my.pipeline-v2","archetype":"batch-ingestion"}`, http.StatusCreated},   // dots and dashes
+		{`{"name":"../../etc","archetype":"batch-ingestion"}`, http.StatusBadRequest},     // path traversal
+		{`{"name":"key:injection","archetype":"batch-ingestion"}`, http.StatusBadRequest}, // colon
 	}
 
 	for _, tt := range tests {
 		resp, err := http.Post(ts.URL+"/api/pipelines", "application/json", strings.NewReader(tt.name))
 		require.NoError(t, err)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		assert.Equal(t, tt.code, resp.StatusCode, "for body: %s", tt.name)
 	}
 }
@@ -586,22 +586,22 @@ func TestPipelineNameValidation(t *testing.T) {
 func TestAPIKeyAuth_Valid(t *testing.T) {
 	ts, _ := setupTestServerWithOpts(t, "test-secret", 0)
 
-	req, _ := http.NewRequest("GET", ts.URL+"/api/pipelines", nil)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/pipelines", http.NoBody)
 	req.Header.Set("X-API-Key", "test-secret")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestAPIKeyAuth_Invalid(t *testing.T) {
 	ts, _ := setupTestServerWithOpts(t, "test-secret", 0)
 
-	req, _ := http.NewRequest("GET", ts.URL+"/api/pipelines", nil)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/pipelines", http.NoBody)
 	req.Header.Set("X-API-Key", "wrong-key")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
@@ -610,7 +610,7 @@ func TestAPIKeyAuth_Missing(t *testing.T) {
 
 	resp, err := http.Get(ts.URL + "/api/pipelines")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
@@ -619,7 +619,7 @@ func TestAPIKeyAuth_HealthBypass(t *testing.T) {
 
 	resp, err := http.Get(ts.URL + "/api/health")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -629,6 +629,6 @@ func TestMaxBody_Enforced(t *testing.T) {
 	bigBody := strings.Repeat("x", 200)
 	resp, err := http.Post(ts.URL+"/api/pipelines", "application/json", strings.NewReader(bigBody))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }

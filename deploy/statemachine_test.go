@@ -10,8 +10,8 @@ import (
 )
 
 type aslDefinition struct {
-	Comment string                    `json:"Comment"`
-	StartAt string                    `json:"StartAt"`
+	Comment string                     `json:"Comment"`
+	StartAt string                     `json:"StartAt"`
 	States  map[string]json.RawMessage `json:"States"`
 }
 
@@ -45,7 +45,7 @@ type mapState struct {
 	Type          string `json:"Type"`
 	Next          string `json:"Next,omitempty"`
 	ItemProcessor struct {
-		StartAt string                    `json:"StartAt"`
+		StartAt string                     `json:"StartAt"`
 		States  map[string]json.RawMessage `json:"States"`
 	} `json:"ItemProcessor"`
 }
@@ -191,13 +191,13 @@ func TestASL_NoOrphanStates(t *testing.T) {
 func TestASL_AllStatesHaveValidType(t *testing.T) {
 	asl := loadASL(t)
 	validTypes := map[string]bool{
-		"Task":    true,
-		"Choice":  true,
-		"Wait":    true,
-		"Pass":    true,
-		"Succeed": true,
-		"Fail":    true,
-		"Map":     true,
+		"Task":     true,
+		"Choice":   true,
+		"Wait":     true,
+		"Pass":     true,
+		"Succeed":  true,
+		"Fail":     true,
+		"Map":      true,
 		"Parallel": true,
 	}
 

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/go-chi/chi/v5"
 )
 
 // validPipelineName constrains pipeline names to lowercase alphanumeric with dots,

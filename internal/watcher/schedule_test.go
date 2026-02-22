@@ -281,8 +281,8 @@ func TestIsExcluded_NoCalendarRegistry(t *testing.T) {
 	pipeline := types.PipelineConfig{
 		Name: "test",
 		Exclusions: &types.ExclusionConfig{
-			Calendar: "nonexistent",             // references a calendar but registry is nil
-			Days:     []string{"saturday"},       // inline should still work
+			Calendar: "nonexistent",        // references a calendar but registry is nil
+			Days:     []string{"saturday"}, // inline should still work
 		},
 	}
 

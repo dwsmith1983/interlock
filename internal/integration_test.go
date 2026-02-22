@@ -31,7 +31,7 @@ import (
 func writeEvaluator(t *testing.T, dir, name, script string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	require.NoError(t, os.WriteFile(path, []byte(script), 0755))
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
 	return path
 }
 
@@ -77,7 +77,7 @@ func splitLines(data []byte) [][]byte {
 func TestIntegration_HappyPath_CommandTrigger(t *testing.T) {
 	tmpDir := t.TempDir()
 	evalDir := filepath.Join(tmpDir, "evaluators")
-	require.NoError(t, os.MkdirAll(evalDir, 0755))
+	require.NoError(t, os.MkdirAll(evalDir, 0o755))
 	alertLog := filepath.Join(tmpDir, "alerts.log")
 
 	// Create evaluators that all pass
@@ -206,7 +206,7 @@ echo '{"status":"PASS","value":{"cpu_available":true}}'
 func TestIntegration_BlockedPath_AlertsFire(t *testing.T) {
 	tmpDir := t.TempDir()
 	evalDir := filepath.Join(tmpDir, "evaluators")
-	require.NoError(t, os.MkdirAll(evalDir, 0755))
+	require.NoError(t, os.MkdirAll(evalDir, 0o755))
 	alertLog := filepath.Join(tmpDir, "alerts.log")
 
 	// Source freshness FAILS, others pass
@@ -327,7 +327,7 @@ echo '{"status":"PASS","value":{}}'
 func TestIntegration_HTTPTrigger_WithCallback(t *testing.T) {
 	tmpDir := t.TempDir()
 	evalDir := filepath.Join(tmpDir, "evaluators")
-	require.NoError(t, os.MkdirAll(evalDir, 0755))
+	require.NoError(t, os.MkdirAll(evalDir, 0o755))
 
 	freshEval := writeEvaluator(t, evalDir, "check-pass", `#!/bin/bash
 echo '{"status":"PASS","value":{"ok":true}}'
@@ -499,7 +499,7 @@ func TestIntegration_CASRace_OneTriggerWins(t *testing.T) {
 func TestIntegration_StaleTrait_CheckReadiness(t *testing.T) {
 	tmpDir := t.TempDir()
 	evalDir := filepath.Join(tmpDir, "evaluators")
-	require.NoError(t, os.MkdirAll(evalDir, 0755))
+	require.NoError(t, os.MkdirAll(evalDir, 0o755))
 	alertLog := filepath.Join(tmpDir, "alerts.log")
 
 	passEval := writeEvaluator(t, evalDir, "check-pass", `#!/bin/bash
@@ -574,7 +574,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 func TestIntegration_KVRoundTrip_FieldValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 	evalDir := filepath.Join(tmpDir, "evaluators")
-	require.NoError(t, os.MkdirAll(evalDir, 0755))
+	require.NoError(t, os.MkdirAll(evalDir, 0o755))
 
 	// Evaluator that returns specific values we can verify
 	freshEval := writeEvaluator(t, evalDir, "check-freshness", `#!/bin/bash
@@ -707,7 +707,7 @@ echo '{"status":"PASS","value":{"lagSeconds":42,"threshold":300,"source":"sales_
 func TestIntegration_EventAuditTrail(t *testing.T) {
 	tmpDir := t.TempDir()
 	evalDir := filepath.Join(tmpDir, "evaluators")
-	require.NoError(t, os.MkdirAll(evalDir, 0755))
+	require.NoError(t, os.MkdirAll(evalDir, 0o755))
 
 	freshEval := writeEvaluator(t, evalDir, "check-fresh", `#!/bin/bash
 echo '{"status":"PASS","value":{"ok":true}}'
@@ -854,7 +854,7 @@ echo '{"status":"PASS","value":{"upstream":"done"}}'
 func TestIntegration_RunFailure_CommandFails(t *testing.T) {
 	tmpDir := t.TempDir()
 	evalDir := filepath.Join(tmpDir, "evaluators")
-	require.NoError(t, os.MkdirAll(evalDir, 0755))
+	require.NoError(t, os.MkdirAll(evalDir, 0o755))
 	alertLog := filepath.Join(tmpDir, "alerts.log")
 
 	passEval := writeEvaluator(t, evalDir, "check-pass", `#!/bin/bash
@@ -1115,7 +1115,7 @@ func TestIntegration_RunFailure_CASRejection(t *testing.T) {
 func TestIntegration_EventTrail_EvaluationFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 	evalDir := filepath.Join(tmpDir, "evaluators")
-	require.NoError(t, os.MkdirAll(evalDir, 0755))
+	require.NoError(t, os.MkdirAll(evalDir, 0o755))
 
 	failEval := writeEvaluator(t, evalDir, "check-fail", `#!/bin/bash
 echo '{"status":"FAIL","value":{"lag":9999},"reason":"source is stale"}'

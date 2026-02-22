@@ -30,7 +30,7 @@ func TestHTTPRunner_Success(t *testing.T) {
 		assert.Equal(t, "freshness", input.TraitType)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(expected)
+		_ = json.NewEncoder(w).Encode(expected)
 	}))
 	defer srv.Close()
 
@@ -50,7 +50,7 @@ func TestHTTPRunner_Success(t *testing.T) {
 func TestHTTPRunner_BaseURL(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/evaluate/freshness", r.URL.Path)
-		json.NewEncoder(w).Encode(types.EvaluatorOutput{Status: types.TraitPass})
+		_ = json.NewEncoder(w).Encode(types.EvaluatorOutput{Status: types.TraitPass})
 	}))
 	defer srv.Close()
 
@@ -89,7 +89,7 @@ func TestHTTPRunner_ClientError(t *testing.T) {
 
 func TestHTTPRunner_InvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("not json"))
+		_, _ = w.Write([]byte("not json"))
 	}))
 	defer srv.Close()
 
@@ -111,7 +111,7 @@ func TestHTTPRunner_NoBaseURL(t *testing.T) {
 func TestHTTPRunner_Timeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
-		json.NewEncoder(w).Encode(types.EvaluatorOutput{Status: types.TraitPass})
+		_ = json.NewEncoder(w).Encode(types.EvaluatorOutput{Status: types.TraitPass})
 	}))
 	defer srv.Close()
 

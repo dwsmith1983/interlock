@@ -73,7 +73,7 @@ func (p *DynamoDBProvider) GetRerun(ctx context.Context, rerunID string) (*types
 		return nil, nil
 	}
 
-	ttlVal, _ := attributeInt(out.Item, "ttl")
+	ttlVal, _ := attributeInt(out.Item)
 	if isExpired(ttlVal) {
 		return nil, nil
 	}
@@ -141,7 +141,7 @@ func (p *DynamoDBProvider) unmarshalReruns(items []map[string]ddbtypes.Attribute
 	var records []types.RerunRecord
 
 	for _, item := range items {
-		ttlVal, _ := attributeInt(item, "ttl")
+		ttlVal, _ := attributeInt(item)
 		if isExpired(ttlVal) {
 			continue
 		}

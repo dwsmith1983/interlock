@@ -44,7 +44,7 @@ func runInit(projectName string, skipValkey bool) error {
 
 	for _, dir := range dirs {
 		path := filepath.Join(projectName, dir)
-		if err := os.MkdirAll(path, 0755); err != nil {
+		if err := os.MkdirAll(path, 0o755); err != nil {
 			return fmt.Errorf("creating directory %s: %w", path, err)
 		}
 	}
@@ -66,7 +66,7 @@ pipelineDirs:
 alerts:
   - type: console
 `
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 
@@ -83,7 +83,7 @@ alerts:
 # Replace with real checks for your data sources.
 echo '{"status":"PASS","value":{"source":"example","lagSeconds":0}}'
 `
-	if err := os.WriteFile(evalPath, []byte(evalContent), 0755); err != nil {
+	if err := os.WriteFile(evalPath, []byte(evalContent), 0o755); err != nil {
 		return fmt.Errorf("writing example evaluator: %w", err)
 	}
 
@@ -104,7 +104,7 @@ trigger:
   type: command
   command: "echo 'Pipeline executed successfully'"
 `
-	if err := os.WriteFile(pipelinePath, []byte(pipelineContent), 0644); err != nil {
+	if err := os.WriteFile(pipelinePath, []byte(pipelineContent), 0o644); err != nil {
 		return fmt.Errorf("writing example pipeline: %w", err)
 	}
 
@@ -242,7 +242,7 @@ readinessRule:
 
 	for name, content := range archetypes {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("writing %s: %w", name, err)
 		}
 	}

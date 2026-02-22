@@ -170,10 +170,3 @@ func isConditionalCheckFailed(err error) bool {
 	var ccfe *ddbtypes.ConditionalCheckFailedException
 	return errors.As(err, &ccfe)
 }
-
-// isTransactionCanceled returns true if the error is a DynamoDB TransactionCanceledException
-// where at least one cancellation reason is ConditionalCheckFailed.
-func isTransactionCanceled(err error) bool {
-	var tce *ddbtypes.TransactionCanceledException
-	return errors.As(err, &tce)
-}

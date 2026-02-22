@@ -10,6 +10,12 @@ linters:
     - unparam        # unused function parameters
     - usestdlibvars  # use stdlib constants (http.MethodGet, etc.)
     - whitespace     # unnecessary blank lines
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+      disabled-checks: []
 
 formatters:
   enable:
@@ -18,11 +24,3 @@ formatters:
 issues:
   max-issues-per-linter: 50
   max-same-issues: 5
-
-linters-settings:
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-    disabled-checks:
-      - hugeParam  # we pass structs by value intentionally sometimes

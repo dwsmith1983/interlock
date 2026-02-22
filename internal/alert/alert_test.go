@@ -157,4 +157,3 @@ func TestDispatcher_SinkError_ContinuesOthers(t *testing.T) {
 	// Even though first sink failed, second should have received the alert
 	assert.Len(t, recording.alerts, 1)
 }
-

@@ -36,7 +36,7 @@ func ExecuteDatabricks(ctx context.Context, cfg *types.TriggerConfig, httpClient
 		return nil, fmt.Errorf("databricks trigger: marshaling payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("databricks trigger: creating request: %w", err)
 	}
@@ -88,7 +88,7 @@ func (r *Runner) checkDatabricksStatus(ctx context.Context, metadata map[string]
 
 	url := strings.TrimRight(workspaceURL, "/") + "/api/2.1/jobs/runs/get?run_id=" + runID
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return StatusResult{}, fmt.Errorf("databricks status: creating request: %w", err)
 	}

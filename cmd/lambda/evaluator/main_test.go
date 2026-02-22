@@ -31,7 +31,7 @@ func setupDeps(t *testing.T, evaluatorURL string) *intlambda.Deps {
 
 func TestHandleEvaluate_Pass(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(types.EvaluatorOutput{
+		_ = json.NewEncoder(w).Encode(types.EvaluatorOutput{
 			Status: types.TraitPass,
 			Value:  map[string]interface{}{"lag": float64(5)},
 			Reason: "within threshold",
@@ -59,7 +59,7 @@ func TestHandleEvaluate_Pass(t *testing.T) {
 
 func TestHandleEvaluate_Fail(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(types.EvaluatorOutput{
+		_ = json.NewEncoder(w).Encode(types.EvaluatorOutput{
 			Status: types.TraitFail,
 			Reason: "lag exceeded threshold",
 		})

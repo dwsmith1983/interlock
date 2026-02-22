@@ -26,7 +26,7 @@ pipelineDirs:
 alerts:
   - type: console
 `
-	err := os.WriteFile(filepath.Join(dir, "interlock.yaml"), []byte(content), 0644)
+	err := os.WriteFile(filepath.Join(dir, "interlock.yaml"), []byte(content), 0o644)
 	require.NoError(t, err)
 
 	cfg, err := Load(dir)
@@ -46,7 +46,7 @@ func TestLoadMissingFile(t *testing.T) {
 
 func TestLoadInvalidYAML(t *testing.T) {
 	dir := t.TempDir()
-	err := os.WriteFile(filepath.Join(dir, "interlock.yaml"), []byte("invalid: [yaml"), 0644)
+	err := os.WriteFile(filepath.Join(dir, "interlock.yaml"), []byte("invalid: [yaml"), 0o644)
 	require.NoError(t, err)
 
 	_, err = Load(dir)
@@ -59,7 +59,7 @@ func TestValidation_MissingProvider(t *testing.T) {
 evaluatorDirs: [./e]
 pipelineDirs: [./p]
 `
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "interlock.yaml"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "interlock.yaml"), []byte(content), 0o644))
 
 	_, err := Load(dir)
 	assert.Error(t, err)
@@ -73,7 +73,7 @@ archetypeDirs: [./a]
 evaluatorDirs: [./e]
 pipelineDirs: [./p]
 `
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "interlock.yaml"), []byte(content), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "interlock.yaml"), []byte(content), 0o644))
 
 	_, err := Load(dir)
 	assert.Error(t, err)

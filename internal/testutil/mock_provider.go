@@ -200,14 +200,14 @@ func (m *MockProvider) ListEvents(_ context.Context, pipelineID string, limit in
 	return result, nil
 }
 
-func (m *MockProvider) ReadEventsSince(_ context.Context, pipelineID string, sinceID string, count int64) ([]types.EventRecord, error) {
+func (m *MockProvider) ReadEventsSince(_ context.Context, pipelineID, sinceID string, count int64) ([]types.EventRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// sinceID is a 1-based index formatted as "<idx>-0"; "0-0" means start from beginning
 	startIdx := 0
 	if sinceID != "" && sinceID != "0-0" {
-		fmt.Sscanf(sinceID, "%d-", &startIdx)
+		_, _ = fmt.Sscanf(sinceID, "%d-", &startIdx)
 	}
 
 	var records []types.EventRecord

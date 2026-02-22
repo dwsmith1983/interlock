@@ -78,7 +78,7 @@ func (p *DynamoDBProvider) GetRunState(ctx context.Context, runID string) (*type
 		return nil, fmt.Errorf("run %q not found", runID)
 	}
 
-	ttlVal, _ := attributeInt(out.Item, "ttl")
+	ttlVal, _ := attributeInt(out.Item)
 	if isExpired(ttlVal) {
 		return nil, fmt.Errorf("run %q not found", runID)
 	}
@@ -116,7 +116,7 @@ func (p *DynamoDBProvider) ListRuns(ctx context.Context, pipelineID string, limi
 
 	var runs []types.RunState
 	for _, item := range out.Items {
-		ttlVal, _ := attributeInt(item, "ttl")
+		ttlVal, _ := attributeInt(item)
 		if isExpired(ttlVal) {
 			continue
 		}
@@ -151,7 +151,7 @@ func (p *DynamoDBProvider) CompareAndSwapRunState(ctx context.Context, runID str
 			"PK": &ddbtypes.AttributeValueMemberS{Value: runPK(runID)},
 			"SK": &ddbtypes.AttributeValueMemberS{Value: runTruthSK(runID)},
 		},
-		UpdateExpression: aws.String("SET #data = :data, #version = :newVersion, #ttl = :ttl"),
+		UpdateExpression:    aws.String("SET #data = :data, #version = :newVersion, #ttl = :ttl"),
 		ConditionExpression: aws.String("#version = :expectedVersion"),
 		ExpressionAttributeNames: map[string]string{
 			"#data":    "data",

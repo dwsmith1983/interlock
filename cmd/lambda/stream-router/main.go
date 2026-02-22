@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
+	awslambda "github.com/aws/aws-lambda-go/lambda"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
-	awslambda "github.com/aws/aws-lambda-go/lambda"
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
 )
 

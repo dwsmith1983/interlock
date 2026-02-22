@@ -75,7 +75,7 @@ func runAddPipeline(name, archetypeName string, tier int, triggerType, triggerCo
 	if err != nil {
 		return fmt.Errorf("marshaling pipeline: %w", err)
 	}
-	if err := os.WriteFile(pipelinePath, data, 0644); err != nil {
+	if err := os.WriteFile(pipelinePath, data, 0o644); err != nil {
 		return fmt.Errorf("writing pipeline file: %w", err)
 	}
 

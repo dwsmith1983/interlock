@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/go-chi/chi/v5"
 )
 
 // GetTraits returns all trait evaluations for a pipeline.
@@ -55,10 +55,10 @@ func (h *Handlers) PushTrait(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Status types.TraitStatus       `json:"status"`
-		Value  map[string]interface{}  `json:"value,omitempty"`
-		Reason string                  `json:"reason,omitempty"`
-		TTL    int                     `json:"ttl,omitempty"` // seconds, 0 = no expiry
+		Status types.TraitStatus      `json:"status"`
+		Value  map[string]interface{} `json:"value,omitempty"`
+		Reason string                 `json:"reason,omitempty"`
+		TTL    int                    `json:"ttl,omitempty"` // seconds, 0 = no expiry
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid JSON", err)

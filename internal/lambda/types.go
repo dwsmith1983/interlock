@@ -47,10 +47,10 @@ type EvaluatorResponse struct {
 
 // TriggerRequest is the input to the trigger Lambda.
 type TriggerRequest struct {
-	PipelineID string              `json:"pipelineID"`
-	ScheduleID string              `json:"scheduleID"`
+	PipelineID string               `json:"pipelineID"`
+	ScheduleID string               `json:"scheduleID"`
 	Trigger    *types.TriggerConfig `json:"trigger"`
-	RunID      string              `json:"runID"`
+	RunID      string               `json:"runID"`
 }
 
 // TriggerResponse is the output of the trigger Lambda.

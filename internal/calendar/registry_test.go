@@ -19,7 +19,7 @@ days: ["saturday", "sunday"]
 dates:
   - "2025-12-25"
   - "2025-01-01"
-`), 0644))
+`), 0o644))
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "uk-business.yml"), []byte(`
 name: uk-business
@@ -27,10 +27,10 @@ days: ["saturday", "sunday"]
 dates:
   - "2025-12-25"
   - "2025-12-26"
-`), 0644))
+`), 0o644))
 
 	// Write a non-YAML file that should be ignored
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("ignored"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("ignored"), 0o644))
 
 	reg := NewRegistry()
 	require.NoError(t, reg.LoadDir(dir))
@@ -56,7 +56,7 @@ func TestRegistry_Get_NotFound(t *testing.T) {
 func TestRegistry_LoadFile_NoName(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`days: ["saturday"]`), 0644))
+	require.NoError(t, os.WriteFile(path, []byte(`days: ["saturday"]`), 0o644))
 
 	reg := NewRegistry()
 	err := reg.LoadFile(path)

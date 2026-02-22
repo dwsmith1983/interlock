@@ -24,10 +24,10 @@ func (p *RedisProvider) runKeyTTL(status types.RunStatus) time.Duration {
 
 // SCAN batch size and sorted-set trim limits for Redis indexes.
 const (
-	scanBatchSize          = 100
-	defaultRunLogIndexMax  = 100
-	defaultRerunIndexMax   = 100
-	defaultRerunGlobalMax  = 500
+	scanBatchSize         = 100
+	defaultRunLogIndexMax = 100
+	defaultRerunIndexMax  = 100
+	defaultRerunGlobalMax = 500
 )
 
 func (p *RedisProvider) pipelineKey(id string) string {
@@ -375,7 +375,7 @@ func lastColon(s string) int {
 
 // AcquireLock attempts to acquire a distributed lock with the given key and TTL.
 func (p *RedisProvider) AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
-	ok, err := p.client.SetNX(ctx, p.lockKey(key), "1", ttl).Result()
+	ok, err := p.client.SetNX(ctx, p.lockKey(key), "1", ttl).Result() //nolint:staticcheck // SetNX is cleaner than SetArgs for lock semantics
 	return ok, err
 }
 
@@ -515,7 +515,7 @@ func (p *RedisProvider) AppendEvent(ctx context.Context, event types.Event) erro
 
 // ReadEventsSince reads events forward from after sinceID (exclusive).
 // Use "0-0" to read from the beginning of the stream.
-func (p *RedisProvider) ReadEventsSince(ctx context.Context, pipelineID string, sinceID string, count int64) ([]types.EventRecord, error) {
+func (p *RedisProvider) ReadEventsSince(ctx context.Context, pipelineID, sinceID string, count int64) ([]types.EventRecord, error) {
 	if sinceID == "" {
 		sinceID = "0-0"
 	}

@@ -57,7 +57,7 @@ func TestHandleRunCheck_CommandType(t *testing.T) {
 
 func TestHandleRunCheck_AirflowSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"dag_run_id": "run_1", "state": "success"}`)
+		_, _ = fmt.Fprintf(w, `{"dag_run_id": "run_1", "state": "success"}`)
 	}))
 	defer srv.Close()
 

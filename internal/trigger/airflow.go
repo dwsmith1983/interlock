@@ -39,7 +39,7 @@ func ExecuteAirflow(ctx context.Context, cfg *types.TriggerConfig) (map[string]i
 		return nil, fmt.Errorf("airflow trigger: marshaling payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("airflow trigger: creating request: %w", err)
 	}
@@ -95,7 +95,7 @@ func ExecuteAirflow(ctx context.Context, cfg *types.TriggerConfig) (map[string]i
 func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string, headers map[string]string) (string, error) {
 	url := strings.TrimRight(airflowURL, "/") + "/api/v1/dags/" + dagID + "/dagRuns/" + dagRunID
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("airflow status: creating request: %w", err)
 	}
