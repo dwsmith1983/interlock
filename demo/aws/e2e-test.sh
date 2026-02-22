@@ -33,9 +33,9 @@ FAIL_COUNT=0
 # ── Logging ──────────────────────────────────────────────────
 
 log()  { echo -e "${CYAN}[interlock-e2e]${NC} $*"; }
-ok()   { echo -e "${GREEN}  ✓${NC} $*"; PASS_COUNT=$((PASS_COUNT + 1)); }
-fail() { echo -e "${RED}  ✗${NC} $*"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
-warn() { echo -e "${YELLOW}  ⚠${NC} $*"; }
+ok()   { echo -e "${GREEN}  PASS${NC} $*"; PASS_COUNT=$((PASS_COUNT + 1)); }
+fail() { echo -e "${RED}  FAIL${NC} $*"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
+warn() { echo -e "${YELLOW}  WARN${NC} $*"; }
 
 # ── DynamoDB Helpers ─────────────────────────────────────────
 
@@ -813,10 +813,11 @@ do_teardown() {
         --role-name "$TEST_EVALUATOR_ROLE" \
         --no-cli-pager 2>/dev/null || true
 
-    log "Cleaning up results..."
-    rm -rf "$RESULTS_DIR"
+    log "Garbage-collecting unused CDK assets..."
+    (cd "$CDK_DIR" && cdk gc --unstable=gc 2>/dev/null) || warn "cdk gc not available (CDK >= 2.160 required)"
 
     log "Teardown complete."
+    log "Results preserved in: $RESULTS_DIR/"
 }
 
 # ── Main ─────────────────────────────────────────────────────

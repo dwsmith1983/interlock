@@ -1,0 +1,11 @@
+#!/bin/bash
+# check-upstream evaluator: reads sensor:upstream from Redis,
+# PASS if value is "true".
+cat > /dev/null
+
+VALUE=$(redis-cli -h redis GET sensor:upstream 2>/dev/null)
+if [ "$VALUE" = "true" ]; then
+    echo '{"status":"PASS","value":{"upstream":true},"reason":"upstream complete"}'
+else
+    echo "{\"status\":\"FAIL\",\"value\":{\"upstream\":false},\"reason\":\"upstream not complete (got: ${VALUE})\"}"
+fi

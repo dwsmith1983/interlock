@@ -1,0 +1,17 @@
+#!/bin/bash
+# check-record-count evaluator: reads sensor:record-count from Redis,
+# compares against threshold from config (stdin JSON).
+CONFIG=$(cat)
+THRESHOLD=$(echo "$CONFIG" | jq -r '.config.threshold // 1000')
+
+COUNT=$(redis-cli -h redis GET sensor:record-count 2>/dev/null)
+if [ -z "$COUNT" ] || [ "$COUNT" = "(nil)" ]; then
+    echo '{"status":"FAIL","value":{"count":null},"reason":"sensor:record-count not set"}'
+    exit 0
+fi
+
+if [ "$COUNT" -ge "$THRESHOLD" ] 2>/dev/null; then
+    echo "{\"status\":\"PASS\",\"value\":{\"count\":$COUNT,\"threshold\":$THRESHOLD},\"reason\":\"count ${COUNT} >= threshold ${THRESHOLD}\"}"
+else
+    echo "{\"status\":\"FAIL\",\"value\":{\"count\":$COUNT,\"threshold\":$THRESHOLD},\"reason\":\"count ${COUNT} < threshold ${THRESHOLD}\"}"
+fi

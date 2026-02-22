@@ -162,4 +162,5 @@ Destroys all AWS resources:
 1. CDK stack (DynamoDB table, Lambdas, Step Function, SNS topic)
 2. Test-evaluator Lambda + Function URL
 3. Test-evaluator IAM role + policies
-4. Local results directory
+
+Results are preserved in `demo/aws/e2e-results/` for review after teardown. Delete manually with `rm -rf demo/aws/e2e-results/`.

@@ -29,9 +29,9 @@ services:
   airflow:
     image: apache/airflow:2.10.4-python3.11
     command: >
-      bash -c 'airflow db init
-      && airflow users create --role Admin --username admin --password admin --firstname Admin --lastname User --email admin@example.com || true
-      && airflow scheduler &
+      bash -c 'airflow db migrate || true;
+      airflow users create --role Admin --username admin --password admin --firstname Admin --lastname User --email admin@example.com || true;
+      airflow scheduler &
       exec airflow webserver'
     ports:
       - "8080:8080"
@@ -51,7 +51,7 @@ services:
   # ── Interlock server + watcher ───────────────────────────
   interlock:
     build:
-      context: ..
+      context: ../..
       dockerfile: demo/local/Dockerfile
     ports:
       - "3000:3000"

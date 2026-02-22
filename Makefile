@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-integration clean lint fmt vet build-lambda cdk-synth cdk-diff cdk-deploy cdk-test e2e-test e2e-test-teardown
+.PHONY: build test test-unit test-integration clean lint fmt vet build-lambda cdk-synth cdk-diff cdk-deploy cdk-test e2e-test e2e-test-teardown local-e2e-test local-e2e-test-teardown
 
 BINARY := interlock
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -61,5 +61,11 @@ e2e-test:
 
 e2e-test-teardown:
 	bash demo/aws/e2e-test.sh teardown
+
+local-e2e-test:
+	bash demo/local/e2e-test.sh run
+
+local-e2e-test-teardown:
+	bash demo/local/e2e-test.sh teardown
 
 .DEFAULT_GOAL := build

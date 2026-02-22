@@ -1,0 +1,23 @@
+name: batch-ingestion
+requiredTraits:
+  - type: source-freshness
+    description: "Source data is recent enough"
+    defaultConfig:
+      maxLagSeconds: 300
+    defaultTtl: 300
+    defaultTimeout: 30
+  - type: upstream-dependency
+    description: "Upstream pipelines completed"
+    defaultTtl: 600
+    defaultTimeout: 60
+  - type: resource-availability
+    description: "Resources available"
+    defaultTtl: 120
+    defaultTimeout: 10
+optionalTraits:
+  - type: schema-contract
+    description: "Schema compatibility verified"
+  - type: data-quality-sample
+    description: "Sample data quality check"
+readinessRule:
+  type: all-required-pass

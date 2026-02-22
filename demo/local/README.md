@@ -98,6 +98,65 @@ docker compose logs -f interlock
 docker compose logs -f seed
 ```
 
+## E2E Tests
+
+Automated end-to-end test suite that validates the full Interlock lifecycle using the local Docker stack.
+
+### Running
+
+```bash
+# From repo root
+make local-e2e-test
+
+# Or directly
+./demo/local/e2e-test.sh run
+```
+
+### Teardown
+
+```bash
+make local-e2e-test-teardown
+
+# Or directly
+./demo/local/e2e-test.sh teardown
+```
+
+Results are preserved in `demo/local/e2e-results/` after teardown. Delete manually with `rm -rf demo/local/e2e-results/`.
+
+```
+e2e-results/
+├── scenario-1-round-1.json        # Progressive: all fail
+├── scenario-1-round-2.json        # Progressive: partial pass (1/3)
+├── scenario-1-round-3-eval.json   # Progressive: all pass (READY)
+├── scenario-1-round-3-complete.json # Progressive: run completed
+├── scenario-2-round-1.json        # Quality drop
+├── scenario-2-round-2-eval.json   # Quality restored (READY)
+├── scenario-2-round-2-complete.json # Recovery run completed
+├── scenario-3-result.json         # Dedup (no new run)
+├── scenario-4-result.json         # Excluded day
+├── scenario-5-result.json         # Pipeline not found
+└── scenario-6-result.json         # Watcher-driven completion
+```
+
+### Scenarios
+
+| # | Scenario | What It Tests |
+|---|----------|---------------|
+| 1 | Progressive Readiness | Sensors fail → partial pass → all pass → watcher triggers → complete via callback |
+| 2 | Re-run After Quality Drop | Reset sensor below threshold → NOT_READY → restore → re-trigger → complete |
+| 3 | Already Completed (Dedup) | Watcher skips pipeline when RunLog shows COMPLETED for today |
+| 4 | Excluded Day | Pipeline with today's weekday excluded — watcher skips entirely |
+| 5 | Pipeline Not Found | Evaluate nonexistent pipeline — returns error |
+| 6 | Watcher-Driven Evaluation | Register pipeline with passing sensors, watcher auto-triggers and runs to completion |
+
+### Evaluators
+
+The E2E tests use three sensor-backed evaluators that read from Redis:
+
+- `check-freshness` — compares `sensor:freshness` against `maxLagSeconds`
+- `check-record-count` — compares `sensor:record-count` against `threshold`
+- `check-upstream` — checks if `sensor:upstream` is `"true"`
+
 ## Notes
 
 - RunLog tracking prevents re-triggering completed pipelines on the same day. Each scenario executes once; the dashboard shows the final state.

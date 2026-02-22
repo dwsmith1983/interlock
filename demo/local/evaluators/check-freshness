@@ -1,0 +1,17 @@
+#!/bin/bash
+# check-freshness evaluator: reads sensor:freshness from Redis,
+# compares against maxLagSeconds from config (stdin JSON).
+CONFIG=$(cat)
+MAX_LAG=$(echo "$CONFIG" | jq -r '.config.maxLagSeconds // 300')
+
+LAG=$(redis-cli -h redis GET sensor:freshness 2>/dev/null)
+if [ -z "$LAG" ] || [ "$LAG" = "(nil)" ]; then
+    echo '{"status":"FAIL","value":{"lag":null},"reason":"sensor:freshness not set"}'
+    exit 0
+fi
+
+if [ "$LAG" -le "$MAX_LAG" ] 2>/dev/null; then
+    echo "{\"status\":\"PASS\",\"value\":{\"lag\":$LAG,\"maxLagSeconds\":$MAX_LAG},\"reason\":\"lag ${LAG}s <= threshold ${MAX_LAG}s\"}"
+else
+    echo "{\"status\":\"FAIL\",\"value\":{\"lag\":$LAG,\"maxLagSeconds\":$MAX_LAG},\"reason\":\"lag ${LAG}s > threshold ${MAX_LAG}s\"}"
+fi
