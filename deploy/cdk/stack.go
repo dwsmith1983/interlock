@@ -102,7 +102,7 @@ func NewInterlockStack(scope constructs.Construct, id string, cfg StackConfig) a
 		Architecture: awslambda.Architecture_ARM_64(),
 		MemorySize:   memorySize,
 		Timeout:      timeout,
-		Environment: &map[string]*string{
+		Environment:  &map[string]*string{
 			// STATE_MACHINE_ARN set after SFN creation
 		},
 		LogRetention: logRetention,

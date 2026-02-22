@@ -303,8 +303,8 @@ func checkEvaluationSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 
 	if pipeline.SLA == nil || pipeline.SLA.EvaluationDeadline == "" {
 		return intlambda.OrchestratorResponse{
-			Action: req.Action,
-			Result: "proceed",
+			Action:  req.Action,
+			Result:  "proceed",
 			Payload: map[string]interface{}{"breached": false},
 		}, nil
 	}

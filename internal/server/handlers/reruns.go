@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/dwsmith1983/interlock/internal/lifecycle"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/go-chi/chi/v5"
 )
 
 // RequestRerun creates a rerun record and triggers the pipeline if ready.

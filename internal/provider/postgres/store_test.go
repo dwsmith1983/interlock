@@ -98,14 +98,14 @@ func TestUpsertRunLog_Idempotent(t *testing.T) {
 
 	now := time.Now().Truncate(time.Microsecond)
 	entry := types.RunLogEntry{
-		PipelineID:    "test-pipe",
-		Date:          "2025-01-15",
-		Status:        types.RunFailed,
-		AttemptNumber: 1,
-		RunID:         "run-1",
+		PipelineID:     "test-pipe",
+		Date:           "2025-01-15",
+		Status:         types.RunFailed,
+		AttemptNumber:  1,
+		RunID:          "run-1",
 		FailureMessage: "connection refused",
-		StartedAt:     now,
-		UpdatedAt:     now,
+		StartedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	require.NoError(t, store.UpsertRunLog(ctx, entry))

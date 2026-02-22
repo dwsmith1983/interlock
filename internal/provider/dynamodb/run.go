@@ -151,7 +151,7 @@ func (p *DynamoDBProvider) CompareAndSwapRunState(ctx context.Context, runID str
 			"PK": &ddbtypes.AttributeValueMemberS{Value: runPK(runID)},
 			"SK": &ddbtypes.AttributeValueMemberS{Value: runTruthSK(runID)},
 		},
-		UpdateExpression: aws.String("SET #data = :data, #version = :newVersion, #ttl = :ttl"),
+		UpdateExpression:    aws.String("SET #data = :data, #version = :newVersion, #ttl = :ttl"),
 		ConditionExpression: aws.String("#version = :expectedVersion"),
 		ExpressionAttributeNames: map[string]string{
 			"#data":    "data",

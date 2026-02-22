@@ -15,10 +15,10 @@ import (
 
 // Redis storage defaults.
 const (
-	defaultReadinessTTL    = 5 * time.Minute
-	defaultRetentionTTL    = 7 * 24 * time.Hour // 7 days
-	defaultRunIndexLimit   = 100
-	defaultEventStreamMax  = 10000
+	defaultReadinessTTL   = 5 * time.Minute
+	defaultRetentionTTL   = 7 * 24 * time.Hour // 7 days
+	defaultRunIndexLimit  = 100
+	defaultEventStreamMax = 10000
 )
 
 // RedisProvider implements the Provider interface backed by Redis/Valkey.

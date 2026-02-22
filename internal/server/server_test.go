@@ -564,13 +564,13 @@ func TestPipelineNameValidation(t *testing.T) {
 		name string
 		code int
 	}{
-		{`{"name":"a","archetype":"batch-ingestion"}`, http.StatusBadRequest},            // too short (1 char)
+		{`{"name":"a","archetype":"batch-ingestion"}`, http.StatusBadRequest},             // too short (1 char)
 		{`{"name":"ab","archetype":"batch-ingestion"}`, http.StatusCreated},               // minimum valid (2 chars)
-		{`{"name":"UPPER","archetype":"batch-ingestion"}`, http.StatusBadRequest},          // uppercase
-		{`{"name":"has space","archetype":"batch-ingestion"}`, http.StatusBadRequest},      // space
-		{`{"name":"my.pipeline-v2","archetype":"batch-ingestion"}`, http.StatusCreated},    // dots and dashes
-		{`{"name":"../../etc","archetype":"batch-ingestion"}`, http.StatusBadRequest},      // path traversal
-		{`{"name":"key:injection","archetype":"batch-ingestion"}`, http.StatusBadRequest},  // colon
+		{`{"name":"UPPER","archetype":"batch-ingestion"}`, http.StatusBadRequest},         // uppercase
+		{`{"name":"has space","archetype":"batch-ingestion"}`, http.StatusBadRequest},     // space
+		{`{"name":"my.pipeline-v2","archetype":"batch-ingestion"}`, http.StatusCreated},   // dots and dashes
+		{`{"name":"../../etc","archetype":"batch-ingestion"}`, http.StatusBadRequest},     // path traversal
+		{`{"name":"key:injection","archetype":"batch-ingestion"}`, http.StatusBadRequest}, // colon
 	}
 
 	for _, tt := range tests {

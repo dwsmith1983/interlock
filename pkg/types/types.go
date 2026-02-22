@@ -28,9 +28,9 @@ type TraitStatus string
 
 // TraitStatus values enumerate the possible trait evaluation outcomes.
 const (
-	TraitPass    TraitStatus = "PASS"
-	TraitFail    TraitStatus = "FAIL"
-	TraitStale   TraitStatus = "STALE"
+	TraitPass  TraitStatus = "PASS"
+	TraitFail  TraitStatus = "FAIL"
+	TraitStale TraitStatus = "STALE"
 )
 
 // ReadinessStatus represents whether a pipeline is ready to execute.
@@ -141,13 +141,13 @@ type TraitConfig struct {
 
 // TriggerConfig defines how to trigger a pipeline.
 type TriggerConfig struct {
-	Type         TriggerType       `yaml:"type" json:"type"`
-	Method       string            `yaml:"method,omitempty" json:"method,omitempty"`
-	URL          string            `yaml:"url,omitempty" json:"url,omitempty"`
-	Headers      map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
-	Body         string            `yaml:"body,omitempty" json:"body,omitempty"`
-	Command      string            `yaml:"command,omitempty" json:"command,omitempty"`
-	Timeout      int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Type            TriggerType       `yaml:"type" json:"type"`
+	Method          string            `yaml:"method,omitempty" json:"method,omitempty"`
+	URL             string            `yaml:"url,omitempty" json:"url,omitempty"`
+	Headers         map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Body            string            `yaml:"body,omitempty" json:"body,omitempty"`
+	Command         string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Timeout         int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	DagID           string            `yaml:"dagID,omitempty" json:"dagID,omitempty"`
 	PollInterval    string            `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty"`
 	JobName         string            `yaml:"jobName,omitempty" json:"jobName,omitempty"`
@@ -157,7 +157,6 @@ type TriggerConfig struct {
 	StateMachineARN string            `yaml:"stateMachineArn,omitempty" json:"stateMachineArn,omitempty"`
 	Arguments       map[string]string `yaml:"arguments,omitempty" json:"arguments,omitempty"`
 }
-
 
 // RetryPolicy configures automatic retry behavior.
 type RetryPolicy struct {
@@ -188,8 +187,8 @@ type MonitoringConfig struct {
 
 // PipelineWatchConfig overrides watcher settings per pipeline.
 type PipelineWatchConfig struct {
-	Interval   string           `yaml:"interval,omitempty" json:"interval,omitempty"`
-	Enabled    *bool            `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Interval   string            `yaml:"interval,omitempty" json:"interval,omitempty"`
+	Enabled    *bool             `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Monitoring *MonitoringConfig `yaml:"monitoring,omitempty" json:"monitoring,omitempty"`
 }
 
@@ -300,22 +299,22 @@ type EventKind string
 
 // EventKind values enumerate the categories of recorded events.
 const (
-	EventTraitEvaluated    EventKind = "TRAIT_EVALUATED"
-	EventReadinessChecked  EventKind = "READINESS_CHECKED"
-	EventRunStateChanged   EventKind = "RUN_STATE_CHANGED"
-	EventTriggerFired      EventKind = "TRIGGER_FIRED"
-	EventTriggerFailed     EventKind = "TRIGGER_FAILED"
-	EventCallbackReceived  EventKind = "CALLBACK_RECEIVED"
-	EventRetryScheduled    EventKind = "RETRY_SCHEDULED"
-	EventRetryExhausted    EventKind = "RETRY_EXHAUSTED"
-	EventSLABreached       EventKind = "SLA_BREACHED"
-	EventWatcherEvaluation EventKind = "WATCHER_EVALUATION"
-	EventTraitPushed          EventKind = "TRAIT_PUSHED"
-	EventRerunRequested       EventKind = "RERUN_REQUESTED"
-	EventRerunCompleted       EventKind = "RERUN_COMPLETED"
-	EventMonitoringStarted    EventKind = "MONITORING_STARTED"
-	EventMonitoringDrift      EventKind = "MONITORING_DRIFT_DETECTED"
-	EventMonitoringCompleted  EventKind = "MONITORING_COMPLETED"
+	EventTraitEvaluated      EventKind = "TRAIT_EVALUATED"
+	EventReadinessChecked    EventKind = "READINESS_CHECKED"
+	EventRunStateChanged     EventKind = "RUN_STATE_CHANGED"
+	EventTriggerFired        EventKind = "TRIGGER_FIRED"
+	EventTriggerFailed       EventKind = "TRIGGER_FAILED"
+	EventCallbackReceived    EventKind = "CALLBACK_RECEIVED"
+	EventRetryScheduled      EventKind = "RETRY_SCHEDULED"
+	EventRetryExhausted      EventKind = "RETRY_EXHAUSTED"
+	EventSLABreached         EventKind = "SLA_BREACHED"
+	EventWatcherEvaluation   EventKind = "WATCHER_EVALUATION"
+	EventTraitPushed         EventKind = "TRAIT_PUSHED"
+	EventRerunRequested      EventKind = "RERUN_REQUESTED"
+	EventRerunCompleted      EventKind = "RERUN_COMPLETED"
+	EventMonitoringStarted   EventKind = "MONITORING_STARTED"
+	EventMonitoringDrift     EventKind = "MONITORING_DRIFT_DETECTED"
+	EventMonitoringCompleted EventKind = "MONITORING_COMPLETED"
 )
 
 // Event is an append-only audit log entry recording what happened and when.

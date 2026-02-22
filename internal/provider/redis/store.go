@@ -24,10 +24,10 @@ func (p *RedisProvider) runKeyTTL(status types.RunStatus) time.Duration {
 
 // SCAN batch size and sorted-set trim limits for Redis indexes.
 const (
-	scanBatchSize          = 100
-	defaultRunLogIndexMax  = 100
-	defaultRerunIndexMax   = 100
-	defaultRerunGlobalMax  = 500
+	scanBatchSize         = 100
+	defaultRunLogIndexMax = 100
+	defaultRerunIndexMax  = 100
+	defaultRerunGlobalMax = 500
 )
 
 func (p *RedisProvider) pipelineKey(id string) string {

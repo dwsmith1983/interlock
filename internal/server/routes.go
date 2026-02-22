@@ -1,8 +1,8 @@
 package server
 
 import (
-	"github.com/go-chi/chi/v5"
 	"github.com/dwsmith1983/interlock/internal/server/handlers"
+	"github.com/go-chi/chi/v5"
 )
 
 func (s *Server) registerRoutes(r chi.Router) {
