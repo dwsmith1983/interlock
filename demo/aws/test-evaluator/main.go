@@ -40,7 +40,7 @@ func init() {
 	ddbClient = dynamodb.NewFromConfig(cfg)
 }
 
-func handler(ctx context.Context, req events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
+func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	path := req.RawPath
 	logger.Info("request", "method", req.RequestContext.HTTP.Method, "path", path)
 
@@ -63,63 +63,55 @@ func handler(ctx context.Context, req events.LambdaFunctionURLRequest) (events.L
 // handleFreshness checks if data lag is within acceptable bounds.
 // Sensor: SENSOR#freshness → {"lag": <seconds>}
 // Config: {"maxLagSeconds": <threshold>}
-func handleFreshness(ctx context.Context, req events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
+func handleFreshness(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	sensor, err := getSensor(ctx, "freshness")
 	if err != nil {
 		return evalResponse("FAIL", map[string]any{"error": err.Error()})
 	}
 
-	var cfg struct {
-		MaxLagSeconds float64 `json:"maxLagSeconds"`
-	}
-	if err := json.Unmarshal([]byte(req.Body), &cfg); err != nil {
-		return evalResponse("FAIL", map[string]any{"error": "invalid config: " + err.Error()})
-	}
+	cfg := extractConfig(req.Body)
+	maxLag, _ := cfg["maxLagSeconds"].(float64)
 
 	lag, _ := sensor["lag"].(float64)
 	status := "FAIL"
-	if lag <= cfg.MaxLagSeconds {
+	if maxLag > 0 && lag <= maxLag {
 		status = "PASS"
 	}
 
 	return evalResponse(status, map[string]any{
 		"lagSeconds": lag,
-		"threshold":  cfg.MaxLagSeconds,
+		"threshold":  maxLag,
 	})
 }
 
 // handleRecordCount checks if record count meets minimum threshold.
 // Sensor: SENSOR#record-count → {"count": <n>}
 // Config: {"threshold": <min>}
-func handleRecordCount(ctx context.Context, req events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
+func handleRecordCount(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	sensor, err := getSensor(ctx, "record-count")
 	if err != nil {
 		return evalResponse("FAIL", map[string]any{"error": err.Error()})
 	}
 
-	var cfg struct {
-		Threshold float64 `json:"threshold"`
-	}
-	if err := json.Unmarshal([]byte(req.Body), &cfg); err != nil {
-		return evalResponse("FAIL", map[string]any{"error": "invalid config: " + err.Error()})
-	}
+	cfg := extractConfig(req.Body)
+	threshold, _ := cfg["threshold"].(float64)
 
 	count, _ := sensor["count"].(float64)
 	status := "FAIL"
-	if count >= cfg.Threshold {
+	if count >= threshold {
 		status = "PASS"
 	}
 
 	return evalResponse(status, map[string]any{
 		"count":     count,
-		"threshold": cfg.Threshold,
+		"threshold": threshold,
 	})
 }
 
 // handleUpstreamCheck checks if upstream pipeline is complete.
 // Sensor: SENSOR#upstream-check → {"complete": true/false}
 // Config: {"expectComplete": true}
-func handleUpstreamCheck(ctx context.Context, req events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
+func handleUpstreamCheck(ctx context.Context, _ events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	sensor, err := getSensor(ctx, "upstream-check")
 	if err != nil {
 		return evalResponse("FAIL", map[string]any{"error": err.Error()})
@@ -137,11 +129,23 @@ func handleUpstreamCheck(ctx context.Context, req events.LambdaFunctionURLReques
 }
 
 // handleTrigger accepts trigger requests and returns success.
-func handleTrigger(_ context.Context, _ events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
+func handleTrigger(_ context.Context, _ events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	return jsonResponse(http.StatusOK, map[string]string{
 		"status":  "success",
 		"message": "triggered",
 	})
+}
+
+// extractConfig parses the request body as EvaluatorInput and returns the config map.
+// EvaluatorInput format: {"pipelineId":"...","traitType":"...","config":{...}}
+func extractConfig(body string) map[string]any {
+	var input struct {
+		Config map[string]any `json:"config"`
+	}
+	if err := json.Unmarshal([]byte(body), &input); err != nil || input.Config == nil {
+		return map[string]any{}
+	}
+	return input.Config
 }
 
 // getSensor reads sensor state from DynamoDB.
@@ -187,16 +191,16 @@ func getSensor(ctx context.Context, name string) (map[string]any, error) {
 	return result, nil
 }
 
-func evalResponse(status string, value map[string]any) (events.LambdaFunctionURLResponse, error) {
+func evalResponse(status string, value map[string]any) (events.APIGatewayV2HTTPResponse, error) {
 	return jsonResponse(http.StatusOK, map[string]any{
 		"status": status,
 		"value":  value,
 	})
 }
 
-func jsonResponse(statusCode int, body any) (events.LambdaFunctionURLResponse, error) {
+func jsonResponse(statusCode int, body any) (events.APIGatewayV2HTTPResponse, error) {
 	data, _ := json.Marshal(body)
-	return events.LambdaFunctionURLResponse{
+	return events.APIGatewayV2HTTPResponse{
 		StatusCode: statusCode,
 		Headers:    map[string]string{"Content-Type": "application/json"},
 		Body:       string(data),

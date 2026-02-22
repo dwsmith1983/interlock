@@ -18,6 +18,7 @@ STACK_NAME="${STACK_NAME:-InterlockStack-e2e}"
 AWS_REGION="${AWS_REGION:-ap-southeast-1}"
 TEST_EVALUATOR_NAME="interlock-e2e-test-evaluator"
 TEST_EVALUATOR_ROLE="interlock-e2e-test-evaluator-role"
+TEST_API_NAME="interlock-e2e-evaluator-api"
 
 # Colors
 RED='\033[0;31m'
@@ -87,13 +88,20 @@ write_marker() {
 
 seed_runlog() {
     local pipeline="$1" date="$2" schedule="$3" status="$4" run_id="$5"
+    local data_json
+    data_json=$(jq -c -n \
+        --arg pid "$pipeline" \
+        --arg date "$date" \
+        --arg sid "$schedule" \
+        --arg status "$status" \
+        --arg rid "$run_id" \
+        '{pipelineID: $pid, date: $date, scheduleID: $sid, status: $status, runID: $rid}')
+    local escaped_data
+    escaped_data=$(echo "$data_json" | jq -Rs '.')
     put_item "{
         \"PK\": {\"S\": \"PIPELINE#$pipeline\"},
         \"SK\": {\"S\": \"RUNLOG#$date#$schedule\"},
-        \"status\": {\"S\": \"$status\"},
-        \"runID\": {\"S\": \"$run_id\"},
-        \"date\": {\"S\": \"$date\"},
-        \"scheduleID\": {\"S\": \"$schedule\"}
+        \"data\": {\"S\": $escaped_data}
     }"
     log "Seeded runlog: $pipeline / $date / $schedule → $status"
 }
@@ -181,9 +189,13 @@ verify_states() {
     local history
     history=$(get_history "$exec_arn")
 
+    # Extract all entered state names
+    local state_names
+    state_names=$(echo "$history" | jq -r '[.events[]? | .stateEnteredEventDetails?.name? // empty] | unique | .[]' 2>/dev/null)
+
     local all_found=true
     for state in "${expected_states[@]}"; do
-        if echo "$history" | grep -q "\"name\":\"$state\""; then
+        if echo "$state_names" | grep -qx "$state"; then
             ok "State entered: $state"
         else
             fail "State NOT entered: $state"
@@ -227,9 +239,9 @@ deploy_test_evaluator() {
     local build_dir="$SCRIPT_DIR/test-evaluator"
     local bootstrap="$build_dir/bootstrap"
 
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+    (cd "$build_dir" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
         go build -tags lambda.norpc -ldflags="-s -w" \
-        -o "$bootstrap" "$build_dir"
+        -o "$bootstrap" .)
 
     log "Creating IAM role for test-evaluator..."
     local trust_policy='{
@@ -277,7 +289,7 @@ deploy_test_evaluator() {
 
     log "Creating test-evaluator Lambda..."
     local zip_file
-    zip_file=$(mktemp /tmp/test-evaluator-XXXXXX.zip)
+    zip_file=$(mktemp /tmp/test-evaluator-XXXXXX).zip
     (cd "$build_dir" && zip -j "$zip_file" bootstrap)
 
     # Delete existing function if present
@@ -307,37 +319,50 @@ deploy_test_evaluator() {
         --region "$AWS_REGION" \
         --no-cli-pager
 
-    log "Creating Function URL..."
-    # Remove existing URL config if present
-    aws lambda delete-function-url-config \
+    log "Creating API Gateway HTTP API for test-evaluator..."
+    # Delete existing API if present
+    local existing_api_id
+    existing_api_id=$(aws apigatewayv2 get-apis \
+        --region "$AWS_REGION" \
+        --no-cli-pager \
+        --query "Items[?Name=='$TEST_API_NAME'].ApiId | [0]" \
+        --output text 2>/dev/null) || true
+    if [ -n "$existing_api_id" ] && [ "$existing_api_id" != "None" ]; then
+        aws apigatewayv2 delete-api \
+            --api-id "$existing_api_id" \
+            --region "$AWS_REGION" \
+            --no-cli-pager 2>/dev/null || true
+        sleep 2
+    fi
+
+    local lambda_arn
+    lambda_arn=$(aws lambda get-function \
         --function-name "$TEST_EVALUATOR_NAME" \
         --region "$AWS_REGION" \
-        --no-cli-pager 2>/dev/null || true
+        --query "Configuration.FunctionArn" \
+        --output text --no-cli-pager)
 
-    aws lambda create-function-url-config \
+    TEST_API_ID=$(aws apigatewayv2 create-api \
+        --name "$TEST_API_NAME" \
+        --protocol-type HTTP \
+        --target "$lambda_arn" \
+        --region "$AWS_REGION" \
+        --query "ApiId" \
+        --output text --no-cli-pager)
+
+    # Grant API Gateway permission to invoke the Lambda
+    local account_id
+    account_id=$(aws sts get-caller-identity --query "Account" --output text --no-cli-pager)
+    aws lambda add-permission \
         --function-name "$TEST_EVALUATOR_NAME" \
-        --auth-type NONE \
+        --statement-id "ApiGatewayInvoke" \
+        --action "lambda:InvokeFunction" \
+        --principal "apigateway.amazonaws.com" \
+        --source-arn "arn:aws:execute-api:$AWS_REGION:$account_id:$TEST_API_ID/*" \
         --region "$AWS_REGION" \
         --no-cli-pager >/dev/null
 
-    # Allow public invocation via Function URL
-    aws lambda add-permission \
-        --function-name "$TEST_EVALUATOR_NAME" \
-        --statement-id "FunctionURLAllowPublicAccess" \
-        --action "lambda:InvokeFunctionUrl" \
-        --principal "*" \
-        --function-url-auth-type NONE \
-        --region "$AWS_REGION" \
-        --no-cli-pager >/dev/null 2>&1 || true
-
-    EVALUATOR_BASE_URL=$(aws lambda get-function-url-config \
-        --function-name "$TEST_EVALUATOR_NAME" \
-        --region "$AWS_REGION" \
-        --query "FunctionUrl" \
-        --output text --no-cli-pager)
-
-    # Strip trailing slash
-    EVALUATOR_BASE_URL="${EVALUATOR_BASE_URL%/}"
+    EVALUATOR_BASE_URL="https://${TEST_API_ID}.execute-api.${AWS_REGION}.amazonaws.com"
     log "Evaluator URL: $EVALUATOR_BASE_URL"
 }
 
@@ -377,6 +402,18 @@ deploy_cdk_stack() {
 
 TODAY=$(date -u +%Y-%m-%d)
 TODAY_WEEKDAY=$(date -u +%A)
+RUN_ID=$(date -u +%H%M%S)
+
+cleanup_stale_data() {
+    log "Cleaning up stale e2e data..."
+    local pipelines=("e2e-progressive" "e2e-excluded")
+    for p in "${pipelines[@]}"; do
+        # Delete pipeline config
+        delete_item "PIPELINE#$p" "CONFIG" 2>/dev/null || true
+        # Delete today's runlog
+        delete_item "PIPELINE#$p" "RUNLOG#${TODAY}#daily" 2>/dev/null || true
+    done
+}
 
 seed_initial_data() {
     log "Seeding initial sensor data..."
@@ -429,7 +466,7 @@ run_scenario_1() {
     # Round 1: All traits fail
     log ""
     log "── Round 1: All traits fail ──"
-    local exec_name="e2e-s1r1-${TODAY}-daily"
+    local exec_name="e2e-s1r1-${TODAY}-${RUN_ID}-daily"
     local result
     result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-progressive\",\"scheduleID\":\"daily\"}")
 
@@ -462,7 +499,7 @@ run_scenario_1() {
     delete_runlog "e2e-progressive" "$TODAY" "daily"
     sleep 2
 
-    exec_name="e2e-s1r2-${TODAY}-daily"
+    exec_name="e2e-s1r2-${TODAY}-${RUN_ID}-daily"
     result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-progressive\",\"scheduleID\":\"daily\"}")
     exec_arn=$(echo "$result" | jq -r '.executionArn // empty')
     if [ -z "$exec_arn" ]; then
@@ -489,7 +526,7 @@ run_scenario_1() {
     delete_runlog "e2e-progressive" "$TODAY" "daily"
     sleep 2
 
-    exec_name="e2e-s1r3-${TODAY}-daily"
+    exec_name="e2e-s1r3-${TODAY}-${RUN_ID}-daily"
     result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-progressive\",\"scheduleID\":\"daily\"}")
     exec_arn=$(echo "$result" | jq -r '.executionArn // empty')
     if [ -z "$exec_arn" ]; then
@@ -531,7 +568,7 @@ run_scenario_2() {
     sleep 2
 
     log "── Round 1: Data quality dropped — count below threshold ──"
-    local exec_name="e2e-s2r1-${TODAY}-daily"
+    local exec_name="e2e-s2r1-${TODAY}-${RUN_ID}-daily"
     local result
     result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-progressive\",\"scheduleID\":\"daily\"}")
     local exec_arn
@@ -560,7 +597,7 @@ run_scenario_2() {
     delete_runlog "e2e-progressive" "$TODAY" "daily"
     sleep 2
 
-    exec_name="e2e-s2r2-${TODAY}-daily"
+    exec_name="e2e-s2r2-${TODAY}-${RUN_ID}-daily"
     result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-progressive\",\"scheduleID\":\"daily\"}")
     exec_arn=$(echo "$result" | jq -r '.executionArn // empty')
     if [ -z "$exec_arn" ]; then
@@ -589,7 +626,7 @@ run_scenario_3() {
     # Ensure a COMPLETED runlog exists from Scenario 2
     seed_runlog "e2e-progressive" "$TODAY" "daily" "COMPLETED" "e2e-dedup-run"
 
-    local exec_name="e2e-s3-${TODAY}-daily"
+    local exec_name="e2e-s3-${TODAY}-${RUN_ID}-daily"
     local result
     result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-progressive\",\"scheduleID\":\"daily\"}")
     local exec_arn
@@ -647,7 +684,7 @@ EXJSON
 )
     seed_pipeline "e2e-excluded" "$(echo "$pipeline_config" | jq -c '.' | jq -Rs '.')"
 
-    local exec_name="e2e-s4-${TODAY}-daily"
+    local exec_name="e2e-s4-${TODAY}-${RUN_ID}-daily"
     local result
     result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-excluded\",\"scheduleID\":\"daily\"}")
     local exec_arn
@@ -677,7 +714,7 @@ run_scenario_5() {
     log ""
     log "━━━ Scenario 5: Pipeline Not Found ━━━"
 
-    local exec_name="e2e-s5-${TODAY}-daily"
+    local exec_name="e2e-s5-${TODAY}-${RUN_ID}-daily"
     local result
     result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-nonexistent\",\"scheduleID\":\"daily\"}")
     local exec_arn
@@ -709,11 +746,12 @@ run_scenario_6() {
     log ""
     log "━━━ Scenario 6: Stream-Router Integration ━━━"
 
-    # Seed a simple pipeline for stream testing
+    # Seed a simple pipeline for stream testing (unique per run to avoid SFN dedup)
+    local stream_pipeline="e2e-stream-${RUN_ID}"
     local pipeline_config
     pipeline_config=$(cat <<STREAMJSON
 {
-    "name": "e2e-stream-test",
+    "name": "$stream_pipeline",
     "archetype": "batch-ingestion",
     "traits": {
         "source-freshness": {
@@ -731,17 +769,17 @@ run_scenario_6() {
 }
 STREAMJSON
 )
-    seed_pipeline "e2e-stream-test" "$(echo "$pipeline_config" | jq -c '.' | jq -Rs '.')"
+    seed_pipeline "$stream_pipeline" "$(echo "$pipeline_config" | jq -c '.' | jq -Rs '.')"
 
     log "Writing MARKER# record to trigger stream-router..."
-    write_marker "e2e-stream-test" "freshness#$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    write_marker "$stream_pipeline" "freshness#$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-    log "Waiting for DynamoDB Stream → stream-router → SFN execution (up to 30s)..."
+    log "Waiting for DynamoDB Stream → stream-router → SFN execution (up to 60s)..."
     local found=false
     local elapsed=0
     local exec_arn=""
 
-    while [ "$elapsed" -lt 30 ]; do
+    while [ "$elapsed" -lt 60 ]; do
         sleep 5
         elapsed=$((elapsed + 5))
 
@@ -754,7 +792,7 @@ STREAMJSON
             --output json 2>/dev/null)
 
         # Look for an execution matching our stream-test pipeline
-        exec_arn=$(echo "$executions" | jq -r '.executions[] | select(.name | contains("e2e-stream-test")) | .executionArn' | head -1)
+        exec_arn=$(echo "$executions" | jq -r ".executions[] | select(.name | contains(\"$stream_pipeline\")) | .executionArn" | head -1)
         if [ -n "$exec_arn" ]; then
             found=true
             break
@@ -777,7 +815,7 @@ STREAMJSON
             warn "Scenario 6: Execution status=$status"
         fi
     else
-        fail "Scenario 6: No SFN execution found for e2e-stream-test after 30s"
+        fail "Scenario 6: No SFN execution found for $stream_pipeline after 60s"
         log_result "scenario-6" "result" '{"error": "no execution found"}'
     fi
 }
@@ -790,11 +828,21 @@ do_teardown() {
     log "Destroying CDK stack: $STACK_NAME..."
     (cd "$CDK_DIR" && INTERLOCK_DESTROY_ON_DELETE=true INTERLOCK_TABLE_NAME="$TABLE_NAME" INTERLOCK_STACK_NAME="$STACK_NAME" cdk destroy "$STACK_NAME" --force) || warn "CDK destroy failed (stack may not exist)"
 
-    log "Deleting test-evaluator Lambda..."
-    aws lambda delete-function-url-config \
-        --function-name "$TEST_EVALUATOR_NAME" \
+    log "Deleting API Gateway..."
+    local api_id
+    api_id=$(aws apigatewayv2 get-apis \
         --region "$AWS_REGION" \
-        --no-cli-pager 2>/dev/null || true
+        --no-cli-pager \
+        --query "Items[?Name=='$TEST_API_NAME'].ApiId | [0]" \
+        --output text 2>/dev/null) || true
+    if [ -n "$api_id" ] && [ "$api_id" != "None" ]; then
+        aws apigatewayv2 delete-api \
+            --api-id "$api_id" \
+            --region "$AWS_REGION" \
+            --no-cli-pager 2>/dev/null || true
+    fi
+
+    log "Deleting test-evaluator Lambda..."
     aws lambda delete-function \
         --function-name "$TEST_EVALUATOR_NAME" \
         --region "$AWS_REGION" \
@@ -833,7 +881,8 @@ do_run() {
     deploy_test_evaluator
     deploy_cdk_stack
 
-    # Seed
+    # Clean stale data and seed
+    cleanup_stale_data
     seed_initial_data
 
     # Run scenarios

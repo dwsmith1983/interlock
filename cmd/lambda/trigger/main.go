@@ -73,6 +73,9 @@ func handleTrigger(ctx context.Context, d *intlambda.Deps, req intlambda.Trigger
 
 	// Execute the trigger
 	metadata, err := d.Runner.Execute(ctx, req.Trigger)
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
 	if err != nil {
 		// CAS to FAILED
 		failedState := triggeringState
@@ -111,20 +114,30 @@ func handleTrigger(ctx context.Context, d *intlambda.Deps, req intlambda.Trigger
 		}, nil
 	}
 
-	// CAS to RUNNING
-	runningState := triggeringState
-	runningState.Status = types.RunRunning
-	runningState.UpdatedAt = time.Now()
-	runningState.Version = 3
-	runningState.Metadata = metadata
-	_, _ = d.Provider.CompareAndSwapRunState(ctx, req.RunID, 2, runningState)
+	// Synchronous triggers (HTTP, Command) complete immediately — no polling needed.
+	// Async triggers (Airflow, Glue, EMR, etc.) need status polling.
+	isSynchronous := req.Trigger.Type == types.TriggerHTTP || req.Trigger.Type == types.TriggerCommand
+	targetStatus := types.RunRunning
+	responseStatus := "running"
+	if isSynchronous {
+		targetStatus = types.RunCompleted
+		responseStatus = "completed"
+	}
+
+	// CAS to target status
+	nextState := triggeringState
+	nextState.Status = targetStatus
+	nextState.UpdatedAt = time.Now()
+	nextState.Version = 3
+	nextState.Metadata = metadata
+	_, _ = d.Provider.CompareAndSwapRunState(ctx, req.RunID, 2, nextState)
 
 	// Update run log
 	_ = d.Provider.PutRunLog(ctx, types.RunLogEntry{
 		PipelineID: req.PipelineID,
 		Date:       now.UTC().Format("2006-01-02"),
 		ScheduleID: req.ScheduleID,
-		Status:     types.RunRunning,
+		Status:     targetStatus,
 		RunID:      req.RunID,
 		StartedAt:  now,
 		UpdatedAt:  time.Now(),
@@ -135,14 +148,14 @@ func handleTrigger(ctx context.Context, d *intlambda.Deps, req intlambda.Trigger
 		Kind:       types.EventTriggerFired,
 		PipelineID: req.PipelineID,
 		RunID:      req.RunID,
-		Status:     string(types.RunRunning),
+		Status:     string(targetStatus),
 		Details:    metadata,
 		Timestamp:  time.Now(),
 	})
 
 	return intlambda.TriggerResponse{
 		RunID:    req.RunID,
-		Status:   "running",
+		Status:   responseStatus,
 		Metadata: metadata,
 	}, nil
 }

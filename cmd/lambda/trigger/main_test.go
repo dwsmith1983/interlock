@@ -50,13 +50,13 @@ func TestHandleTrigger_CommandSuccess(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "running", resp.Status)
+	assert.Equal(t, "completed", resp.Status)
 	assert.Equal(t, "run-1", resp.RunID)
 
-	// Verify run state was created and transitioned
+	// Verify run state was created and transitioned to completed (synchronous trigger)
 	run, err := d.Provider.GetRunState(context.Background(), "run-1")
 	require.NoError(t, err)
-	assert.Equal(t, types.RunRunning, run.Status)
+	assert.Equal(t, types.RunCompleted, run.Status)
 }
 
 func TestHandleTrigger_CommandFailure(t *testing.T) {
@@ -94,7 +94,7 @@ func TestHandleTrigger_RunStateTransitions(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "running", resp.Status)
+	assert.Equal(t, "completed", resp.Status)
 
 	// Check run log was written
 	rl, err := d.Provider.GetRunLog(context.Background(), "test-pipe", resp.RunID, "daily")
