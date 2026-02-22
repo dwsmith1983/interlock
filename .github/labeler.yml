@@ -1,0 +1,82 @@
+ci:
+  - changed-files:
+      - any-glob-to-any-file: ".github/**"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "README.md"
+          - "LICENSE"
+          - "*.md"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*_test.go"
+          - "internal/testutil/**"
+          - "testdata/**"
+          - "internal/provider/providertest/**"
+
+e2e:
+  - changed-files:
+      - any-glob-to-any-file: "demo/**"
+
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/engine/**"
+          - "internal/watcher/**"
+          - "internal/schedule/**"
+          - "internal/lifecycle/**"
+
+provider:
+  - changed-files:
+      - any-glob-to-any-file: "internal/provider/**"
+
+triggers:
+  - changed-files:
+      - any-glob-to-any-file: "internal/trigger/**"
+
+alerts:
+  - changed-files:
+      - any-glob-to-any-file: "internal/alert/**"
+
+lambda:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "cmd/lambda/**"
+          - "internal/lambda/**"
+
+cli:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "cmd/interlock/**"
+          - "internal/commands/**"
+          - "internal/server/**"
+
+archetypes:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "archetypes/**"
+          - "internal/archetype/**"
+          - "internal/calendar/**"
+
+deploy:
+  - changed-files:
+      - any-glob-to-any-file: "deploy/**"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "go.mod"
+          - "go.sum"
+
+config:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".golangci.yml"
+          - "Makefile"
+
+types:
+  - changed-files:
+      - any-glob-to-any-file: "pkg/types/**"
