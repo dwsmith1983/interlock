@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/interlock-systems/interlock/internal/provider/providertest"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/provider/providertest"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 func setupTestProvider(t *testing.T) *RedisProvider {

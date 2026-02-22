@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,9 +12,10 @@ import (
 	"time"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
-	intlambda "github.com/interlock-systems/interlock/internal/lambda"
-	"github.com/interlock-systems/interlock/internal/schedule"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/archetype"
+	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/schedule"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 var (
@@ -38,6 +40,8 @@ func handleOrchestrator(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		return acquireLock(ctx, d, req)
 	case "checkRunLog":
 		return checkRunLog(ctx, d, req)
+	case "resolvePipeline":
+		return resolvePipeline(ctx, d, req)
 	case "checkReadiness":
 		return checkReadiness(ctx, d, req)
 	case "checkEvaluationSLA":
@@ -188,6 +192,68 @@ func checkRunLog(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestra
 			"attemptNumber": entry.AttemptNumber + 1,
 		},
 	}, nil
+}
+
+func resolvePipeline(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
+	pipeline, err := d.Provider.GetPipeline(ctx, req.PipelineID)
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("loading pipeline: %v", err)), nil
+	}
+
+	if pipeline.Archetype == "" {
+		return errorResponse(req.Action, "pipeline has no archetype configured"), nil
+	}
+
+	arch, err := d.ArchetypeReg.Get(pipeline.Archetype)
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("resolving archetype %q: %v", pipeline.Archetype, err)), nil
+	}
+
+	resolved := archetype.ResolveTraits(arch, pipeline)
+
+	traits := make([]interface{}, 0, len(resolved))
+	for _, rt := range resolved {
+		traits = append(traits, map[string]interface{}{
+			"pipelineID": req.PipelineID,
+			"traitType":  rt.Type,
+			"evaluator":  rt.Evaluator,
+			"config":     rt.Config,
+			"timeout":    rt.Timeout,
+			"ttl":        rt.TTL,
+			"required":   rt.Required,
+		})
+	}
+
+	runID, err := generateRunID()
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("generating run ID: %v", err)), nil
+	}
+
+	payload := map[string]interface{}{
+		"traits": traits,
+		"runID":  runID,
+	}
+	if pipeline.Trigger != nil {
+		payload["trigger"] = pipeline.Trigger
+	}
+
+	return intlambda.OrchestratorResponse{
+		Action:  req.Action,
+		Result:  "proceed",
+		Payload: payload,
+	}, nil
+}
+
+// generateRunID produces a UUID v4 using crypto/rand.
+func generateRunID() (string, error) {
+	var uuid [16]byte
+	if _, err := rand.Read(uuid[:]); err != nil {
+		return "", err
+	}
+	uuid[6] = (uuid[6] & 0x0f) | 0x40 // version 4
+	uuid[8] = (uuid[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
 }
 
 func checkReadiness(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {

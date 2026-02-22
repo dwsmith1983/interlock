@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/emrserverless"
 	emrtypes "github.com/aws/aws-sdk-go-v2/service/emrserverless/types"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // EMRServerlessAPI is the subset of the AWS EMR Serverless client used by the trigger package.

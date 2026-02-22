@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"testing"
 
-	intlambda "github.com/interlock-systems/interlock/internal/lambda"
-	"github.com/interlock-systems/interlock/internal/testutil"
-	"github.com/interlock-systems/interlock/internal/trigger"
-	"github.com/interlock-systems/interlock/pkg/types"
+	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/testutil"
+	"github.com/dwsmith1983/interlock/internal/trigger"
+	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

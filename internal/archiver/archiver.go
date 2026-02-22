@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/interlock-systems/interlock/internal/lifecycle"
-	"github.com/interlock-systems/interlock/internal/provider"
-	"github.com/interlock-systems/interlock/internal/provider/postgres"
+	"github.com/dwsmith1983/interlock/internal/lifecycle"
+	"github.com/dwsmith1983/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/internal/provider/postgres"
 )
 
 const (

@@ -3,7 +3,7 @@ package archetype
 import (
 	"testing"
 
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

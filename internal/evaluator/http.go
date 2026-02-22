@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // HTTPRunner executes evaluators over HTTP instead of subprocesses.

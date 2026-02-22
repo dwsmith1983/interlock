@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
-	intlambda "github.com/interlock-systems/interlock/internal/lambda"
-	"github.com/interlock-systems/interlock/internal/trigger"
+	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/trigger"
 )
 
 var (

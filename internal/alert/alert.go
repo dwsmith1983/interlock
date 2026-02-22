@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/interlock-systems/interlock/internal/metrics"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/metrics"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // Sink is an alert destination.

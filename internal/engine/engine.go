@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/interlock-systems/interlock/internal/archetype"
-	"github.com/interlock-systems/interlock/internal/metrics"
-	"github.com/interlock-systems/interlock/internal/provider"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/archetype"
+	"github.com/dwsmith1983/interlock/internal/metrics"
+	"github.com/dwsmith1983/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // ArchetypeResolver resolves archetype definitions by name.

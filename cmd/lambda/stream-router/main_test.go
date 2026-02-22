@@ -7,7 +7,7 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
-	intlambda "github.com/interlock-systems/interlock/internal/lambda"
+	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

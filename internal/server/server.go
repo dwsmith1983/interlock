@@ -11,9 +11,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/interlock-systems/interlock/internal/archetype"
-	"github.com/interlock-systems/interlock/internal/engine"
-	"github.com/interlock-systems/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/internal/archetype"
+	"github.com/dwsmith1983/interlock/internal/engine"
+	"github.com/dwsmith1983/interlock/internal/provider"
 )
 
 // HTTP server defaults.

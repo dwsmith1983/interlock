@@ -8,10 +8,10 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/interlock-systems/interlock/internal/config"
-	"github.com/interlock-systems/interlock/internal/lifecycle"
-	"github.com/interlock-systems/interlock/internal/trigger"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/config"
+	"github.com/dwsmith1983/interlock/internal/lifecycle"
+	"github.com/dwsmith1983/interlock/internal/trigger"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // NewRunCmd creates the run command.

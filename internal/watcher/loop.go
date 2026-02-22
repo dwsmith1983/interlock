@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/interlock-systems/interlock/internal/lifecycle"
-	"github.com/interlock-systems/interlock/internal/metrics"
-	"github.com/interlock-systems/interlock/internal/trigger"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/lifecycle"
+	"github.com/dwsmith1983/interlock/internal/metrics"
+	"github.com/dwsmith1983/interlock/internal/trigger"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // Watcher loop defaults.

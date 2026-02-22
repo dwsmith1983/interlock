@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/interlock-systems/interlock/internal/testutil"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/testutil"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // mockPGStore records calls for testing without a real Postgres.

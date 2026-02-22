@@ -13,16 +13,16 @@ import (
 
 	"log/slog"
 
-	"github.com/interlock-systems/interlock/internal/alert"
-	"github.com/interlock-systems/interlock/internal/archetype"
-	"github.com/interlock-systems/interlock/internal/archiver"
-	"github.com/interlock-systems/interlock/internal/calendar"
-	"github.com/interlock-systems/interlock/internal/config"
-	"github.com/interlock-systems/interlock/internal/engine"
-	"github.com/interlock-systems/interlock/internal/evaluator"
-	pgstore "github.com/interlock-systems/interlock/internal/provider/postgres"
-	"github.com/interlock-systems/interlock/internal/server"
-	"github.com/interlock-systems/interlock/internal/watcher"
+	"github.com/dwsmith1983/interlock/internal/alert"
+	"github.com/dwsmith1983/interlock/internal/archetype"
+	"github.com/dwsmith1983/interlock/internal/archiver"
+	"github.com/dwsmith1983/interlock/internal/calendar"
+	"github.com/dwsmith1983/interlock/internal/config"
+	"github.com/dwsmith1983/interlock/internal/engine"
+	"github.com/dwsmith1983/interlock/internal/evaluator"
+	pgstore "github.com/dwsmith1983/interlock/internal/provider/postgres"
+	"github.com/dwsmith1983/interlock/internal/server"
+	"github.com/dwsmith1983/interlock/internal/watcher"
 )
 
 // NewServeCmd creates the serve command.

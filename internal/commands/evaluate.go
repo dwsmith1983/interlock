@@ -8,13 +8,13 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/interlock-systems/interlock/internal/alert"
-	"github.com/interlock-systems/interlock/internal/archetype"
-	"github.com/interlock-systems/interlock/internal/config"
-	"github.com/interlock-systems/interlock/internal/engine"
-	"github.com/interlock-systems/interlock/internal/evaluator"
-	"github.com/interlock-systems/interlock/internal/provider"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/alert"
+	"github.com/dwsmith1983/interlock/internal/archetype"
+	"github.com/dwsmith1983/interlock/internal/config"
+	"github.com/dwsmith1983/interlock/internal/engine"
+	"github.com/dwsmith1983/interlock/internal/evaluator"
+	"github.com/dwsmith1983/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // NewEvaluateCmd creates the evaluate command.

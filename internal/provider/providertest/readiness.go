@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/interlock-systems/interlock/internal/provider"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // TestReadinessPutGet verifies get-when-not-set, put, and get with traits.

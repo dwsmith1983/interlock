@@ -10,9 +10,9 @@ import (
 	"time"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
-	intlambda "github.com/interlock-systems/interlock/internal/lambda"
-	trigpkg "github.com/interlock-systems/interlock/internal/trigger"
-	"github.com/interlock-systems/interlock/pkg/types"
+	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
+	trigpkg "github.com/dwsmith1983/interlock/internal/trigger"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 var (

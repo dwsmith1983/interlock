@@ -7,7 +7,7 @@ import (
 	"regexp"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // validPipelineName constrains pipeline names to lowercase alphanumeric with dots,

@@ -3,8 +3,8 @@ package lambda
 
 import (
 	"github.com/aws/aws-lambda-go/events"
-	"github.com/interlock-systems/interlock/internal/trigger"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/trigger"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // StreamEvent is the input to the stream-router Lambda.

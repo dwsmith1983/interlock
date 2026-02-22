@@ -8,9 +8,9 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
-	"github.com/interlock-systems/interlock/internal/config"
-	"github.com/interlock-systems/interlock/internal/provider"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/config"
+	"github.com/dwsmith1983/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // NewStatusCmd creates the status command.

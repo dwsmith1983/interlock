@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/interlock-systems/interlock/internal/commands"
+	"github.com/dwsmith1983/interlock/internal/commands"
 )
 
 var version = "dev"

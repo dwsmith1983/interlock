@@ -11,8 +11,8 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/interlock-systems/interlock/internal/config"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/config"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // NewAddPipelineCmd creates the add-pipeline command.

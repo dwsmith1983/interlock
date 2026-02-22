@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/interlock-systems/interlock/internal/provider"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // TestRerunCRUD verifies put, get, list, cross-pipeline list-all, and not-found.

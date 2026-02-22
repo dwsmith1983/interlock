@@ -9,8 +9,8 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	luascripts "github.com/interlock-systems/interlock/internal/provider/redis/lua"
-	"github.com/interlock-systems/interlock/pkg/types"
+	luascripts "github.com/dwsmith1983/interlock/internal/provider/redis/lua"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // Redis storage defaults.

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 const defaultTriggerTimeout = 30 * time.Second

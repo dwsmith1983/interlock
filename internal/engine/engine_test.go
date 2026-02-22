@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/interlock-systems/interlock/internal/archetype"
-	"github.com/interlock-systems/interlock/internal/evaluator"
-	"github.com/interlock-systems/interlock/internal/testutil"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/archetype"
+	"github.com/dwsmith1983/interlock/internal/evaluator"
+	"github.com/dwsmith1983/interlock/internal/testutil"
+	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

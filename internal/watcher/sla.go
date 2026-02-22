@@ -3,7 +3,7 @@ package watcher
 import (
 	"time"
 
-	"github.com/interlock-systems/interlock/internal/schedule"
+	"github.com/dwsmith1983/interlock/internal/schedule"
 )
 
 // ParseSLADeadline parses a deadline string into a time.Time for today.

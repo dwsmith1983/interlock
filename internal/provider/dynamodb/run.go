@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
-	"github.com/interlock-systems/interlock/internal/lifecycle"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/lifecycle"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // runKeyTTL returns the TTL for a run-related key based on status.

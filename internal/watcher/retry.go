@@ -3,8 +3,8 @@ package watcher
 import (
 	"time"
 
-	"github.com/interlock-systems/interlock/internal/schedule"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/schedule"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // DefaultRetryPolicy returns the default retry configuration.

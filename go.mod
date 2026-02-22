@@ -1,4 +1,4 @@
-module github.com/interlock-systems/interlock
+module github.com/dwsmith1983/interlock
 
 go 1.24.0
 

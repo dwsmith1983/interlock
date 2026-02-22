@@ -2,7 +2,7 @@ package server
 
 import (
 	"github.com/go-chi/chi/v5"
-	"github.com/interlock-systems/interlock/internal/server/handlers"
+	"github.com/dwsmith1983/interlock/internal/server/handlers"
 )
 
 func (s *Server) registerRoutes(r chi.Router) {

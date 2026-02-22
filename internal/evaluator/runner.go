@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // Runner executes evaluator subprocesses.

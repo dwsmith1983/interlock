@@ -4,7 +4,7 @@ package lifecycle
 import (
 	"fmt"
 
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // Transition table: from -> allowed tos

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/interlock-systems/interlock/internal/lifecycle"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/lifecycle"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // RequestRerun creates a rerun record and triggers the pipeline if ready.

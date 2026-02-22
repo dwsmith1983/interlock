@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/interlock-systems/interlock/internal/calendar"
-	"github.com/interlock-systems/interlock/internal/schedule"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/calendar"
+	"github.com/dwsmith1983/interlock/internal/schedule"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 func isScheduleActive(sched types.ScheduleConfig, now time.Time, logger *slog.Logger) bool {

@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	intlambda "github.com/interlock-systems/interlock/internal/lambda"
-	"github.com/interlock-systems/interlock/internal/testutil"
-	"github.com/interlock-systems/interlock/internal/trigger"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/archetype"
+	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/testutil"
+	"github.com/dwsmith1983/interlock/internal/trigger"
+	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,10 +19,11 @@ func testDeps(t *testing.T) *intlambda.Deps {
 	t.Helper()
 	prov := testutil.NewMockProvider()
 	return &intlambda.Deps{
-		Provider: prov,
-		Runner:   trigger.NewRunner(),
-		AlertFn:  func(a types.Alert) {},
-		Logger:   slog.Default(),
+		Provider:     prov,
+		Runner:       trigger.NewRunner(),
+		ArchetypeReg: archetype.NewRegistry(),
+		AlertFn:      func(a types.Alert) {},
+		Logger:       slog.Default(),
 	}
 }
 
@@ -358,4 +360,148 @@ func TestCheckDrift_DriftDetected(t *testing.T) {
 	assert.Equal(t, "proceed", resp.Result)
 	assert.Equal(t, true, resp.Payload["driftDetected"])
 	assert.Len(t, alerts, 1)
+}
+
+// --- resolvePipeline ---
+
+func TestResolvePipeline_Success(t *testing.T) {
+	d := testDeps(t)
+
+	// Register an archetype
+	require.NoError(t, d.ArchetypeReg.Register(&types.Archetype{
+		Name: "batch-etl",
+		RequiredTraits: []types.TraitDefinition{
+			{Type: "freshness", Description: "data freshness", DefaultTimeout: 30, DefaultTTL: 300},
+			{Type: "schema", Description: "schema check", DefaultTimeout: 15, DefaultTTL: 600},
+		},
+		OptionalTraits: []types.TraitDefinition{
+			{Type: "volume", Description: "row count check", DefaultTimeout: 10, DefaultTTL: 300},
+		},
+		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
+	}))
+
+	seedPipeline(t, d, types.PipelineConfig{
+		Name:      "pipe-a",
+		Archetype: "batch-etl",
+		Traits: map[string]types.TraitConfig{
+			"freshness": {Evaluator: "check-freshness"},
+			"schema":    {Evaluator: "check-schema"},
+		},
+		Trigger: &types.TriggerConfig{
+			Type: types.TriggerHTTP,
+			URL:  "https://example.com/trigger",
+		},
+	})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "resolvePipeline",
+		PipelineID: "pipe-a",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+
+	// Check traits
+	traits, ok := resp.Payload["traits"].([]interface{})
+	require.True(t, ok)
+	assert.Len(t, traits, 2) // 2 required (optional "volume" not opted in)
+
+	// Check runID is a UUID-like string
+	runID, ok := resp.Payload["runID"].(string)
+	require.True(t, ok)
+	assert.Len(t, runID, 36) // UUID format: 8-4-4-4-12
+
+	// Check trigger is present
+	assert.NotNil(t, resp.Payload["trigger"])
+}
+
+func TestResolvePipeline_WithOptionalTrait(t *testing.T) {
+	d := testDeps(t)
+
+	require.NoError(t, d.ArchetypeReg.Register(&types.Archetype{
+		Name: "batch-etl",
+		RequiredTraits: []types.TraitDefinition{
+			{Type: "freshness", Description: "data freshness"},
+		},
+		OptionalTraits: []types.TraitDefinition{
+			{Type: "volume", Description: "row count check"},
+		},
+		ReadinessRule: types.ReadinessRule{Type: types.AllRequiredPass},
+	}))
+
+	seedPipeline(t, d, types.PipelineConfig{
+		Name:      "pipe-a",
+		Archetype: "batch-etl",
+		Traits: map[string]types.TraitConfig{
+			"freshness": {Evaluator: "check-freshness"},
+			"volume":    {Evaluator: "check-volume"}, // opt in to optional trait
+		},
+	})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "resolvePipeline",
+		PipelineID: "pipe-a",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+
+	traits := resp.Payload["traits"].([]interface{})
+	assert.Len(t, traits, 2) // freshness + volume
+
+	// Verify trigger is absent when not configured
+	assert.Nil(t, resp.Payload["trigger"])
+}
+
+func TestResolvePipeline_PipelineNotFound(t *testing.T) {
+	d := testDeps(t)
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "resolvePipeline",
+		PipelineID: "nonexistent",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "error", resp.Result)
+}
+
+func TestResolvePipeline_NoArchetype(t *testing.T) {
+	d := testDeps(t)
+	seedPipeline(t, d, types.PipelineConfig{Name: "pipe-a"})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "resolvePipeline",
+		PipelineID: "pipe-a",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "error", resp.Result)
+}
+
+func TestResolvePipeline_UnknownArchetype(t *testing.T) {
+	d := testDeps(t)
+	seedPipeline(t, d, types.PipelineConfig{
+		Name:      "pipe-a",
+		Archetype: "nonexistent-archetype",
+	})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "resolvePipeline",
+		PipelineID: "pipe-a",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "error", resp.Result)
+}
+
+func TestGenerateRunID(t *testing.T) {
+	id, err := generateRunID()
+	require.NoError(t, err)
+	assert.Len(t, id, 36)
+	// UUID v4 format check: position 14 should be '4'
+	assert.Equal(t, byte('4'), id[14])
+
+	// Generate multiple and check uniqueness
+	ids := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		id, err := generateRunID()
+		require.NoError(t, err)
+		assert.False(t, ids[id], "duplicate run ID generated")
+		ids[id] = true
+	}
 }

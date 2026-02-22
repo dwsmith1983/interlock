@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/interlock-systems/interlock/internal/calendar"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/calendar"
+	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

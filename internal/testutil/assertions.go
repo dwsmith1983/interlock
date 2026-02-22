@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // WaitFor polls check every 10ms until it returns true or timeout is reached.

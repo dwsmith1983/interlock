@@ -1,0 +1,356 @@
+{
+  "Comment": "Interlock pipeline evaluation, trigger, and monitoring workflow",
+  "StartAt": "CheckExclusion",
+  "States": {
+    "CheckExclusion": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "checkExclusion",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID"
+      },
+      "ResultPath": "$.checkExclusion",
+      "Next": "IsExcluded"
+    },
+    "IsExcluded": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.checkExclusion.result",
+          "StringEquals": "proceed",
+          "Next": "AcquireLock"
+        }
+      ],
+      "Default": "End"
+    },
+    "AcquireLock": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "acquireLock",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID"
+      },
+      "ResultPath": "$.acquireLock",
+      "Next": "IsLockAcquired"
+    },
+    "IsLockAcquired": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.acquireLock.result",
+          "StringEquals": "proceed",
+          "Next": "CheckRunLog"
+        }
+      ],
+      "Default": "End"
+    },
+    "CheckRunLog": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "checkRunLog",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID"
+      },
+      "ResultPath": "$.checkRunLog",
+      "Next": "ShouldProceedAfterRunLog"
+    },
+    "ShouldProceedAfterRunLog": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.checkRunLog.result",
+          "StringEquals": "proceed",
+          "Next": "ResolvePipeline"
+        }
+      ],
+      "Default": "ReleaseLock"
+    },
+    "ResolvePipeline": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "resolvePipeline",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID"
+      },
+      "ResultPath": "$.resolvePipeline",
+      "Next": "IsResolved",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "ReleaseLock"
+        }
+      ]
+    },
+    "IsResolved": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.resolvePipeline.result",
+          "StringEquals": "proceed",
+          "Next": "EvaluateTraits"
+        }
+      ],
+      "Default": "ReleaseLock"
+    },
+    "EvaluateTraits": {
+      "Type": "Map",
+      "ItemsPath": "$.resolvePipeline.payload.traits",
+      "MaxConcurrency": 0,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "EvaluateSingleTrait",
+        "States": {
+          "EvaluateSingleTrait": {
+            "Type": "Task",
+            "Resource": "${EvaluatorFunctionArn}",
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.traitResults",
+      "Next": "CheckEvaluationSLA"
+    },
+    "CheckEvaluationSLA": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "checkEvaluationSLA",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID"
+      },
+      "ResultPath": "$.evaluationSLA",
+      "Next": "CheckReadiness"
+    },
+    "CheckReadiness": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "checkReadiness",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "traitResults.$": "$.traitResults"
+        }
+      },
+      "ResultPath": "$.checkReadiness",
+      "Next": "IsReady"
+    },
+    "IsReady": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.checkReadiness.result",
+          "StringEquals": "proceed",
+          "Next": "TriggerPipeline"
+        }
+      ],
+      "Default": "LogNotReady"
+    },
+    "LogNotReady": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "logResult",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "status": "PENDING",
+          "runID.$": "$.resolvePipeline.payload.runID",
+          "message": "not ready - blocking traits"
+        }
+      },
+      "ResultPath": "$.logNotReady",
+      "Next": "ReleaseLock"
+    },
+    "TriggerPipeline": {
+      "Type": "Task",
+      "Resource": "${TriggerFunctionArn}",
+      "Parameters": {
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "trigger.$": "$.resolvePipeline.payload.trigger",
+        "runID.$": "$.resolvePipeline.payload.runID"
+      },
+      "ResultPath": "$.triggerResult",
+      "Next": "IsTriggerSuccessful",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.triggerError",
+          "Next": "LogTriggerFailed"
+        }
+      ]
+    },
+    "IsTriggerSuccessful": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.triggerResult.status",
+          "StringEquals": "running",
+          "Next": "InitPollCounter"
+        },
+        {
+          "Variable": "$.triggerResult.status",
+          "StringEquals": "completed",
+          "Next": "CheckCompletionSLA"
+        }
+      ],
+      "Default": "LogTriggerFailed"
+    },
+    "LogTriggerFailed": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "logResult",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "status": "FAILED",
+          "runID.$": "$.resolvePipeline.payload.runID",
+          "message": "trigger failed"
+        }
+      },
+      "ResultPath": "$.logTriggerFailed",
+      "Next": "ReleaseLock"
+    },
+    "InitPollCounter": {
+      "Type": "Pass",
+      "Result": 0,
+      "ResultPath": "$.pollCount",
+      "Next": "WaitForRun"
+    },
+    "WaitForRun": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "PollRunStatus"
+    },
+    "PollRunStatus": {
+      "Type": "Task",
+      "Resource": "${RunCheckerFunctionArn}",
+      "Parameters": {
+        "pipelineID.$": "$.pipelineID",
+        "runID.$": "$.resolvePipeline.payload.runID",
+        "triggerType.$": "$.resolvePipeline.payload.trigger.type",
+        "metadata.$": "$.triggerResult.metadata"
+      },
+      "ResultPath": "$.pollResult",
+      "Next": "EvaluatePollResult"
+    },
+    "EvaluatePollResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.pollResult.state",
+          "StringEquals": "succeeded",
+          "Next": "CheckCompletionSLA"
+        },
+        {
+          "Variable": "$.pollResult.state",
+          "StringEquals": "failed",
+          "Next": "LogRunFailed"
+        }
+      ],
+      "Default": "IncrementPollCount"
+    },
+    "IncrementPollCount": {
+      "Type": "Pass",
+      "InputPath": "$.pollCount",
+      "ResultPath": "$.pollCount",
+      "Parameters": {
+        "count.$": "States.MathAdd($.pollCount, 1)"
+      },
+      "Next": "CheckPollLimit",
+      "Comment": "Increment poll counter"
+    },
+    "CheckPollLimit": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.pollCount.count",
+          "NumericLessThan": 120,
+          "Next": "WaitForRun"
+        }
+      ],
+      "Default": "LogTimeout"
+    },
+    "CheckCompletionSLA": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "checkCompletionSLA",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID"
+      },
+      "ResultPath": "$.completionSLA",
+      "Next": "LogCompleted"
+    },
+    "LogCompleted": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "logResult",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "status": "COMPLETED",
+          "runID.$": "$.resolvePipeline.payload.runID"
+        }
+      },
+      "ResultPath": "$.logCompleted",
+      "Next": "ReleaseLock"
+    },
+    "LogRunFailed": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "logResult",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "status": "FAILED",
+          "runID.$": "$.resolvePipeline.payload.runID",
+          "message.$": "$.pollResult.message"
+        }
+      },
+      "ResultPath": "$.logRunFailed",
+      "Next": "ReleaseLock"
+    },
+    "LogTimeout": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "logResult",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "status": "FAILED",
+          "runID.$": "$.resolvePipeline.payload.runID",
+          "message": "run polling timed out after 120 attempts"
+        }
+      },
+      "ResultPath": "$.logTimeout",
+      "Next": "ReleaseLock"
+    },
+    "ReleaseLock": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "releaseLock",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID"
+      },
+      "ResultPath": "$.releaseLock",
+      "Next": "End"
+    },
+    "End": {
+      "Type": "Succeed"
+    }
+  }
+}

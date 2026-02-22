@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // ExecuteAirflow triggers an Airflow DAG run and returns metadata with the dag_run_id.

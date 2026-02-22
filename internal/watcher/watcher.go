@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/interlock-systems/interlock/internal/calendar"
-	"github.com/interlock-systems/interlock/internal/engine"
-	"github.com/interlock-systems/interlock/internal/provider"
-	"github.com/interlock-systems/interlock/internal/trigger"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/calendar"
+	"github.com/dwsmith1983/interlock/internal/engine"
+	"github.com/dwsmith1983/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/internal/trigger"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // Watcher periodically evaluates pipelines and triggers them when ready.

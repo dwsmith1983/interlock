@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/interlock-systems/interlock/internal/archetype"
-	"github.com/interlock-systems/interlock/internal/engine"
-	"github.com/interlock-systems/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/internal/archetype"
+	"github.com/dwsmith1983/interlock/internal/engine"
+	"github.com/dwsmith1983/interlock/internal/provider"
 )
 
 // Handlers contains all HTTP handler dependencies.

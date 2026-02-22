@@ -10,8 +10,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
-	"github.com/interlock-systems/interlock/internal/provider/providertest"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/provider/providertest"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 func setupTestProvider(t *testing.T) *DynamoDBProvider {

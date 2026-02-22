@@ -3,7 +3,7 @@ package archetype
 import (
 	"fmt"
 
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // ValidateArchetype checks that an archetype definition is well-formed.

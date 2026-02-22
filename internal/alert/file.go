@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // FileSink appends alerts as JSON lines to a file.

@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/interlock-systems/interlock/internal/provider"
-	ddbprov "github.com/interlock-systems/interlock/internal/provider/dynamodb"
-	"github.com/interlock-systems/interlock/internal/provider/redis"
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/internal/provider"
+	ddbprov "github.com/dwsmith1983/interlock/internal/provider/dynamodb"
+	"github.com/dwsmith1983/interlock/internal/provider/redis"
+	"github.com/dwsmith1983/interlock/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 

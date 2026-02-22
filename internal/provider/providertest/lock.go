@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/interlock-systems/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/internal/provider"
 )
 
 // TestLocking verifies acquire, double-acquire, different-key, release, re-acquire.

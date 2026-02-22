@@ -6,7 +6,7 @@ package providertest
 import (
 	"testing"
 
-	"github.com/interlock-systems/interlock/internal/provider"
+	"github.com/dwsmith1983/interlock/internal/provider"
 )
 
 // RunAll runs the complete provider conformance suite as subtests.

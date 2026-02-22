@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/interlock-systems/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // ExecuteDatabricks submits a Databricks job run via the REST API.
