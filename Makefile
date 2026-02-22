@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-integration clean lint fmt vet
+.PHONY: build test test-unit test-integration clean lint fmt vet build-lambda cdk-synth cdk-diff cdk-deploy cdk-test
 
 BINARY := interlock
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -40,5 +40,20 @@ dist:
 		echo "Building $$output..."; \
 		GOOS=$$os GOARCH=$$arch go build $(LDFLAGS) -o $$output ./cmd/interlock; \
 	done
+
+build-lambda:
+	bash deploy/build.sh
+
+cdk-synth: build-lambda
+	cd deploy/cdk && cdk synth
+
+cdk-diff: build-lambda
+	cd deploy/cdk && cdk diff
+
+cdk-deploy: build-lambda
+	cd deploy/cdk && cdk deploy
+
+cdk-test:
+	cd deploy/cdk && go test -v ./...
 
 .DEFAULT_GOAL := build
