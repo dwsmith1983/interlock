@@ -15,8 +15,7 @@ linters:
       enabled-tags:
         - diagnostic
         - style
-      disabled-checks:
-        - hugeParam  # we pass structs by value intentionally sometimes
+      disabled-checks: []
 
 formatters:
   enable:

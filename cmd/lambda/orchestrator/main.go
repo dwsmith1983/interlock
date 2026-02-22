@@ -256,7 +256,7 @@ func generateRunID() (string, error) {
 		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
 }
 
-func checkReadiness(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
+func checkReadiness(_ context.Context, _ *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
 	// Trait results come via the Step Function payload
 	traitResults, _ := req.Payload["traitResults"].([]interface{})
 

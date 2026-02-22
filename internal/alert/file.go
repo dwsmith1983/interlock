@@ -18,7 +18,7 @@ type FileSink struct {
 // NewFileSink creates a new file alert sink.
 func NewFileSink(path string) (*FileSink, error) {
 	// Ensure the file is writable
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("opening alert file: %w", err)
 	}
@@ -35,7 +35,7 @@ func (s *FileSink) Send(alert types.Alert) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}

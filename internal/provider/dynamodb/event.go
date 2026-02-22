@@ -56,7 +56,7 @@ func (p *DynamoDBProvider) ListEvents(ctx context.Context, pipelineID string, li
 	events := make([]types.Event, 0, len(out.Items))
 	for i := len(out.Items) - 1; i >= 0; i-- {
 		item := out.Items[i]
-		ttlVal, _ := attributeInt(item, "ttl")
+		ttlVal, _ := attributeInt(item)
 		if isExpired(ttlVal) {
 			continue
 		}
@@ -78,7 +78,7 @@ func (p *DynamoDBProvider) ListEvents(ctx context.Context, pipelineID string, li
 // ReadEventsSince reads events forward from after sinceID (exclusive).
 // sinceID is the SK value from a previous EventRecord.StreamID.
 // Use "" or "0-0" to read from the beginning.
-func (p *DynamoDBProvider) ReadEventsSince(ctx context.Context, pipelineID string, sinceID string, count int64) ([]types.EventRecord, error) {
+func (p *DynamoDBProvider) ReadEventsSince(ctx context.Context, pipelineID, sinceID string, count int64) ([]types.EventRecord, error) {
 	if count <= 0 {
 		count = 100
 	}
@@ -109,7 +109,7 @@ func (p *DynamoDBProvider) ReadEventsSince(ctx context.Context, pipelineID strin
 
 	records := make([]types.EventRecord, 0, len(out.Items))
 	for _, item := range out.Items {
-		ttlVal, _ := attributeInt(item, "ttl")
+		ttlVal, _ := attributeInt(item)
 		if isExpired(ttlVal) {
 			continue
 		}

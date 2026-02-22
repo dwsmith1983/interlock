@@ -789,14 +789,12 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 	})
 
 	// Transition run to COMPLETED — monitoring duty done; rerun is a separate lifecycle
-	if ok, err := w.transitionRun(ctx, runTransition{
+	_, _ = w.transitionRun(ctx, runTransition{
 		RunID:           run.RunID,
 		ExpectedVersion: run.Version,
 		NewStatus:       types.RunCompleted,
 		UpdatedAt:       now,
-	}); err != nil || !ok {
-		// Already logged by transitionRun
-	}
+	})
 	w.updateRunLog(ctx, runLogUpdate{
 		PipelineID:     pipeline.Name,
 		Date:           today,

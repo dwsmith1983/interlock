@@ -229,8 +229,7 @@ func TestArchiver_StartStop(t *testing.T) {
 		logger:   slog.Default(),
 	}
 
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(ctx)
+	_, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	a.wg.Add(1)
 

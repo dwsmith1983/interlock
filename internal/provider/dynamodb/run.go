@@ -78,7 +78,7 @@ func (p *DynamoDBProvider) GetRunState(ctx context.Context, runID string) (*type
 		return nil, fmt.Errorf("run %q not found", runID)
 	}
 
-	ttlVal, _ := attributeInt(out.Item, "ttl")
+	ttlVal, _ := attributeInt(out.Item)
 	if isExpired(ttlVal) {
 		return nil, fmt.Errorf("run %q not found", runID)
 	}
@@ -116,7 +116,7 @@ func (p *DynamoDBProvider) ListRuns(ctx context.Context, pipelineID string, limi
 
 	var runs []types.RunState
 	for _, item := range out.Items {
-		ttlVal, _ := attributeInt(item, "ttl")
+		ttlVal, _ := attributeInt(item)
 		if isExpired(ttlVal) {
 			continue
 		}

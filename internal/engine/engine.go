@@ -207,7 +207,6 @@ func (e *Engine) CheckReadiness(ctx context.Context, pipelineID string) (*types.
 	for _, rt := range resolved {
 		existing, err := e.provider.GetTrait(ctx, pipelineID, rt.Type)
 		if err != nil || existing == nil {
-			// Missing = STALE
 			traitEvals = append(traitEvals, types.TraitEvaluation{
 				PipelineID:  pipelineID,
 				TraitType:   rt.Type,
