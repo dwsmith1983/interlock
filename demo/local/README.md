@@ -26,7 +26,7 @@ Full-stack demo with Airflow, Redis, and Grafana showing Interlock's STAMP-based
 ## Quick Start
 
 ```bash
-cd demo
+cd demo/local
 docker compose up --build
 ```
 

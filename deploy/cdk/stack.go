@@ -33,7 +33,7 @@ func NewInterlockStack(scope constructs.Construct, id string, cfg StackConfig) a
 		Billing:             awsdynamodb.Billing_OnDemand(nil),
 		DynamoStream:        awsdynamodb.StreamViewType_NEW_IMAGE,
 		TimeToLiveAttribute: jsii.String("ttl"),
-		RemovalPolicy:       awscdk.RemovalPolicy_RETAIN,
+		RemovalPolicy:       removalPolicy(cfg.DestroyOnDelete),
 		GlobalSecondaryIndexes: &[]*awsdynamodb.GlobalSecondaryIndexPropsV2{
 			{
 				IndexName: jsii.String("GSI1"),
@@ -237,6 +237,13 @@ func loadASL(path string) string {
 		panic("failed to read ASL file: " + err.Error())
 	}
 	return string(data)
+}
+
+func removalPolicy(destroy bool) awscdk.RemovalPolicy {
+	if destroy {
+		return awscdk.RemovalPolicy_DESTROY
+	}
+	return awscdk.RemovalPolicy_RETAIN
 }
 
 func logRetentionDays(days float64) awslogs.RetentionDays {

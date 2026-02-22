@@ -1,5 +1,5 @@
 # ── Builder ──────────────────────────────────────────────
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -16,9 +16,9 @@ RUN apk add --no-cache bash
 COPY --from=builder /interlock /usr/local/bin/interlock
 
 # Demo configuration
-COPY demo/interlock.yaml   /app/interlock.yaml
-COPY demo/archetypes/      /app/archetypes/
-COPY demo/evaluators/      /app/evaluators/
+COPY demo/local/interlock.yaml   /app/interlock.yaml
+COPY demo/local/archetypes/      /app/archetypes/
+COPY demo/local/evaluators/      /app/evaluators/
 RUN mkdir -p /app/pipelines && chmod +x /app/evaluators/*
 
 ENV PATH="/app/evaluators:${PATH}"

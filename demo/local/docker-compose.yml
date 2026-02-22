@@ -52,7 +52,7 @@ services:
   interlock:
     build:
       context: ..
-      dockerfile: demo/Dockerfile
+      dockerfile: demo/local/Dockerfile
     ports:
       - "3000:3000"
     depends_on:

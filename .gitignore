@@ -37,4 +37,7 @@ Thumbs.db
 /build/
 /bin/
 deploy/dist/
-demo/airflow/dags/__pycache__/
+deploy/cdk/cdk
+deploy/cdk/cdk.out/
+demo/local/airflow/dags/__pycache__/
+demo/aws/e2e-results/

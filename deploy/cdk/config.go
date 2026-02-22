@@ -13,6 +13,9 @@ type StackConfig struct {
 	LogRetentionDays float64
 	ASLPath          string
 
+	// Set to true for testing — allows cdk destroy to delete the DynamoDB table
+	DestroyOnDelete bool
+
 	// Opt-in trigger permissions
 	EnableGlueTrigger          bool
 	EnableEMRTrigger           bool
