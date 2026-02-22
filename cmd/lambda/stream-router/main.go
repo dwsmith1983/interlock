@@ -80,8 +80,16 @@ func handleStreamEvent(ctx context.Context, client SFNAPI, smARN string, event i
 			continue
 		}
 
-		// Extract schedule from marker or default
+		// Extract schedule from NewImage attribute, defaulting to "daily"
 		scheduleID := "daily"
+		if record.Change.NewImage != nil {
+			if schedAttr, ok := record.Change.NewImage["scheduleID"]; ok {
+				if s := schedAttr.String(); s != "" {
+					scheduleID = s
+				}
+			}
+		}
+
 		markerParts := strings.SplitN(sk, "#", 3)
 		markerSource := ""
 		if len(markerParts) >= 2 {
