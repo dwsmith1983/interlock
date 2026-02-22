@@ -50,6 +50,11 @@ func (d *Dispatcher) Dispatch(alert types.Alert) {
 	}
 }
 
+// AddSink appends a sink to the dispatcher.
+func (d *Dispatcher) AddSink(s Sink) {
+	d.sinks = append(d.sinks, s)
+}
+
 // AlertFunc returns a function suitable for use as the engine's alert callback.
 func (d *Dispatcher) AlertFunc() func(types.Alert) {
 	return d.Dispatch
@@ -69,6 +74,8 @@ func newSink(cfg types.AlertConfig) (Sink, error) {
 			return nil, fmt.Errorf("file path required")
 		}
 		return NewFileSink(cfg.Path)
+	case types.AlertSNS:
+		return NewSNSSink(cfg.TopicARN)
 	default:
 		return nil, fmt.Errorf("unknown alert type %q", cfg.Type)
 	}

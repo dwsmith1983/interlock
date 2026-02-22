@@ -91,7 +91,7 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 		go func(idx int, trait archetype.ResolvedTrait) {
 			defer wg.Done()
 
-			te, err := e.evaluateTrait(ctx, pipelineID, trait)
+			te, err := e.EvaluateTrait(ctx, pipelineID, trait)
 			results[idx] = evalResult{trait: trait, eval: te, err: err}
 		}(i, rt)
 	}
@@ -243,7 +243,9 @@ func (e *Engine) CheckReadiness(ctx context.Context, pipelineID string) (*types.
 	}, nil
 }
 
-func (e *Engine) evaluateTrait(ctx context.Context, pipelineID string, trait archetype.ResolvedTrait) (*types.TraitEvaluation, error) {
+// EvaluateTrait evaluates a single trait for a pipeline. It runs the evaluator,
+// stores the result, and emits an event. Exported for use by Lambda handlers.
+func (e *Engine) EvaluateTrait(ctx context.Context, pipelineID string, trait archetype.ResolvedTrait) (*types.TraitEvaluation, error) {
 	if trait.Evaluator == "" {
 		return &types.TraitEvaluation{
 			PipelineID:  pipelineID,

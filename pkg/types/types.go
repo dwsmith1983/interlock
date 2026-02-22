@@ -87,6 +87,7 @@ const (
 	AlertConsole AlertType = "console"
 	AlertWebhook AlertType = "webhook"
 	AlertFile    AlertType = "file"
+	AlertSNS     AlertType = "sns"
 )
 
 // AlertLevel replaces string-typed alert levels with a proper enum.
@@ -269,9 +270,10 @@ type EvaluatorOutput struct {
 
 // AlertConfig defines an alert sink configuration.
 type AlertConfig struct {
-	Type AlertType `yaml:"type" json:"type"`
-	URL  string    `yaml:"url,omitempty" json:"url,omitempty"`
-	Path string    `yaml:"path,omitempty" json:"path,omitempty"`
+	Type     AlertType `yaml:"type" json:"type"`
+	URL      string    `yaml:"url,omitempty" json:"url,omitempty"`
+	Path     string    `yaml:"path,omitempty" json:"path,omitempty"`
+	TopicARN string    `yaml:"topicArn,omitempty" json:"topicArn,omitempty"`
 }
 
 // Alert represents an alert event to be dispatched.
