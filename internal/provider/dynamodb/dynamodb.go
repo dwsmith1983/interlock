@@ -14,8 +14,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	"github.com/dwsmith1983/interlock/internal/provider"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
+
+// Compile-time interface satisfaction check.
+var _ provider.Provider = (*DynamoDBProvider)(nil)
 
 // Storage defaults.
 const (
