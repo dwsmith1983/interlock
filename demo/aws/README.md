@@ -7,14 +7,14 @@ End-to-end testing of Interlock's AWS deployment: DynamoDB + Lambda + Step Funct
 ```
                                     ┌─────────────────┐
                                     │  Step Function  │
-                                    │  (28-state ASL) │
+                                    │  (46-state ASL) │
                                     └───┬───┬───┬───┬─┘
                                         │   │   │   │
               ┌─────────────────────────┘   │   │   └─────────────────────────┐
               │                             │   │                             │
      ┌────────▼────────┐       ┌────────────▼───▼────────────┐       ┌────────▼────────┐
      │  orchestrator   │       │     evaluator / trigger     │       │   run-checker   │
-     │  (10 actions)   │       │  (trait eval / job launch)  │       │  (status poll)  │
+     │  (14 actions)   │       │  (trait eval / job launch)  │       │  (status poll)  │
      └────────┬────────┘       └────────────┬────────────────┘       └────────┬────────┘
               │                             │                                 │
               └──────────────┬──────────────┘                                 │
@@ -56,7 +56,7 @@ make e2e-test-teardown   # teardown
 
 ## What Gets Deployed
 
-1. **Test-evaluator Lambda** — a standalone Lambda with Function URL that:
+1. **Test-evaluator Lambda** — a standalone Lambda with API Gateway that:
    - Serves as trait evaluator endpoints (`/freshness`, `/record-count`, `/upstream-check`)
    - Reads "sensor state" from DynamoDB to decide PASS/FAIL
    - Provides a fake trigger endpoint (`/trigger-endpoint`)
@@ -64,9 +64,51 @@ make e2e-test-teardown   # teardown
 2. **CDK Stack** (via `deploy/cdk/`) — the full Interlock infrastructure:
    - DynamoDB table (single-table design with streams)
    - 5 Lambda functions (stream-router, orchestrator, evaluator, trigger, run-checker)
-   - Step Function state machine (28 states)
+   - Step Function state machine (46 states)
    - SNS topic for alerts
    - Lambda layer with archetype definitions
+
+## Step Function Lifecycle
+
+The 46-state ASL implements the full pipeline lifecycle:
+
+```
+CheckExclusion → AcquireLock → CheckRunLog → ResolvePipeline
+  → EvaluateTraits (Map/parallel) → CheckEvaluationSLA → CheckValidationTimeout
+  → CheckReadiness → TriggerPipeline → [poll loop] → CheckCompletionSLA
+  → LogCompleted → NotifyDownstream → [monitoring loop] → ReleaseLock
+```
+
+Key lifecycle paths within the state machine:
+
+| Path | States | Description |
+|------|--------|-------------|
+| Happy path | 16 states | Evaluate → ready → trigger → complete → notify downstream |
+| Monitoring | 8 states | Post-completion trait re-evaluation with drift detection |
+| Retry | 4 states | Failed run → backoff wait → re-acquire lock → retry |
+| SLA | 4 states | Evaluation + completion + validation timeout checks |
+| Error handling | 3 states | Catch → SNS alert → release lock |
+
+### Orchestrator Actions
+
+The orchestrator Lambda handles 14 distinct actions dispatched by the state machine:
+
+| Action | Description |
+|--------|-------------|
+| `checkExclusion` | Calendar/day-based pipeline exclusion |
+| `acquireLock` | Distributed lock via DynamoDB conditional write |
+| `checkRunLog` | Dedup check + retry eligibility (backoff, max attempts) |
+| `resolvePipeline` | Load config, resolve archetype traits, generate run ID |
+| `checkReadiness` | Evaluate trait results against readiness rule |
+| `checkEvaluationSLA` | Fire alert if evaluation deadline breached |
+| `checkCompletionSLA` | Fire alert if completion deadline breached |
+| `checkValidationTimeout` | Force-fail if validation timeout exceeded |
+| `logResult` | Write run log entry + event + compute retry info |
+| `releaseLock` | Release distributed lock |
+| `checkDrift` | Compare monitoring trait results for drift |
+| `notifyDownstream` | Scan for dependent pipelines, write cascade markers |
+| `checkMonitoringExpired` | Check if monitoring window has elapsed |
+| `handleLateArrival` | Record late arrival + create rerun on drift |
 
 ## Test Scenarios
 
@@ -152,15 +194,17 @@ The script updates these items between Step Function executions to control trait
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TABLE_NAME` | `interlock` | DynamoDB table name |
-| `AWS_REGION` | `us-east-1` | AWS region |
+| `TABLE_NAME` | `interlock-e2e` | DynamoDB table name |
+| `STACK_NAME` | `InterlockStack-e2e` | CDK stack name |
+| `AWS_REGION` | `ap-southeast-1` | AWS region |
 
 ## Teardown
 
 Destroys all AWS resources:
 
 1. CDK stack (DynamoDB table, Lambdas, Step Function, SNS topic)
-2. Test-evaluator Lambda + Function URL
+2. Test-evaluator Lambda + API Gateway
 3. Test-evaluator IAM role + policies
+4. CDK bootstrap assets (via `cdk gc`)
 
 Results are preserved in `demo/aws/e2e-results/` for review after teardown. Delete manually with `rm -rf demo/aws/e2e-results/`.

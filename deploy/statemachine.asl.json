@@ -1,5 +1,5 @@
 {
-  "Comment": "Interlock pipeline evaluation, trigger, and monitoring workflow",
+  "Comment": "Interlock pipeline lifecycle: evaluation, trigger, retry, monitoring, cascade (46 states)",
   "StartAt": "CheckExclusion",
   "States": {
     "CheckExclusion": {
