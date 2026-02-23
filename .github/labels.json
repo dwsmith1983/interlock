@@ -1,0 +1,17 @@
+[
+  { "name": "ci", "color": "0e8a16", "description": "CI/CD workflows" },
+  { "name": "docs", "color": "0075ca", "description": "Documentation" },
+  { "name": "tests", "color": "fbca04", "description": "Test changes" },
+  { "name": "e2e", "color": "d4c5f9", "description": "End-to-end tests" },
+  { "name": "core", "color": "b60205", "description": "Core engine/watcher/schedule" },
+  { "name": "provider", "color": "5319e7", "description": "Storage providers" },
+  { "name": "triggers", "color": "ff9f1c", "description": "Trigger types" },
+  { "name": "alerts", "color": "d93f0b", "description": "Alert system" },
+  { "name": "lambda", "color": "1d76db", "description": "Lambda handlers" },
+  { "name": "cli", "color": "006b75", "description": "CLI and HTTP server" },
+  { "name": "archetypes", "color": "c2e0c6", "description": "Archetypes and calendars" },
+  { "name": "deploy", "color": "0e8a16", "description": "Deployment and ASL" },
+  { "name": "dependencies", "color": "ededed", "description": "Dependency updates" },
+  { "name": "config", "color": "bfdadc", "description": "Build/lint configuration" },
+  { "name": "types", "color": "c5def5", "description": "Public types (pkg/types)" }
+]

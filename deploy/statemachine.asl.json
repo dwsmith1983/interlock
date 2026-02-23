@@ -11,7 +11,27 @@
         "scheduleID.$": "$.scheduleID"
       },
       "ResultPath": "$.checkExclusion",
-      "Next": "IsExcluded"
+      "Next": "IsExcluded",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "IsExcluded": {
       "Type": "Choice",
@@ -33,7 +53,27 @@
         "scheduleID.$": "$.scheduleID"
       },
       "ResultPath": "$.acquireLock",
-      "Next": "IsLockAcquired"
+      "Next": "IsLockAcquired",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "IsLockAcquired": {
       "Type": "Choice",
@@ -55,7 +95,27 @@
         "scheduleID.$": "$.scheduleID"
       },
       "ResultPath": "$.checkRunLog",
-      "Next": "ShouldProceedAfterRunLog"
+      "Next": "ShouldProceedAfterRunLog",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "ShouldProceedAfterRunLog": {
       "Type": "Choice",
@@ -74,15 +134,29 @@
       "Parameters": {
         "action": "resolvePipeline",
         "pipelineID.$": "$.pipelineID",
-        "scheduleID.$": "$.scheduleID"
+        "scheduleID.$": "$.scheduleID",
+        "date.$": "$.date"
       },
       "ResultPath": "$.resolvePipeline",
       "Next": "IsResolved",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.error",
-          "Next": "ReleaseLock"
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
         }
       ]
     },
@@ -110,12 +184,32 @@
           "EvaluateSingleTrait": {
             "Type": "Task",
             "Resource": "${EvaluatorFunctionArn}",
-            "End": true
+            "End": true,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ]
           }
         }
       },
       "ResultPath": "$.traitResults",
-      "Next": "CheckEvaluationSLA"
+      "Next": "CheckEvaluationSLA",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "CheckEvaluationSLA": {
       "Type": "Task",
@@ -126,7 +220,27 @@
         "scheduleID.$": "$.scheduleID"
       },
       "ResultPath": "$.evaluationSLA",
-      "Next": "CheckReadiness"
+      "Next": "CheckReadiness",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "CheckReadiness": {
       "Type": "Task",
@@ -140,7 +254,27 @@
         }
       },
       "ResultPath": "$.checkReadiness",
-      "Next": "IsReady"
+      "Next": "IsReady",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "IsReady": {
       "Type": "Choice",
@@ -167,7 +301,27 @@
         }
       },
       "ResultPath": "$.logNotReady",
-      "Next": "ReleaseLock"
+      "Next": "ReleaseLock",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "TriggerPipeline": {
       "Type": "Task",
@@ -180,6 +334,19 @@
       },
       "ResultPath": "$.triggerResult",
       "Next": "IsTriggerSuccessful",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
@@ -218,11 +385,33 @@
         }
       },
       "ResultPath": "$.logTriggerFailed",
-      "Next": "ReleaseLock"
+      "Next": "ReleaseLock",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "InitPollCounter": {
       "Type": "Pass",
-      "Result": 0,
+      "Result": {
+        "count": 0
+      },
       "ResultPath": "$.pollCount",
       "Next": "WaitForRun"
     },
@@ -241,7 +430,27 @@
         "metadata.$": "$.triggerResult.metadata"
       },
       "ResultPath": "$.pollResult",
-      "Next": "EvaluatePollResult"
+      "Next": "EvaluatePollResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "EvaluatePollResult": {
       "Type": "Choice",
@@ -261,10 +470,9 @@
     },
     "IncrementPollCount": {
       "Type": "Pass",
-      "InputPath": "$.pollCount",
       "ResultPath": "$.pollCount",
       "Parameters": {
-        "count.$": "States.MathAdd($.pollCount, 1)"
+        "count.$": "States.MathAdd($.pollCount.count, 1)"
       },
       "Next": "CheckPollLimit",
       "Comment": "Increment poll counter"
@@ -289,7 +497,27 @@
         "scheduleID.$": "$.scheduleID"
       },
       "ResultPath": "$.completionSLA",
-      "Next": "LogCompleted"
+      "Next": "LogCompleted",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "LogCompleted": {
       "Type": "Task",
@@ -304,7 +532,27 @@
         }
       },
       "ResultPath": "$.logCompleted",
-      "Next": "ReleaseLock"
+      "Next": "ReleaseLock",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "LogRunFailed": {
       "Type": "Task",
@@ -320,7 +568,27 @@
         }
       },
       "ResultPath": "$.logRunFailed",
-      "Next": "ReleaseLock"
+      "Next": "ReleaseLock",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "LogTimeout": {
       "Type": "Task",
@@ -336,7 +604,58 @@
         }
       },
       "ResultPath": "$.logTimeout",
-      "Next": "ReleaseLock"
+      "Next": "ReleaseLock",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
+    },
+    "AlertError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertTopicArn}",
+        "Subject.$": "States.Format('[ERROR] {} / {}', $.pipelineID, $.scheduleID)",
+        "Message.$": "States.JsonToString($.errorInfo)"
+      },
+      "ResultPath": "$.alertResult",
+      "Next": "ReleaseLock",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.alertFailed",
+          "Next": "ReleaseLock"
+        }
+      ]
     },
     "ReleaseLock": {
       "Type": "Task",
@@ -347,7 +666,20 @@
         "scheduleID.$": "$.scheduleID"
       },
       "ResultPath": "$.releaseLock",
-      "Next": "End"
+      "Next": "End",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ]
     },
     "End": {
       "Type": "Succeed"

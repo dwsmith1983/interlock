@@ -34,10 +34,16 @@ type catchEntry struct {
 	Next string `json:"Next"`
 }
 
+type retryEntry struct {
+	ErrorEquals []string `json:"ErrorEquals"`
+	MaxAttempts int      `json:"MaxAttempts"`
+}
+
 type taskState struct {
 	Type  string       `json:"Type"`
 	Next  string       `json:"Next,omitempty"`
 	End   bool         `json:"End,omitempty"`
+	Retry []retryEntry `json:"Retry,omitempty"`
 	Catch []catchEntry `json:"Catch,omitempty"`
 }
 
@@ -112,6 +118,7 @@ func TestASL_ExpectedStatesExist(t *testing.T) {
 		"LogCompleted",
 		"LogRunFailed",
 		"LogTimeout",
+		"AlertError",
 		"ReleaseLock",
 		"End",
 	}
@@ -246,5 +253,61 @@ func TestASL_MapStateHasItemProcessor(t *testing.T) {
 			_, ok := ms.ItemProcessor.States[ms.ItemProcessor.StartAt]
 			assert.True(t, ok, "Map state %q ItemProcessor.StartAt %q must reference an inner state", name, ms.ItemProcessor.StartAt)
 		}
+	}
+}
+
+func TestASL_AllTaskStatesHaveRetry(t *testing.T) {
+	asl := loadASL(t)
+
+	for name, raw := range asl.States {
+		var ts taskState
+		if err := json.Unmarshal(raw, &ts); err != nil || ts.Type != "Task" {
+			continue
+		}
+		assert.NotEmpty(t, ts.Retry, "Task state %q must have a Retry block", name)
+	}
+
+	// Also check inner Task states inside Map processors.
+	for name, raw := range asl.States {
+		var ms mapState
+		if err := json.Unmarshal(raw, &ms); err != nil || ms.Type != "Map" {
+			continue
+		}
+		for innerName, innerRaw := range ms.ItemProcessor.States {
+			var ts taskState
+			if err := json.Unmarshal(innerRaw, &ts); err != nil || ts.Type != "Task" {
+				continue
+			}
+			assert.NotEmpty(t, ts.Retry, "inner Task state %q in Map %q must have a Retry block", innerName, name)
+		}
+	}
+}
+
+func TestASL_CatchCoverage(t *testing.T) {
+	asl := loadASL(t)
+
+	// Every Task state except ReleaseLock must have a Catch block.
+	// Map states (like EvaluateTraits) that wrap Task states also need Catch.
+	exempt := map[string]bool{
+		"ReleaseLock": true,
+	}
+
+	for name, raw := range asl.States {
+		var base stateBase
+		require.NoError(t, json.Unmarshal(raw, &base))
+
+		if base.Type != "Task" && base.Type != "Map" {
+			continue
+		}
+		if exempt[name] {
+			continue
+		}
+
+		// Parse Catch from the raw JSON (works for both Task and Map states).
+		var withCatch struct {
+			Catch []catchEntry `json:"Catch"`
+		}
+		require.NoError(t, json.Unmarshal(raw, &withCatch), "parsing Catch for state %q", name)
+		assert.NotEmpty(t, withCatch.Catch, "state %q (type %s) must have a Catch block", name, base.Type)
 	}
 }
