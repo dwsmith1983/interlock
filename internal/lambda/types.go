@@ -15,6 +15,7 @@ type OrchestratorRequest struct {
 	Action     string                 `json:"action"`
 	PipelineID string                 `json:"pipelineID"`
 	ScheduleID string                 `json:"scheduleID"`
+	Date       string                 `json:"date,omitempty"`
 	Payload    map[string]interface{} `json:"payload,omitempty"`
 }
 

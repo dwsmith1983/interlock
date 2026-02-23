@@ -211,8 +211,23 @@ func resolvePipeline(ctx context.Context, d *intlambda.Deps, req intlambda.Orche
 
 	resolved := archetype.ResolveTraits(arch, pipeline)
 
+	// Determine evaluation date: use explicit date from request if provided,
+	// otherwise default to today's UTC date.
+	evalDate := time.Now().UTC().Format("2006-01-02")
+	if req.Date != "" {
+		evalDate = req.Date
+	}
+
 	traits := make([]interface{}, 0, len(resolved))
 	for _, rt := range resolved {
+		// Inject scheduleID and date into config so evaluators can scope to
+		// the right time partition.
+		if rt.Config == nil {
+			rt.Config = make(map[string]interface{})
+		}
+		rt.Config["scheduleID"] = req.ScheduleID
+		rt.Config["date"] = evalDate
+
 		traits = append(traits, map[string]interface{}{
 			"pipelineID": req.PipelineID,
 			"traitType":  rt.Type,
