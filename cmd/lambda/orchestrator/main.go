@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -242,6 +243,27 @@ func resolvePipeline(ctx context.Context, d *intlambda.Deps, req intlambda.Orche
 	runID, err := generateRunID()
 	if err != nil {
 		return errorResponse(req.Action, fmt.Sprintf("generating run ID: %v", err)), nil
+	}
+
+	// Resolve template variables in trigger arguments. Pipeline configs can
+	// reference execution context via ${var} placeholders (e.g. "--date": "${date}",
+	// "--hour": "${hour}") so they declare exactly what their triggers need.
+	if pipeline.Trigger != nil && len(pipeline.Trigger.Arguments) > 0 {
+		// Derive hour from scheduleID (e.g. "h15" → "15").
+		hour := ""
+		if strings.HasPrefix(req.ScheduleID, "h") {
+			hour = req.ScheduleID[1:]
+		}
+
+		replacer := strings.NewReplacer(
+			"${date}", evalDate,
+			"${hour}", hour,
+			"${scheduleID}", req.ScheduleID,
+			"${pipelineID}", req.PipelineID,
+		)
+		for k, v := range pipeline.Trigger.Arguments {
+			pipeline.Trigger.Arguments[k] = replacer.Replace(v)
+		}
 	}
 
 	payload := map[string]interface{}{
