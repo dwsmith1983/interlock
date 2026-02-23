@@ -146,17 +146,44 @@ PIPELINES = [
 
 # ── Webhook server (receives trigger from Interlock) ──────
 
+# Gate state for conditional trigger endpoint (used by E2E retry tests)
+gate_open = False
+
+
 class WebhookHandler(BaseHTTPRequestHandler):
-    """Accepts POST /webhook and logs the trigger."""
+    """Accepts POST /webhook, POST /gate, POST /gate/open, POST /gate/close."""
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length) if length else b""
-        print(f"[webhook] received trigger: {body.decode()}", flush=True)
-        self.send_response(200)
+        global gate_open
+        path = self.path
+
+        if path == "/gate/open":
+            gate_open = True
+            print("[gate] opened", flush=True)
+            self._respond(200, {"status": "open"})
+        elif path == "/gate/close":
+            gate_open = False
+            print("[gate] closed", flush=True)
+            self._respond(200, {"status": "closed"})
+        elif path == "/gate":
+            if gate_open:
+                print("[gate] trigger accepted (gate open)", flush=True)
+                self._respond(200, {"status": "accepted"})
+            else:
+                print("[gate] trigger rejected (gate closed)", flush=True)
+                self._respond(500, {"error": "gate closed"})
+        else:
+            # Default webhook handler
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b""
+            print(f"[webhook] received trigger: {body.decode()}", flush=True)
+            self._respond(200, {"status": "accepted"})
+
+    def _respond(self, code, body):
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b'{"status":"accepted"}')
+        self.wfile.write(json.dumps(body).encode())
 
     def log_message(self, fmt, *args):
         pass  # suppress default stderr logging

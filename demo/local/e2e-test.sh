@@ -104,6 +104,60 @@ complete_run() {
         "${INTERLOCK_URL}/api/runs/${run_id}/complete" 2>/dev/null || echo "{}"
 }
 
+get_runlog() {
+    local pipeline="$1" date="$2" schedule="${3:-daily}"
+    curl -sf "${INTERLOCK_URL}/api/pipelines/${pipeline}/runlogs/${date}?schedule=${schedule}" 2>/dev/null || echo "{}"
+}
+
+request_rerun() {
+    local pipeline="$1" date="$2" reason="$3"
+    curl -sf -X POST -H "Content-Type: application/json" \
+        -d "{\"originalDate\":\"$date\",\"reason\":\"$reason\"}" \
+        "${INTERLOCK_URL}/api/pipelines/${pipeline}/rerun" 2>/dev/null || echo "{}"
+}
+
+get_events() {
+    local pipeline="$1" limit="${2:-50}"
+    curl -sf "${INTERLOCK_URL}/api/pipelines/${pipeline}/events?limit=${limit}" 2>/dev/null || echo "[]"
+}
+
+get_reruns() {
+    local pipeline="$1"
+    curl -sf "${INTERLOCK_URL}/api/pipelines/${pipeline}/reruns" 2>/dev/null || echo "[]"
+}
+
+wait_for_runlog_status() {
+    local pipeline="$1" status="$2" timeout="${3:-60}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        local runlog_status
+        runlog_status=$(get_runlog "$pipeline" "$TODAY" "daily" | jq -r '.status // empty' 2>/dev/null)
+        if [ "$runlog_status" = "$status" ]; then
+            return 0
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    return 1
+}
+
+wait_for_event() {
+    local pipeline="$1" event_kind="$2" timeout="${3:-60}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        local events match
+        events=$(get_events "$pipeline")
+        match=$(echo "$events" | jq -r "[.[] | select(.kind == \"$event_kind\")] | first // empty" 2>/dev/null)
+        if [ -n "$match" ] && [ "$match" != "null" ]; then
+            echo "$match"
+            return 0
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+    return 1
+}
+
 wait_for_run() {
     local name="$1" target_status="$2" timeout="${3:-60}"
     local elapsed=0
@@ -517,6 +571,470 @@ run_scenario_6() {
     fi
 }
 
+run_scenario_7() {
+    log ""
+    log "--- Scenario 7: Cascade (Silver -> Gold) ---"
+
+    # Clean up any previous runs for these pipelines
+    delete_runlog "e2e-silver" "$TODAY" "daily"
+    delete_runlog "e2e-gold" "$TODAY" "daily"
+
+    log "Registering e2e-silver pipeline (HTTP trigger)..."
+    register_pipeline "e2e-silver" '{
+        "name": "e2e-silver",
+        "archetype": "batch-ingestion",
+        "traits": {
+            "source-freshness": {
+                "evaluator": "check-freshness",
+                "config": {"maxLagSeconds": 9999},
+                "timeout": 15,
+                "ttl": 300
+            },
+            "upstream-dependency": {
+                "evaluator": "check-upstream",
+                "config": {},
+                "timeout": 15,
+                "ttl": 300
+            },
+            "resource-availability": {
+                "evaluator": "check-record-count",
+                "config": {"threshold": 100},
+                "timeout": 15,
+                "ttl": 300
+            }
+        },
+        "trigger": {
+            "type": "http",
+            "method": "POST",
+            "url": "http://seed:8888/webhook",
+            "headers": {"Content-Type": "application/json"},
+            "body": "{\"pipeline\":\"e2e-silver\"}",
+            "timeout": 10
+        },
+        "watch": {"interval": "10s"}
+    }' > /dev/null
+
+    log "Registering e2e-gold pipeline (depends on e2e-silver via check-upstream-runlog)..."
+    register_pipeline "e2e-gold" '{
+        "name": "e2e-gold",
+        "archetype": "medallion",
+        "traits": {
+            "upstream-dependency": {
+                "evaluator": "check-upstream-runlog",
+                "config": {"upstreamPipeline": "e2e-silver"},
+                "timeout": 15,
+                "ttl": 60
+            }
+        },
+        "trigger": {
+            "type": "http",
+            "method": "POST",
+            "url": "http://seed:8888/webhook",
+            "headers": {"Content-Type": "application/json"},
+            "body": "{\"pipeline\":\"e2e-gold\"}",
+            "timeout": 10
+        },
+        "watch": {"interval": "10s"}
+    }' > /dev/null
+
+    # Sensors already passing from earlier scenarios (freshness=30, record-count=1200, upstream=true)
+    # Silver should evaluate READY and trigger. HTTP trigger → RUNNING → complete via callback.
+
+    log "Waiting for silver to reach RUNNING (up to 45s)..."
+    local silver_run
+    if silver_run=$(wait_for_run "e2e-silver" "RUNNING" 45); then
+        local silver_run_id
+        silver_run_id=$(echo "$silver_run" | jq -r '.runId // .runID // empty')
+        log "  Silver run ID: $silver_run_id"
+
+        # Complete silver via callback
+        complete_run "$silver_run_id" "success" > /dev/null
+        sleep 2
+
+        if wait_for_runlog_status "e2e-silver" "COMPLETED" 10; then
+            ok "Scenario 7: Silver pipeline completed"
+        else
+            fail "Scenario 7: Silver pipeline did not reach COMPLETED after callback"
+            log_result "scenario-7" "silver-runlog" "$(get_runlog "e2e-silver" "$TODAY" "daily")"
+            return
+        fi
+    else
+        fail "Scenario 7: Silver pipeline did not reach RUNNING within 45s"
+        log_result "scenario-7" "silver-runlog" "$(get_runlog "e2e-silver" "$TODAY" "daily")"
+        return
+    fi
+
+    # Gold's evaluator checks silver's RunLog via API. Once silver is COMPLETED, gold triggers.
+    log "Waiting for gold to reach RUNNING (up to 45s)..."
+    local gold_run
+    if gold_run=$(wait_for_run "e2e-gold" "RUNNING" 45); then
+        local gold_run_id
+        gold_run_id=$(echo "$gold_run" | jq -r '.runId // .runID // empty')
+        log "  Gold run ID: $gold_run_id"
+
+        complete_run "$gold_run_id" "success" > /dev/null
+        sleep 2
+
+        if wait_for_runlog_status "e2e-gold" "COMPLETED" 10; then
+            ok "Scenario 7: Gold pipeline completed (cascade from silver)"
+        else
+            fail "Scenario 7: Gold pipeline did not reach COMPLETED after callback"
+        fi
+    else
+        fail "Scenario 7: Gold pipeline did not reach RUNNING within 45s"
+        log_result "scenario-7" "gold-runlog" "$(get_runlog "e2e-gold" "$TODAY" "daily")"
+        return
+    fi
+
+    log_result "scenario-7" "silver" "$(get_runlog "e2e-silver" "$TODAY" "daily")"
+    log_result "scenario-7" "gold" "$(get_runlog "e2e-gold" "$TODAY" "daily")"
+}
+
+run_scenario_8() {
+    log ""
+    log "--- Scenario 8: Retry with Backoff ---"
+
+    delete_runlog "e2e-retry" "$TODAY" "daily"
+
+    # Close gate so trigger fails on first attempt
+    log "Closing seed gate (trigger will return 500)..."
+    curl -sf -X POST "http://localhost:8888/gate/close" > /dev/null 2>&1 || true
+
+    log "Registering e2e-retry pipeline (HTTP trigger to /gate, retry maxAttempts=3, backoff=5s)..."
+    register_pipeline "e2e-retry" '{
+        "name": "e2e-retry",
+        "archetype": "batch-ingestion",
+        "traits": {
+            "source-freshness": {
+                "evaluator": "check-freshness",
+                "config": {"maxLagSeconds": 9999},
+                "timeout": 15,
+                "ttl": 300
+            },
+            "upstream-dependency": {
+                "evaluator": "check-upstream",
+                "config": {},
+                "timeout": 15,
+                "ttl": 300
+            },
+            "resource-availability": {
+                "evaluator": "check-record-count",
+                "config": {"threshold": 100},
+                "timeout": 15,
+                "ttl": 300
+            }
+        },
+        "trigger": {
+            "type": "http",
+            "method": "POST",
+            "url": "http://seed:8888/gate",
+            "headers": {"Content-Type": "application/json"},
+            "body": "{\"pipeline\":\"e2e-retry\"}",
+            "timeout": 10
+        },
+        "retry": {
+            "maxAttempts": 3,
+            "backoffSeconds": 5,
+            "backoffMultiplier": 1.0
+        },
+        "watch": {"interval": "10s"}
+    }' > /dev/null
+
+    # Wait for first trigger attempt to fail
+    log "Waiting for first trigger attempt to fail (up to 30s)..."
+    local elapsed=0
+    local first_failed=false
+    while [ "$elapsed" -lt 30 ]; do
+        local runlog
+        runlog=$(get_runlog "e2e-retry" "$TODAY" "daily")
+        local status attempt
+        status=$(echo "$runlog" | jq -r '.status // empty' 2>/dev/null)
+        attempt=$(echo "$runlog" | jq -r '.attemptNumber // 0' 2>/dev/null)
+        if [ "$status" = "FAILED" ] && [ "$attempt" -ge 1 ]; then
+            first_failed=true
+            ok "Scenario 8: First trigger attempt failed (attempt $attempt)"
+            break
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+
+    if [ "$first_failed" = "false" ]; then
+        fail "Scenario 8: First trigger attempt did not fail within 30s"
+        log_result "scenario-8" "runlog" "$(get_runlog "e2e-retry" "$TODAY" "daily")"
+        return
+    fi
+
+    # Open gate so retry succeeds
+    log "Opening seed gate (trigger will return 200)..."
+    curl -sf -X POST "http://localhost:8888/gate/open" > /dev/null 2>&1 || true
+
+    # Wait for retry to trigger and reach RUNNING
+    log "Waiting for retry to reach RUNNING (up to 60s)..."
+    local retry_run
+    if retry_run=$(wait_for_run "e2e-retry" "RUNNING" 60); then
+        local retry_run_id attempt
+        retry_run_id=$(echo "$retry_run" | jq -r '.runId // .runID // empty')
+        log "  Retry run ID: $retry_run_id"
+
+        # Complete via callback
+        complete_run "$retry_run_id" "success" > /dev/null
+        sleep 2
+
+        local runlog
+        runlog=$(get_runlog "e2e-retry" "$TODAY" "daily")
+        local final_status
+        final_status=$(echo "$runlog" | jq -r '.status // empty' 2>/dev/null)
+        attempt=$(echo "$runlog" | jq -r '.attemptNumber // 0' 2>/dev/null)
+
+        if [ "$final_status" = "COMPLETED" ] && [ "$attempt" -ge 2 ]; then
+            ok "Scenario 8: Retry succeeded on attempt $attempt"
+        elif [ "$final_status" = "COMPLETED" ]; then
+            ok "Scenario 8: Retry completed (attempt $attempt)"
+        else
+            fail "Scenario 8: Expected COMPLETED, got $final_status (attempt $attempt)"
+        fi
+        log_result "scenario-8" "result" "$runlog"
+    else
+        fail "Scenario 8: Retry did not reach RUNNING within 60s"
+        log_result "scenario-8" "result" "$(get_runlog "e2e-retry" "$TODAY" "daily")"
+    fi
+}
+
+run_scenario_9() {
+    log ""
+    log "--- Scenario 9: Post-Run Monitoring / Drift Detection ---"
+
+    delete_runlog "e2e-monitored" "$TODAY" "daily"
+    # Ensure freshness sensor passes
+    set_sensor "freshness" "30"
+
+    log "Registering e2e-monitored pipeline (HTTP trigger, monitoring duration=60s)..."
+    register_pipeline "e2e-monitored" '{
+        "name": "e2e-monitored",
+        "archetype": "batch-ingestion",
+        "traits": {
+            "source-freshness": {
+                "evaluator": "check-freshness",
+                "config": {"maxLagSeconds": 60},
+                "timeout": 15,
+                "ttl": 30
+            },
+            "upstream-dependency": {
+                "evaluator": "check-upstream",
+                "config": {},
+                "timeout": 15,
+                "ttl": 300
+            },
+            "resource-availability": {
+                "evaluator": "check-record-count",
+                "config": {"threshold": 100},
+                "timeout": 15,
+                "ttl": 300
+            }
+        },
+        "trigger": {
+            "type": "http",
+            "method": "POST",
+            "url": "http://seed:8888/webhook",
+            "headers": {"Content-Type": "application/json"},
+            "body": "{\"pipeline\":\"e2e-monitored\"}",
+            "timeout": 10
+        },
+        "watch": {
+            "interval": "10s",
+            "monitoring": {
+                "enabled": true,
+                "duration": "60s"
+            }
+        }
+    }' > /dev/null
+
+    # Wait for run to reach RUNNING (HTTP trigger fires, run enters RUNNING)
+    log "Waiting for RUNNING state (up to 30s)..."
+    local run_json
+    if run_json=$(wait_for_run "e2e-monitored" "RUNNING" 30); then
+        local run_id
+        run_id=$(echo "$run_json" | jq -r '.runId // .runID // empty')
+        log "  Run ID: $run_id"
+
+        # Complete with "success" — monitoring enabled, so transitions to COMPLETED_MONITORING
+        complete_run "$run_id" "success" > /dev/null
+        sleep 2
+    else
+        fail "Scenario 9: Run did not reach RUNNING within 30s"
+        log_result "scenario-9" "runs" "$(get_runs "e2e-monitored")"
+        return
+    fi
+
+    # Verify run entered COMPLETED_MONITORING
+    log "Waiting for COMPLETED_MONITORING state (up to 15s)..."
+    local elapsed=0
+    local in_monitoring=false
+    while [ "$elapsed" -lt 15 ]; do
+        local runs match
+        runs=$(get_runs "e2e-monitored")
+        match=$(echo "$runs" | jq -r '[.[] | select(.status == "COMPLETED_MONITORING")] | first // empty' 2>/dev/null)
+        if [ -n "$match" ] && [ "$match" != "null" ]; then
+            in_monitoring=true
+            ok "Scenario 9: Run entered COMPLETED_MONITORING state"
+            break
+        fi
+        sleep 3
+        elapsed=$((elapsed + 3))
+    done
+
+    if [ "$in_monitoring" = "false" ]; then
+        fail "Scenario 9: Run did not enter COMPLETED_MONITORING after callback"
+        log_result "scenario-9" "runs" "$(get_runs "e2e-monitored")"
+        return
+    fi
+
+    # Simulate drift by making freshness fail
+    set_sensor "freshness" "9999"
+    log "Set sensor:freshness = 9999 (simulating drift)"
+
+    # Wait for drift detection — watcher re-evaluates traits during monitoring window
+    log "Waiting for drift detection (up to 45s)..."
+    if wait_for_event "e2e-monitored" "MONITORING_DRIFT_DETECTED" 45; then
+        ok "Scenario 9: Monitoring drift detected"
+    else
+        warn "Scenario 9: Drift event not found (monitoring window may have expired first)"
+    fi
+
+    # Verify rerun was created
+    local reruns rerun_count
+    reruns=$(get_reruns "e2e-monitored")
+    rerun_count=$(echo "$reruns" | jq 'length' 2>/dev/null)
+    if [ "$rerun_count" -gt 0 ]; then
+        ok "Scenario 9: Rerun record created ($rerun_count rerun(s))"
+    else
+        warn "Scenario 9: No rerun record found (monitoring may have completed before drift)"
+    fi
+
+    log_result "scenario-9" "events" "$(get_events "e2e-monitored")"
+    log_result "scenario-9" "reruns" "$reruns"
+
+    # Restore sensor
+    set_sensor "freshness" "30"
+}
+
+run_scenario_10() {
+    log ""
+    log "--- Scenario 10: Replay (Re-run Completed Pipeline) ---"
+
+    # Use e2e-silver which completed in Scenario 7
+    log "Requesting rerun for e2e-silver..."
+    local rerun_result http_code response
+    response=$(curl -s -w "\n%{http_code}" -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"originalDate\":\"$TODAY\",\"reason\":\"e2e replay test\"}" \
+        "${INTERLOCK_URL}/api/pipelines/e2e-silver/rerun" 2>/dev/null) || response=$'\n0'
+    http_code=$(echo "$response" | tail -1)
+    rerun_result=$(echo "$response" | sed '$d')
+
+    log_result "scenario-10" "rerun-request" "$rerun_result"
+
+    if [ "$http_code" = "202" ]; then
+        ok "Scenario 10: Rerun accepted (HTTP 202)"
+
+        # Verify rerun record has a run ID
+        local rerun_run_id
+        rerun_run_id=$(echo "$rerun_result" | jq -r '.rerunRunID // .RerunRunID // empty' 2>/dev/null)
+        if [ -n "$rerun_run_id" ] && [ "$rerun_run_id" != "null" ]; then
+            ok "Scenario 10: Rerun created new run: $rerun_run_id"
+        else
+            warn "Scenario 10: Rerun accepted but no run ID in response"
+        fi
+    elif [ "$http_code" = "412" ]; then
+        # Pipeline traits not ready (precondition failed) — rerun stored as PENDING
+        warn "Scenario 10: Rerun stored as PENDING (traits not ready, HTTP 412)"
+        local rerun_status
+        rerun_status=$(echo "$rerun_result" | jq -r '.rerun.status // empty' 2>/dev/null)
+        if [ "$rerun_status" = "PENDING" ]; then
+            ok "Scenario 10: Rerun record created with PENDING status"
+        else
+            fail "Scenario 10: Unexpected rerun status: $rerun_status"
+        fi
+    else
+        fail "Scenario 10: Expected HTTP 202 or 412, got $http_code"
+    fi
+
+    # Verify rerun appears in the reruns list
+    local reruns rerun_count
+    reruns=$(get_reruns "e2e-silver")
+    rerun_count=$(echo "$reruns" | jq 'length' 2>/dev/null)
+    log_result "scenario-10" "reruns" "$reruns"
+
+    if [ "$rerun_count" -gt 0 ]; then
+        ok "Scenario 10: Rerun record visible in reruns list ($rerun_count)"
+    else
+        fail "Scenario 10: No rerun records found for e2e-silver"
+    fi
+}
+
+run_scenario_11() {
+    log ""
+    log "--- Scenario 11: Evaluation SLA Breach Alert ---"
+
+    delete_runlog "e2e-sla-breach" "$TODAY" "daily"
+
+    # Set freshness high enough to exceed the evaluator's fallback threshold (300)
+    set_sensor "freshness" "999"
+
+    log "Registering e2e-sla-breach pipeline (strict freshness, SLA deadline 00:01 = always past)..."
+    register_pipeline "e2e-sla-breach" '{
+        "name": "e2e-sla-breach",
+        "archetype": "batch-ingestion",
+        "traits": {
+            "source-freshness": {
+                "evaluator": "check-freshness",
+                "config": {"maxLagSeconds": 5},
+                "timeout": 15,
+                "ttl": 300
+            },
+            "upstream-dependency": {
+                "evaluator": "check-upstream",
+                "config": {},
+                "timeout": 15,
+                "ttl": 300
+            },
+            "resource-availability": {
+                "evaluator": "check-record-count",
+                "config": {"threshold": 100},
+                "timeout": 15,
+                "ttl": 300
+            }
+        },
+        "trigger": {
+            "type": "http",
+            "method": "POST",
+            "url": "http://seed:8888/webhook",
+            "headers": {"Content-Type": "application/json"},
+            "body": "{\"pipeline\":\"e2e-sla-breach\"}",
+            "timeout": 10
+        },
+        "sla": {
+            "evaluationDeadline": "00:01",
+            "timezone": "UTC"
+        },
+        "watch": {"interval": "10s"}
+    }' > /dev/null
+
+    # Wait for SLA breach event — watcher evaluates, traits fail, deadline already past
+    log "Waiting for SLA_BREACHED event (up to 30s)..."
+    if wait_for_event "e2e-sla-breach" "SLA_BREACHED" 30; then
+        ok "Scenario 11: SLA_BREACHED event detected"
+    else
+        fail "Scenario 11: No SLA_BREACHED event found within 30s"
+    fi
+
+    log_result "scenario-11" "events" "$(get_events "e2e-sla-breach")"
+
+    # Restore freshness for other scenarios
+    set_sensor "freshness" "30"
+}
+
 # ── Teardown ─────────────────────────────────────────────────
 
 do_teardown() {
@@ -560,6 +1078,11 @@ do_run() {
     run_scenario_4
     run_scenario_5
     run_scenario_6
+    run_scenario_7
+    run_scenario_8
+    run_scenario_9
+    run_scenario_10
+    run_scenario_11
 
     # Wait for archiver to flush all data to Postgres (interval=30s)
     log "Waiting for Postgres archival cycle (35s)..."

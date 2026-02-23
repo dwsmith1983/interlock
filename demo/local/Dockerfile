@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /interlock ./cmd/interlock
 # ── Runtime ──────────────────────────────────────────────
 FROM alpine:3.19
 
-RUN apk add --no-cache bash redis jq
+RUN apk add --no-cache bash redis jq curl
 
 COPY --from=builder /interlock /usr/local/bin/interlock
 
