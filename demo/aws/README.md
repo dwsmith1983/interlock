@@ -147,22 +147,79 @@ Execution for a non-existent pipeline. Verifies graceful error handling.
 
 Writes a MARKER# record directly to DynamoDB and verifies the full event-driven path: DynamoDB Streams → stream-router Lambda → Step Function execution.
 
+### Scenario 7: Cascade (Silver → Gold)
+
+Demonstrates downstream notification and cascade triggering:
+
+1. Register `e2e-silver` (all traits pass, HTTP trigger)
+2. Register `e2e-gold` (depends on silver via `upstreamPipeline` config)
+3. Silver execution completes → `NotifyDownstream` writes cascade MARKER for gold
+4. DynamoDB Stream → stream-router → starts gold execution automatically
+5. Gold evaluates, triggers, and completes
+
+Verifies the full cascade path: `LogCompleted → NotifyDownstream → MARKER → stream-router → SFN`.
+
+### Scenario 8: Retry (Cross-Execution)
+
+Tests retry with backoff across two Step Function executions:
+
+| Round | Gate | Result |
+|-------|------|--------|
+| 1 | Closed (500) | Traits pass → trigger fails → FAILED runlog |
+| 2 | Open (200) | `checkRunLog` sees FAILED + retryable + backoff elapsed → trigger succeeds |
+
+Uses the `/trigger-gate` endpoint on the test-evaluator Lambda.
+
+### Scenario 9: Post-Run Monitoring
+
+Tests the monitoring loop after pipeline completion:
+
+1. Pipeline completes → enters monitoring (`ShouldMonitor → InitMonitoringCounter`)
+2. Monitoring wait (60s) → re-evaluates all traits (`MonitoringEvaluate`)
+3. Monitoring duration (10s) already elapsed → expires → `ReleaseLock`
+
+Verifies states: `InitMonitoringCounter`, `MonitoringEvaluate`, `CheckMonitoringExpired`.
+
+### Scenario 10: Replay
+
+Re-runs a completed pipeline by passing `replay: true` in the Step Function input:
+
+1. `e2e-silver` already has a COMPLETED runlog from scenario 7
+2. New execution with `replay: true` → `checkRunLog` bypasses dedup → proceeds
+3. Full evaluation → trigger → complete
+
+### Scenario 11: Evaluation SLA Breach
+
+Tests SLA deadline enforcement:
+
+1. Pipeline with `evaluationDeadline: "00:01"` (always past in UTC)
+2. Freshness sensor fails (lag=99999) so pipeline is NOT_READY
+3. `CheckEvaluationSLA` fires alert, returns `breached: true`
+4. Verifies `evaluationSLA.payload.breached == true` in execution output
+
 ## Results
 
 Results are saved to `demo/aws/e2e-results/`:
 
 ```
 e2e-results/
-├── stack-outputs.json         # CDK stack outputs
-├── scenario-1-round-1.json    # Progressive: all fail
-├── scenario-1-round-2.json    # Progressive: partial pass
-├── scenario-1-round-3.json    # Progressive: all pass → trigger
-├── scenario-2-round-1.json    # Quality drop
-├── scenario-2-round-2.json    # Quality recovery
-├── scenario-3-result.json     # Dedup
-├── scenario-4-result.json     # Exclusion
-├── scenario-5-result.json     # Not found
-└── scenario-6-result.json     # Stream-router
+├── stack-outputs.json          # CDK stack outputs
+├── scenario-1-round-1.json     # Progressive: all fail
+├── scenario-1-round-2.json     # Progressive: partial pass
+├── scenario-1-round-3.json     # Progressive: all pass → trigger
+├── scenario-2-round-1.json     # Quality drop
+├── scenario-2-round-2.json     # Quality recovery
+├── scenario-3-result.json      # Dedup
+├── scenario-4-result.json      # Exclusion
+├── scenario-5-result.json      # Not found
+├── scenario-6-result.json      # Stream-router
+├── scenario-7-silver.json      # Cascade: silver completes
+├── scenario-7-gold.json        # Cascade: gold triggered by cascade
+├── scenario-8-round-1.json     # Retry: trigger fails (gate closed)
+├── scenario-8-round-2.json     # Retry: trigger succeeds (gate open)
+├── scenario-9-result.json      # Monitoring loop
+├── scenario-10-result.json     # Replay
+└── scenario-11-result.json     # SLA breach
 ```
 
 ## Test-Evaluator Lambda
@@ -176,7 +233,8 @@ Source: `demo/aws/test-evaluator/main.go`
 | `/freshness` | `SENSOR#freshness` | `{"maxLagSeconds": N}` | PASS if `lag <= maxLagSeconds` |
 | `/record-count` | `SENSOR#record-count` | `{"threshold": N}` | PASS if `count >= threshold` |
 | `/upstream-check` | `SENSOR#upstream-check` | `{"expectComplete": true}` | PASS if `complete == true` |
-| `/trigger-endpoint` | — | — | Always returns success |
+| `/trigger-endpoint` | — | — | Always returns 200 (success) |
+| `/trigger-gate` | `SENSOR#trigger-gate` | — | Returns 200 if `open == true`, 500 if closed |
 
 ### Sensor Items
 
@@ -187,8 +245,9 @@ The E2E script seeds DynamoDB items that the test-evaluator reads:
 | `SENSOR#freshness` | `STATE` | `{"lag": 300}` |
 | `SENSOR#record-count` | `STATE` | `{"count": 500}` |
 | `SENSOR#upstream-check` | `STATE` | `{"complete": false}` |
+| `SENSOR#trigger-gate` | `STATE` | `{"open": false}` |
 
-The script updates these items between Step Function executions to control trait pass/fail.
+The script updates these items between Step Function executions to control trait pass/fail and trigger behavior.
 
 ## Environment Variables
 

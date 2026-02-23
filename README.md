@@ -507,7 +507,7 @@ cfg.EnableStepFunctionTrigger = true  // SFN StartExecution/DescribeExecution
 
 ### E2E Testing
 
-See [`demo/aws/`](demo/aws/) for the AWS E2E test suite (6 scenarios: progressive readiness, quality drop, dedup, exclusion, not found, stream-router).
+See [`demo/aws/`](demo/aws/) for the AWS E2E test suite (11 scenarios: progressive readiness, quality drop, dedup, exclusion, not found, stream-router, cascade, retry, monitoring, replay, SLA breach).
 
 See [`demo/local/`](demo/local/) for the local E2E test suite (11 scenarios including cascade, retry, monitoring, replay, and SLA breach).
 
@@ -545,7 +545,7 @@ interlock serve                  Start HTTP API server
 | Demo | Scenarios | Description | Location |
 |------|-----------|-------------|----------|
 | **Local** | 11 | Docker Compose with Redis, Airflow, Grafana — includes cascade, retry, monitoring, replay, SLA | [`demo/local/`](demo/local/) |
-| **AWS** | 6 | E2E test suite with DynamoDB, Lambda, Step Functions | [`demo/aws/`](demo/aws/) |
+| **AWS** | 11 | E2E test suite with DynamoDB, Lambda, Step Functions — includes cascade, retry, monitoring, replay, SLA | [`demo/aws/`](demo/aws/) |
 
 ## Development
 
