@@ -307,7 +307,7 @@ func TestASL_CatchCoverage(t *testing.T) {
 	// Every Task state except ReleaseLock must have a Catch block.
 	// Map states (like EvaluateTraits) that wrap Task states also need Catch.
 	exempt := map[string]bool{
-		"ReleaseLock":        true,
+		"ReleaseLock":         true,
 		"ReleaseLockForRetry": true,
 	}
 

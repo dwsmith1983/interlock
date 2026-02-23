@@ -63,7 +63,12 @@ func (p *RedisProvider) ListReplays(ctx context.Context, limit int) ([]types.Rep
 	if limit <= 0 {
 		limit = 50
 	}
-	keys, err := p.client.ZRevRange(ctx, p.replayIndexKey(), 0, int64(limit-1)).Result()
+	keys, err := p.client.ZRangeArgs(ctx, goredis.ZRangeArgs{
+		Key:   p.replayIndexKey(),
+		Start: 0,
+		Stop:  int64(limit - 1),
+		Rev:   true,
+	}).Result()
 	if err != nil {
 		return nil, err
 	}

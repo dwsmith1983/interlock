@@ -37,7 +37,12 @@ func (p *RedisProvider) PutLateArrival(ctx context.Context, entry types.LateArri
 // ListLateArrivals returns late-arrival records for a pipeline/date/schedule.
 func (p *RedisProvider) ListLateArrivals(ctx context.Context, pipelineID, date, scheduleID string) ([]types.LateArrival, error) {
 	key := p.lateArrivalKey(pipelineID, date, scheduleID)
-	members, err := p.client.ZRevRange(ctx, key, 0, -1).Result()
+	members, err := p.client.ZRangeArgs(ctx, goredis.ZRangeArgs{
+		Key:   key,
+		Start: 0,
+		Stop:  -1,
+		Rev:   true,
+	}).Result()
 	if err != nil {
 		return nil, err
 	}

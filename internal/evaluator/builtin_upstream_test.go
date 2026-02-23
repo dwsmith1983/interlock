@@ -19,14 +19,14 @@ func TestUpstreamJobLogHandler_Pass(t *testing.T) {
 	// Set up upstream as completed
 	now := time.Now()
 	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
-		PipelineID: "silver-pipeline",
-		Date:       "2026-02-23",
-		ScheduleID: "h14",
-		Status:     types.RunCompleted,
-		RunID:      "run-123",
-		StartedAt:  now,
+		PipelineID:  "silver-pipeline",
+		Date:        "2026-02-23",
+		ScheduleID:  "h14",
+		Status:      types.RunCompleted,
+		RunID:       "run-123",
+		StartedAt:   now,
 		CompletedAt: &now,
-		UpdatedAt:  now,
+		UpdatedAt:   now,
 	}))
 
 	handler := NewUpstreamJobLogHandler(prov)

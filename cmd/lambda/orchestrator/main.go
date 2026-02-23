@@ -614,14 +614,15 @@ func notifyDownstream(ctx context.Context, d *intlambda.Deps, req intlambda.Orch
 		for _, tc := range p.Traits {
 			upstreamPipeline, _ := tc.Config["upstreamPipeline"].(string)
 			if upstreamPipeline == req.PipelineID {
-				// This pipeline depends on us — write cascade marker for each schedule
-				for _, sched := range types.ResolveSchedules(p) {
-					if err := d.Provider.WriteCascadeMarker(ctx, p.Name, sched.Name, date, req.PipelineID); err != nil {
-						d.Logger.Error("failed to write cascade marker",
-							"downstream", p.Name, "schedule", sched.Name, "error", err)
-					} else {
-						notified = append(notified, p.Name+"/"+sched.Name)
-					}
+				// Cascade only the matching schedule. Writing markers for all
+				// downstream schedules causes premature triggers (e.g. silver h06
+				// completing triggers gold h07 before silver h07 finishes) and the
+				// dedup key prevents re-triggering when silver h07 actually completes.
+				if err := d.Provider.WriteCascadeMarker(ctx, p.Name, req.ScheduleID, date, req.PipelineID); err != nil {
+					d.Logger.Error("failed to write cascade marker",
+						"downstream", p.Name, "schedule", req.ScheduleID, "error", err)
+				} else {
+					notified = append(notified, p.Name+"/"+req.ScheduleID)
 				}
 				break // found the trait, move to next pipeline
 			}
