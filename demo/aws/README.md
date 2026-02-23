@@ -7,7 +7,7 @@ End-to-end testing of Interlock's AWS deployment: DynamoDB + Lambda + Step Funct
 ```
                                     ┌─────────────────┐
                                     │  Step Function  │
-                                    │  (46-state ASL) │
+                                    │  (46 states)    │
                                     └───┬───┬───┬───┬─┘
                                         │   │   │   │
               ┌─────────────────────────┘   │   │   └─────────────────────────┐
@@ -70,7 +70,7 @@ make e2e-test-teardown   # teardown
 
 ## Step Function Lifecycle
 
-The 46-state ASL implements the full pipeline lifecycle:
+The 46-state Amazon States Language definition implements the full pipeline lifecycle:
 
 ```
 CheckExclusion → AcquireLock → CheckRunLog → ResolvePipeline
