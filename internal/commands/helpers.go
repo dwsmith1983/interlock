@@ -1,3 +1,4 @@
+// Package commands implements the CLI subcommands for the interlock binary.
 package commands
 
 import (

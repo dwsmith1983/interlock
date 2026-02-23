@@ -2,6 +2,7 @@ package archiver
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -21,7 +22,12 @@ type mockPGStore struct {
 	insertedEvents  []types.EventRecord
 	cursors         map[string]string
 	insertEventsErr error
+	upsertRunErr    error
+	getCursorErr    error
 }
+
+// Compile-time interface check.
+var _ Destination = (*mockPGStore)(nil)
 
 func newMockPG() *mockPGStore {
 	return &mockPGStore{
@@ -30,6 +36,9 @@ func newMockPG() *mockPGStore {
 }
 
 func (m *mockPGStore) UpsertRun(_ context.Context, run types.RunState) error {
+	if m.upsertRunErr != nil {
+		return m.upsertRunErr
+	}
 	m.upsertedRuns = append(m.upsertedRuns, run)
 	return nil
 }
@@ -53,6 +62,9 @@ func (m *mockPGStore) InsertEvents(_ context.Context, records []types.EventRecor
 }
 
 func (m *mockPGStore) GetCursor(_ context.Context, pipelineID, dataType string) (string, error) {
+	if m.getCursorErr != nil {
+		return "", m.getCursorErr
+	}
 	return m.cursors[pipelineID+":"+dataType], nil
 }
 
@@ -61,47 +73,94 @@ func (m *mockPGStore) SetCursor(_ context.Context, pipelineID, dataType, cursorV
 	return nil
 }
 
-// pgDest wraps mockPGStore to satisfy the archiver's dependency (matching the real postgres.Store methods).
-// Since the archiver calls methods directly on *postgres.Store, we test via the
-// exported archiving functions using an integration-style approach with the mock provider.
+func newTestArchiver(prov *testutil.MockProvider, pg *mockPGStore) *Archiver {
+	return New(prov, pg, time.Minute, slog.Default())
+}
 
-func setupTestArchiver(t *testing.T) (*testutil.MockProvider, *mockPGStore) {
-	t.Helper()
+func TestNew_DefaultInterval(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	a := New(prov, nil, 0, slog.Default())
+	assert.Equal(t, defaultInterval, a.interval, "zero interval should fall back to default")
+}
+
+func TestNew_NegativeInterval(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	a := New(prov, nil, -1*time.Second, slog.Default())
+	assert.Equal(t, defaultInterval, a.interval, "negative interval should fall back to default")
+}
+
+func TestNew_CustomInterval(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	a := New(prov, nil, 30*time.Second, slog.Default())
+	assert.Equal(t, 30*time.Second, a.interval)
+}
+
+func TestArchiver_StartStop(t *testing.T) {
 	prov := testutil.NewMockProvider()
 	pg := newMockPG()
-	return prov, pg
+	a := New(prov, pg, 50*time.Millisecond, slog.Default())
+
+	a.Start(context.Background())
+	time.Sleep(100 * time.Millisecond) // let at least one tick run
+	a.Stop(context.Background())
+}
+
+func TestArchiver_StopWithoutStart(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	a := New(prov, nil, time.Minute, slog.Default())
+	a.Stop(context.Background()) // should not panic
+}
+
+func TestTick_ArchivesPipelines(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	ctx := context.Background()
+
+	require.NoError(t, prov.RegisterPipeline(ctx, types.PipelineConfig{Name: "p1", Archetype: "batch"}))
+	require.NoError(t, prov.RegisterPipeline(ctx, types.PipelineConfig{Name: "p2", Archetype: "batch"}))
+
+	now := time.Now()
+	// Terminal run for p1
+	require.NoError(t, prov.PutRunState(ctx, types.RunState{
+		RunID: "run-1", PipelineID: "p1", Status: types.RunCompleted, Version: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+	// Active run for p2 (should not be archived)
+	require.NoError(t, prov.PutRunState(ctx, types.RunState{
+		RunID: "run-2", PipelineID: "p2", Status: types.RunRunning, Version: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	a := newTestArchiver(prov, pg)
+	a.tick(ctx)
+
+	assert.Len(t, pg.upsertedRuns, 1, "only terminal runs should be archived")
+	assert.Equal(t, "run-1", pg.upsertedRuns[0].RunID)
 }
 
 func TestArchiveRuns_TerminalOnly(t *testing.T) {
-	prov, pg := setupTestArchiver(t)
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
 	ctx := context.Background()
 
-	require.NoError(t, prov.RegisterPipeline(ctx, types.PipelineConfig{Name: "test-pipe", Archetype: "batch"}))
-
-	// Create terminal and active runs
+	now := time.Now()
 	require.NoError(t, prov.PutRunState(ctx, types.RunState{
-		RunID: "run-completed", PipelineID: "test-pipe", Status: types.RunCompleted, Version: 2,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		RunID: "completed", PipelineID: "test-pipe", Status: types.RunCompleted, Version: 2,
+		CreatedAt: now, UpdatedAt: now,
 	}))
 	require.NoError(t, prov.PutRunState(ctx, types.RunState{
-		RunID: "run-running", PipelineID: "test-pipe", Status: types.RunRunning, Version: 1,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		RunID: "running", PipelineID: "test-pipe", Status: types.RunRunning, Version: 1,
+		CreatedAt: now, UpdatedAt: now,
 	}))
 	require.NoError(t, prov.PutRunState(ctx, types.RunState{
-		RunID: "run-failed", PipelineID: "test-pipe", Status: types.RunFailed, Version: 3,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		RunID: "failed", PipelineID: "test-pipe", Status: types.RunFailed, Version: 3,
+		CreatedAt: now, UpdatedAt: now,
 	}))
 
-	// Simulate archiveRuns directly
-	runs, err := prov.ListRuns(ctx, "test-pipe", 0)
-	require.NoError(t, err)
-	for _, run := range runs {
-		if run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled {
-			require.NoError(t, pg.UpsertRun(ctx, run))
-		}
-	}
+	a := newTestArchiver(prov, pg)
+	a.archiveRuns(ctx, "test-pipe")
 
-	assert.Len(t, pg.upsertedRuns, 2, "only terminal runs should be archived")
+	assert.Len(t, pg.upsertedRuns, 2, "only terminal runs archived")
 	statuses := map[types.RunStatus]bool{}
 	for _, r := range pg.upsertedRuns {
 		statuses[r.Status] = true
@@ -111,45 +170,112 @@ func TestArchiveRuns_TerminalOnly(t *testing.T) {
 	assert.False(t, statuses[types.RunRunning])
 }
 
-func TestArchiveEvents_IncrementalCursor(t *testing.T) {
-	prov, pg := setupTestArchiver(t)
+func TestArchiveRuns_NoRuns(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	a := newTestArchiver(prov, pg)
+	a.archiveRuns(context.Background(), "empty-pipe")
+	assert.Empty(t, pg.upsertedRuns)
+}
+
+func TestArchiveRuns_UpsertError(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	pg.upsertRunErr = fmt.Errorf("pg down")
 	ctx := context.Background()
 
-	require.NoError(t, prov.RegisterPipeline(ctx, types.PipelineConfig{Name: "event-pipe", Archetype: "batch"}))
+	now := time.Now()
+	require.NoError(t, prov.PutRunState(ctx, types.RunState{
+		RunID: "run-1", PipelineID: "p", Status: types.RunCompleted, Version: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}))
 
-	// Append events
-	for i := 0; i < 5; i++ {
+	a := newTestArchiver(prov, pg)
+	a.archiveRuns(ctx, "p") // should log error, not panic
+	assert.Empty(t, pg.upsertedRuns)
+}
+
+func TestArchiveRunLogs(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	ctx := context.Background()
+
+	now := time.Now()
+	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
+		PipelineID: "log-pipe", Date: "2025-01-15", ScheduleID: "daily",
+		Status: types.RunCompleted, AttemptNumber: 1, RunID: "run-1",
+		StartedAt: now, UpdatedAt: now,
+	}))
+	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
+		PipelineID: "log-pipe", Date: "2025-01-16", ScheduleID: "daily",
+		Status: types.RunFailed, AttemptNumber: 2, RunID: "run-2",
+		FailureMessage: "timeout", StartedAt: now, UpdatedAt: now,
+	}))
+
+	a := newTestArchiver(prov, pg)
+	a.archiveRunLogs(ctx, "log-pipe")
+
+	assert.Len(t, pg.upsertedLogs, 2)
+}
+
+func TestArchiveRunLogs_NoLogs(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	a := newTestArchiver(prov, pg)
+	a.archiveRunLogs(context.Background(), "nolog-pipe")
+	assert.Empty(t, pg.upsertedLogs)
+}
+
+func TestArchiveReruns(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	ctx := context.Background()
+
+	require.NoError(t, prov.PutRerun(ctx, types.RerunRecord{
+		RerunID: "rr-1", PipelineID: "rerun-pipe", OriginalDate: "2025-01-15",
+		Reason: "drift", Status: types.RunCompleted, RequestedAt: time.Now(),
+	}))
+
+	a := newTestArchiver(prov, pg)
+	a.archiveReruns(ctx, "rerun-pipe")
+	assert.Len(t, pg.upsertedReruns, 1)
+}
+
+func TestArchiveEvents_WithEvents(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
 		require.NoError(t, prov.AppendEvent(ctx, types.Event{
 			Kind:       types.EventTraitEvaluated,
-			PipelineID: "event-pipe",
-			TraitType:  "freshness",
-			Status:     "PASS",
+			PipelineID: "ev-pipe",
 			Timestamp:  time.Now(),
 		}))
 	}
 
-	// First read: from beginning
-	records, err := prov.ReadEventsSince(ctx, "event-pipe", "0-0", 3)
-	require.NoError(t, err)
-	assert.Len(t, records, 3)
-	require.NoError(t, pg.InsertEvents(ctx, records))
-	require.NoError(t, pg.SetCursor(ctx, "event-pipe", "events", records[2].StreamID))
+	a := newTestArchiver(prov, pg)
+	a.archiveEvents(ctx, "ev-pipe")
 
-	// Second read: from cursor
-	cursor, err := pg.GetCursor(ctx, "event-pipe", "events")
+	assert.Len(t, pg.insertedEvents, 3)
+	cursor, err := pg.GetCursor(ctx, "ev-pipe", "events")
 	require.NoError(t, err)
-	assert.NotEmpty(t, cursor)
-
-	records2, err := prov.ReadEventsSince(ctx, "event-pipe", cursor, 100)
-	require.NoError(t, err)
-	assert.Len(t, records2, 2, "should read remaining 2 events after cursor")
+	assert.NotEmpty(t, cursor, "cursor should be advanced after archival")
 }
 
-func TestArchiveEvents_CursorNotAdvancedOnFailure(t *testing.T) {
-	prov, pg := setupTestArchiver(t)
-	ctx := context.Background()
+func TestArchiveEvents_NoEvents(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	a := newTestArchiver(prov, pg)
+	a.archiveEvents(context.Background(), "no-events")
+	assert.Empty(t, pg.insertedEvents)
+}
 
-	require.NoError(t, prov.RegisterPipeline(ctx, types.PipelineConfig{Name: "fail-pipe", Archetype: "batch"}))
+func TestArchiveEvents_InsertFailure_CursorNotAdvanced(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	pg.insertEventsErr = fmt.Errorf("write error")
+	ctx := context.Background()
 
 	require.NoError(t, prov.AppendEvent(ctx, types.Event{
 		Kind:       types.EventRunStateChanged,
@@ -157,88 +283,94 @@ func TestArchiveEvents_CursorNotAdvancedOnFailure(t *testing.T) {
 		Timestamp:  time.Now(),
 	}))
 
-	records, err := prov.ReadEventsSince(ctx, "fail-pipe", "0-0", 100)
-	require.NoError(t, err)
-	assert.Len(t, records, 1)
+	a := newTestArchiver(prov, pg)
+	a.archiveEvents(ctx, "fail-pipe")
 
-	// Simulate insert failure
-	pg.insertEventsErr = assert.AnError
-	err = pg.InsertEvents(ctx, records)
-	assert.Error(t, err)
-
-	// Cursor should still be empty (not advanced)
 	cursor, err := pg.GetCursor(ctx, "fail-pipe", "events")
 	require.NoError(t, err)
 	assert.Empty(t, cursor, "cursor should not advance on write failure")
 }
 
-func TestArchiveRunLogs(t *testing.T) {
-	prov, pg := setupTestArchiver(t)
-	ctx := context.Background()
-
-	require.NoError(t, prov.RegisterPipeline(ctx, types.PipelineConfig{Name: "log-pipe", Archetype: "batch"}))
-
-	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
-		PipelineID: "log-pipe", Date: "2025-01-15", Status: types.RunCompleted,
-		AttemptNumber: 1, RunID: "run-1", StartedAt: time.Now(), UpdatedAt: time.Now(),
-	}))
-	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
-		PipelineID: "log-pipe", Date: "2025-01-16", Status: types.RunFailed,
-		AttemptNumber: 2, RunID: "run-2", FailureMessage: "timeout",
-		StartedAt: time.Now(), UpdatedAt: time.Now(),
-	}))
-
-	entries, err := prov.ListRunLogs(ctx, "log-pipe", 0)
-	require.NoError(t, err)
-	for _, entry := range entries {
-		require.NoError(t, pg.UpsertRunLog(ctx, entry))
-	}
-
-	assert.Len(t, pg.upsertedLogs, 2)
-}
-
-func TestArchiveReruns(t *testing.T) {
-	prov, pg := setupTestArchiver(t)
-	ctx := context.Background()
-
-	require.NoError(t, prov.RegisterPipeline(ctx, types.PipelineConfig{Name: "rerun-pipe", Archetype: "batch"}))
-
-	require.NoError(t, prov.PutRerun(ctx, types.RerunRecord{
-		RerunID: "rr-1", PipelineID: "rerun-pipe", OriginalDate: "2025-01-15",
-		Reason: "drift", Status: types.RunCompleted, RequestedAt: time.Now(),
-	}))
-
-	reruns, err := prov.ListReruns(ctx, "rerun-pipe", 0)
-	require.NoError(t, err)
-	for _, r := range reruns {
-		require.NoError(t, pg.UpsertRerun(ctx, r))
-	}
-
-	assert.Len(t, pg.upsertedReruns, 1)
-}
-
-func TestArchiver_StartStop(t *testing.T) {
+func TestArchiveEvents_GetCursorError(t *testing.T) {
 	prov := testutil.NewMockProvider()
-	// We can't use the real postgres.Store here without a DB,
-	// but we can verify Start/Stop lifecycle doesn't panic.
-	// Use a nil dest which will cause errors on tick — that's fine, errors are logged.
-	a := &Archiver{
-		source:   prov,
-		dest:     nil,
-		interval: 50 * time.Millisecond,
-		logger:   slog.Default(),
+	pg := newMockPG()
+	pg.getCursorErr = fmt.Errorf("cursor read error")
+	ctx := context.Background()
+
+	require.NoError(t, prov.AppendEvent(ctx, types.Event{
+		Kind:       types.EventTraitEvaluated,
+		PipelineID: "cursor-err",
+		Timestamp:  time.Now(),
+	}))
+
+	a := newTestArchiver(prov, pg)
+	a.archiveEvents(ctx, "cursor-err") // should log error, not panic
+	assert.Empty(t, pg.insertedEvents, "no events should be inserted when cursor read fails")
+}
+
+func TestArchiveEvents_IncrementalCursor(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		require.NoError(t, prov.AppendEvent(ctx, types.Event{
+			Kind:       types.EventTraitEvaluated,
+			PipelineID: "incr-pipe",
+			Timestamp:  time.Now(),
+		}))
 	}
 
-	_, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
-	a.wg.Add(1)
+	a := newTestArchiver(prov, pg)
 
-	// Just verify it doesn't block or panic
-	go func() {
-		defer a.wg.Done()
-		// Single tick with nil dest will panic on method call, so skip
-		// This test just verifies the lifecycle management
-	}()
+	// First archival gets all 5
+	a.archiveEvents(ctx, "incr-pipe")
+	assert.Len(t, pg.insertedEvents, 5)
 
-	a.Stop(context.Background())
+	// Add 2 more events
+	for i := 0; i < 2; i++ {
+		require.NoError(t, prov.AppendEvent(ctx, types.Event{
+			Kind:       types.EventRunStateChanged,
+			PipelineID: "incr-pipe",
+			Timestamp:  time.Now(),
+		}))
+	}
+
+	// Second archival only gets 2 new events
+	a.archiveEvents(ctx, "incr-pipe")
+	assert.Len(t, pg.insertedEvents, 7, "should have archived 5+2 events total")
+}
+
+func TestArchivePipeline_AllTypes(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	pg := newMockPG()
+	ctx := context.Background()
+
+	now := time.Now()
+	require.NoError(t, prov.PutRunState(ctx, types.RunState{
+		RunID: "r1", PipelineID: "full-pipe", Status: types.RunCompleted, Version: 1,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
+		PipelineID: "full-pipe", Date: "2025-01-15", ScheduleID: "daily",
+		Status: types.RunCompleted, AttemptNumber: 1, RunID: "r1",
+		StartedAt: now, UpdatedAt: now,
+	}))
+	require.NoError(t, prov.PutRerun(ctx, types.RerunRecord{
+		RerunID: "rr-1", PipelineID: "full-pipe", OriginalDate: "2025-01-15",
+		Reason: "test", Status: types.RunPending, RequestedAt: now,
+	}))
+	require.NoError(t, prov.AppendEvent(ctx, types.Event{
+		Kind:       types.EventTriggerFired,
+		PipelineID: "full-pipe",
+		Timestamp:  now,
+	}))
+
+	a := newTestArchiver(prov, pg)
+	a.archivePipeline(ctx, "full-pipe")
+
+	assert.Len(t, pg.upsertedRuns, 1)
+	assert.Len(t, pg.upsertedLogs, 1)
+	assert.Len(t, pg.upsertedReruns, 1)
+	assert.Len(t, pg.insertedEvents, 1)
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -504,4 +505,310 @@ func TestGenerateRunID(t *testing.T) {
 		assert.False(t, ids[id], "duplicate run ID generated")
 		ids[id] = true
 	}
+}
+
+// --- errProvider wraps MockProvider to inject errors into specific methods ---
+
+type errProvider struct {
+	*testutil.MockProvider
+	listPipelinesErr error
+	putLateArrivalFn func(context.Context, types.LateArrival) error
+}
+
+func (e *errProvider) ListPipelines(ctx context.Context) ([]types.PipelineConfig, error) {
+	if e.listPipelinesErr != nil {
+		return nil, e.listPipelinesErr
+	}
+	return e.MockProvider.ListPipelines(ctx)
+}
+
+func (e *errProvider) PutLateArrival(ctx context.Context, entry types.LateArrival) error {
+	if e.putLateArrivalFn != nil {
+		return e.putLateArrivalFn(ctx, entry)
+	}
+	return e.MockProvider.PutLateArrival(ctx, entry)
+}
+
+// --- notifyDownstream ---
+
+func TestNotifyDownstream_FoundDownstream(t *testing.T) {
+	d := testDeps(t)
+	mock := d.Provider.(*testutil.MockProvider)
+
+	// Upstream pipeline
+	seedPipeline(t, d, types.PipelineConfig{Name: "pipe-a"})
+
+	// Downstream pipeline with upstreamPipeline trait pointing to pipe-a
+	seedPipeline(t, d, types.PipelineConfig{
+		Name: "pipe-b",
+		Traits: map[string]types.TraitConfig{
+			"upstream": {
+				Evaluator: "check-upstream",
+				Config:    map[string]interface{}{"upstreamPipeline": "pipe-a"},
+			},
+		},
+	})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "notifyDownstream",
+		PipelineID: "pipe-a",
+		ScheduleID: "daily",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+
+	notified, ok := resp.Payload["notified"].([]string)
+	require.True(t, ok)
+	assert.Contains(t, notified, "pipe-b/daily")
+
+	// Verify cascade marker was written
+	markers := mock.CascadeMarkers()
+	require.Len(t, markers, 1)
+	assert.Equal(t, "pipe-b", markers[0].PipelineID)
+	assert.Equal(t, "daily", markers[0].ScheduleID)
+	assert.Equal(t, "pipe-a", markers[0].Source)
+}
+
+func TestNotifyDownstream_NoDownstream(t *testing.T) {
+	d := testDeps(t)
+
+	seedPipeline(t, d, types.PipelineConfig{Name: "pipe-a"})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "notifyDownstream",
+		PipelineID: "pipe-a",
+		ScheduleID: "daily",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+
+	// notified should be nil (no downstream found)
+	assert.Nil(t, resp.Payload["notified"])
+}
+
+func TestNotifyDownstream_ListPipelinesError(t *testing.T) {
+	mock := testutil.NewMockProvider()
+	ep := &errProvider{
+		MockProvider:     mock,
+		listPipelinesErr: fmt.Errorf("dynamodb unavailable"),
+	}
+	d := &intlambda.Deps{
+		Provider:     ep,
+		Runner:       trigger.NewRunner(),
+		ArchetypeReg: archetype.NewRegistry(),
+		AlertFn:      func(a types.Alert) {},
+		Logger:       slog.Default(),
+	}
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "notifyDownstream",
+		PipelineID: "pipe-a",
+		ScheduleID: "daily",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "error", resp.Result)
+}
+
+// --- checkValidationTimeout ---
+
+func TestCheckValidationTimeout_NoSLA(t *testing.T) {
+	d := testDeps(t)
+	seedPipeline(t, d, types.PipelineConfig{Name: "pipe-a"})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "checkValidationTimeout",
+		PipelineID: "pipe-a",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	assert.Equal(t, false, resp.Payload["validationTimedOut"])
+}
+
+func TestCheckValidationTimeout_NotBreached(t *testing.T) {
+	d := testDeps(t)
+
+	// Set validation timeout to 1 hour from now
+	deadline := time.Now().Add(1 * time.Hour).Format("15:04")
+	seedPipeline(t, d, types.PipelineConfig{
+		Name: "pipe-a",
+		SLA:  &types.SLAConfig{ValidationTimeout: deadline},
+	})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "checkValidationTimeout",
+		PipelineID: "pipe-a",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	assert.Equal(t, false, resp.Payload["validationTimedOut"])
+}
+
+func TestCheckValidationTimeout_Breached(t *testing.T) {
+	d := testDeps(t)
+	var alerts []types.Alert
+	d.AlertFn = func(a types.Alert) { alerts = append(alerts, a) }
+
+	// Set validation timeout to 1 hour ago
+	deadline := time.Now().Add(-1 * time.Hour).Format("15:04")
+	seedPipeline(t, d, types.PipelineConfig{
+		Name: "pipe-a",
+		SLA:  &types.SLAConfig{ValidationTimeout: deadline},
+	})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "checkValidationTimeout",
+		PipelineID: "pipe-a",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	assert.Equal(t, true, resp.Payload["validationTimedOut"])
+	assert.Len(t, alerts, 1)
+	assert.Equal(t, types.AlertLevelError, alerts[0].Level)
+}
+
+// --- checkMonitoringExpired ---
+
+func TestCheckMonitoringExpired_NoMonitoringConfig(t *testing.T) {
+	d := testDeps(t)
+	seedPipeline(t, d, types.PipelineConfig{Name: "pipe-a"})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "checkMonitoringExpired",
+		PipelineID: "pipe-a",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	assert.Equal(t, true, resp.Payload["expired"])
+}
+
+func TestCheckMonitoringExpired_NotExpired(t *testing.T) {
+	d := testDeps(t)
+	seedPipeline(t, d, types.PipelineConfig{
+		Name: "pipe-a",
+		Watch: &types.PipelineWatchConfig{
+			Monitoring: &types.MonitoringConfig{
+				Enabled:  true,
+				Duration: "2h",
+			},
+		},
+	})
+
+	startedAt := time.Now().Add(-1 * time.Minute).Format(time.RFC3339)
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "checkMonitoringExpired",
+		PipelineID: "pipe-a",
+		Payload: map[string]interface{}{
+			"monitoringStartedAt": startedAt,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	assert.Equal(t, false, resp.Payload["expired"])
+}
+
+func TestCheckMonitoringExpired_Expired(t *testing.T) {
+	d := testDeps(t)
+	seedPipeline(t, d, types.PipelineConfig{
+		Name: "pipe-a",
+		Watch: &types.PipelineWatchConfig{
+			Monitoring: &types.MonitoringConfig{
+				Enabled:  true,
+				Duration: "2h",
+			},
+		},
+	})
+
+	startedAt := time.Now().Add(-3 * time.Hour).Format(time.RFC3339)
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "checkMonitoringExpired",
+		PipelineID: "pipe-a",
+		Payload: map[string]interface{}{
+			"monitoringStartedAt": startedAt,
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	assert.Equal(t, true, resp.Payload["expired"])
+}
+
+// --- handleLateArrival ---
+
+func TestHandleLateArrival_StoresAndCascades(t *testing.T) {
+	d := testDeps(t)
+	mock := d.Provider.(*testutil.MockProvider)
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "handleLateArrival",
+		PipelineID: "pipe-a",
+		ScheduleID: "daily",
+		Payload: map[string]interface{}{
+			"drifted": []interface{}{"freshness", "schema"},
+			"runID":   "run-42",
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	assert.Equal(t, true, resp.Payload["lateArrivalHandled"])
+
+	// Verify late arrivals were stored
+	date := time.Now().UTC().Format("2006-01-02")
+	arrivals, err := d.Provider.ListLateArrivals(context.Background(), "pipe-a", date, "daily")
+	require.NoError(t, err)
+	assert.Len(t, arrivals, 2)
+
+	traitTypes := []string{arrivals[0].TraitType, arrivals[1].TraitType}
+	assert.Contains(t, traitTypes, "freshness")
+	assert.Contains(t, traitTypes, "schema")
+
+	// Verify rerun record was created
+	reruns := mock.Reruns()
+	require.Len(t, reruns, 1)
+	assert.Equal(t, "rerun-run-42", reruns[0].RerunID)
+	assert.Equal(t, "pipe-a", reruns[0].PipelineID)
+	assert.Equal(t, types.RunPending, reruns[0].Status)
+
+	// Verify cascade marker was written for self-re-evaluation
+	markers := mock.CascadeMarkers()
+	require.Len(t, markers, 1)
+	assert.Equal(t, "pipe-a", markers[0].PipelineID)
+	assert.Equal(t, "daily", markers[0].ScheduleID)
+	assert.Equal(t, "late-arrival", markers[0].Source)
+}
+
+func TestHandleLateArrival_PutLateArrivalError(t *testing.T) {
+	mock := testutil.NewMockProvider()
+	ep := &errProvider{
+		MockProvider: mock,
+		putLateArrivalFn: func(_ context.Context, _ types.LateArrival) error {
+			return fmt.Errorf("storage write failed")
+		},
+	}
+	d := &intlambda.Deps{
+		Provider:     ep,
+		Runner:       trigger.NewRunner(),
+		ArchetypeReg: archetype.NewRegistry(),
+		AlertFn:      func(a types.Alert) {},
+		Logger:       slog.Default(),
+	}
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "handleLateArrival",
+		PipelineID: "pipe-a",
+		ScheduleID: "daily",
+		Payload: map[string]interface{}{
+			"drifted": []interface{}{"freshness"},
+			"runID":   "run-99",
+		},
+	})
+	require.NoError(t, err)
+	// Should still proceed despite PutLateArrival errors
+	assert.Equal(t, "proceed", resp.Result)
+	assert.Equal(t, true, resp.Payload["lateArrivalHandled"])
+
+	// Rerun and cascade should still be written (those go through MockProvider, not errProvider)
+	reruns := mock.Reruns()
+	require.Len(t, reruns, 1)
+	assert.Equal(t, "rerun-run-99", reruns[0].RerunID)
 }

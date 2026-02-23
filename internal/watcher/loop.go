@@ -7,6 +7,7 @@ import (
 
 	"github.com/dwsmith1983/interlock/internal/lifecycle"
 	"github.com/dwsmith1983/interlock/internal/metrics"
+	"github.com/dwsmith1983/interlock/internal/schedule"
 	"github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -73,14 +74,17 @@ type runLogUpdate struct {
 }
 
 // updateRunLog fetches the run log, checks RunID match, and updates fields.
-func (w *Watcher) updateRunLog(ctx context.Context, u runLogUpdate) {
+func (w *Watcher) updateRunLog(ctx context.Context, u runLogUpdate) error {
 	scheduleID := u.ScheduleID
 	if scheduleID == "" {
 		scheduleID = types.DefaultScheduleID
 	}
 	runLog, err := w.provider.GetRunLog(ctx, u.PipelineID, u.Date, scheduleID)
-	if err != nil || runLog == nil || runLog.RunID != u.RunID {
-		return
+	if err != nil {
+		return fmt.Errorf("getting run log: %w", err)
+	}
+	if runLog == nil || runLog.RunID != u.RunID {
+		return nil
 	}
 	runLog.Status = u.Status
 	if u.FailureMessage != "" {
@@ -95,8 +99,9 @@ func (w *Watcher) updateRunLog(ctx context.Context, u runLogUpdate) {
 	}
 	runLog.UpdatedAt = u.UpdatedAt
 	if err := w.provider.PutRunLog(ctx, *runLog); err != nil {
-		w.logger.Error("failed to update run log", "pipeline", u.PipelineID, "error", err)
+		return fmt.Errorf("putting run log: %w", err)
 	}
+	return nil
 }
 
 // computeLockTTL calculates a lock TTL based on the number and timeout of traits.
@@ -147,7 +152,7 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 
 // acquireLock attempts to acquire the evaluation lock for the pipeline and schedule.
 func (w *Watcher) acquireLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, interval time.Duration) bool {
-	lockKey := "eval:" + pipeline.Name + ":" + sched.Name
+	lockKey := schedule.LockKey(pipeline.Name, sched.Name)
 	acquired, err := w.provider.AcquireLock(ctx, lockKey, computeLockTTL(pipeline, interval))
 	if err != nil {
 		w.logger.Error("failed to acquire lock", "pipeline", pipeline.Name, "schedule", sched.Name, "error", err)
@@ -158,7 +163,7 @@ func (w *Watcher) acquireLock(ctx context.Context, pipeline types.PipelineConfig
 
 // releaseLock releases the evaluation lock for the pipeline and schedule.
 func (w *Watcher) releaseLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig) {
-	lockKey := "eval:" + pipeline.Name + ":" + sched.Name
+	lockKey := schedule.LockKey(pipeline.Name, sched.Name)
 	if err := w.provider.ReleaseLock(ctx, lockKey); err != nil {
 		w.logger.Error("failed to release lock", "pipeline", pipeline.Name, "schedule", sched.Name, "error", err)
 	}
@@ -234,12 +239,14 @@ func (w *Watcher) checkRunLog(ctx context.Context, pipeline types.PipelineConfig
 				Message:    fmt.Sprintf("Pipeline %s exhausted %d retry attempts", pipeline.Name, retryPolicy.MaxAttempts),
 				Timestamp:  now,
 			})
-			w.appendEvent(ctx, types.Event{
+			if err := w.appendEvent(ctx, types.Event{
 				Kind:       types.EventRetryExhausted,
 				PipelineID: pipeline.Name,
 				Message:    fmt.Sprintf("exhausted %d attempts", retryPolicy.MaxAttempts),
 				Timestamp:  now,
-			})
+			}); err != nil {
+				w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+			}
 			runLog.AlertSent = true
 			runLog.UpdatedAt = now
 			if err := w.provider.PutRunLog(ctx, *runLog); err != nil {
@@ -284,12 +291,14 @@ func (w *Watcher) evaluateReadiness(ctx context.Context, pipeline types.Pipeline
 		return nil, false
 	}
 
-	w.appendEvent(ctx, types.Event{
+	if err := w.appendEvent(ctx, types.Event{
 		Kind:       types.EventWatcherEvaluation,
 		PipelineID: pipeline.Name,
 		Status:     string(result.Status),
 		Timestamp:  now,
-	})
+	}); err != nil {
+		w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+	}
 
 	w.checkEvaluationSLA(ctx, pipeline, sched, result, now)
 	return result, true
@@ -371,24 +380,28 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 			w.logger.Warn("failed to CAS run to FAILED", "pipeline", pipeline.Name, "runID", runID, "error", err)
 		}
 
-		w.appendEvent(ctx, types.Event{
+		if err := w.appendEvent(ctx, types.Event{
 			Kind:       types.EventTriggerFailed,
 			PipelineID: pipeline.Name,
 			RunID:      runID,
 			Status:     string(types.RunFailed),
 			Message:    triggerErr.Error(),
 			Timestamp:  time.Now(),
-		})
+		}); err != nil {
+			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+		}
 
 		if IsRetryable(retryPolicy, fc) && attemptNum < retryPolicy.MaxAttempts {
 			metrics.RetriesScheduled.Add(1)
-			w.appendEvent(ctx, types.Event{
+			if err := w.appendEvent(ctx, types.Event{
 				Kind:       types.EventRetryScheduled,
 				PipelineID: pipeline.Name,
 				RunID:      runID,
 				Message:    fmt.Sprintf("retry %d/%d scheduled after %v", attemptNum+1, retryPolicy.MaxAttempts, CalculateBackoff(retryPolicy, attemptNum)),
 				Timestamp:  time.Now(),
-			})
+			}); err != nil {
+				w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+			}
 		}
 
 		w.logger.Warn("trigger failed", "pipeline", pipeline.Name, "attempt", attemptNum, "error", triggerErr, "category", fc)
@@ -447,22 +460,26 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 		w.logger.Error("failed to persist run log", "pipeline", pipeline.Name, "error", err)
 	}
 
-	w.appendEvent(ctx, types.Event{
+	if err := w.appendEvent(ctx, types.Event{
 		Kind:       types.EventTriggerFired,
 		PipelineID: pipeline.Name,
 		RunID:      runID,
 		Status:     string(entry.Status),
 		Timestamp:  time.Now(),
-	})
+	}); err != nil {
+		w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+	}
 
 	if entry.Status == types.RunCompletedMonitoring {
-		w.appendEvent(ctx, types.Event{
+		if err := w.appendEvent(ctx, types.Event{
 			Kind:       types.EventMonitoringStarted,
 			PipelineID: pipeline.Name,
 			RunID:      runID,
 			Message:    fmt.Sprintf("post-completion monitoring started (duration: %s)", monitoringDuration(pipeline)),
 			Timestamp:  time.Now(),
-		})
+		}); err != nil {
+			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+		}
 	}
 
 	w.logger.Info("trigger succeeded", "pipeline", pipeline.Name, "run", runID, "attempt", attemptNum)
@@ -510,7 +527,7 @@ func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineCon
 		if err != nil || !ok {
 			return
 		}
-		w.updateRunLog(ctx, runLogUpdate{
+		if err := w.updateRunLog(ctx, runLogUpdate{
 			PipelineID:     pipeline.Name,
 			Date:           today,
 			ScheduleID:     sched.Name,
@@ -518,23 +535,29 @@ func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineCon
 			Status:         targetStatus,
 			SetCompletedAt: targetStatus == types.RunCompleted,
 			UpdatedAt:      now,
-		})
-		w.appendEvent(ctx, types.Event{
+		}); err != nil {
+			w.logger.Error("failed to update run log", "pipeline", pipeline.Name, "error", err)
+		}
+		if err := w.appendEvent(ctx, types.Event{
 			Kind:       types.EventCallbackReceived,
 			PipelineID: pipeline.Name,
 			RunID:      run.RunID,
 			Status:     string(targetStatus),
 			Message:    fmt.Sprintf("run completed successfully (provider state: %s)", result.Message),
 			Timestamp:  now,
-		})
+		}); err != nil {
+			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+		}
 		if targetStatus == types.RunCompletedMonitoring {
-			w.appendEvent(ctx, types.Event{
+			if err := w.appendEvent(ctx, types.Event{
 				Kind:       types.EventMonitoringStarted,
 				PipelineID: pipeline.Name,
 				RunID:      run.RunID,
 				Message:    fmt.Sprintf("post-completion monitoring started (duration: %s)", monitoringDuration(pipeline)),
 				Timestamp:  now,
-			})
+			}); err != nil {
+				w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+			}
 		}
 		w.logger.Info("run completed", "pipeline", pipeline.Name, "run", run.RunID, "providerState", result.Message)
 
@@ -548,7 +571,7 @@ func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineCon
 		if err != nil || !ok {
 			return
 		}
-		w.updateRunLog(ctx, runLogUpdate{
+		if err := w.updateRunLog(ctx, runLogUpdate{
 			PipelineID:      pipeline.Name,
 			Date:            today,
 			ScheduleID:      sched.Name,
@@ -558,21 +581,25 @@ func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineCon
 			FailureCategory: types.FailureTransient,
 			SetCompletedAt:  true,
 			UpdatedAt:       now,
-		})
+		}); err != nil {
+			w.logger.Error("failed to update run log", "pipeline", pipeline.Name, "error", err)
+		}
 		w.fireAlert(types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,
 			Message:    fmt.Sprintf("Run %s failed for pipeline %s (provider state: %s)", run.RunID, pipeline.Name, result.Message),
 			Timestamp:  now,
 		})
-		w.appendEvent(ctx, types.Event{
+		if err := w.appendEvent(ctx, types.Event{
 			Kind:       types.EventCallbackReceived,
 			PipelineID: pipeline.Name,
 			RunID:      run.RunID,
 			Status:     string(types.RunFailed),
 			Message:    fmt.Sprintf("run failed (provider state: %s)", result.Message),
 			Timestamp:  now,
-		})
+		}); err != nil {
+			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+		}
 		w.logger.Warn("run failed", "pipeline", pipeline.Name, "run", run.RunID, "providerState", result.Message)
 	}
 }
@@ -625,13 +652,15 @@ func (w *Watcher) checkEvaluationSLA(ctx context.Context, pipeline types.Pipelin
 			Message:    fmt.Sprintf("Pipeline %s evaluation SLA breached: not ready by %s", pipeline.Name, deadlineLabel),
 			Timestamp:  now,
 		})
-		w.appendEvent(ctx, types.Event{
+		if err := w.appendEvent(ctx, types.Event{
 			Kind:       types.EventSLABreached,
 			PipelineID: pipeline.Name,
 			Status:     string(result.Status),
 			Message:    fmt.Sprintf("evaluation deadline %s breached", deadlineLabel),
 			Timestamp:  now,
-		})
+		}); err != nil {
+			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+		}
 	}
 }
 
@@ -667,14 +696,16 @@ func (w *Watcher) checkCompletionSLA(ctx context.Context, pipeline types.Pipelin
 			Message:    fmt.Sprintf("Pipeline %s completion SLA breached: run %s still %s past %s", pipeline.Name, run.RunID, run.Status, deadlineLabel),
 			Timestamp:  now,
 		})
-		w.appendEvent(ctx, types.Event{
+		if err := w.appendEvent(ctx, types.Event{
 			Kind:       types.EventSLABreached,
 			PipelineID: pipeline.Name,
 			RunID:      run.RunID,
 			Status:     string(run.Status),
 			Message:    fmt.Sprintf("completion deadline %s breached", deadlineLabel),
 			Timestamp:  now,
-		})
+		}); err != nil {
+			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+		}
 	}
 }
 
@@ -711,7 +742,7 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 		if err != nil || !ok {
 			return
 		}
-		w.updateRunLog(ctx, runLogUpdate{
+		if err := w.updateRunLog(ctx, runLogUpdate{
 			PipelineID:     pipeline.Name,
 			Date:           today,
 			ScheduleID:     sched.Name,
@@ -719,15 +750,19 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 			Status:         types.RunCompleted,
 			SetCompletedAt: true,
 			UpdatedAt:      now,
-		})
-		w.appendEvent(ctx, types.Event{
+		}); err != nil {
+			w.logger.Error("failed to update run log", "pipeline", pipeline.Name, "error", err)
+		}
+		if err := w.appendEvent(ctx, types.Event{
 			Kind:       types.EventMonitoringCompleted,
 			PipelineID: pipeline.Name,
 			RunID:      run.RunID,
 			Status:     string(types.RunCompleted),
 			Message:    "monitoring window expired with no drift detected",
 			Timestamp:  now,
-		})
+		}); err != nil {
+			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+		}
 		w.logger.Info("monitoring completed, no drift", "pipeline", pipeline.Name, "run", run.RunID)
 		return
 	}
@@ -765,7 +800,7 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 		w.logger.Error("failed to store rerun record", "pipeline", pipeline.Name, "rerunID", rerunID, "error", err)
 	}
 
-	w.appendEvent(ctx, types.Event{
+	if err := w.appendEvent(ctx, types.Event{
 		Kind:       types.EventMonitoringDrift,
 		PipelineID: pipeline.Name,
 		RunID:      run.RunID,
@@ -775,7 +810,9 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 			"blockingTraits": result.Blocking,
 		},
 		Timestamp: now,
-	})
+	}); err != nil {
+		w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+	}
 
 	w.fireAlert(types.Alert{
 		Level:      types.AlertLevelWarning,
@@ -795,7 +832,7 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 		NewStatus:       types.RunCompleted,
 		UpdatedAt:       now,
 	})
-	w.updateRunLog(ctx, runLogUpdate{
+	if err := w.updateRunLog(ctx, runLogUpdate{
 		PipelineID:     pipeline.Name,
 		Date:           today,
 		ScheduleID:     sched.Name,
@@ -803,15 +840,18 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 		Status:         types.RunCompleted,
 		SetCompletedAt: true,
 		UpdatedAt:      now,
-	})
+	}); err != nil {
+		w.logger.Error("failed to update run log", "pipeline", pipeline.Name, "error", err)
+	}
 
 	w.logger.Info("monitoring drift detected, rerun created", "pipeline", pipeline.Name, "run", run.RunID, "rerunID", rerunID)
 }
 
-func (w *Watcher) appendEvent(ctx context.Context, event types.Event) {
+func (w *Watcher) appendEvent(ctx context.Context, event types.Event) error {
 	if err := w.provider.AppendEvent(ctx, event); err != nil {
-		w.logger.Error("failed to append event", "pipeline", event.PipelineID, "event", string(event.Kind), "error", err)
+		return fmt.Errorf("appending %s event for %s: %w", event.Kind, event.PipelineID, err)
 	}
+	return nil
 }
 
 func monitoringEnabled(p types.PipelineConfig) bool {

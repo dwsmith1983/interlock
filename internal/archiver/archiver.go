@@ -10,7 +10,7 @@ import (
 
 	"github.com/dwsmith1983/interlock/internal/lifecycle"
 	"github.com/dwsmith1983/interlock/internal/provider"
-	"github.com/dwsmith1983/interlock/internal/provider/postgres"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 const (
@@ -18,10 +18,20 @@ const (
 	eventBatchSize  = int64(500)
 )
 
+// Destination defines the write interface for the archival backend.
+type Destination interface {
+	UpsertRun(ctx context.Context, run types.RunState) error
+	UpsertRunLog(ctx context.Context, entry types.RunLogEntry) error
+	UpsertRerun(ctx context.Context, record types.RerunRecord) error
+	InsertEvents(ctx context.Context, records []types.EventRecord) error
+	GetCursor(ctx context.Context, pipelineID, dataType string) (string, error)
+	SetCursor(ctx context.Context, pipelineID, dataType, cursorValue string) error
+}
+
 // Archiver periodically archives Redis data to Postgres.
 type Archiver struct {
 	source   provider.Provider
-	dest     *postgres.Store
+	dest     Destination
 	interval time.Duration
 	logger   *slog.Logger
 	cancel   context.CancelFunc
@@ -29,7 +39,7 @@ type Archiver struct {
 }
 
 // New creates a new Archiver.
-func New(source provider.Provider, dest *postgres.Store, interval time.Duration, logger *slog.Logger) *Archiver {
+func New(source provider.Provider, dest Destination, interval time.Duration, logger *slog.Logger) *Archiver {
 	if interval <= 0 {
 		interval = defaultInterval
 	}

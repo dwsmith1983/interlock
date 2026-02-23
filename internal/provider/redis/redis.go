@@ -9,9 +9,13 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/dwsmith1983/interlock/internal/provider"
 	luascripts "github.com/dwsmith1983/interlock/internal/provider/redis/lua"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
+
+// Compile-time interface satisfaction check.
+var _ provider.Provider = (*RedisProvider)(nil)
 
 // Redis storage defaults.
 const (

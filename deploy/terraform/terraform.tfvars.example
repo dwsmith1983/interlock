@@ -1,0 +1,29 @@
+# Core settings
+aws_region = "ap-southeast-1"
+table_name = "interlock"
+
+# Lambda configuration
+lambda_memory_size = 256
+lambda_timeout     = 60
+log_retention_days = 7
+
+# TTLs (Go duration strings)
+readiness_ttl = "1h"
+retention_ttl = "168h"
+
+# Optional: HTTP evaluator endpoint
+# evaluator_base_url = "https://your-evaluator.example.com"
+
+# Build paths (relative to deploy/terraform/)
+lambda_dist_dir = "../dist/lambda"
+layer_dist_dir  = "../dist/layer"
+asl_path        = "../statemachine.asl.json"
+
+# Set to true for dev/test environments to allow terraform destroy on DynamoDB table
+destroy_on_delete = false
+
+# Opt-in trigger permissions (enable only the types you use)
+enable_glue_trigger          = false
+enable_emr_trigger           = false
+enable_emr_serverless_trigger = false
+enable_sfn_trigger           = false

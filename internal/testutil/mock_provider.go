@@ -8,8 +8,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dwsmith1983/interlock/internal/provider"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
+
+// Compile-time interface satisfaction check.
+var _ provider.Provider = (*MockProvider)(nil)
 
 // MockProvider is an in-memory Provider implementation for testing.
 type MockProvider struct {
