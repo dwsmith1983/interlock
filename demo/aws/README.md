@@ -7,7 +7,7 @@ End-to-end testing of Interlock's AWS deployment: DynamoDB + Lambda + Step Funct
 ```
                                     ┌─────────────────┐
                                     │  Step Function  │
-                                    │  (46 states)    │
+                                    │  (47 states)    │
                                     └───┬───┬───┬───┬─┘
                                         │   │   │   │
               ┌─────────────────────────┘   │   │   └─────────────────────────┐
@@ -64,16 +64,16 @@ make e2e-test-teardown   # teardown
 2. **CDK Stack** (via `deploy/cdk/`) — the full Interlock infrastructure:
    - DynamoDB table (single-table design with streams)
    - 5 Lambda functions (stream-router, orchestrator, evaluator, trigger, run-checker)
-   - Step Function state machine (46 states)
+   - Step Function state machine (47 states)
    - SNS topic for alerts
    - Lambda layer with archetype definitions
 
 ## Step Function Lifecycle
 
-The 46-state Amazon States Language definition implements the full pipeline lifecycle:
+The 47-state Amazon States Language definition implements the full pipeline lifecycle:
 
 ```
-CheckExclusion → AcquireLock → CheckRunLog → ResolvePipeline
+InitDefaults → CheckExclusion → AcquireLock → CheckRunLog → ResolvePipeline
   → EvaluateTraits (Map/parallel) → CheckEvaluationSLA → CheckValidationTimeout
   → CheckReadiness → TriggerPipeline → [poll loop] → CheckCompletionSLA
   → LogCompleted → NotifyDownstream → [monitoring loop] → ReleaseLock

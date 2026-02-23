@@ -185,7 +185,7 @@ Interlock runs in two modes: **local** (Redis + subprocess evaluators) and **AWS
          │                                            │
          │                               ┌────────────▼─────────────┐
          │                               │    Step Function         │
-         │                               │  (46-state lifecycle)    │
+         │                               │  (47-state lifecycle)    │
          │                               └──┬────┬────┬─────┬───────┘
          │                                  │    │    │     │
     ┌────▼─────┐  ┌──────────┐  ┌───────────┴┐  ┌┴────▼──┐ ┌┴───────────┐
@@ -483,7 +483,7 @@ make cdk-test
 |----------|-------------|
 | DynamoDB table | Single-table design with streams, GSI, TTL |
 | 5 Lambda functions | stream-router, orchestrator, evaluator, trigger, run-checker |
-| Step Function | 46-state pipeline lifecycle (Amazon States Language) |
+| Step Function | 47-state pipeline lifecycle (Amazon States Language) |
 | SNS topic | Alert notifications |
 | Lambda layer | Archetype YAML definitions |
 

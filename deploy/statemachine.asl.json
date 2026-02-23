@@ -1,7 +1,16 @@
 {
-  "Comment": "Interlock pipeline lifecycle: evaluation, trigger, retry, monitoring, cascade (46 states)",
-  "StartAt": "CheckExclusion",
+  "Comment": "Interlock pipeline lifecycle: evaluation, trigger, retry, monitoring, cascade (47 states)",
+  "StartAt": "InitDefaults",
   "States": {
+    "InitDefaults": {
+      "Type": "Pass",
+      "Comment": "Merge default values for optional input fields. States.Runtime on missing JSONPath is uncatchable, so all optional fields must exist before any state references them.",
+      "Parameters": {
+        "result.$": "States.JsonMerge(States.StringToJson('{\"replay\":false,\"date\":\"\"}'), $, false)"
+      },
+      "OutputPath": "$.result",
+      "Next": "CheckExclusion"
+    },
     "CheckExclusion": {
       "Type": "Task",
       "Resource": "${OrchestratorFunctionArn}",

@@ -92,6 +92,7 @@ func TestASL_ExpectedStatesExist(t *testing.T) {
 	asl := loadASL(t)
 
 	expectedStates := []string{
+		"InitDefaults",
 		"CheckExclusion",
 		"IsExcluded",
 		"AcquireLock",

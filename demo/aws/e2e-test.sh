@@ -72,6 +72,8 @@ seed_pipeline() {
     put_item "{
         \"PK\": {\"S\": \"PIPELINE#$name\"},
         \"SK\": {\"S\": \"CONFIG\"},
+        \"GSI1PK\": {\"S\": \"TYPE#pipeline\"},
+        \"GSI1SK\": {\"S\": \"PIPELINE#$name\"},
         \"data\": {\"S\": $config_json}
     }"
     log "Seeded pipeline: $name"
@@ -412,6 +414,8 @@ cleanup_stale_data() {
         delete_item "PIPELINE#$p" "CONFIG" 2>/dev/null || true
         # Delete today's runlog
         delete_item "PIPELINE#$p" "RUNLOG#${TODAY}#daily" 2>/dev/null || true
+        # Delete stale lock (PK=LOCK#eval:{pipeline}:{schedule}, SK=LOCK)
+        delete_item "LOCK#eval:${p}:daily" "LOCK" 2>/dev/null || true
     done
 }
 
