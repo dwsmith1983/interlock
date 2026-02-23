@@ -28,4 +28,7 @@ func RunAll(t *testing.T, prov provider.Provider) {
 	t.Run("LockExpiry", func(t *testing.T) { TestLockExpiry(t, prov) })
 	t.Run("EventAppendAndList", func(t *testing.T) { TestEventAppendAndList(t, prov) })
 	t.Run("ReadEventsSince", func(t *testing.T) { TestReadEventsSince(t, prov) })
+	t.Run("WriteCascadeMarker", func(t *testing.T) { TestWriteCascadeMarker(t, prov) })
+	t.Run("LateArrivalPutList", func(t *testing.T) { TestLateArrivalPutList(t, prov) })
+	t.Run("ReplayCRUD", func(t *testing.T) { TestReplayCRUD(t, prov) })
 }

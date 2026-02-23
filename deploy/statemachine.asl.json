@@ -92,7 +92,10 @@
       "Parameters": {
         "action": "checkRunLog",
         "pipelineID.$": "$.pipelineID",
-        "scheduleID.$": "$.scheduleID"
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "replay.$": "$.replay"
+        }
       },
       "ResultPath": "$.checkRunLog",
       "Next": "ShouldProceedAfterRunLog",
@@ -220,7 +223,85 @@
         "scheduleID.$": "$.scheduleID"
       },
       "ResultPath": "$.evaluationSLA",
-      "Next": "CheckReadiness",
+      "Next": "CheckValidationTimeout",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
+    },
+    "CheckValidationTimeout": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "checkValidationTimeout",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID"
+      },
+      "ResultPath": "$.validationTimeout",
+      "Next": "IsValidationTimedOut",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
+    },
+    "IsValidationTimedOut": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.validationTimeout.payload.validationTimedOut",
+          "BooleanEquals": true,
+          "Next": "LogValidationTimeout"
+        }
+      ],
+      "Default": "CheckReadiness"
+    },
+    "LogValidationTimeout": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "logResult",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "status": "FAILED",
+          "runID.$": "$.resolvePipeline.payload.runID",
+          "message": "validation timed out"
+        }
+      },
+      "ResultPath": "$.logValidationTimeout",
+      "Next": "ReleaseLock",
       "Retry": [
         {
           "ErrorEquals": [
@@ -532,7 +613,7 @@
         }
       },
       "ResultPath": "$.logCompleted",
-      "Next": "ReleaseLock",
+      "Next": "NotifyDownstream",
       "Retry": [
         {
           "ErrorEquals": [
@@ -554,6 +635,237 @@
         }
       ]
     },
+    "NotifyDownstream": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "notifyDownstream",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID"
+      },
+      "ResultPath": "$.notifyDownstream",
+      "Next": "ShouldMonitor",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.notifyError",
+          "Next": "ShouldMonitor"
+        }
+      ]
+    },
+    "ShouldMonitor": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.resolvePipeline.payload.monitoring",
+          "BooleanEquals": true,
+          "Next": "InitMonitoringCounter"
+        }
+      ],
+      "Default": "ReleaseLock"
+    },
+    "InitMonitoringCounter": {
+      "Type": "Pass",
+      "Parameters": {
+        "count": 0,
+        "monitoringStartedAt.$": "$$.State.EnteredTime"
+      },
+      "ResultPath": "$.monitoringState",
+      "Next": "MonitoringWait"
+    },
+    "MonitoringWait": {
+      "Type": "Wait",
+      "Seconds": 60,
+      "Next": "MonitoringEvaluate"
+    },
+    "MonitoringEvaluate": {
+      "Type": "Map",
+      "ItemsPath": "$.resolvePipeline.payload.traits",
+      "MaxConcurrency": 0,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "MonitoringSingleTrait",
+        "States": {
+          "MonitoringSingleTrait": {
+            "Type": "Task",
+            "Resource": "${EvaluatorFunctionArn}",
+            "End": true,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException",
+                  "Lambda.TooManyRequestsException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ]
+          }
+        }
+      },
+      "ResultPath": "$.monitoringTraitResults",
+      "Next": "MonitoringCheckDrift",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.monitoringError",
+          "Next": "ReleaseLock"
+        }
+      ]
+    },
+    "MonitoringCheckDrift": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "checkDrift",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "traitResults.$": "$.monitoringTraitResults",
+          "runID.$": "$.resolvePipeline.payload.runID"
+        }
+      },
+      "ResultPath": "$.monitoringDrift",
+      "Next": "IsDrifted",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.monitoringError",
+          "Next": "ReleaseLock"
+        }
+      ]
+    },
+    "IsDrifted": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.monitoringDrift.payload.driftDetected",
+          "BooleanEquals": true,
+          "Next": "HandleLateArrival"
+        }
+      ],
+      "Default": "IncrementMonitoringCount"
+    },
+    "HandleLateArrival": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "handleLateArrival",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "drifted.$": "$.monitoringDrift.payload.drifted",
+          "runID.$": "$.resolvePipeline.payload.runID"
+        }
+      },
+      "ResultPath": "$.handleLateArrival",
+      "Next": "ReleaseLock",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.lateArrivalError",
+          "Next": "ReleaseLock"
+        }
+      ]
+    },
+    "IncrementMonitoringCount": {
+      "Type": "Pass",
+      "ResultPath": "$.monitoringState",
+      "Parameters": {
+        "count.$": "States.MathAdd($.monitoringState.count, 1)",
+        "monitoringStartedAt.$": "$.monitoringState.monitoringStartedAt"
+      },
+      "Next": "CheckMonitoringExpired"
+    },
+    "CheckMonitoringExpired": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "checkMonitoringExpired",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "monitoringStartedAt.$": "$.monitoringState.monitoringStartedAt"
+        }
+      },
+      "ResultPath": "$.monitoringExpiry",
+      "Next": "IsMonitoringExpired",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.monitoringError",
+          "Next": "ReleaseLock"
+        }
+      ]
+    },
+    "IsMonitoringExpired": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.monitoringExpiry.payload.expired",
+          "BooleanEquals": true,
+          "Next": "ReleaseLock"
+        }
+      ],
+      "Default": "MonitoringWait"
+    },
     "LogRunFailed": {
       "Type": "Task",
       "Resource": "${OrchestratorFunctionArn}",
@@ -568,7 +880,7 @@
         }
       },
       "ResultPath": "$.logRunFailed",
-      "Next": "ReleaseLock",
+      "Next": "ShouldRetry",
       "Retry": [
         {
           "ErrorEquals": [
@@ -587,6 +899,46 @@
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.errorInfo",
           "Next": "AlertError"
+        }
+      ]
+    },
+    "ShouldRetry": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.logRunFailed.payload.retryable",
+          "BooleanEquals": true,
+          "Next": "RetryBackoffWait"
+        }
+      ],
+      "Default": "ReleaseLock"
+    },
+    "RetryBackoffWait": {
+      "Type": "Wait",
+      "SecondsPath": "$.logRunFailed.payload.retryBackoffSeconds",
+      "Next": "ReleaseLockForRetry"
+    },
+    "ReleaseLockForRetry": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "releaseLock",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID"
+      },
+      "ResultPath": "$.releaseLockForRetry",
+      "Next": "AcquireLock",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
         }
       ]
     },
