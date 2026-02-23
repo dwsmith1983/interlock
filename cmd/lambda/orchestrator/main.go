@@ -55,6 +55,14 @@ func handleOrchestrator(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		return releaseLock(ctx, d, req)
 	case "checkDrift":
 		return checkDrift(ctx, d, req)
+	case "notifyDownstream":
+		return notifyDownstream(ctx, d, req)
+	case "checkValidationTimeout":
+		return checkValidationTimeout(ctx, d, req)
+	case "checkMonitoringExpired":
+		return checkMonitoringExpired(ctx, d, req)
+	case "handleLateArrival":
+		return handleLateArrival(ctx, d, req)
 	default:
 		return intlambda.OrchestratorResponse{
 			Action: req.Action,
@@ -129,8 +137,9 @@ func checkRunLog(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestra
 		}, nil
 	}
 
-	// Already completed successfully
-	if entry.Status == types.RunCompleted {
+	// Already completed successfully — unless this is a replay
+	isReplay, _ := req.Payload["replay"].(bool)
+	if entry.Status == types.RunCompleted && !isReplay {
 		return intlambda.OrchestratorResponse{
 			Action: req.Action,
 			Result: "skip",
@@ -272,6 +281,11 @@ func resolvePipeline(ctx context.Context, d *intlambda.Deps, req intlambda.Orche
 	}
 	if pipeline.Trigger != nil {
 		payload["trigger"] = pipeline.Trigger
+	}
+	if pipeline.Watch != nil && pipeline.Watch.Monitoring != nil && pipeline.Watch.Monitoring.Enabled {
+		payload["monitoring"] = true
+	} else {
+		payload["monitoring"] = false
 	}
 
 	return intlambda.OrchestratorResponse{
@@ -424,21 +438,51 @@ func logResult(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrato
 	status, _ := req.Payload["status"].(string)
 	runID, _ := req.Payload["runID"].(string)
 	message, _ := req.Payload["message"].(string)
+	failureCategory, _ := req.Payload["failureCategory"].(string)
 
 	date := time.Now().UTC().Format("2006-01-02")
 	now := time.Now()
 
+	// Load existing entry to preserve/extend retry history
+	existing, _ := d.Provider.GetRunLog(ctx, req.PipelineID, date, req.ScheduleID)
+
+	attemptNumber := 1
+	var retryHistory []types.RetryAttempt
+	if existing != nil {
+		attemptNumber = existing.AttemptNumber + 1
+		retryHistory = existing.RetryHistory
+	}
+
 	entry := types.RunLogEntry{
-		PipelineID: req.PipelineID,
-		Date:       date,
-		ScheduleID: req.ScheduleID,
-		Status:     types.RunStatus(status),
-		RunID:      runID,
-		UpdatedAt:  now,
+		PipelineID:    req.PipelineID,
+		Date:          date,
+		ScheduleID:    req.ScheduleID,
+		Status:        types.RunStatus(status),
+		AttemptNumber: attemptNumber,
+		RunID:         runID,
+		RetryHistory:  retryHistory,
+		StartedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	if status == string(types.RunFailed) {
 		entry.FailureMessage = message
+		entry.FailureCategory = types.FailureCategory(failureCategory)
+
+		// Append to retry history
+		entry.RetryHistory = append(entry.RetryHistory, types.RetryAttempt{
+			Attempt:         attemptNumber,
+			Status:          types.RunFailed,
+			RunID:           runID,
+			FailureMessage:  message,
+			FailureCategory: types.FailureCategory(failureCategory),
+			StartedAt:       now,
+			CompletedAt:     &now,
+		})
+	}
+
+	if status == string(types.RunCompleted) {
+		entry.CompletedAt = &now
 	}
 
 	if err := d.Provider.PutRunLog(ctx, entry); err != nil {
@@ -455,9 +499,31 @@ func logResult(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrato
 		Timestamp:  now,
 	})
 
+	// Build response payload — include retry info for SFN to use
+	respPayload := map[string]interface{}{
+		"attemptNumber": attemptNumber,
+	}
+
+	if status == string(types.RunFailed) {
+		pipeline, err := d.Provider.GetPipeline(ctx, req.PipelineID)
+		if err == nil && pipeline != nil {
+			retryPolicy := schedule.DefaultRetryPolicy()
+			if pipeline.Retry != nil {
+				retryPolicy = *pipeline.Retry
+			}
+			retryable := schedule.IsRetryable(retryPolicy, types.FailureCategory(failureCategory))
+			canRetry := retryable && attemptNumber < retryPolicy.MaxAttempts
+			backoff := schedule.CalculateBackoff(retryPolicy, attemptNumber)
+
+			respPayload["retryable"] = canRetry
+			respPayload["retryBackoffSeconds"] = int(backoff.Seconds())
+		}
+	}
+
 	return intlambda.OrchestratorResponse{
-		Action: req.Action,
-		Result: "proceed",
+		Action:  req.Action,
+		Result:  "proceed",
+		Payload: respPayload,
 	}, nil
 }
 
@@ -525,6 +591,174 @@ func checkDrift(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrat
 		Result: "proceed",
 		Payload: map[string]interface{}{
 			"driftDetected": false,
+		},
+	}, nil
+}
+
+func notifyDownstream(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
+	pipelines, err := d.Provider.ListPipelines(ctx)
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("listing pipelines: %v", err)), nil
+	}
+
+	date := time.Now().UTC().Format("2006-01-02")
+	if req.Date != "" {
+		date = req.Date
+	}
+
+	var notified []string
+	for _, p := range pipelines {
+		if p.Name == req.PipelineID {
+			continue // skip self
+		}
+		for _, tc := range p.Traits {
+			upstreamPipeline, _ := tc.Config["upstreamPipeline"].(string)
+			if upstreamPipeline == req.PipelineID {
+				// Cascade only the matching schedule. Writing markers for all
+				// downstream schedules causes premature triggers (e.g. silver h06
+				// completing triggers gold h07 before silver h07 finishes) and the
+				// dedup key prevents re-triggering when silver h07 actually completes.
+				if err := d.Provider.WriteCascadeMarker(ctx, p.Name, req.ScheduleID, date, req.PipelineID); err != nil {
+					d.Logger.Error("failed to write cascade marker",
+						"downstream", p.Name, "schedule", req.ScheduleID, "error", err)
+				} else {
+					notified = append(notified, p.Name+"/"+req.ScheduleID)
+				}
+				break // found the trait, move to next pipeline
+			}
+		}
+	}
+
+	return intlambda.OrchestratorResponse{
+		Action: req.Action,
+		Result: "proceed",
+		Payload: map[string]interface{}{
+			"notified": notified,
+		},
+	}, nil
+}
+
+func checkValidationTimeout(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
+	pipeline, err := d.Provider.GetPipeline(ctx, req.PipelineID)
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("loading pipeline: %v", err)), nil
+	}
+
+	if pipeline.SLA == nil || pipeline.SLA.ValidationTimeout == "" {
+		return intlambda.OrchestratorResponse{
+			Action:  req.Action,
+			Result:  "proceed",
+			Payload: map[string]interface{}{"validationTimedOut": false},
+		}, nil
+	}
+
+	now := time.Now()
+	deadline, err := schedule.ParseSLADeadline(pipeline.SLA.ValidationTimeout, pipeline.SLA.Timezone, now)
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("parsing validation timeout: %v", err)), nil
+	}
+
+	if schedule.IsBreached(deadline, now) {
+		d.AlertFn(types.Alert{
+			Level:      types.AlertLevelError,
+			PipelineID: req.PipelineID,
+			Message:    fmt.Sprintf("Validation timeout for %s (deadline: %s)", req.PipelineID, pipeline.SLA.ValidationTimeout),
+			Timestamp:  now,
+		})
+		return intlambda.OrchestratorResponse{
+			Action:  req.Action,
+			Result:  "proceed",
+			Payload: map[string]interface{}{"validationTimedOut": true},
+		}, nil
+	}
+
+	return intlambda.OrchestratorResponse{
+		Action:  req.Action,
+		Result:  "proceed",
+		Payload: map[string]interface{}{"validationTimedOut": false},
+	}, nil
+}
+
+func checkMonitoringExpired(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
+	pipeline, err := d.Provider.GetPipeline(ctx, req.PipelineID)
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("loading pipeline: %v", err)), nil
+	}
+
+	if pipeline.Watch == nil || pipeline.Watch.Monitoring == nil {
+		return intlambda.OrchestratorResponse{
+			Action:  req.Action,
+			Result:  "proceed",
+			Payload: map[string]interface{}{"expired": true},
+		}, nil
+	}
+
+	duration, err := time.ParseDuration(pipeline.Watch.Monitoring.Duration)
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("parsing monitoring duration: %v", err)), nil
+	}
+
+	// startedAt is passed in payload from when monitoring began
+	startedAtStr, _ := req.Payload["monitoringStartedAt"].(string)
+	startedAt, err := time.Parse(time.RFC3339, startedAtStr)
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("parsing monitoringStartedAt: %v", err)), nil
+	}
+
+	expired := time.Since(startedAt) >= duration
+	return intlambda.OrchestratorResponse{
+		Action:  req.Action,
+		Result:  "proceed",
+		Payload: map[string]interface{}{"expired": expired},
+	}, nil
+}
+
+func handleLateArrival(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
+	drifted, _ := req.Payload["drifted"].([]interface{})
+	runID, _ := req.Payload["runID"].(string)
+	date := time.Now().UTC().Format("2006-01-02")
+
+	for _, drift := range drifted {
+		traitType, _ := drift.(string)
+		if traitType == "" {
+			continue
+		}
+		if err := d.Provider.PutLateArrival(ctx, types.LateArrival{
+			PipelineID: req.PipelineID,
+			Date:       date,
+			ScheduleID: req.ScheduleID,
+			DetectedAt: time.Now(),
+			TraitType:  traitType,
+		}); err != nil {
+			d.Logger.Error("failed to store late arrival",
+				"pipeline", req.PipelineID, "trait", traitType, "error", err)
+		}
+	}
+
+	// Create a rerun record for the pipeline
+	if err := d.Provider.PutRerun(ctx, types.RerunRecord{
+		RerunID:      "rerun-" + runID,
+		PipelineID:   req.PipelineID,
+		OriginalDate: date,
+		Reason:       "late arrival detected",
+		Status:       types.RunPending,
+		RequestedAt:  time.Now(),
+	}); err != nil {
+		d.Logger.Error("failed to create rerun record",
+			"pipeline", req.PipelineID, "error", err)
+	}
+
+	// Write cascade marker so the pipeline gets re-evaluated
+	if err := d.Provider.WriteCascadeMarker(ctx, req.PipelineID, req.ScheduleID, date, "late-arrival"); err != nil {
+		d.Logger.Error("failed to write self-cascade for late arrival",
+			"pipeline", req.PipelineID, "error", err)
+	}
+
+	return intlambda.OrchestratorResponse{
+		Action: req.Action,
+		Result: "proceed",
+		Payload: map[string]interface{}{
+			"lateArrivalHandled": true,
 		},
 	}, nil
 }

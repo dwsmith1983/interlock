@@ -80,6 +80,77 @@ result = {"status": "PASS" if lag <= config["maxLagSeconds"] else "FAIL",
 json.dump(result, sys.stdout)
 ```
 
+## Lifecycle Management
+
+Interlock manages the full lifecycle of pipeline runs, not just readiness gating.
+
+### Retry with Backoff
+
+Failed triggers or runs are automatically retried with configurable exponential backoff:
+
+```yaml
+retry:
+  maxAttempts: 3
+  backoffSeconds: 30
+  backoffMultiplier: 2.0
+  retryableFailures: [TRANSIENT, TIMEOUT]
+```
+
+Failures are classified as `TRANSIENT` (HTTP 5xx, network errors), `PERMANENT` (HTTP 4xx), `TIMEOUT`, or `EVALUATOR_CRASH`. Only categories listed in `retryableFailures` are retried.
+
+### Cascade (Downstream Notification)
+
+When a pipeline completes, Interlock scans all registered pipelines for traits that reference it via `upstreamPipeline` config. Matching downstream pipelines receive cascade markers, triggering their own evaluation cycles:
+
+```
+silver completes → NotifyDownstream → writes MARKER for gold → gold evaluates → triggers
+```
+
+In AWS mode, cascade markers flow through DynamoDB Streams → stream-router → Step Function. In local mode, the watcher picks up state changes on the next tick.
+
+### Post-Run Monitoring / Drift Detection
+
+After a pipeline completes, Interlock can continue monitoring traits for drift — detecting when conditions that were true at trigger time have degraded:
+
+```yaml
+watch:
+  interval: 30s
+  monitoring:
+    enabled: true
+    duration: 2h
+```
+
+If drift is detected during the monitoring window, a `MONITORING_DRIFT_DETECTED` event is emitted, an alert fires, and a rerun record is created.
+
+### Replay (Re-run Completed Pipelines)
+
+Completed pipelines can be re-run via the API, bypassing the usual dedup check:
+
+```bash
+curl -X POST http://localhost:3000/api/pipelines/my-pipeline/rerun \
+  -d '{"originalDate": "2026-02-23", "reason": "data quality fix"}'
+```
+
+Rerun records track the original date, reason, and status independently from the primary run log.
+
+### SLA Tracking
+
+Pipelines can define evaluation and completion deadlines. Breaches fire alerts:
+
+```yaml
+sla:
+  evaluationDeadline: "09:00"
+  completionDeadline: "12:00"
+  validationTimeout: "10:00"
+  timezone: America/New_York
+```
+
+| SLA Type | Fires When |
+|----------|-----------|
+| Evaluation deadline | Pipeline still NOT_READY after the deadline |
+| Completion deadline | Pipeline triggered but not yet COMPLETED |
+| Validation timeout | Pipeline still in evaluation phase (force-fails) |
+
 ## Architecture
 
 Interlock runs in two modes: **local** (Redis + subprocess evaluators) and **AWS** (DynamoDB + Lambda + Step Functions).
@@ -114,13 +185,13 @@ Interlock runs in two modes: **local** (Redis + subprocess evaluators) and **AWS
          │                                            │
          │                               ┌────────────▼─────────────┐
          │                               │    Step Function         │
-         │                               │  (28-state pipeline)     │
+         │                               │  (47-state lifecycle)    │
          │                               └──┬────┬────┬─────┬───────┘
          │                                  │    │    │     │
     ┌────▼─────┐  ┌──────────┐  ┌───────────┴┐  ┌┴────▼──┐ ┌┴───────────┐
     │orchestr- │  │evaluator │  │  trigger   │  │  run-  │ │    SNS     │
     │  ator    │  │(per-trait│  │(job launch)│  │checker │ │  (alerts)  │
-    │(10 acts) │  │  eval)   │  │            │  │(poll)  │ │            │
+    │(14 acts) │  │  eval)   │  │            │  │(poll)  │ │            │
     └──────────┘  └──────────┘  └────────────┘  └────────┘ └────────────┘
 ```
 
@@ -214,7 +285,7 @@ interlock/
 ├── deploy/
 │   ├── cdk/                   # AWS CDK stack (Go)
 │   ├── build.sh               # Lambda build script
-│   └── statemachine.asl.json  # Step Function ASL definition
+│   └── statemachine.asl.json  # Step Function definition (Amazon States Language)
 └── demo/
     ├── local/                 # Local demo (Redis + Airflow + Grafana)
     └── aws/                   # AWS E2E test suite
@@ -323,10 +394,18 @@ Start with `interlock serve` (default `:3000`).
 | `GET` | `/api/pipelines/{id}/readiness` | Get cached readiness |
 | `GET` | `/api/pipelines/{id}/traits` | Get all trait results |
 | `GET` | `/api/pipelines/{id}/traits/{type}` | Get single trait result |
+| `POST` | `/api/pipelines/{id}/traits/{type}` | Push external trait result |
 | `POST` | `/api/pipelines/{id}/run` | Evaluate + trigger |
 | `GET` | `/api/pipelines/{id}/runs` | List recent runs |
 | `GET` | `/api/runs/{runId}` | Get run state |
 | `POST` | `/api/runs/{runId}/complete` | Completion callback |
+| `GET` | `/api/pipelines/{id}/runlogs` | List run log entries |
+| `GET` | `/api/pipelines/{id}/runlogs/{date}` | Get run log for date (query: `?schedule=`) |
+| `GET` | `/api/pipelines/{id}/events` | List pipeline events |
+| `POST` | `/api/pipelines/{id}/rerun` | Request replay of completed run |
+| `GET` | `/api/pipelines/{id}/reruns` | List reruns for pipeline |
+| `GET` | `/api/reruns` | List all reruns |
+| `POST` | `/api/reruns/{rerunId}/complete` | Complete a rerun |
 
 ### Orchestrator Integration
 
@@ -404,7 +483,7 @@ make cdk-test
 |----------|-------------|
 | DynamoDB table | Single-table design with streams, GSI, TTL |
 | 5 Lambda functions | stream-router, orchestrator, evaluator, trigger, run-checker |
-| Step Function | 28-state pipeline orchestration (ASL) |
+| Step Function | 47-state pipeline lifecycle (Amazon States Language) |
 | SNS topic | Alert notifications |
 | Lambda layer | Archetype YAML definitions |
 
@@ -428,11 +507,18 @@ cfg.EnableStepFunctionTrigger = true  // SFN StartExecution/DescribeExecution
 
 ### E2E Testing
 
-See [`demo/aws/`](demo/aws/) for the full E2E test suite that deploys a fake evaluator Lambda and runs 6 scenarios exercising the complete lifecycle.
+See [`demo/aws/`](demo/aws/) for the AWS E2E test suite (11 scenarios: progressive readiness, quality drop, dedup, exclusion, not found, stream-router, cascade, retry, monitoring, replay, SLA breach).
+
+See [`demo/local/`](demo/local/) for the local E2E test suite (11 scenarios including cascade, retry, monitoring, replay, and SLA breach).
 
 ```bash
+# AWS
 ./demo/aws/e2e-test.sh run       # deploy + test
 ./demo/aws/e2e-test.sh teardown  # clean up
+
+# Local (Docker)
+make local-e2e-test              # build + test
+make local-e2e-test-teardown     # clean up
 ```
 
 ## CLI Reference
@@ -456,26 +542,28 @@ interlock serve                  Start HTTP API server
 
 ## Demos
 
-| Demo | Description | Location |
-|------|-------------|----------|
-| **Local** | Docker Compose with Redis, Airflow, Grafana | [`demo/local/`](demo/local/) |
-| **AWS** | E2E test suite with DynamoDB, Lambda, Step Functions | [`demo/aws/`](demo/aws/) |
+| Demo | Scenarios | Description | Location |
+|------|-----------|-------------|----------|
+| **Local** | 11 | Docker Compose with Redis, Airflow, Grafana — includes cascade, retry, monitoring, replay, SLA | [`demo/local/`](demo/local/) |
+| **AWS** | 11 | E2E test suite with DynamoDB, Lambda, Step Functions — includes cascade, retry, monitoring, replay, SLA | [`demo/aws/`](demo/aws/) |
 
 ## Development
 
 ```bash
-make build            # Build binary
-make test             # Run all tests
-make test-unit        # Run unit tests (no Redis needed)
-make test-integration # Run integration tests (requires Redis on localhost:6379)
-make lint             # Run gofmt + go vet + golangci-lint
-make dist             # Cross-compile for linux/darwin amd64/arm64
-make build-lambda     # Build Lambda handlers for deployment
-make cdk-synth        # Synthesize CDK CloudFormation template
-make cdk-diff         # Show pending CDK changes
-make cdk-deploy       # Deploy CDK stack to AWS
-make cdk-test         # Run CDK Go tests
-make e2e-test         # Run AWS E2E test suite
+make build                    # Build binary
+make test                     # Run all tests
+make test-unit                # Run unit tests (no Redis needed)
+make test-integration         # Run integration tests (requires Redis on localhost:6379)
+make lint                     # Run gofmt + go vet + golangci-lint
+make dist                     # Cross-compile for linux/darwin amd64/arm64
+make build-lambda             # Build Lambda handlers for deployment
+make cdk-synth                # Synthesize CDK CloudFormation template
+make cdk-diff                 # Show pending CDK changes
+make cdk-deploy               # Deploy CDK stack to AWS
+make cdk-test                 # Run CDK Go tests
+make e2e-test                 # Run AWS E2E test suite
+make local-e2e-test           # Run local E2E test suite (Docker)
+make local-e2e-test-teardown  # Tear down local E2E stack
 ```
 
 ### Prerequisites

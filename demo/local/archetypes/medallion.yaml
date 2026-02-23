@@ -1,0 +1,8 @@
+name: medallion
+requiredTraits:
+  - type: upstream-dependency
+    description: "Upstream pipeline completed successfully"
+    defaultTtl: 60
+    defaultTimeout: 15
+readinessRule:
+  type: all-required-pass

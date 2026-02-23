@@ -53,6 +53,8 @@ func handler(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.AP
 		return handleUpstreamCheck(ctx, req)
 	case strings.HasSuffix(path, "/trigger-endpoint"):
 		return handleTrigger(ctx, req)
+	case strings.HasSuffix(path, "/trigger-gate"):
+		return handleTriggerGate(ctx, req)
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]string{
 			"error": "unknown path: " + path,
@@ -133,6 +135,30 @@ func handleTrigger(_ context.Context, _ events.APIGatewayV2HTTPRequest) (events.
 	return jsonResponse(http.StatusOK, map[string]string{
 		"status":  "success",
 		"message": "triggered",
+	})
+}
+
+// handleTriggerGate is a conditional trigger endpoint for retry testing.
+// Sensor: SENSOR#trigger-gate → {"open": true/false}
+// Returns 200 if open, 500 if closed.
+func handleTriggerGate(ctx context.Context, _ events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	sensor, err := getSensor(ctx, "trigger-gate")
+	if err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]string{
+			"error": "gate sensor not found: " + err.Error(),
+		})
+	}
+
+	open, _ := sensor["open"].(bool)
+	if open {
+		return jsonResponse(http.StatusOK, map[string]string{
+			"status":  "success",
+			"message": "gate open — trigger accepted",
+		})
+	}
+
+	return jsonResponse(http.StatusInternalServerError, map[string]string{
+		"error": "gate closed — trigger rejected",
 	})
 }
 

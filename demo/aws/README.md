@@ -7,14 +7,14 @@ End-to-end testing of Interlock's AWS deployment: DynamoDB + Lambda + Step Funct
 ```
                                     ┌─────────────────┐
                                     │  Step Function  │
-                                    │  (28-state ASL) │
+                                    │  (47 states)    │
                                     └───┬───┬───┬───┬─┘
                                         │   │   │   │
               ┌─────────────────────────┘   │   │   └─────────────────────────┐
               │                             │   │                             │
      ┌────────▼────────┐       ┌────────────▼───▼────────────┐       ┌────────▼────────┐
      │  orchestrator   │       │     evaluator / trigger     │       │   run-checker   │
-     │  (10 actions)   │       │  (trait eval / job launch)  │       │  (status poll)  │
+     │  (14 actions)   │       │  (trait eval / job launch)  │       │  (status poll)  │
      └────────┬────────┘       └────────────┬────────────────┘       └────────┬────────┘
               │                             │                                 │
               └──────────────┬──────────────┘                                 │
@@ -56,7 +56,7 @@ make e2e-test-teardown   # teardown
 
 ## What Gets Deployed
 
-1. **Test-evaluator Lambda** — a standalone Lambda with Function URL that:
+1. **Test-evaluator Lambda** — a standalone Lambda with API Gateway that:
    - Serves as trait evaluator endpoints (`/freshness`, `/record-count`, `/upstream-check`)
    - Reads "sensor state" from DynamoDB to decide PASS/FAIL
    - Provides a fake trigger endpoint (`/trigger-endpoint`)
@@ -64,9 +64,51 @@ make e2e-test-teardown   # teardown
 2. **CDK Stack** (via `deploy/cdk/`) — the full Interlock infrastructure:
    - DynamoDB table (single-table design with streams)
    - 5 Lambda functions (stream-router, orchestrator, evaluator, trigger, run-checker)
-   - Step Function state machine (28 states)
+   - Step Function state machine (47 states)
    - SNS topic for alerts
    - Lambda layer with archetype definitions
+
+## Step Function Lifecycle
+
+The 47-state Amazon States Language definition implements the full pipeline lifecycle:
+
+```
+InitDefaults → CheckExclusion → AcquireLock → CheckRunLog → ResolvePipeline
+  → EvaluateTraits (Map/parallel) → CheckEvaluationSLA → CheckValidationTimeout
+  → CheckReadiness → TriggerPipeline → [poll loop] → CheckCompletionSLA
+  → LogCompleted → NotifyDownstream → [monitoring loop] → ReleaseLock
+```
+
+Key lifecycle paths within the state machine:
+
+| Path | States | Description |
+|------|--------|-------------|
+| Happy path | 16 states | Evaluate → ready → trigger → complete → notify downstream |
+| Monitoring | 8 states | Post-completion trait re-evaluation with drift detection |
+| Retry | 4 states | Failed run → backoff wait → re-acquire lock → retry |
+| SLA | 4 states | Evaluation + completion + validation timeout checks |
+| Error handling | 3 states | Catch → SNS alert → release lock |
+
+### Orchestrator Actions
+
+The orchestrator Lambda handles 14 distinct actions dispatched by the state machine:
+
+| Action | Description |
+|--------|-------------|
+| `checkExclusion` | Calendar/day-based pipeline exclusion |
+| `acquireLock` | Distributed lock via DynamoDB conditional write |
+| `checkRunLog` | Dedup check + retry eligibility (backoff, max attempts) |
+| `resolvePipeline` | Load config, resolve archetype traits, generate run ID |
+| `checkReadiness` | Evaluate trait results against readiness rule |
+| `checkEvaluationSLA` | Fire alert if evaluation deadline breached |
+| `checkCompletionSLA` | Fire alert if completion deadline breached |
+| `checkValidationTimeout` | Force-fail if validation timeout exceeded |
+| `logResult` | Write run log entry + event + compute retry info |
+| `releaseLock` | Release distributed lock |
+| `checkDrift` | Compare monitoring trait results for drift |
+| `notifyDownstream` | Scan for dependent pipelines, write cascade markers |
+| `checkMonitoringExpired` | Check if monitoring window has elapsed |
+| `handleLateArrival` | Record late arrival + create rerun on drift |
 
 ## Test Scenarios
 
@@ -105,22 +147,79 @@ Execution for a non-existent pipeline. Verifies graceful error handling.
 
 Writes a MARKER# record directly to DynamoDB and verifies the full event-driven path: DynamoDB Streams → stream-router Lambda → Step Function execution.
 
+### Scenario 7: Cascade (Silver → Gold)
+
+Demonstrates downstream notification and cascade triggering:
+
+1. Register `e2e-silver` (all traits pass, HTTP trigger)
+2. Register `e2e-gold` (depends on silver via `upstreamPipeline` config)
+3. Silver execution completes → `NotifyDownstream` writes cascade MARKER for gold
+4. DynamoDB Stream → stream-router → starts gold execution automatically
+5. Gold evaluates, triggers, and completes
+
+Verifies the full cascade path: `LogCompleted → NotifyDownstream → MARKER → stream-router → SFN`.
+
+### Scenario 8: Retry (Cross-Execution)
+
+Tests retry with backoff across two Step Function executions:
+
+| Round | Gate | Result |
+|-------|------|--------|
+| 1 | Closed (500) | Traits pass → trigger fails → FAILED runlog |
+| 2 | Open (200) | `checkRunLog` sees FAILED + retryable + backoff elapsed → trigger succeeds |
+
+Uses the `/trigger-gate` endpoint on the test-evaluator Lambda.
+
+### Scenario 9: Post-Run Monitoring
+
+Tests the monitoring loop after pipeline completion:
+
+1. Pipeline completes → enters monitoring (`ShouldMonitor → InitMonitoringCounter`)
+2. Monitoring wait (60s) → re-evaluates all traits (`MonitoringEvaluate`)
+3. Monitoring duration (10s) already elapsed → expires → `ReleaseLock`
+
+Verifies states: `InitMonitoringCounter`, `MonitoringEvaluate`, `CheckMonitoringExpired`.
+
+### Scenario 10: Replay
+
+Re-runs a completed pipeline by passing `replay: true` in the Step Function input:
+
+1. `e2e-silver` already has a COMPLETED runlog from scenario 7
+2. New execution with `replay: true` → `checkRunLog` bypasses dedup → proceeds
+3. Full evaluation → trigger → complete
+
+### Scenario 11: Evaluation SLA Breach
+
+Tests SLA deadline enforcement:
+
+1. Pipeline with `evaluationDeadline: "00:01"` (always past in UTC)
+2. Freshness sensor fails (lag=99999) so pipeline is NOT_READY
+3. `CheckEvaluationSLA` fires alert, returns `breached: true`
+4. Verifies `evaluationSLA.payload.breached == true` in execution output
+
 ## Results
 
 Results are saved to `demo/aws/e2e-results/`:
 
 ```
 e2e-results/
-├── stack-outputs.json         # CDK stack outputs
-├── scenario-1-round-1.json    # Progressive: all fail
-├── scenario-1-round-2.json    # Progressive: partial pass
-├── scenario-1-round-3.json    # Progressive: all pass → trigger
-├── scenario-2-round-1.json    # Quality drop
-├── scenario-2-round-2.json    # Quality recovery
-├── scenario-3-result.json     # Dedup
-├── scenario-4-result.json     # Exclusion
-├── scenario-5-result.json     # Not found
-└── scenario-6-result.json     # Stream-router
+├── stack-outputs.json          # CDK stack outputs
+├── scenario-1-round-1.json     # Progressive: all fail
+├── scenario-1-round-2.json     # Progressive: partial pass
+├── scenario-1-round-3.json     # Progressive: all pass → trigger
+├── scenario-2-round-1.json     # Quality drop
+├── scenario-2-round-2.json     # Quality recovery
+├── scenario-3-result.json      # Dedup
+├── scenario-4-result.json      # Exclusion
+├── scenario-5-result.json      # Not found
+├── scenario-6-result.json      # Stream-router
+├── scenario-7-silver.json      # Cascade: silver completes
+├── scenario-7-gold.json        # Cascade: gold triggered by cascade
+├── scenario-8-round-1.json     # Retry: trigger fails (gate closed)
+├── scenario-8-round-2.json     # Retry: trigger succeeds (gate open)
+├── scenario-9-result.json      # Monitoring loop
+├── scenario-10-result.json     # Replay
+└── scenario-11-result.json     # SLA breach
 ```
 
 ## Test-Evaluator Lambda
@@ -134,7 +233,8 @@ Source: `demo/aws/test-evaluator/main.go`
 | `/freshness` | `SENSOR#freshness` | `{"maxLagSeconds": N}` | PASS if `lag <= maxLagSeconds` |
 | `/record-count` | `SENSOR#record-count` | `{"threshold": N}` | PASS if `count >= threshold` |
 | `/upstream-check` | `SENSOR#upstream-check` | `{"expectComplete": true}` | PASS if `complete == true` |
-| `/trigger-endpoint` | — | — | Always returns success |
+| `/trigger-endpoint` | — | — | Always returns 200 (success) |
+| `/trigger-gate` | `SENSOR#trigger-gate` | — | Returns 200 if `open == true`, 500 if closed |
 
 ### Sensor Items
 
@@ -145,22 +245,25 @@ The E2E script seeds DynamoDB items that the test-evaluator reads:
 | `SENSOR#freshness` | `STATE` | `{"lag": 300}` |
 | `SENSOR#record-count` | `STATE` | `{"count": 500}` |
 | `SENSOR#upstream-check` | `STATE` | `{"complete": false}` |
+| `SENSOR#trigger-gate` | `STATE` | `{"open": false}` |
 
-The script updates these items between Step Function executions to control trait pass/fail.
+The script updates these items between Step Function executions to control trait pass/fail and trigger behavior.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TABLE_NAME` | `interlock` | DynamoDB table name |
-| `AWS_REGION` | `us-east-1` | AWS region |
+| `TABLE_NAME` | `interlock-e2e` | DynamoDB table name |
+| `STACK_NAME` | `InterlockStack-e2e` | CDK stack name |
+| `AWS_REGION` | `ap-southeast-1` | AWS region |
 
 ## Teardown
 
 Destroys all AWS resources:
 
 1. CDK stack (DynamoDB table, Lambdas, Step Function, SNS topic)
-2. Test-evaluator Lambda + Function URL
+2. Test-evaluator Lambda + API Gateway
 3. Test-evaluator IAM role + policies
+4. CDK bootstrap assets (via `cdk gc`)
 
 Results are preserved in `demo/aws/e2e-results/` for review after teardown. Delete manually with `rm -rf demo/aws/e2e-results/`.

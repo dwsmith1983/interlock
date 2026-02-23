@@ -54,32 +54,33 @@ func Init(ctx context.Context) (*Deps, error) {
 		return nil, fmt.Errorf("creating DynamoDB provider: %w", err)
 	}
 
-	// Create alert function
-	var alertFn func(types.Alert)
+	// Create alert dispatcher and sinks
+	dispatcher, err := alert.NewDispatcher(nil, logger)
+	if err != nil {
+		return nil, fmt.Errorf("creating alert dispatcher: %w", err)
+	}
 	if topicARN := os.Getenv("SNS_TOPIC_ARN"); topicARN != "" {
 		snsSink, err := alert.NewSNSSink(topicARN)
 		if err != nil {
 			return nil, fmt.Errorf("creating SNS sink: %w", err)
 		}
-		dispatcher, err := alert.NewDispatcher(nil, logger)
-		if err != nil {
-			return nil, fmt.Errorf("creating alert dispatcher: %w", err)
-		}
 		dispatcher.AddSink(snsSink)
-		alertFn = dispatcher.AlertFunc()
-	} else {
-		alertFn = func(a types.Alert) {
-			logger.Info("alert", "level", a.Level, "pipeline", a.PipelineID, "message", a.Message)
+	}
+	if bucket := os.Getenv("S3_ALERT_BUCKET"); bucket != "" {
+		prefix := envOrDefault("S3_ALERT_PREFIX", "alerts")
+		s3Sink, err := alert.NewS3Sink(bucket, prefix)
+		if err != nil {
+			return nil, fmt.Errorf("creating S3 alert sink: %w", err)
 		}
+		dispatcher.AddSink(s3Sink)
 	}
+	alertFn := dispatcher.AlertFunc()
 
-	// Create HTTP evaluator runner for Lambda
-	var runner engine.TraitRunner
-	if baseURL := os.Getenv("EVALUATOR_BASE_URL"); baseURL != "" {
-		runner = evaluator.NewHTTPRunner(baseURL)
-	} else {
-		runner = evaluator.NewHTTPRunner("")
-	}
+	// Create composite evaluator runner for Lambda (HTTP + built-in handlers)
+	httpRunner := evaluator.NewHTTPRunner(envOrDefault("EVALUATOR_BASE_URL", ""))
+	composite := evaluator.NewCompositeRunner(httpRunner)
+	composite.Register("upstream-job-log", evaluator.NewUpstreamJobLogHandler(prov))
+	var runner engine.TraitRunner = composite
 
 	// Load archetype registry
 	archetypeDir := envOrDefault("ARCHETYPE_DIR", "/var/task/archetypes")

@@ -92,6 +92,7 @@ func TestASL_ExpectedStatesExist(t *testing.T) {
 	asl := loadASL(t)
 
 	expectedStates := []string{
+		"InitDefaults",
 		"CheckExclusion",
 		"IsExcluded",
 		"AcquireLock",
@@ -102,6 +103,9 @@ func TestASL_ExpectedStatesExist(t *testing.T) {
 		"IsResolved",
 		"EvaluateTraits",
 		"CheckEvaluationSLA",
+		"CheckValidationTimeout",
+		"IsValidationTimedOut",
+		"LogValidationTimeout",
 		"CheckReadiness",
 		"IsReady",
 		"LogNotReady",
@@ -116,7 +120,21 @@ func TestASL_ExpectedStatesExist(t *testing.T) {
 		"CheckPollLimit",
 		"CheckCompletionSLA",
 		"LogCompleted",
+		"NotifyDownstream",
+		"ShouldMonitor",
+		"InitMonitoringCounter",
+		"MonitoringWait",
+		"MonitoringEvaluate",
+		"MonitoringCheckDrift",
+		"IsDrifted",
+		"HandleLateArrival",
+		"IncrementMonitoringCount",
+		"CheckMonitoringExpired",
+		"IsMonitoringExpired",
 		"LogRunFailed",
+		"ShouldRetry",
+		"RetryBackoffWait",
+		"ReleaseLockForRetry",
 		"LogTimeout",
 		"AlertError",
 		"ReleaseLock",
@@ -289,7 +307,8 @@ func TestASL_CatchCoverage(t *testing.T) {
 	// Every Task state except ReleaseLock must have a Catch block.
 	// Map states (like EvaluateTraits) that wrap Task states also need Catch.
 	exempt := map[string]bool{
-		"ReleaseLock": true,
+		"ReleaseLock":         true,
+		"ReleaseLockForRetry": true,
 	}
 
 	for name, raw := range asl.States {

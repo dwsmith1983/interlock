@@ -72,6 +72,8 @@ seed_pipeline() {
     put_item "{
         \"PK\": {\"S\": \"PIPELINE#$name\"},
         \"SK\": {\"S\": \"CONFIG\"},
+        \"GSI1PK\": {\"S\": \"TYPE#pipeline\"},
+        \"GSI1SK\": {\"S\": \"PIPELINE#$name\"},
         \"data\": {\"S\": $config_json}
     }"
     log "Seeded pipeline: $name"
@@ -406,12 +408,14 @@ RUN_ID=$(date -u +%H%M%S)
 
 cleanup_stale_data() {
     log "Cleaning up stale e2e data..."
-    local pipelines=("e2e-progressive" "e2e-excluded")
+    local pipelines=("e2e-progressive" "e2e-excluded" "e2e-silver" "e2e-gold" "e2e-retry" "e2e-monitored" "e2e-sla")
     for p in "${pipelines[@]}"; do
         # Delete pipeline config
         delete_item "PIPELINE#$p" "CONFIG" 2>/dev/null || true
         # Delete today's runlog
         delete_item "PIPELINE#$p" "RUNLOG#${TODAY}#daily" 2>/dev/null || true
+        # Delete stale lock (PK=LOCK#eval:{pipeline}:{schedule}, SK=LOCK)
+        delete_item "LOCK#eval:${p}:daily" "LOCK" 2>/dev/null || true
     done
 }
 
@@ -820,6 +824,517 @@ STREAMJSON
     fi
 }
 
+run_scenario_7() {
+    log ""
+    log "━━━ Scenario 7: Cascade (Silver → Gold) ━━━"
+
+    # Seed e2e-silver pipeline — all traits lenient, HTTP trigger
+    log "── Seeding silver pipeline ──"
+    update_sensor "freshness" '{"M":{"lag":{"N":"10"}}}'
+    update_sensor "record-count" '{"M":{"count":{"N":"5000"}}}'
+    update_sensor "upstream-check" '{"M":{"complete":{"BOOL":true}}}'
+
+    local silver_config
+    silver_config=$(cat <<SILVERJSON
+{
+    "name": "e2e-silver",
+    "archetype": "batch-ingestion",
+    "traits": {
+        "source-freshness": {
+            "evaluator": "freshness",
+            "config": {"maxLagSeconds": 9999},
+            "timeout": 15,
+            "ttl": 300
+        },
+        "upstream-dependency": {
+            "evaluator": "upstream-check",
+            "config": {"expectComplete": true},
+            "timeout": 15,
+            "ttl": 300
+        },
+        "resource-availability": {
+            "evaluator": "record-count",
+            "config": {"threshold": 100},
+            "timeout": 15,
+            "ttl": 300
+        }
+    },
+    "trigger": {
+        "type": "http",
+        "method": "POST",
+        "url": "$EVALUATOR_BASE_URL/trigger-endpoint"
+    }
+}
+SILVERJSON
+)
+    seed_pipeline "e2e-silver" "$(echo "$silver_config" | jq -c '.' | jq -Rs '.')"
+
+    # Seed e2e-gold pipeline — depends on e2e-silver via upstreamPipeline config
+    log "── Seeding gold pipeline (depends on silver) ──"
+    local gold_config
+    gold_config=$(cat <<GOLDJSON
+{
+    "name": "e2e-gold",
+    "archetype": "batch-ingestion",
+    "traits": {
+        "source-freshness": {
+            "evaluator": "freshness",
+            "config": {"maxLagSeconds": 9999},
+            "timeout": 15,
+            "ttl": 300
+        },
+        "upstream-dependency": {
+            "evaluator": "upstream-check",
+            "config": {"expectComplete": true, "upstreamPipeline": "e2e-silver"},
+            "timeout": 15,
+            "ttl": 300
+        },
+        "resource-availability": {
+            "evaluator": "record-count",
+            "config": {"threshold": 100},
+            "timeout": 15,
+            "ttl": 300
+        }
+    },
+    "trigger": {
+        "type": "http",
+        "method": "POST",
+        "url": "$EVALUATOR_BASE_URL/trigger-endpoint"
+    }
+}
+GOLDJSON
+)
+    seed_pipeline "e2e-gold" "$(echo "$gold_config" | jq -c '.' | jq -Rs '.')"
+
+    # Run silver execution — should complete and notify downstream
+    log "── Starting silver execution ──"
+    local exec_name="e2e-s7-silver-${TODAY}-${RUN_ID}-daily"
+    local result
+    result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-silver\",\"scheduleID\":\"daily\"}")
+    local exec_arn
+    exec_arn=$(echo "$result" | jq -r '.executionArn // empty')
+    if [ -z "$exec_arn" ]; then
+        fail "Scenario 7: Failed to start silver execution"
+        log_result "scenario-7" "silver" "$result"
+        return
+    fi
+
+    local status
+    status=$(wait_execution "$exec_arn" 120)
+    local output
+    output=$(get_execution_output "$exec_arn")
+    log_result "scenario-7" "silver" "$output"
+
+    if [ "$status" = "SUCCEEDED" ]; then
+        ok "Scenario 7: Silver execution succeeded"
+    else
+        fail "Scenario 7: Silver execution status=$status (expected SUCCEEDED)"
+        return
+    fi
+
+    verify_states "$exec_arn" "TriggerPipeline" "LogCompleted" "NotifyDownstream" || true
+
+    # Wait for gold cascade execution via stream-router
+    log "── Waiting for gold cascade execution (up to 90s) ──"
+    local gold_found=false
+    local gold_exec_arn=""
+    local elapsed=0
+
+    while [ "$elapsed" -lt 90 ]; do
+        sleep 5
+        elapsed=$((elapsed + 5))
+
+        local executions
+        executions=$(aws stepfunctions list-executions \
+            --state-machine-arn "$STATE_MACHINE_ARN" \
+            --max-results 20 \
+            --region "$AWS_REGION" \
+            --no-cli-pager \
+            --output json 2>/dev/null)
+
+        gold_exec_arn=$(echo "$executions" | jq -r ".executions[] | select(.name | contains(\"e2e-gold\")) | .executionArn" | head -1)
+        if [ -n "$gold_exec_arn" ]; then
+            gold_found=true
+            break
+        fi
+    done
+
+    if $gold_found; then
+        ok "Scenario 7: Cascade triggered gold execution"
+        log "  Gold execution: $gold_exec_arn"
+
+        status=$(wait_execution "$gold_exec_arn" 120)
+        output=$(get_execution_output "$gold_exec_arn")
+        log_result "scenario-7" "gold" "$output"
+
+        if [ "$status" = "SUCCEEDED" ]; then
+            ok "Scenario 7: Gold cascade execution succeeded"
+        else
+            warn "Scenario 7: Gold execution status=$status"
+        fi
+
+        verify_states "$gold_exec_arn" "TriggerPipeline" "LogCompleted" || true
+    else
+        fail "Scenario 7: No cascade execution found for e2e-gold after 90s"
+        log_result "scenario-7" "gold" '{"error": "no cascade execution found"}'
+    fi
+}
+
+run_scenario_8() {
+    log ""
+    log "━━━ Scenario 8: Retry (Cross-Execution) ━━━"
+
+    # Set trigger-gate sensor to closed
+    update_sensor "trigger-gate" '{"M":{"open":{"BOOL":false}}}'
+
+    # Seed e2e-retry pipeline with retry config, trigger pointing to gate
+    local retry_config
+    retry_config=$(cat <<RETRYJSON
+{
+    "name": "e2e-retry",
+    "archetype": "batch-ingestion",
+    "traits": {
+        "source-freshness": {
+            "evaluator": "freshness",
+            "config": {"maxLagSeconds": 9999},
+            "timeout": 15,
+            "ttl": 300
+        },
+        "upstream-dependency": {
+            "evaluator": "upstream-check",
+            "config": {"expectComplete": true},
+            "timeout": 15,
+            "ttl": 300
+        },
+        "resource-availability": {
+            "evaluator": "record-count",
+            "config": {"threshold": 100},
+            "timeout": 15,
+            "ttl": 300
+        }
+    },
+    "trigger": {
+        "type": "http",
+        "method": "POST",
+        "url": "$EVALUATOR_BASE_URL/trigger-gate"
+    },
+    "retry": {
+        "maxAttempts": 3,
+        "backoffSeconds": 1,
+        "backoffMultiplier": 1.0,
+        "retryableFailures": ["TRANSIENT"]
+    }
+}
+RETRYJSON
+)
+    seed_pipeline "e2e-retry" "$(echo "$retry_config" | jq -c '.' | jq -Rs '.')"
+
+    # Execution 1: trigger will fail (gate closed → HTTP 500)
+    log "── Execution 1: Trigger should fail (gate closed) ──"
+    local exec_name="e2e-s8r1-${TODAY}-${RUN_ID}-daily"
+    local result
+    result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-retry\",\"scheduleID\":\"daily\"}")
+    local exec_arn
+    exec_arn=$(echo "$result" | jq -r '.executionArn // empty')
+    if [ -z "$exec_arn" ]; then
+        fail "Scenario 8 Round 1: Failed to start execution"
+        log_result "scenario-8" "round-1" "$result"
+        return
+    fi
+
+    local status
+    status=$(wait_execution "$exec_arn" 120)
+    local output
+    output=$(get_execution_output "$exec_arn")
+    log_result "scenario-8" "round-1" "$output"
+
+    if [ "$status" = "SUCCEEDED" ]; then
+        ok "Scenario 8 Round 1: Execution completed (trigger failed, FAILED runlog written)"
+    else
+        fail "Scenario 8 Round 1: Execution status=$status"
+    fi
+
+    verify_states "$exec_arn" "TriggerPipeline" "LogTriggerFailed" "ReleaseLock" || true
+
+    # Open the gate and wait for backoff to elapse
+    log "── Opening gate, waiting for backoff ──"
+    update_sensor "trigger-gate" '{"M":{"open":{"BOOL":true}}}'
+    sleep 5
+
+    # Execution 2: checkRunLog sees FAILED entry, retryable, backoff elapsed → proceed → trigger succeeds
+    log "── Execution 2: Retry should succeed (gate open) ──"
+    exec_name="e2e-s8r2-${TODAY}-${RUN_ID}-daily"
+    result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-retry\",\"scheduleID\":\"daily\"}")
+    exec_arn=$(echo "$result" | jq -r '.executionArn // empty')
+    if [ -z "$exec_arn" ]; then
+        fail "Scenario 8 Round 2: Failed to start execution"
+        log_result "scenario-8" "round-2" "$result"
+        return
+    fi
+
+    status=$(wait_execution "$exec_arn" 120)
+    output=$(get_execution_output "$exec_arn")
+    log_result "scenario-8" "round-2" "$output"
+
+    if [ "$status" = "SUCCEEDED" ]; then
+        ok "Scenario 8 Round 2: Retry execution succeeded"
+        # Verify it went through the full trigger path
+        if echo "$output" | jq -e '.output' >/dev/null 2>&1; then
+            local sfn_output
+            sfn_output=$(echo "$output" | jq -r '.output')
+            if echo "$sfn_output" | jq -e '.logCompleted' >/dev/null 2>&1; then
+                ok "Scenario 8 Round 2: Pipeline re-triggered and completed"
+            else
+                warn "Scenario 8 Round 2: Could not confirm completion in output"
+            fi
+        fi
+    else
+        fail "Scenario 8 Round 2: Execution status=$status (expected SUCCEEDED)"
+    fi
+
+    verify_states "$exec_arn" "CheckRunLog" "TriggerPipeline" "LogCompleted" || true
+}
+
+run_scenario_9() {
+    log ""
+    log "━━━ Scenario 9: Post-Run Monitoring ━━━"
+
+    # Ensure sensors pass for initial evaluation
+    update_sensor "freshness" '{"M":{"lag":{"N":"10"}}}'
+    update_sensor "record-count" '{"M":{"count":{"N":"5000"}}}'
+    update_sensor "upstream-check" '{"M":{"complete":{"BOOL":true}}}'
+
+    # Seed pipeline with monitoring enabled (short duration so it expires after one cycle)
+    local monitor_config
+    monitor_config=$(cat <<MONITORJSON
+{
+    "name": "e2e-monitored",
+    "archetype": "batch-ingestion",
+    "traits": {
+        "source-freshness": {
+            "evaluator": "freshness",
+            "config": {"maxLagSeconds": 9999},
+            "timeout": 15,
+            "ttl": 300
+        },
+        "upstream-dependency": {
+            "evaluator": "upstream-check",
+            "config": {"expectComplete": true},
+            "timeout": 15,
+            "ttl": 300
+        },
+        "resource-availability": {
+            "evaluator": "record-count",
+            "config": {"threshold": 100},
+            "timeout": 15,
+            "ttl": 300
+        }
+    },
+    "trigger": {
+        "type": "http",
+        "method": "POST",
+        "url": "$EVALUATOR_BASE_URL/trigger-endpoint"
+    },
+    "watch": {
+        "interval": "30s",
+        "monitoring": {
+            "enabled": true,
+            "duration": "10s"
+        }
+    }
+}
+MONITORJSON
+)
+    seed_pipeline "e2e-monitored" "$(echo "$monitor_config" | jq -c '.' | jq -Rs '.')"
+    delete_runlog "e2e-monitored" "$TODAY" "daily"
+    sleep 2
+
+    log "── Starting monitored pipeline execution ──"
+    local exec_name="e2e-s9-${TODAY}-${RUN_ID}-daily"
+    local result
+    result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-monitored\",\"scheduleID\":\"daily\"}")
+    local exec_arn
+    exec_arn=$(echo "$result" | jq -r '.executionArn // empty')
+    if [ -z "$exec_arn" ]; then
+        fail "Scenario 9: Failed to start execution"
+        log_result "scenario-9" "result" "$result"
+        return
+    fi
+
+    log "  Execution started. Monitoring loop has 60s wait — this will take ~90s..."
+
+    local status
+    status=$(wait_execution "$exec_arn" 180)
+    local output
+    output=$(get_execution_output "$exec_arn")
+    log_result "scenario-9" "result" "$output"
+
+    if [ "$status" = "SUCCEEDED" ]; then
+        ok "Scenario 9: Monitoring execution succeeded"
+    else
+        fail "Scenario 9: Execution status=$status (expected SUCCEEDED)"
+    fi
+
+    # Verify monitoring states were entered
+    verify_states "$exec_arn" "TriggerPipeline" "LogCompleted" "NotifyDownstream" || true
+
+    local history
+    history=$(get_history "$exec_arn")
+    local monitoring_entered
+    monitoring_entered=$(echo "$history" | jq -r '[.events[]? | .stateEnteredEventDetails?.name? // empty] | unique | .[]' 2>/dev/null)
+
+    if echo "$monitoring_entered" | grep -q "InitMonitoringCounter"; then
+        ok "Scenario 9: Monitoring loop entered (InitMonitoringCounter)"
+    else
+        fail "Scenario 9: Monitoring loop NOT entered"
+    fi
+
+    if echo "$monitoring_entered" | grep -q "MonitoringEvaluate"; then
+        ok "Scenario 9: Monitoring evaluation executed"
+    else
+        warn "Scenario 9: MonitoringEvaluate not found (may have expired before evaluation)"
+    fi
+
+    if echo "$monitoring_entered" | grep -q "CheckMonitoringExpired"; then
+        ok "Scenario 9: Monitoring expiry checked"
+    else
+        warn "Scenario 9: CheckMonitoringExpired not found in history"
+    fi
+}
+
+run_scenario_10() {
+    log ""
+    log "━━━ Scenario 10: Replay (Re-run Completed Pipeline) ━━━"
+
+    # Use e2e-silver from scenario 7 — should have a COMPLETED runlog
+    # Sensors are still in passing state from scenario 9
+    update_sensor "freshness" '{"M":{"lag":{"N":"10"}}}'
+    update_sensor "record-count" '{"M":{"count":{"N":"5000"}}}'
+    update_sensor "upstream-check" '{"M":{"complete":{"BOOL":true}}}'
+
+    log "── Starting replay execution for e2e-silver (replay=true) ──"
+    local exec_name="e2e-s10-replay-${TODAY}-${RUN_ID}-daily"
+    local result
+    result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-silver\",\"scheduleID\":\"daily\",\"replay\":true}")
+    local exec_arn
+    exec_arn=$(echo "$result" | jq -r '.executionArn // empty')
+    if [ -z "$exec_arn" ]; then
+        fail "Scenario 10: Failed to start replay execution"
+        log_result "scenario-10" "result" "$result"
+        return
+    fi
+
+    local status
+    status=$(wait_execution "$exec_arn" 120)
+    local output
+    output=$(get_execution_output "$exec_arn")
+    log_result "scenario-10" "result" "$output"
+
+    if [ "$status" = "SUCCEEDED" ]; then
+        ok "Scenario 10: Replay execution succeeded"
+    else
+        fail "Scenario 10: Execution status=$status (expected SUCCEEDED)"
+    fi
+
+    # Replay should go through the full path: evaluate → trigger → complete
+    verify_states "$exec_arn" "CheckRunLog" "ResolvePipeline" "TriggerPipeline" "LogCompleted" || true
+}
+
+run_scenario_11() {
+    log ""
+    log "━━━ Scenario 11: Evaluation SLA Breach ━━━"
+
+    # Set freshness sensor to fail (high lag)
+    update_sensor "freshness" '{"M":{"lag":{"N":"99999"}}}'
+
+    # Seed pipeline with evaluationDeadline in the past (00:01 UTC — always breached)
+    local sla_config
+    sla_config=$(cat <<SLAJSON
+{
+    "name": "e2e-sla",
+    "archetype": "batch-ingestion",
+    "traits": {
+        "source-freshness": {
+            "evaluator": "freshness",
+            "config": {"maxLagSeconds": 60},
+            "timeout": 15,
+            "ttl": 300
+        },
+        "upstream-dependency": {
+            "evaluator": "upstream-check",
+            "config": {"expectComplete": true},
+            "timeout": 15,
+            "ttl": 300
+        },
+        "resource-availability": {
+            "evaluator": "record-count",
+            "config": {"threshold": 100},
+            "timeout": 15,
+            "ttl": 300
+        }
+    },
+    "trigger": {
+        "type": "http",
+        "method": "POST",
+        "url": "$EVALUATOR_BASE_URL/trigger-endpoint"
+    },
+    "sla": {
+        "evaluationDeadline": "00:01",
+        "timezone": "UTC"
+    }
+}
+SLAJSON
+)
+    seed_pipeline "e2e-sla" "$(echo "$sla_config" | jq -c '.' | jq -Rs '.')"
+    delete_runlog "e2e-sla" "$TODAY" "daily"
+    sleep 2
+
+    log "── Starting SLA breach execution ──"
+    local exec_name="e2e-s11-${TODAY}-${RUN_ID}-daily"
+    local result
+    result=$(start_execution "$exec_name" "{\"pipelineID\":\"e2e-sla\",\"scheduleID\":\"daily\"}")
+    local exec_arn
+    exec_arn=$(echo "$result" | jq -r '.executionArn // empty')
+    if [ -z "$exec_arn" ]; then
+        fail "Scenario 11: Failed to start execution"
+        log_result "scenario-11" "result" "$result"
+        return
+    fi
+
+    local status
+    status=$(wait_execution "$exec_arn" 120)
+    local output
+    output=$(get_execution_output "$exec_arn")
+    log_result "scenario-11" "result" "$output"
+
+    if [ "$status" = "SUCCEEDED" ]; then
+        ok "Scenario 11: SLA execution succeeded"
+    else
+        fail "Scenario 11: Execution status=$status"
+    fi
+
+    # Verify SLA check was entered and pipeline was NOT ready (freshness fails)
+    verify_states "$exec_arn" "CheckEvaluationSLA" "CheckReadiness" || true
+
+    # Check if SLA breach is in the output
+    if echo "$output" | jq -e '.output' >/dev/null 2>&1; then
+        local sfn_output
+        sfn_output=$(echo "$output" | jq -r '.output')
+        local breached
+        breached=$(echo "$sfn_output" | jq -r '.evaluationSLA.payload.breached // false')
+        if [ "$breached" = "true" ]; then
+            ok "Scenario 11: Evaluation SLA breached=true"
+        else
+            fail "Scenario 11: Expected breached=true but got $breached"
+        fi
+    else
+        warn "Scenario 11: Could not extract SLA breach status from output"
+    fi
+
+    # Restore sensors for any subsequent use
+    update_sensor "freshness" '{"M":{"lag":{"N":"10"}}}'
+}
+
 # ── Teardown ─────────────────────────────────────────────────
 
 do_teardown() {
@@ -892,6 +1407,11 @@ do_run() {
     run_scenario_4
     run_scenario_5
     run_scenario_6
+    run_scenario_7
+    run_scenario_8
+    run_scenario_9
+    run_scenario_10
+    run_scenario_11
 
     print_summary
 }

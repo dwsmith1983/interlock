@@ -59,6 +59,24 @@ type Locker interface {
 	ReleaseLock(ctx context.Context, key string) error
 }
 
+// CascadeStore handles downstream pipeline notification.
+type CascadeStore interface {
+	WriteCascadeMarker(ctx context.Context, pipelineID, scheduleID, date, source string) error
+}
+
+// LateArrivalStore handles late-arrival tracking.
+type LateArrivalStore interface {
+	PutLateArrival(ctx context.Context, entry types.LateArrival) error
+	ListLateArrivals(ctx context.Context, pipelineID, date, scheduleID string) ([]types.LateArrival, error)
+}
+
+// ReplayStore handles manual replay requests.
+type ReplayStore interface {
+	PutReplay(ctx context.Context, entry types.ReplayRequest) error
+	GetReplay(ctx context.Context, pipelineID, date, scheduleID string) (*types.ReplayRequest, error)
+	ListReplays(ctx context.Context, limit int) ([]types.ReplayRequest, error)
+}
+
 // Provider is the storage backend interface. Phase 1 implements Redis/Valkey;
 // future phases add DynamoDB, etcd, Firestore, and Cosmos.
 type Provider interface {
@@ -68,6 +86,9 @@ type Provider interface {
 	EventStore
 	RunLogStore
 	RerunStore
+	CascadeStore
+	LateArrivalStore
+	ReplayStore
 	Locker
 
 	// Readiness caching

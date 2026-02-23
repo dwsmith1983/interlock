@@ -88,6 +88,7 @@ const (
 	AlertWebhook AlertType = "webhook"
 	AlertFile    AlertType = "file"
 	AlertSNS     AlertType = "sns"
+	AlertS3      AlertType = "s3"
 )
 
 // AlertLevel replaces string-typed alert levels with a proper enum.
@@ -171,6 +172,7 @@ type SLAConfig struct {
 	EvaluationDeadline string `yaml:"evaluationDeadline" json:"evaluationDeadline"`
 	CompletionDeadline string `yaml:"completionDeadline" json:"completionDeadline"`
 	Timezone           string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+	ValidationTimeout  string `yaml:"validationTimeout,omitempty" json:"validationTimeout,omitempty"` // hard stop, e.g. "+45m"
 }
 
 // WatcherConfig configures the reactive evaluation watcher.
@@ -269,10 +271,12 @@ type EvaluatorOutput struct {
 
 // AlertConfig defines an alert sink configuration.
 type AlertConfig struct {
-	Type     AlertType `yaml:"type" json:"type"`
-	URL      string    `yaml:"url,omitempty" json:"url,omitempty"`
-	Path     string    `yaml:"path,omitempty" json:"path,omitempty"`
-	TopicARN string    `yaml:"topicArn,omitempty" json:"topicArn,omitempty"`
+	Type       AlertType `yaml:"type" json:"type"`
+	URL        string    `yaml:"url,omitempty" json:"url,omitempty"`
+	Path       string    `yaml:"path,omitempty" json:"path,omitempty"`
+	TopicARN   string    `yaml:"topicArn,omitempty" json:"topicArn,omitempty"`
+	BucketName string    `yaml:"bucketName,omitempty" json:"bucketName,omitempty"`
+	Prefix     string    `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 }
 
 // Alert represents an alert event to be dispatched.
@@ -329,6 +333,38 @@ type Event struct {
 	Timestamp  time.Time              `json:"timestamp"`
 }
 
+// RetryAttempt tracks per-attempt details for retry history.
+type RetryAttempt struct {
+	Attempt         int             `json:"attempt"`
+	Status          RunStatus       `json:"status"`
+	RunID           string          `json:"runId"`
+	FailureMessage  string          `json:"failureMessage,omitempty"`
+	FailureCategory FailureCategory `json:"failureCategory,omitempty"`
+	StartedAt       time.Time       `json:"startedAt"`
+	CompletedAt     *time.Time      `json:"completedAt,omitempty"`
+}
+
+// LateArrival records detection of data arriving after a pipeline run completed.
+type LateArrival struct {
+	PipelineID  string    `json:"pipelineId"`
+	Date        string    `json:"date"`
+	ScheduleID  string    `json:"scheduleId"`
+	DetectedAt  time.Time `json:"detectedAt"`
+	RecordDelta int       `json:"recordDelta"`
+	TraitType   string    `json:"traitType"`
+}
+
+// ReplayRequest represents a manual replay of a pipeline run.
+type ReplayRequest struct {
+	PipelineID  string    `json:"pipelineId"`
+	Date        string    `json:"date"`
+	ScheduleID  string    `json:"scheduleId"`
+	Reason      string    `json:"reason"`
+	RequestedBy string    `json:"requestedBy"`
+	Status      string    `json:"status"` // pending, started, completed, failed
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
 // RunLogEntry tracks durable per-pipeline-per-date-per-schedule run state.
 type RunLogEntry struct {
 	PipelineID      string          `json:"pipelineId"`
@@ -340,6 +376,7 @@ type RunLogEntry struct {
 	FailureMessage  string          `json:"failureMessage,omitempty"`
 	FailureCategory FailureCategory `json:"failureCategory,omitempty"`
 	AlertSent       bool            `json:"alertSent"`
+	RetryHistory    []RetryAttempt  `json:"retryHistory,omitempty"`
 	StartedAt       time.Time       `json:"startedAt"`
 	CompletedAt     *time.Time      `json:"completedAt,omitempty"`
 	UpdatedAt       time.Time       `json:"updatedAt"`

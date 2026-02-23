@@ -1,0 +1,25 @@
+#!/bin/bash
+# check-upstream-runlog evaluator: checks if an upstream pipeline completed today
+# by querying the Interlock API RunLog endpoint.
+#
+# Config (via stdin JSON — the runner pipes TraitConfig.Config directly):
+#   .upstreamPipeline  — required, pipeline ID to check
+#   .upstreamSchedule  — optional, defaults to "daily"
+CONFIG=$(cat)
+UPSTREAM=$(echo "$CONFIG" | jq -r '.upstreamPipeline // empty')
+DATE=$(date +%Y-%m-%d)
+SCHEDULE=$(echo "$CONFIG" | jq -r '.upstreamSchedule // "daily"')
+
+if [ -z "$UPSTREAM" ]; then
+    echo '{"status":"FAIL","value":{},"reason":"upstreamPipeline not configured"}'
+    exit 0
+fi
+
+RESULT=$(curl -sf "http://localhost:3000/api/pipelines/$UPSTREAM/runlogs/$DATE?schedule=$SCHEDULE" 2>/dev/null)
+STATUS=$(echo "$RESULT" | jq -r '.status // empty')
+
+if [ "$STATUS" = "COMPLETED" ]; then
+    echo "{\"status\":\"PASS\",\"value\":{\"upstream\":\"$UPSTREAM\",\"status\":\"$STATUS\"},\"reason\":\"upstream completed\"}"
+else
+    echo "{\"status\":\"FAIL\",\"value\":{\"upstream\":\"$UPSTREAM\",\"status\":\"$STATUS\"},\"reason\":\"upstream not completed\"}"
+fi

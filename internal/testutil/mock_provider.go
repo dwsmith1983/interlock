@@ -13,18 +13,28 @@ import (
 
 // MockProvider is an in-memory Provider implementation for testing.
 type MockProvider struct {
-	mu        sync.Mutex
-	pipelines map[string]types.PipelineConfig
-	traits    map[string]types.TraitEvaluation
-	runs      map[string]types.RunState
-	runIndex  map[string][]string
-	readiness map[string]types.ReadinessResult
-	events    []types.Event
-	runLogs   map[string]types.RunLogEntry // key: "pipelineID:date:scheduleID"
-	locks     map[string]bool
-	reruns    map[string]types.RerunRecord
+	mu           sync.Mutex
+	pipelines    map[string]types.PipelineConfig
+	traits       map[string]types.TraitEvaluation
+	runs         map[string]types.RunState
+	runIndex     map[string][]string
+	readiness    map[string]types.ReadinessResult
+	events       []types.Event
+	runLogs      map[string]types.RunLogEntry // key: "pipelineID:date:scheduleID"
+	locks        map[string]bool
+	reruns       map[string]types.RerunRecord
+	cascades     []cascadeMarker
+	lateArrivals []types.LateArrival
+	replays      map[string]types.ReplayRequest // key: "pipelineID:date:scheduleID"
 
 	pollCount atomic.Int64 // incremented on each ListPipelines call
+}
+
+type cascadeMarker struct {
+	PipelineID string
+	ScheduleID string
+	Date       string
+	Source     string
 }
 
 // NewMockProvider creates a new in-memory mock provider.
@@ -38,6 +48,7 @@ func NewMockProvider() *MockProvider {
 		runLogs:   make(map[string]types.RunLogEntry),
 		locks:     make(map[string]bool),
 		reruns:    make(map[string]types.RerunRecord),
+		replays:   make(map[string]types.ReplayRequest),
 	}
 }
 
@@ -338,6 +349,78 @@ func (m *MockProvider) ListAllReruns(_ context.Context, limit int) ([]types.Reru
 		}
 	}
 	return result, nil
+}
+
+func (m *MockProvider) WriteCascadeMarker(_ context.Context, pipelineID, scheduleID, date, source string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cascades = append(m.cascades, cascadeMarker{
+		PipelineID: pipelineID,
+		ScheduleID: scheduleID,
+		Date:       date,
+		Source:     source,
+	})
+	return nil
+}
+
+func (m *MockProvider) PutLateArrival(_ context.Context, entry types.LateArrival) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lateArrivals = append(m.lateArrivals, entry)
+	return nil
+}
+
+func (m *MockProvider) ListLateArrivals(_ context.Context, pipelineID, date, scheduleID string) ([]types.LateArrival, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []types.LateArrival
+	for _, la := range m.lateArrivals {
+		if la.PipelineID == pipelineID && la.Date == date && la.ScheduleID == scheduleID {
+			result = append(result, la)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockProvider) PutReplay(_ context.Context, entry types.ReplayRequest) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := entry.PipelineID + ":" + entry.Date + ":" + entry.ScheduleID
+	m.replays[key] = entry
+	return nil
+}
+
+func (m *MockProvider) GetReplay(_ context.Context, pipelineID, date, scheduleID string) (*types.ReplayRequest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := pipelineID + ":" + date + ":" + scheduleID
+	r, ok := m.replays[key]
+	if !ok {
+		return nil, nil
+	}
+	return &r, nil
+}
+
+func (m *MockProvider) ListReplays(_ context.Context, limit int) ([]types.ReplayRequest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []types.ReplayRequest
+	for _, r := range m.replays {
+		result = append(result, r)
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+// CascadeMarkers returns a copy of all stored cascade markers (test helper).
+func (m *MockProvider) CascadeMarkers() []cascadeMarker {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]cascadeMarker, len(m.cascades))
+	copy(out, m.cascades)
+	return out
 }
 
 func (m *MockProvider) Start(_ context.Context) error { return nil }
