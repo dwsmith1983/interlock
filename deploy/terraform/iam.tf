@@ -84,6 +84,16 @@ resource "aws_iam_role_policy" "dynamodb_ro" {
 }
 
 # -----------------------------------------------------------------------------
+# DynamoDB read/write — watchdog (needs read + lock write)
+# -----------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "dynamodb_watchdog" {
+  name   = "dynamodb-rw"
+  role   = aws_iam_role.lambda["watchdog"].id
+  policy = data.aws_iam_policy_document.dynamodb_rw.json
+}
+
+# -----------------------------------------------------------------------------
 # SNS publish — orchestrator, trigger
 # -----------------------------------------------------------------------------
 
@@ -95,7 +105,7 @@ data "aws_iam_policy_document" "sns_publish" {
 }
 
 resource "aws_iam_role_policy" "sns_publish" {
-  for_each = toset(["orchestrator", "trigger"])
+  for_each = toset(["orchestrator", "trigger", "watchdog"])
   name     = "sns-publish"
   role     = aws_iam_role.lambda[each.key].id
   policy   = data.aws_iam_policy_document.sns_publish.json

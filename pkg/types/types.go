@@ -319,6 +319,7 @@ const (
 	EventMonitoringStarted   EventKind = "MONITORING_STARTED"
 	EventMonitoringDrift     EventKind = "MONITORING_DRIFT_DETECTED"
 	EventMonitoringCompleted EventKind = "MONITORING_COMPLETED"
+	EventScheduleMissed      EventKind = "SCHEDULE_MISSED"
 )
 
 // Event is an append-only audit log entry recording what happened and when.
@@ -400,7 +401,8 @@ type ProjectConfig struct {
 	CalendarDirs  []string        `yaml:"calendarDirs,omitempty"`
 	Alerts        []AlertConfig   `yaml:"alerts,omitempty"`
 	Watcher       *WatcherConfig  `yaml:"watcher,omitempty"`
-	Archiver      *ArchiverConfig `yaml:"archiver,omitempty"`
+	Archiver      *ArchiverConfig  `yaml:"archiver,omitempty"`
+	Watchdog      *WatchdogConfig  `yaml:"watchdog,omitempty"`
 }
 
 // RedisConfig holds Redis/Valkey connection settings.
@@ -446,6 +448,12 @@ type ArchiverConfig struct {
 	Enabled  bool   `yaml:"enabled" json:"enabled"`
 	Interval string `yaml:"interval" json:"interval"` // e.g. "5m"
 	DSN      string `yaml:"dsn" json:"dsn"`
+}
+
+// WatchdogConfig configures the SLA watchdog that detects missed pipeline schedules.
+type WatchdogConfig struct {
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+	Interval string `yaml:"interval" json:"interval"` // e.g. "5m"
 }
 
 // EventRecord pairs a Redis stream ID with an event for cursor-based reading.

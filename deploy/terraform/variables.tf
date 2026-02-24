@@ -64,6 +64,12 @@ variable "asl_path" {
   default     = "../statemachine.asl.json"
 }
 
+variable "watchdog_interval" {
+  description = "EventBridge schedule expression for the watchdog Lambda"
+  type        = string
+  default     = "rate(5 minutes)"
+}
+
 variable "destroy_on_delete" {
   description = "Allow terraform destroy to delete the DynamoDB table (use for testing)"
   type        = bool

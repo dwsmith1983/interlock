@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$REPO_ROOT/deploy/dist"
-LAMBDA_HANDLERS=(stream-router evaluator orchestrator trigger run-checker)
+LAMBDA_HANDLERS=(stream-router evaluator orchestrator trigger run-checker watchdog)
 
 echo "==> Cleaning dist directory"
 rm -rf "$DIST_DIR"
