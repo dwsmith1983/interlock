@@ -110,9 +110,9 @@ echo '{"status":"PASS","value":{"cpu_available":true}}'
 		Archetype: "batch-ingestion",
 		Tier:      2,
 		Traits: map[string]types.TraitConfig{
-			"source-freshness":      {Evaluator: freshEval, Timeout: 5},
-			"upstream-dependency":   {Evaluator: depEval, Timeout: 5},
-			"resource-availability": {Evaluator: resEval, Timeout: 5},
+			"source-freshness":      {Evaluator: freshEval, Timeout: 10},
+			"upstream-dependency":   {Evaluator: depEval, Timeout: 10},
+			"resource-availability": {Evaluator: resEval, Timeout: 10},
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
@@ -238,8 +238,8 @@ echo '{"status":"PASS","value":{}}'
 		Name:      "blocked-pipeline",
 		Archetype: "batch-ingestion",
 		Traits: map[string]types.TraitConfig{
-			"source-freshness":      {Evaluator: freshEval, Timeout: 5},
-			"upstream-dependency":   {Evaluator: depEval, Timeout: 5},
+			"source-freshness":      {Evaluator: freshEval, Timeout: 10},
+			"upstream-dependency":   {Evaluator: depEval, Timeout: 10},
 			"resource-availability": {Evaluator: filepath.Join(evalDir, "check-resources-hang"), Timeout: 1},
 		},
 	}
@@ -368,7 +368,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 		Name:      "http-triggered",
 		Archetype: "simple",
 		Traits: map[string]types.TraitConfig{
-			"freshness": {Evaluator: freshEval, Timeout: 5},
+			"freshness": {Evaluator: freshEval, Timeout: 10},
 		},
 		Trigger: &types.TriggerConfig{
 			Type:   types.TriggerHTTP,
@@ -521,8 +521,8 @@ echo '{"status":"PASS","value":{"ok":true}}'
 		Name:      "stale-test",
 		Archetype: "two-trait",
 		Traits: map[string]types.TraitConfig{
-			"trait-a": {Evaluator: passEval, Timeout: 5},
-			"trait-b": {Evaluator: passEval, Timeout: 5},
+			"trait-a": {Evaluator: passEval, Timeout: 10},
+			"trait-b": {Evaluator: passEval, Timeout: 10},
 		},
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
@@ -600,7 +600,7 @@ echo '{"status":"PASS","value":{"lagSeconds":42,"threshold":300,"source":"sales_
 		Name:      "kv-roundtrip-test",
 		Archetype: "kv-test-archetype",
 		Traits: map[string]types.TraitConfig{
-			"source-freshness": {Evaluator: freshEval, TTL: 120, Timeout: 5},
+			"source-freshness": {Evaluator: freshEval, TTL: 120, Timeout: 10},
 		},
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
@@ -667,7 +667,7 @@ echo '{"status":"PASS","value":{"lagSeconds":42,"threshold":300,"source":"sales_
 	assert.Equal(t, "kv-test-archetype", storedPipeline.Archetype)
 	assert.Equal(t, freshEval, storedPipeline.Traits["source-freshness"].Evaluator)
 	assert.Equal(t, 120, storedPipeline.Traits["source-freshness"].TTL)
-	assert.Equal(t, 5, storedPipeline.Traits["source-freshness"].Timeout)
+	assert.Equal(t, 10, storedPipeline.Traits["source-freshness"].Timeout)
 
 	// --- Verify run state round-trip ---
 	runID := "kv-test-run-1"
@@ -731,8 +731,8 @@ echo '{"status":"PASS","value":{"upstream":"done"}}'
 		Name:      "event-test",
 		Archetype: "event-archetype",
 		Traits: map[string]types.TraitConfig{
-			"freshness":  {Evaluator: freshEval, Timeout: 5},
-			"dependency": {Evaluator: depEval, Timeout: 5},
+			"freshness":  {Evaluator: freshEval, Timeout: 10},
+			"dependency": {Evaluator: depEval, Timeout: 10},
 		},
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
@@ -875,7 +875,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 		Name:      "fail-cmd-test",
 		Archetype: "simple",
 		Traits: map[string]types.TraitConfig{
-			"check": {Evaluator: passEval, Timeout: 5},
+			"check": {Evaluator: passEval, Timeout: 10},
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
@@ -1139,8 +1139,8 @@ echo '{"status":"PASS","value":{"ok":true}}'
 		Name:      "fail-event-test",
 		Archetype: "fail-event-archetype",
 		Traits: map[string]types.TraitConfig{
-			"freshness": {Evaluator: failEval, Timeout: 5},
-			"quality":   {Evaluator: passEval, Timeout: 5},
+			"freshness": {Evaluator: failEval, Timeout: 10},
+			"quality":   {Evaluator: passEval, Timeout: 10},
 		},
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))

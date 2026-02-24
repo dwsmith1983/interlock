@@ -1,0 +1,762 @@
+# Interlock pipeline lifecycle: evaluation, trigger, retry, monitoring, cascade
+# Cloud Workflows translation of deploy/statemachine.asl.json (47 steps)
+#
+# Template variables (substituted by Terraform templatefile()):
+#   ${orchestrator_url}  - Orchestrator Cloud Function URL
+#   ${evaluator_url}     - Evaluator Cloud Function URL
+#   ${trigger_url}       - Trigger Cloud Function URL
+#   ${run_checker_url}   - Run-checker Cloud Function URL
+#   ${pubsub_topic}      - Pub/Sub topic for error alerts (full resource name)
+
+main:
+  params: [input]
+  steps:
+    # ---------- Init ----------
+    - initDefaults:
+        assign:
+          - pipelineID: $${input.pipelineID}
+          - scheduleID: $${input.scheduleID}
+          - date: $${default(map.get(input, "date"), "")}
+          - replay: $${default(map.get(input, "replay"), false)}
+
+    # ---------- Exclusion check ----------
+    - checkExclusion:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: checkExclusion
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+          result: checkExclusionResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setExclusionError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromExclusion:
+                next: alertError
+
+    - isExcluded:
+        switch:
+          - condition: $${checkExclusionResult.body.result == "proceed"}
+            next: acquireLock
+        next: releaseLock
+
+    # ---------- Lock acquisition ----------
+    - acquireLock:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: acquireLock
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+          result: acquireLockResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setLockError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromLock:
+                next: alertError
+
+    - isLockAcquired:
+        switch:
+          - condition: $${acquireLockResult.body.result == "proceed"}
+            next: checkRunLog
+        next: theEnd
+
+    # ---------- Run log check ----------
+    - checkRunLog:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: checkRunLog
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                replay: $${replay}
+          result: checkRunLogResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setRunLogError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromRunLog:
+                next: alertError
+
+    - shouldProceedAfterRunLog:
+        switch:
+          - condition: $${checkRunLogResult.body.result == "proceed"}
+            next: resolvePipeline
+        next: releaseLock
+
+    # ---------- Resolve pipeline ----------
+    - resolvePipeline:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: resolvePipeline
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              date: $${date}
+          result: resolvePipelineResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setResolveError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromResolve:
+                next: alertError
+
+    - isResolved:
+        switch:
+          - condition: $${resolvePipelineResult.body.result == "proceed"}
+            next: evaluateTraits
+        next: releaseLock
+
+    # ---------- Trait evaluation (parallel) ----------
+    - evaluateTraits:
+        try:
+          parallel:
+            shared: [traitResults]
+            for:
+              value: trait
+              in: $${resolvePipelineResult.body.payload.traits}
+              steps:
+                - evaluateSingleTrait:
+                    try:
+                      call: http.post
+                      args:
+                        url: ${evaluator_url}
+                        auth:
+                          type: OIDC
+                        body: $${trait}
+                      result: traitResult
+                    retry: $${retryPolicy}
+                - collectTraitResult:
+                    assign:
+                      - traitResults: $${list.concat(default(traitResults, []), [traitResult.body])}
+        except:
+          as: e
+          steps:
+            - setEvalError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromEval:
+                next: alertError
+
+    # ---------- Evaluation SLA ----------
+    - checkEvaluationSLA:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: checkEvaluationSLA
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+          result: evaluationSLAResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setEvalSLAError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromEvalSLA:
+                next: alertError
+
+    # ---------- Validation timeout ----------
+    - checkValidationTimeout:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: checkValidationTimeout
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+          result: validationTimeoutResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setValTimeoutError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromValTimeout:
+                next: alertError
+
+    - isValidationTimedOut:
+        switch:
+          - condition: $${validationTimeoutResult.body.payload.validationTimedOut == true}
+            next: logValidationTimeout
+        next: checkReadiness
+
+    - logValidationTimeout:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: logResult
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                status: FAILED
+                runID: $${resolvePipelineResult.body.payload.runID}
+                message: "validation timed out"
+          result: logValidationTimeoutResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setLogValTimeoutError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromLogValTimeout:
+                next: alertError
+        next: releaseLock
+
+    # ---------- Readiness check ----------
+    - checkReadiness:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: checkReadiness
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                traitResults: $${traitResults}
+          result: checkReadinessResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setReadinessError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromReadiness:
+                next: alertError
+
+    - isReady:
+        switch:
+          - condition: $${checkReadinessResult.body.result == "proceed"}
+            next: triggerPipeline
+        next: logNotReady
+
+    - logNotReady:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: logResult
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                status: PENDING
+                runID: $${resolvePipelineResult.body.payload.runID}
+                message: "not ready - blocking traits"
+          result: logNotReadyResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setLogNotReadyError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromLogNotReady:
+                next: alertError
+        next: releaseLock
+
+    # ---------- Trigger ----------
+    - triggerPipeline:
+        try:
+          call: http.post
+          args:
+            url: ${trigger_url}
+            auth:
+              type: OIDC
+            body:
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              trigger: $${resolvePipelineResult.body.payload.trigger}
+              runID: $${resolvePipelineResult.body.payload.runID}
+          result: triggerResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setTriggerError:
+                assign:
+                  - triggerError: $${e}
+            - gotoLogTriggerFailed:
+                next: logTriggerFailed
+
+    - isTriggerSuccessful:
+        switch:
+          - condition: $${triggerResult.body.status == "running"}
+            next: initPollCounter
+          - condition: $${triggerResult.body.status == "completed"}
+            next: checkCompletionSLA
+        next: logTriggerFailed
+
+    - logTriggerFailed:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: logResult
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                status: FAILED
+                runID: $${resolvePipelineResult.body.payload.runID}
+                message: "trigger failed"
+          result: logTriggerFailedResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setLogTriggerError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromLogTrigger:
+                next: alertError
+        next: releaseLock
+
+    # ---------- Polling loop ----------
+    - initPollCounter:
+        assign:
+          - pollCount: 0
+
+    - waitForRun:
+        call: sys.sleep
+        args:
+          seconds: 30
+
+    - pollRunStatus:
+        try:
+          call: http.post
+          args:
+            url: ${run_checker_url}
+            auth:
+              type: OIDC
+            body:
+              pipelineID: $${pipelineID}
+              runID: $${resolvePipelineResult.body.payload.runID}
+              triggerType: $${resolvePipelineResult.body.payload.trigger.type}
+              metadata: $${triggerResult.body.metadata}
+          result: pollResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setPollError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromPoll:
+                next: alertError
+
+    - evaluatePollResult:
+        switch:
+          - condition: $${pollResult.body.state == "succeeded"}
+            next: checkCompletionSLA
+          - condition: $${pollResult.body.state == "failed"}
+            next: logRunFailed
+        next: incrementPollCount
+
+    - incrementPollCount:
+        assign:
+          - pollCount: $${pollCount + 1}
+
+    - checkPollLimit:
+        switch:
+          - condition: $${pollCount < 120}
+            next: waitForRun
+        next: logTimeout
+
+    # ---------- Completion SLA ----------
+    - checkCompletionSLA:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: checkCompletionSLA
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+          result: completionSLAResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setCompSLAError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromCompSLA:
+                next: alertError
+
+    - logCompleted:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: logResult
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                status: COMPLETED
+                runID: $${resolvePipelineResult.body.payload.runID}
+          result: logCompletedResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setLogCompError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromLogComp:
+                next: alertError
+
+    # ---------- Cascade ----------
+    - notifyDownstream:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: notifyDownstream
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+          result: notifyDownstreamResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - logNotifyError:
+                assign:
+                  - notifyError: $${e}
+
+    # ---------- Monitoring ----------
+    - shouldMonitor:
+        switch:
+          - condition: $${resolvePipelineResult.body.payload.monitoring == true}
+            next: initMonitoringCounter
+        next: releaseLock
+
+    - initMonitoringCounter:
+        assign:
+          - monitoringCount: 0
+          - monitoringStartedAt: $${time.format(sys.now())}
+
+    - monitoringWait:
+        call: sys.sleep
+        args:
+          seconds: 60
+
+    - monitoringEvaluate:
+        try:
+          parallel:
+            shared: [monitoringTraitResults]
+            for:
+              value: trait
+              in: $${resolvePipelineResult.body.payload.traits}
+              steps:
+                - monitoringSingleTrait:
+                    try:
+                      call: http.post
+                      args:
+                        url: ${evaluator_url}
+                        auth:
+                          type: OIDC
+                        body: $${trait}
+                      result: monitoringTraitResult
+                    retry: $${retryPolicy}
+                - collectMonitoringResult:
+                    assign:
+                      - monitoringTraitResults: $${list.concat(default(monitoringTraitResults, []), [monitoringTraitResult.body])}
+        except:
+          as: e
+          steps:
+            - logMonitoringEvalError:
+                assign:
+                  - monitoringError: $${e}
+            - gotoReleaseLockFromMonEval:
+                next: releaseLock
+
+    - monitoringCheckDrift:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: checkDrift
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                traitResults: $${monitoringTraitResults}
+                runID: $${resolvePipelineResult.body.payload.runID}
+          result: monitoringDriftResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - logDriftCheckError:
+                assign:
+                  - monitoringError: $${e}
+            - gotoReleaseLockFromDrift:
+                next: releaseLock
+
+    - isDrifted:
+        switch:
+          - condition: $${monitoringDriftResult.body.payload.driftDetected == true}
+            next: handleLateArrival
+        next: incrementMonitoringCount
+
+    - handleLateArrival:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: handleLateArrival
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                drifted: $${monitoringDriftResult.body.payload.drifted}
+                runID: $${resolvePipelineResult.body.payload.runID}
+          result: handleLateArrivalResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - logLateArrivalError:
+                assign:
+                  - lateArrivalError: $${e}
+        next: releaseLock
+
+    - incrementMonitoringCount:
+        assign:
+          - monitoringCount: $${monitoringCount + 1}
+
+    - checkMonitoringExpired:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: checkMonitoringExpired
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                monitoringStartedAt: $${monitoringStartedAt}
+          result: monitoringExpiryResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - logMonExpiryError:
+                assign:
+                  - monitoringError: $${e}
+            - gotoReleaseLockFromExpiry:
+                next: releaseLock
+
+    - isMonitoringExpired:
+        switch:
+          - condition: $${monitoringExpiryResult.body.payload.expired == true}
+            next: releaseLock
+        next: monitoringWait
+
+    # ---------- Run failure / retry ----------
+    - logRunFailed:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: logResult
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                status: FAILED
+                runID: $${resolvePipelineResult.body.payload.runID}
+                message: $${pollResult.body.message}
+          result: logRunFailedResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setLogFailedError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromLogFailed:
+                next: alertError
+
+    - shouldRetry:
+        switch:
+          - condition: $${logRunFailedResult.body.payload.retryable == true}
+            next: retryBackoffWait
+        next: releaseLock
+
+    - retryBackoffWait:
+        call: sys.sleep
+        args:
+          seconds: $${logRunFailedResult.body.payload.retryBackoffSeconds}
+
+    - releaseLockForRetry:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: releaseLock
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+          result: releaseLockForRetryResult
+        retry: $${retryPolicy}
+        next: acquireLock
+
+    - logTimeout:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: logResult
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+              payload:
+                status: FAILED
+                runID: $${resolvePipelineResult.body.payload.runID}
+                message: "run polling timed out after 120 attempts"
+          result: logTimeoutResult
+        retry: $${retryPolicy}
+        except:
+          as: e
+          steps:
+            - setLogTimeoutError:
+                assign:
+                  - errorInfo: $${e}
+            - gotoAlertErrorFromLogTimeout:
+                next: alertError
+        next: releaseLock
+
+    # ---------- Error alert ----------
+    - alertError:
+        try:
+          call: googleapis.pubsub.v1.projects.topics.publish
+          args:
+            topic: ${pubsub_topic}
+            body:
+              messages:
+                - data: $${base64.encode(json.encode(errorInfo))}
+                  attributes:
+                    pipelineID: $${pipelineID}
+                    scheduleID: $${scheduleID}
+                    level: ERROR
+          result: alertResult
+        retry: $${retryPolicy}
+        except:
+          as: alertException
+          steps:
+            - logAlertFailure:
+                assign:
+                  - alertFailed: $${alertException}
+        next: releaseLock
+
+    # ---------- Lock release ----------
+    - releaseLock:
+        try:
+          call: http.post
+          args:
+            url: ${orchestrator_url}
+            auth:
+              type: OIDC
+            body:
+              action: releaseLock
+              pipelineID: $${pipelineID}
+              scheduleID: $${scheduleID}
+          result: releaseLockResult
+        retry: $${retryPolicy}
+
+    - theEnd:
+        return: "done"
+
+retryPolicy:
+  predicate: $${retryPredicate}
+  max_retries: 3
+  backoff:
+    initial_delay: 2
+    max_delay: 16
+    multiplier: 2
+
+retryPredicate:
+  params: [e]
+  steps:
+    - checkRetryable:
+        switch:
+          - condition: $${e.code == 429}
+            return: true
+          - condition: $${e.code >= 500}
+            return: true
+        return: false

@@ -78,6 +78,8 @@ func newSink(cfg types.AlertConfig) (Sink, error) {
 		return NewSNSSink(cfg.TopicARN)
 	case types.AlertS3:
 		return NewS3Sink(cfg.BucketName, cfg.Prefix)
+	case types.AlertPubSub:
+		return NewPubSubSink(cfg.ProjectID, cfg.TopicID)
 	default:
 		return nil, fmt.Errorf("unknown alert type %q", cfg.Type)
 	}

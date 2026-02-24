@@ -14,17 +14,24 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// Runner holds injectable AWS SDK clients and dispatches trigger execution
+// Runner holds injectable AWS and GCP SDK clients and dispatches trigger execution
 // and status checking across all supported trigger types.
 type Runner struct {
 	httpClient *http.Client
 
 	mu sync.Mutex
 
+	// AWS clients
 	glueClient  GlueAPI
 	emrClient   EMRAPI
 	emrSLClient EMRServerlessAPI
 	sfnClient   SFNAPI
+
+	// GCP clients
+	dataprocClient      DataprocAPI
+	dataprocSLClient    DataprocServerlessAPI
+	bigqueryClient      BigQueryAPI
+	cloudWorkflowsClient CloudWorkflowsAPI
 }
 
 // RunnerOption configures a Runner.
@@ -53,6 +60,26 @@ func WithSFNClient(c SFNAPI) RunnerOption {
 // WithHTTPClient sets a custom HTTP client for HTTP-based triggers.
 func WithHTTPClient(c *http.Client) RunnerOption {
 	return func(r *Runner) { r.httpClient = c }
+}
+
+// WithDataprocClient sets a custom Dataproc client.
+func WithDataprocClient(c DataprocAPI) RunnerOption {
+	return func(r *Runner) { r.dataprocClient = c }
+}
+
+// WithDataprocServerlessClient sets a custom Dataproc Serverless client.
+func WithDataprocServerlessClient(c DataprocServerlessAPI) RunnerOption {
+	return func(r *Runner) { r.dataprocSLClient = c }
+}
+
+// WithBigQueryClient sets a custom BigQuery client.
+func WithBigQueryClient(c BigQueryAPI) RunnerOption {
+	return func(r *Runner) { r.bigqueryClient = c }
+}
+
+// WithCloudWorkflowsClient sets a custom Cloud Workflows client.
+func WithCloudWorkflowsClient(c CloudWorkflowsAPI) RunnerOption {
+	return func(r *Runner) { r.cloudWorkflowsClient = c }
 }
 
 // NewRunner creates a Runner with the given options.
@@ -105,6 +132,30 @@ func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[str
 		return ExecuteSFN(ctx, cfg, client)
 	case types.TriggerDatabricks:
 		return ExecuteDatabricks(ctx, cfg, r.httpClient)
+	case types.TriggerDataproc:
+		client, err := r.getDataprocClient(cfg.Region)
+		if err != nil {
+			return nil, err
+		}
+		return ExecuteDataproc(ctx, cfg, client)
+	case types.TriggerDataprocServerless:
+		client, err := r.getDataprocServerlessClient(cfg.Region)
+		if err != nil {
+			return nil, err
+		}
+		return ExecuteDataprocServerless(ctx, cfg, client)
+	case types.TriggerBigQuery:
+		client, err := r.getBigQueryClient(cfg.ProjectID)
+		if err != nil {
+			return nil, err
+		}
+		return ExecuteBigQuery(ctx, cfg, client)
+	case types.TriggerCloudWorkflows:
+		client, err := r.getCloudWorkflowsClient()
+		if err != nil {
+			return nil, err
+		}
+		return ExecuteCloudWorkflows(ctx, cfg, client)
 	default:
 		return nil, fmt.Errorf("unknown trigger type: %s", cfg.Type)
 	}
@@ -126,6 +177,14 @@ func (r *Runner) CheckStatus(ctx context.Context, triggerType types.TriggerType,
 		return r.checkSFNStatus(ctx, metadata)
 	case types.TriggerDatabricks:
 		return r.checkDatabricksStatus(ctx, metadata, headers)
+	case types.TriggerDataproc:
+		return r.checkDataprocStatus(ctx, metadata)
+	case types.TriggerDataprocServerless:
+		return r.checkDataprocServerlessStatus(ctx, metadata)
+	case types.TriggerBigQuery:
+		return r.checkBigQueryStatus(ctx, metadata)
+	case types.TriggerCloudWorkflows:
+		return r.checkCloudWorkflowsStatus(ctx, metadata)
 	case types.TriggerCommand, types.TriggerHTTP:
 		// Non-polling types — if they're RUNNING they stay that way until callback
 		return StatusResult{State: RunCheckRunning, Message: "non-polling trigger type"}, nil

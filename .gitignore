@@ -37,6 +37,8 @@ Thumbs.db
 /build/
 /bin/
 deploy/dist/
+deploy/gcp/dist/
+deploy/gcp/terraform/.build/
 deploy/cdk/cdk
 deploy/cdk/cdk.out/
 demo/local/airflow/dags/__pycache__/

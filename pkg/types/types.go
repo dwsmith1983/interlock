@@ -75,8 +75,12 @@ const (
 	TriggerGlue          TriggerType = "glue"
 	TriggerEMR           TriggerType = "emr"
 	TriggerEMRServerless TriggerType = "emr-serverless"
-	TriggerDatabricks    TriggerType = "databricks"
-	TriggerStepFunction  TriggerType = "step-function"
+	TriggerDatabricks        TriggerType = "databricks"
+	TriggerStepFunction      TriggerType = "step-function"
+	TriggerDataproc          TriggerType = "dataproc"
+	TriggerDataprocServerless TriggerType = "dataproc-serverless"
+	TriggerBigQuery          TriggerType = "bigquery"
+	TriggerCloudWorkflows    TriggerType = "cloud-workflows"
 )
 
 // AlertType defines the alert sink type.
@@ -89,6 +93,7 @@ const (
 	AlertFile    AlertType = "file"
 	AlertSNS     AlertType = "sns"
 	AlertS3      AlertType = "s3"
+	AlertPubSub  AlertType = "pubsub"
 )
 
 // AlertLevel replaces string-typed alert levels with a proper enum.
@@ -156,6 +161,11 @@ type TriggerConfig struct {
 	ApplicationID   string            `yaml:"applicationId,omitempty" json:"applicationId,omitempty"`
 	WorkspaceURL    string            `yaml:"workspaceUrl,omitempty" json:"workspaceUrl,omitempty"`
 	StateMachineARN string            `yaml:"stateMachineArn,omitempty" json:"stateMachineArn,omitempty"`
+	ProjectID       string            `yaml:"projectId,omitempty" json:"projectId,omitempty"`
+	Region          string            `yaml:"region,omitempty" json:"region,omitempty"`
+	WorkflowID      string            `yaml:"workflowId,omitempty" json:"workflowId,omitempty"`
+	Query           string            `yaml:"query,omitempty" json:"query,omitempty"`
+	DatasetID       string            `yaml:"datasetId,omitempty" json:"datasetId,omitempty"`
 	Arguments       map[string]string `yaml:"arguments,omitempty" json:"arguments,omitempty"`
 }
 
@@ -277,6 +287,8 @@ type AlertConfig struct {
 	TopicARN   string    `yaml:"topicArn,omitempty" json:"topicArn,omitempty"`
 	BucketName string    `yaml:"bucketName,omitempty" json:"bucketName,omitempty"`
 	Prefix     string    `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+	TopicID    string    `yaml:"topicId,omitempty" json:"topicId,omitempty"`       // Pub/Sub topic ID
+	ProjectID  string    `yaml:"projectId,omitempty" json:"projectId,omitempty"`   // GCP project for Pub/Sub
 }
 
 // Alert represents an alert event to be dispatched.
@@ -390,9 +402,10 @@ type EngineConfig struct {
 
 // ProjectConfig represents the top-level interlock.yaml configuration.
 type ProjectConfig struct {
-	Provider      string          `yaml:"provider"`
-	Redis         *RedisConfig    `yaml:"redis,omitempty"`
-	DynamoDB      *DynamoDBConfig `yaml:"dynamodb,omitempty"`
+	Provider      string           `yaml:"provider"`
+	Redis         *RedisConfig     `yaml:"redis,omitempty"`
+	DynamoDB      *DynamoDBConfig  `yaml:"dynamodb,omitempty"`
+	Firestore     *FirestoreConfig `yaml:"firestore,omitempty"`
 	Server        *ServerConfig   `yaml:"server,omitempty"`
 	Engine        *EngineConfig   `yaml:"engine,omitempty"`
 	ArchetypeDirs []string        `yaml:"archetypeDirs"`
@@ -425,6 +438,15 @@ type DynamoDBConfig struct {
 	ReadinessTTL string `yaml:"readinessTtl,omitempty" json:"readinessTtl,omitempty"`
 	RetentionTTL string `yaml:"retentionTtl,omitempty" json:"retentionTtl,omitempty"`
 	CreateTable  bool   `yaml:"createTable,omitempty" json:"createTable,omitempty"`
+}
+
+// FirestoreConfig holds Firestore Native Mode connection and collection settings.
+type FirestoreConfig struct {
+	ProjectID    string `yaml:"projectId" json:"projectId"`
+	Collection   string `yaml:"collection" json:"collection"`                // default "interlock"
+	ReadinessTTL string `yaml:"readinessTtl,omitempty" json:"readinessTtl,omitempty"` // default 5m
+	RetentionTTL string `yaml:"retentionTtl,omitempty" json:"retentionTtl,omitempty"` // default 7d
+	Emulator     string `yaml:"emulator,omitempty" json:"emulator,omitempty"`         // for local dev
 }
 
 // RerunRecord tracks a pipeline rerun triggered by late-arriving data or corrections.

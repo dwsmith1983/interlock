@@ -9,6 +9,7 @@ import (
 
 	"github.com/dwsmith1983/interlock/internal/provider"
 	ddbprov "github.com/dwsmith1983/interlock/internal/provider/dynamodb"
+	fsprov "github.com/dwsmith1983/interlock/internal/provider/firestore"
 	"github.com/dwsmith1983/interlock/internal/provider/redis"
 	"github.com/dwsmith1983/interlock/pkg/types"
 	"gopkg.in/yaml.v3"
@@ -21,6 +22,8 @@ func newProvider(cfg *types.ProjectConfig) (provider.Provider, error) {
 		return redis.New(cfg.Redis), nil
 	case "dynamodb":
 		return ddbprov.New(cfg.DynamoDB)
+	case "firestore":
+		return fsprov.New(cfg.Firestore)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
 	}
