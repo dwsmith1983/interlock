@@ -401,8 +401,8 @@ type ProjectConfig struct {
 	CalendarDirs  []string        `yaml:"calendarDirs,omitempty"`
 	Alerts        []AlertConfig   `yaml:"alerts,omitempty"`
 	Watcher       *WatcherConfig  `yaml:"watcher,omitempty"`
-	Archiver      *ArchiverConfig  `yaml:"archiver,omitempty"`
-	Watchdog      *WatchdogConfig  `yaml:"watchdog,omitempty"`
+	Archiver      *ArchiverConfig `yaml:"archiver,omitempty"`
+	Watchdog      *WatchdogConfig `yaml:"watchdog,omitempty"`
 }
 
 // RedisConfig holds Redis/Valkey connection settings.

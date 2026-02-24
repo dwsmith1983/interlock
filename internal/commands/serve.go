@@ -22,8 +22,8 @@ import (
 	"github.com/dwsmith1983/interlock/internal/evaluator"
 	pgstore "github.com/dwsmith1983/interlock/internal/provider/postgres"
 	"github.com/dwsmith1983/interlock/internal/server"
-	"github.com/dwsmith1983/interlock/internal/watcher"
 	"github.com/dwsmith1983/interlock/internal/watchdog"
+	"github.com/dwsmith1983/interlock/internal/watcher"
 )
 
 // NewServeCmd creates the serve command.

@@ -58,9 +58,11 @@ func (m *mockProvider) AppendEvent(_ context.Context, event types.Event) error {
 }
 
 // Stubs for the rest of provider.Provider — unused by watchdog.
-func (m *mockProvider) RegisterPipeline(context.Context, types.PipelineConfig) error        { return nil }
-func (m *mockProvider) GetPipeline(context.Context, string) (*types.PipelineConfig, error)  { return nil, nil }
-func (m *mockProvider) DeletePipeline(context.Context, string) error                        { return nil }
+func (m *mockProvider) RegisterPipeline(context.Context, types.PipelineConfig) error { return nil }
+func (m *mockProvider) GetPipeline(context.Context, string) (*types.PipelineConfig, error) {
+	return nil, nil
+}
+func (m *mockProvider) DeletePipeline(context.Context, string) error { return nil }
 func (m *mockProvider) PutTrait(context.Context, string, types.TraitEvaluation, time.Duration) error {
 	return nil
 }
@@ -121,7 +123,7 @@ func (m *mockProvider) GetReadiness(context.Context, string) (*types.ReadinessRe
 }
 func (m *mockProvider) Start(context.Context) error { return nil }
 func (m *mockProvider) Stop(context.Context) error  { return nil }
-func (m *mockProvider) Ping(context.Context) error   { return nil }
+func (m *mockProvider) Ping(context.Context) error  { return nil }
 
 // ---------------------------------------------------------------------------
 // Helper builders
@@ -129,23 +131,15 @@ func (m *mockProvider) Ping(context.Context) error   { return nil }
 
 func boolPtr(v bool) *bool { return &v }
 
-func pipelineWithDeadline(name, deadline string) types.PipelineConfig {
+func pipelineWithDeadline(deadline string) types.PipelineConfig {
 	return types.PipelineConfig{
-		Name:      name,
-		Trigger:   &types.TriggerConfig{Type: types.TriggerHTTP},
-		SLA:       &types.SLAConfig{EvaluationDeadline: deadline},
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+		SLA:     &types.SLAConfig{EvaluationDeadline: deadline},
 	}
 }
 
-func pipelineWithScheduleDeadline(name string, schedules []types.ScheduleConfig) types.PipelineConfig {
-	return types.PipelineConfig{
-		Name:      name,
-		Trigger:   &types.TriggerConfig{Type: types.TriggerHTTP},
-		Schedules: schedules,
-	}
-}
-
-func collectAlerts(t *testing.T) (func(types.Alert), func() []types.Alert) {
+func collectAlerts(t *testing.T) (alertFn func(types.Alert), getAlerts func() []types.Alert) {
 	t.Helper()
 	var mu sync.Mutex
 	var alerts []types.Alert
@@ -166,7 +160,7 @@ func collectAlerts(t *testing.T) (func(types.Alert), func() []types.Alert) {
 
 func TestNoRunLog_FiresAlert(t *testing.T) {
 	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("p1", "10:00")}
+	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
@@ -195,7 +189,7 @@ func TestNoRunLog_FiresAlert(t *testing.T) {
 
 func TestRunLogExists_NoAlert(t *testing.T) {
 	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("p1", "10:00")}
+	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
 	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{Status: types.RunPending}
 
 	alertFn, getAlerts := collectAlerts(t)
@@ -218,7 +212,7 @@ func TestRunLogExists_NoAlert(t *testing.T) {
 
 func TestFailedRunLog_NoAlert(t *testing.T) {
 	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("p1", "10:00")}
+	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
 	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{Status: types.RunFailed}
 
 	alertFn, getAlerts := collectAlerts(t)
@@ -241,7 +235,7 @@ func TestFailedRunLog_NoAlert(t *testing.T) {
 
 func TestDeadlineNotPassed_NoAlert(t *testing.T) {
 	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("p1", "15:00")}
+	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("15:00")}
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
@@ -264,7 +258,7 @@ func TestDeadlineNotPassed_NoAlert(t *testing.T) {
 func TestExcludedDay_NoAlert(t *testing.T) {
 	mp := newMockProvider()
 	// 2026-02-24 is a Tuesday
-	pl := pipelineWithDeadline("p1", "10:00")
+	pl := pipelineWithDeadline("10:00")
 	pl.Exclusions = &types.ExclusionConfig{Days: []string{"tuesday"}}
 	mp.pipelines = []types.PipelineConfig{pl}
 
@@ -288,7 +282,7 @@ func TestExcludedDay_NoAlert(t *testing.T) {
 
 func TestWatchDisabled_NoAlert(t *testing.T) {
 	mp := newMockProvider()
-	pl := pipelineWithDeadline("p1", "10:00")
+	pl := pipelineWithDeadline("10:00")
 	pl.Watch = &types.PipelineWatchConfig{Enabled: boolPtr(false)}
 	mp.pipelines = []types.PipelineConfig{pl}
 
@@ -406,7 +400,7 @@ func TestMultiScheduleIndependent(t *testing.T) {
 
 func TestDedup_SecondCallNoAlert(t *testing.T) {
 	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("p1", "10:00")}
+	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
@@ -438,7 +432,7 @@ func TestDedup_SecondCallNoAlert(t *testing.T) {
 
 func TestStartStop(t *testing.T) {
 	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("p1", "00:01")}
+	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("00:01")}
 
 	alertFn, _ := collectAlerts(t)
 	w := New(mp, nil, alertFn, slog.Default(), 50*time.Millisecond)
