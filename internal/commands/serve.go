@@ -22,6 +22,7 @@ import (
 	"github.com/dwsmith1983/interlock/internal/evaluator"
 	pgstore "github.com/dwsmith1983/interlock/internal/provider/postgres"
 	"github.com/dwsmith1983/interlock/internal/server"
+	"github.com/dwsmith1983/interlock/internal/watchdog"
 	"github.com/dwsmith1983/interlock/internal/watcher"
 )
 
@@ -116,6 +117,19 @@ func runServe() error {
 		w.Start(ctx)
 	}
 
+	// Watchdog
+	var wd *watchdog.Watchdog
+	if cfg.Watchdog != nil && cfg.Watchdog.Enabled {
+		wdInterval := 5 * time.Minute
+		if cfg.Watchdog.Interval != "" {
+			if d, err := time.ParseDuration(cfg.Watchdog.Interval); err == nil && d > 0 {
+				wdInterval = d
+			}
+		}
+		wd = watchdog.New(prov, calReg, dispatcher.AlertFunc(), logger, wdInterval)
+		wd.Start(ctx)
+	}
+
 	// Archiver
 	var arc *archiver.Archiver
 	if cfg.Archiver != nil && cfg.Archiver.Enabled {
@@ -155,6 +169,9 @@ func runServe() error {
 		defer cancel()
 		if arc != nil {
 			arc.Stop(shutdownCtx)
+		}
+		if wd != nil {
+			wd.Stop(shutdownCtx)
 		}
 		if w != nil {
 			w.Stop(shutdownCtx)

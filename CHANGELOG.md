@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-02-25
+
+### Added
+
+- **SLA Watchdog**: Framework-level absence detection for silently missed pipelines
+  - `internal/watchdog/` package with `CheckMissedSchedules()` pure function and `Watchdog` polling struct
+  - Detects when upstream ingestion fails silently and no evaluation starts by the configured deadline
+  - Deadline resolution: schedule-level `Deadline` > `SLA.EvaluationDeadline`
+  - Dedup via distributed lock (`watchdog:{pipeline}:{schedule}:{date}`, 24h TTL)
+  - Respects calendar exclusions and per-pipeline watch enable/disable
+  - `EventScheduleMissed` event kind for audit trail
+  - `WatchdogConfig` with enable/interval on `ProjectConfig`
+  - `SchedulesMissed` expvar counter
+  - 11 unit tests covering all edge cases
+- AWS Lambda handler for watchdog (`cmd/lambda/watchdog/`), invoked by EventBridge
+- Terraform resources: watchdog Lambda, EventBridge rule, IAM role (DynamoDB RW + SNS publish)
+
 ## [0.1.0] - 2026-02-23
 
 Initial release of the Interlock STAMP-based safety framework for data pipeline reliability.
@@ -73,4 +90,5 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.1.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.1.1
 [0.1.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.1.0

@@ -31,7 +31,7 @@ locals {
   region     = data.aws_region.current.name
 
   core_lambdas = toset(["orchestrator", "evaluator", "trigger", "run-checker"])
-  all_lambdas  = toset(["orchestrator", "evaluator", "trigger", "run-checker", "stream-router"])
+  all_lambdas  = toset(["orchestrator", "evaluator", "trigger", "run-checker", "stream-router", "watchdog"])
 
   common_env = merge(
     {

@@ -13,4 +13,5 @@ var (
 	RetriesScheduled        = expvar.NewInt("retries_scheduled")
 	SLABreaches             = expvar.NewInt("sla_breaches")
 	MonitoringDriftDetected = expvar.NewInt("monitoring_drift_detected")
+	SchedulesMissed         = expvar.NewInt("schedules_missed")
 )
