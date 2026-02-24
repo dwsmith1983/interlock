@@ -55,7 +55,7 @@ All data lives in one DynamoDB table with a composite primary key (`PK`, `SK`) a
 
 ## Step Function State Machine
 
-The state machine orchestrates the full pipeline lifecycle in 47 states:
+The state machine orchestrates the full pipeline lifecycle:
 
 ### Main Flow
 

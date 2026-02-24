@@ -117,7 +117,7 @@ Interlock runs in two modes: **local** (Redis + subprocess evaluators) and **AWS
          │                                            │
          │                               ┌────────────▼─────────────┐
          │                               │    Step Function         │
-         │                               │  (47-state lifecycle)    │
+         │                               │  (12-stage lifecycle)    │
          │                               └──┬────┬────┬─────┬───────┘
          │                                  │    │    │     │
     ┌────▼─────┐  ┌──────────┐  ┌───────────┴┐  ┌┴────▼──┐ ┌┴───────────┐
