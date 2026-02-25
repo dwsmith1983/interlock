@@ -283,6 +283,7 @@ type AlertConfig struct {
 // Alert represents an alert event to be dispatched.
 type Alert struct {
 	Level      AlertLevel             `json:"level"`
+	Category   string                 `json:"alertType,omitempty"`
 	PipelineID string                 `json:"pipelineId,omitempty"`
 	TraitType  string                 `json:"traitType,omitempty"`
 	Message    string                 `json:"message"`
@@ -321,6 +322,9 @@ const (
 	EventMonitoringDrift     EventKind = "MONITORING_DRIFT_DETECTED"
 	EventMonitoringCompleted EventKind = "MONITORING_COMPLETED"
 	EventScheduleMissed      EventKind = "SCHEDULE_MISSED"
+	EventPipelineCompleted   EventKind = "PIPELINE_COMPLETED"
+	EventPipelineFailed      EventKind = "PIPELINE_FAILED"
+	EventRunStuck            EventKind = "RUN_STUCK"
 )
 
 // Event is an append-only audit log entry recording what happened and when.
@@ -453,8 +457,9 @@ type ArchiverConfig struct {
 
 // WatchdogConfig configures the SLA watchdog that detects missed pipeline schedules.
 type WatchdogConfig struct {
-	Enabled  bool   `yaml:"enabled" json:"enabled"`
-	Interval string `yaml:"interval" json:"interval"` // e.g. "5m"
+	Enabled           bool   `yaml:"enabled" json:"enabled"`
+	Interval          string `yaml:"interval" json:"interval"`                                        // e.g. "5m"
+	StuckRunThreshold string `yaml:"stuckRunThreshold,omitempty" json:"stuckRunThreshold,omitempty"` // e.g. "30m"
 }
 
 // EventRecord pairs a Redis stream ID with an event for cursor-based reading.

@@ -2,10 +2,30 @@
 package lambda
 
 import (
+	"context"
+	"time"
+
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
+
+// SNSAPI is the subset of the SNS client used for publishing lifecycle events.
+type SNSAPI interface {
+	Publish(ctx context.Context, input *sns.PublishInput, opts ...func(*sns.Options)) (*sns.PublishOutput, error)
+}
+
+// LifecycleEvent is published to SNS when a pipeline run reaches a terminal state.
+type LifecycleEvent struct {
+	EventType  types.EventKind `json:"eventType"`
+	PipelineID string          `json:"pipelineId"`
+	ScheduleID string          `json:"scheduleId,omitempty"`
+	Date       string          `json:"date,omitempty"`
+	RunID      string          `json:"runId,omitempty"`
+	Status     string          `json:"status"`
+	Timestamp  time.Time       `json:"timestamp"`
+}
 
 // StreamEvent is the input to the stream-router Lambda.
 type StreamEvent = events.DynamoDBEvent
