@@ -26,6 +26,8 @@ import (
 	"github.com/dwsmith1983/interlock/internal/watcher"
 )
 
+const shutdownTimeout = 10 * time.Second
+
 // NewServeCmd creates the serve command.
 func NewServeCmd() *cobra.Command {
 	return &cobra.Command{
@@ -165,7 +167,7 @@ func runServe() error {
 		return err
 	case sig := <-sigCh:
 		color.Yellow("\nReceived %s, shutting down...", sig)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if arc != nil {
 			arc.Stop(shutdownCtx)

@@ -81,13 +81,15 @@ func checkDrift(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrat
 			Timestamp:  time.Now(),
 		})
 
-		_ = d.Provider.AppendEvent(ctx, types.Event{
+		if err := d.Provider.AppendEvent(ctx, types.Event{
 			Kind:       types.EventMonitoringDrift,
 			PipelineID: req.PipelineID,
 			RunID:      runID,
 			Details:    map[string]interface{}{"drifted": drifted},
 			Timestamp:  time.Now(),
-		})
+		}); err != nil {
+			d.Logger.Error("AppendEvent failed", "pipeline", req.PipelineID, "runID", runID, "error", err)
+		}
 
 		return intlambda.OrchestratorResponse{
 			Action: req.Action,

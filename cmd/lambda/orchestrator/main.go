@@ -402,14 +402,16 @@ func logResult(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrato
 	}
 
 	// Append event
-	_ = d.Provider.AppendEvent(ctx, types.Event{
+	if err := d.Provider.AppendEvent(ctx, types.Event{
 		Kind:       types.EventRunStateChanged,
 		PipelineID: req.PipelineID,
 		RunID:      runID,
 		Status:     status,
 		Message:    message,
 		Timestamp:  now,
-	})
+	}); err != nil {
+		d.Logger.Error("AppendEvent failed", "pipeline", req.PipelineID, "runID", runID, "error", err)
+	}
 
 	// Build response payload — include retry info for SFN to use
 	respPayload := map[string]interface{}{

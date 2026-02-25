@@ -67,6 +67,9 @@ func (r *Runner) checkEMRServerlessStatus(ctx context.Context, metadata map[stri
 		return StatusResult{}, fmt.Errorf("emr-serverless status: GetJobRun failed: %w", err)
 	}
 
+	if out.JobRun == nil {
+		return StatusResult{}, fmt.Errorf("emr-serverless status: GetJobRun returned nil JobRun")
+	}
 	state := out.JobRun.State
 	switch state {
 	case emrtypes.JobRunStateSuccess:

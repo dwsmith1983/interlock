@@ -19,8 +19,7 @@ import (
 type Runner struct {
 	httpClient *http.Client
 
-	mu        sync.Mutex
-	awsLoaded bool
+	mu sync.Mutex
 
 	glueClient  GlueAPI
 	emrClient   EMRAPI
@@ -159,27 +158,11 @@ func (r *Runner) checkAirflowStatus(ctx context.Context, metadata map[string]int
 	}
 }
 
-// loadAWSConfig loads the default AWS config once.
-func (r *Runner) loadAWSConfig() error {
-	if r.awsLoaded {
-		return nil
-	}
-	_, err := awsconfig.LoadDefaultConfig(context.Background())
-	if err != nil {
-		return fmt.Errorf("loading AWS config: %w", err)
-	}
-	r.awsLoaded = true
-	return nil
-}
-
 func (r *Runner) getGlueClient(region string) (GlueAPI, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.glueClient != nil {
 		return r.glueClient, nil
-	}
-	if err := r.loadAWSConfig(); err != nil {
-		return nil, err
 	}
 	opts := []func(*glue.Options){}
 	if region != "" {

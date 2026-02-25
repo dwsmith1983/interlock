@@ -14,16 +14,26 @@ import (
 	"github.com/dwsmith1983/interlock/internal/provider/dynamodb"
 	"github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
 )
+
+// SFNAPI is the subset of the Step Functions client used by Lambda handlers.
+type SFNAPI interface {
+	StartExecution(ctx context.Context, input *sfn.StartExecutionInput, opts ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error)
+}
 
 // Deps holds shared dependencies for Lambda handlers.
 type Deps struct {
-	Provider     provider.Provider
-	Engine       *engine.Engine
-	Runner       *trigger.Runner
-	ArchetypeReg *archetype.Registry
-	AlertFn      func(types.Alert)
-	Logger       *slog.Logger
+	Provider        provider.Provider
+	Engine          *engine.Engine
+	Runner          *trigger.Runner
+	ArchetypeReg    *archetype.Registry
+	AlertFn         func(types.Alert)
+	Logger          *slog.Logger
+	SFNClient       SFNAPI
+	StateMachineARN string
 }
 
 // Init creates shared dependencies from environment variables.
@@ -33,25 +43,9 @@ func Init(ctx context.Context) (*Deps, error) {
 		Level: slog.LevelInfo,
 	}))
 
-	tableName := os.Getenv("TABLE_NAME")
-	region := os.Getenv("AWS_REGION")
-	if tableName == "" {
-		return nil, fmt.Errorf("TABLE_NAME environment variable required")
-	}
-	if region == "" {
-		return nil, fmt.Errorf("AWS_REGION environment variable required")
-	}
-
-	// Create DynamoDB provider
-	ddbCfg := types.DynamoDBConfig{
-		TableName:    tableName,
-		Region:       region,
-		ReadinessTTL: envOrDefault("READINESS_TTL", "1h"),
-		RetentionTTL: envOrDefault("RETENTION_TTL", "168h"),
-	}
-	prov, err := dynamodb.New(&ddbCfg)
+	prov, err := newProvider()
 	if err != nil {
-		return nil, fmt.Errorf("creating DynamoDB provider: %w", err)
+		return nil, err
 	}
 
 	// Create alert dispatcher and sinks
@@ -98,14 +92,52 @@ func Init(ctx context.Context) (*Deps, error) {
 	// Create trigger runner
 	triggerRunner := trigger.NewRunner()
 
-	return &Deps{
+	deps := &Deps{
 		Provider:     prov,
 		Engine:       eng,
 		Runner:       triggerRunner,
 		ArchetypeReg: archetypeReg,
 		AlertFn:      alertFn,
 		Logger:       logger,
-	}, nil
+	}
+
+	// Initialize SFN client for stream-router/replay if configured.
+	if smARN := os.Getenv("STATE_MACHINE_ARN"); smARN != "" {
+		awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("loading AWS config for SFN: %w", err)
+		}
+		deps.SFNClient = sfn.NewFromConfig(awsCfg)
+		deps.StateMachineARN = smARN
+	}
+
+	return deps, nil
+}
+
+// newProvider creates the storage provider from environment variables.
+// Reads: PROVIDER (default "dynamodb"), TABLE_NAME, AWS_REGION, READINESS_TTL, RETENTION_TTL.
+func newProvider() (provider.Provider, error) {
+	providerType := envOrDefault("PROVIDER", "dynamodb")
+	switch providerType {
+	case "dynamodb":
+		tableName := os.Getenv("TABLE_NAME")
+		region := os.Getenv("AWS_REGION")
+		if tableName == "" {
+			return nil, fmt.Errorf("TABLE_NAME environment variable required")
+		}
+		if region == "" {
+			return nil, fmt.Errorf("AWS_REGION environment variable required")
+		}
+		ddbCfg := types.DynamoDBConfig{
+			TableName:    tableName,
+			Region:       region,
+			ReadinessTTL: envOrDefault("READINESS_TTL", "1h"),
+			RetentionTTL: envOrDefault("RETENTION_TTL", "168h"),
+		}
+		return dynamodb.New(&ddbCfg)
+	default:
+		return nil, fmt.Errorf("unsupported PROVIDER: %s", providerType)
+	}
 }
 
 func envOrDefault(key, fallback string) string {

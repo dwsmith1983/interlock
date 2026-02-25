@@ -84,6 +84,12 @@ func (r *Runner) checkEMRStatus(ctx context.Context, metadata map[string]interfa
 		return StatusResult{}, fmt.Errorf("emr status: DescribeStep failed: %w", err)
 	}
 
+	if out.Step == nil {
+		return StatusResult{}, fmt.Errorf("emr status: DescribeStep returned nil Step")
+	}
+	if out.Step.Status == nil {
+		return StatusResult{}, fmt.Errorf("emr status: DescribeStep returned nil Step.Status")
+	}
 	state := out.Step.Status.State
 	switch state {
 	case emrtypes.StepStateCompleted:

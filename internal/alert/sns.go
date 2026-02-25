@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -64,7 +65,9 @@ func (s *SNSSink) Send(alert types.Alert) error {
 		subject = subject[:100]
 	}
 
-	_, err = s.client.Publish(context.Background(), &sns.PublishInput{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = s.client.Publish(ctx, &sns.PublishInput{
 		TopicArn: aws.String(s.topicARN),
 		Subject:  aws.String(subject),
 		Message:  aws.String(string(data)),

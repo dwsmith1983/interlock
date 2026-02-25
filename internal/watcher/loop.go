@@ -307,13 +307,43 @@ func (w *Watcher) evaluateReadiness(ctx context.Context, pipeline types.Pipeline
 // triggerPipeline creates a run, executes the trigger, and handles the outcome.
 func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, runLog *types.RunLogEntry, now time.Time) {
 	today := now.Format("2006-01-02")
-	retryPolicy := w.retryPolicyFor(pipeline)
 
 	attemptNum := 1
 	if runLog != nil {
 		attemptNum = runLog.AttemptNumber + 1
 	}
 
+	run, ok := w.createRunState(ctx, pipeline, sched, now)
+	if !ok {
+		return
+	}
+
+	entry := types.RunLogEntry{
+		PipelineID:    pipeline.Name,
+		Date:          today,
+		ScheduleID:    sched.Name,
+		Status:        types.RunTriggering,
+		AttemptNumber: attemptNum,
+		RunID:         run.RunID,
+		StartedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	// Execute trigger
+	metrics.TriggersTotal.Add(1)
+	triggerMeta, triggerErr := w.runner.Execute(ctx, pipeline.Trigger)
+
+	if triggerErr != nil {
+		w.handleTriggerFailure(ctx, pipeline, &run, &entry, attemptNum, triggerErr)
+		return
+	}
+
+	w.handleTriggerSuccess(ctx, pipeline, &run, &entry, triggerMeta)
+}
+
+// createRunState creates a PENDING run and CAS to TRIGGERING.
+// Returns the run state at version 2 and success status.
+func (w *Watcher) createRunState(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, now time.Time) (types.RunState, bool) {
 	runID := fmt.Sprintf("%s-%d", pipeline.Name, now.UnixNano())
 	run := types.RunState{
 		RunID:      runID,
@@ -328,87 +358,73 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 	}
 	if err := w.provider.PutRunState(ctx, run); err != nil {
 		w.logger.Error("failed to create run", "pipeline", pipeline.Name, "error", err)
-		return
+		return types.RunState{}, false
 	}
 
-	// CAS to TRIGGERING
 	run.Status = types.RunTriggering
 	run.Version = 2
 	run.UpdatedAt = time.Now()
 	ok, err := w.provider.CompareAndSwapRunState(ctx, runID, 1, run)
 	if err != nil || !ok {
 		w.logger.Error("failed to CAS to TRIGGERING", "pipeline", pipeline.Name, "error", err)
-		return
+		return types.RunState{}, false
+	}
+	return run, true
+}
+
+// handleTriggerFailure records trigger failure: CAS to FAILED, update run log, emit events.
+func (w *Watcher) handleTriggerFailure(ctx context.Context, pipeline types.PipelineConfig, run *types.RunState, entry *types.RunLogEntry, attemptNum int, triggerErr error) {
+	retryPolicy := w.retryPolicyFor(pipeline)
+	metrics.TriggersFailed.Add(1)
+	fc := trigger.ClassifyFailure(triggerErr)
+
+	entry.Status = types.RunFailed
+	entry.FailureMessage = triggerErr.Error()
+	entry.FailureCategory = fc
+	entry.UpdatedAt = time.Now()
+	completedAt := time.Now()
+	entry.CompletedAt = &completedAt
+
+	if err := w.provider.PutRunLog(ctx, *entry); err != nil {
+		w.logger.Error("failed to persist run log", "pipeline", pipeline.Name, "error", err)
 	}
 
-	// Create/update run log
-	entry := types.RunLogEntry{
-		PipelineID:    pipeline.Name,
-		Date:          today,
-		ScheduleID:    sched.Name,
-		Status:        types.RunTriggering,
-		AttemptNumber: attemptNum,
-		RunID:         runID,
-		StartedAt:     now,
-		UpdatedAt:     now,
+	run.Status = types.RunFailed
+	run.Version = 3
+	run.UpdatedAt = time.Now()
+	if ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, 2, *run); err != nil || !ok {
+		w.logger.Warn("failed to CAS run to FAILED", "pipeline", pipeline.Name, "runID", run.RunID, "error", err)
 	}
 
-	// Execute trigger
-	metrics.TriggersTotal.Add(1)
-	triggerMeta, triggerErr := w.runner.Execute(ctx, pipeline.Trigger)
+	if err := w.appendEvent(ctx, types.Event{
+		Kind:       types.EventTriggerFailed,
+		PipelineID: pipeline.Name,
+		RunID:      run.RunID,
+		Status:     string(types.RunFailed),
+		Message:    triggerErr.Error(),
+		Timestamp:  time.Now(),
+	}); err != nil {
+		w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+	}
 
-	if triggerErr != nil {
-		metrics.TriggersFailed.Add(1)
-		fc := trigger.ClassifyFailure(triggerErr)
-		entry.Status = types.RunFailed
-		entry.FailureMessage = triggerErr.Error()
-		entry.FailureCategory = fc
-		entry.UpdatedAt = time.Now()
-
-		completedAt := time.Now()
-		entry.CompletedAt = &completedAt
-
-		if err := w.provider.PutRunLog(ctx, entry); err != nil {
-			w.logger.Error("failed to persist run log", "pipeline", pipeline.Name, "error", err)
-		}
-
-		// Update run state to FAILED
-		run.Status = types.RunFailed
-		run.Version = 3
-		run.UpdatedAt = time.Now()
-		if ok, err := w.provider.CompareAndSwapRunState(ctx, runID, 2, run); err != nil || !ok {
-			w.logger.Warn("failed to CAS run to FAILED", "pipeline", pipeline.Name, "runID", runID, "error", err)
-		}
-
+	if IsRetryable(retryPolicy, fc) && attemptNum < retryPolicy.MaxAttempts {
+		metrics.RetriesScheduled.Add(1)
 		if err := w.appendEvent(ctx, types.Event{
-			Kind:       types.EventTriggerFailed,
+			Kind:       types.EventRetryScheduled,
 			PipelineID: pipeline.Name,
-			RunID:      runID,
-			Status:     string(types.RunFailed),
-			Message:    triggerErr.Error(),
+			RunID:      run.RunID,
+			Message:    fmt.Sprintf("retry %d/%d scheduled after %v", attemptNum+1, retryPolicy.MaxAttempts, CalculateBackoff(retryPolicy, attemptNum)),
 			Timestamp:  time.Now(),
 		}); err != nil {
 			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
 		}
-
-		if IsRetryable(retryPolicy, fc) && attemptNum < retryPolicy.MaxAttempts {
-			metrics.RetriesScheduled.Add(1)
-			if err := w.appendEvent(ctx, types.Event{
-				Kind:       types.EventRetryScheduled,
-				PipelineID: pipeline.Name,
-				RunID:      runID,
-				Message:    fmt.Sprintf("retry %d/%d scheduled after %v", attemptNum+1, retryPolicy.MaxAttempts, CalculateBackoff(retryPolicy, attemptNum)),
-				Timestamp:  time.Now(),
-			}); err != nil {
-				w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
-			}
-		}
-
-		w.logger.Warn("trigger failed", "pipeline", pipeline.Name, "attempt", attemptNum, "error", triggerErr, "category", fc)
-		return
 	}
 
-	// Trigger succeeded — merge metadata from trigger into run
+	w.logger.Warn("trigger failed", "pipeline", pipeline.Name, "attempt", attemptNum, "error", triggerErr, "category", fc)
+}
+
+// handleTriggerSuccess merges metadata, determines target status, CAS, and logs.
+func (w *Watcher) handleTriggerSuccess(ctx context.Context, pipeline types.PipelineConfig, run *types.RunState, entry *types.RunLogEntry, triggerMeta map[string]interface{}) {
 	if triggerMeta != nil {
 		if run.Metadata == nil {
 			run.Metadata = make(map[string]interface{})
@@ -429,8 +445,8 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 			run.Status = types.RunCompletedMonitoring
 			run.Version = 3
 			run.UpdatedAt = time.Now()
-			if ok, err := w.provider.CompareAndSwapRunState(ctx, runID, 2, run); err != nil || !ok {
-				w.logger.Warn("failed to CAS run to COMPLETED_MONITORING", "pipeline", pipeline.Name, "runID", runID, "error", err)
+			if ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, 2, *run); err != nil || !ok {
+				w.logger.Warn("failed to CAS run to COMPLETED_MONITORING", "pipeline", pipeline.Name, "runID", run.RunID, "error", err)
 			}
 		} else {
 			entry.Status = types.RunCompleted
@@ -440,8 +456,8 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 			run.Status = types.RunCompleted
 			run.Version = 3
 			run.UpdatedAt = time.Now()
-			if ok, err := w.provider.CompareAndSwapRunState(ctx, runID, 2, run); err != nil || !ok {
-				w.logger.Warn("failed to CAS run to COMPLETED", "pipeline", pipeline.Name, "runID", runID, "error", err)
+			if ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, 2, *run); err != nil || !ok {
+				w.logger.Warn("failed to CAS run to COMPLETED", "pipeline", pipeline.Name, "runID", run.RunID, "error", err)
 			}
 		}
 	} else {
@@ -450,20 +466,20 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 		run.Status = types.RunRunning
 		run.Version = 3
 		run.UpdatedAt = time.Now()
-		if ok, err := w.provider.CompareAndSwapRunState(ctx, runID, 2, run); err != nil || !ok {
-			w.logger.Warn("failed to CAS run to RUNNING", "pipeline", pipeline.Name, "runID", runID, "error", err)
+		if ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, 2, *run); err != nil || !ok {
+			w.logger.Warn("failed to CAS run to RUNNING", "pipeline", pipeline.Name, "runID", run.RunID, "error", err)
 		}
 	}
 
 	entry.UpdatedAt = time.Now()
-	if err := w.provider.PutRunLog(ctx, entry); err != nil {
+	if err := w.provider.PutRunLog(ctx, *entry); err != nil {
 		w.logger.Error("failed to persist run log", "pipeline", pipeline.Name, "error", err)
 	}
 
 	if err := w.appendEvent(ctx, types.Event{
 		Kind:       types.EventTriggerFired,
 		PipelineID: pipeline.Name,
-		RunID:      runID,
+		RunID:      run.RunID,
 		Status:     string(entry.Status),
 		Timestamp:  time.Now(),
 	}); err != nil {
@@ -474,7 +490,7 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 		if err := w.appendEvent(ctx, types.Event{
 			Kind:       types.EventMonitoringStarted,
 			PipelineID: pipeline.Name,
-			RunID:      runID,
+			RunID:      run.RunID,
 			Message:    fmt.Sprintf("post-completion monitoring started (duration: %s)", monitoringDuration(pipeline)),
 			Timestamp:  time.Now(),
 		}); err != nil {
@@ -482,7 +498,7 @@ func (w *Watcher) triggerPipeline(ctx context.Context, pipeline types.PipelineCo
 		}
 	}
 
-	w.logger.Info("trigger succeeded", "pipeline", pipeline.Name, "run", runID, "attempt", attemptNum)
+	w.logger.Info("trigger succeeded", "pipeline", pipeline.Name, "run", run.RunID, "attempt", entry.AttemptNumber)
 }
 
 // checkRunStatus polls the remote trigger system for run completion and transitions
@@ -826,12 +842,14 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 	})
 
 	// Transition run to COMPLETED — monitoring duty done; rerun is a separate lifecycle
-	_, _ = w.transitionRun(ctx, runTransition{
+	if ok, err := w.transitionRun(ctx, runTransition{
 		RunID:           run.RunID,
 		ExpectedVersion: run.Version,
 		NewStatus:       types.RunCompleted,
 		UpdatedAt:       now,
-	})
+	}); err != nil || !ok {
+		w.logger.Warn("failed to CAS run to COMPLETED after drift", "pipeline", pipeline.Name, "runID", run.RunID, "error", err)
+	}
 	if err := w.updateRunLog(ctx, runLogUpdate{
 		PipelineID:     pipeline.Name,
 		Date:           today,

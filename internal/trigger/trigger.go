@@ -54,6 +54,9 @@ func ExecuteHTTP(ctx context.Context, cfg *types.TriggerConfig) error {
 
 	var body io.Reader
 	if cfg.Body != "" {
+		// os.ExpandEnv is intentional: operators store ${VAR} references in
+		// pipeline configs (DynamoDB/Firestore), resolved at runtime from the
+		// Lambda/Cloud Function environment. Config writers are trusted.
 		body = bytes.NewBufferString(os.ExpandEnv(cfg.Body))
 	}
 
@@ -64,6 +67,7 @@ func ExecuteHTTP(ctx context.Context, cfg *types.TriggerConfig) error {
 
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range cfg.Headers {
+		// os.ExpandEnv is intentional — see body comment above.
 		req.Header.Set(k, os.ExpandEnv(v))
 	}
 
