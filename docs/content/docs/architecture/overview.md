@@ -102,5 +102,8 @@ All state changes emit immutable events to an append-only stream:
 | `RETRY_EXHAUSTED` | All retry attempts consumed |
 | `MONITORING_DRIFT_DETECTED` | Post-completion trait regression |
 | `SCHEDULE_MISSED` | Pipeline schedule passed without evaluation |
+| `RUN_STUCK` | Run in non-terminal state beyond threshold |
+| `PIPELINE_COMPLETED` | Pipeline run finished successfully (lifecycle) |
+| `PIPELINE_FAILED` | Pipeline run finished with failure (lifecycle) |
 
 Events support the archiver (Redis → Postgres) and external observability integrations.

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-02-25
+
+### Added
+
+- **Lifecycle Events**: stream-router publishes SNS events on pipeline terminal status changes
+  - `PIPELINE_COMPLETED` and `PIPELINE_FAILED` events emitted to a dedicated lifecycle SNS topic
+  - Configurable via `LIFECYCLE_TOPIC_ARN` environment variable on stream-router Lambda
+  - Best-effort publishing — errors are logged, not propagated
+  - `LifecycleEventsPublished` expvar counter for observability
+  - `LifecycleEvent` struct in `internal/lambda/types.go`
+- **Stuck-Run Detection**: watchdog detects runs stuck in non-terminal states
+  - `CheckStuckRuns()` pure function scans for runs in PENDING/TRIGGERING/RUNNING beyond a configurable threshold
+  - Default threshold: 30 minutes, configurable via `WatchdogConfig.StuckRunThreshold`
+  - Dedup via distributed lock (`watchdog:stuck:{pipeline}:{schedule}:{date}`, 24h TTL)
+  - `EventRunStuck` event kind for audit trail
+  - `RUN_STUCK` alert with Category `"stuck_run"`
+  - `StuckRunsDetected` expvar counter
+  - 265 new lines of tests in `watchdog_test.go`
+- **Alert Categorization**: machine-readable `Category` field on all alerts
+  - `Alert.Category` field (JSON: `alertType`) set by all alert producers
+  - Values: `schedule_missed`, `stuck_run`, `evaluation_sla_breach`, `completion_sla_breach`, `validation_timeout`, `trait_drift`
+  - Enables downstream consumers (alert-logger, dashboards) to filter and route by category without parsing message strings
+- New `EventKind` values: `PIPELINE_COMPLETED`, `PIPELINE_FAILED`, `RUN_STUCK`
+
 ## [0.1.1] - 2026-02-25
 
 ### Added
@@ -90,5 +114,6 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.2.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.2.0
 [0.1.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.1.1
 [0.1.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.1.0

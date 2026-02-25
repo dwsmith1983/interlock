@@ -11,6 +11,7 @@ Interlock dispatches alerts when SLA deadlines are breached, triggers fail, retr
 ```go
 type Alert struct {
     Level      AlertLevel             // "error", "warning", "info"
+    Category   string                 // machine-readable alert type (JSON: "alertType")
     PipelineID string
     TraitType  string                 // empty for pipeline-level alerts
     Message    string
@@ -18,6 +19,21 @@ type Alert struct {
     Timestamp  time.Time
 }
 ```
+
+### Alert Categories
+
+The `Category` field (serialized as `alertType` in JSON) provides a machine-readable classification for filtering and routing:
+
+| Category | Source | Meaning |
+|---|---|---|
+| `schedule_missed` | Watchdog | No evaluation started by deadline |
+| `stuck_run` | Watchdog | Run in non-terminal state beyond threshold |
+| `evaluation_sla_breach` | Orchestrator | Evaluation deadline exceeded |
+| `completion_sla_breach` | Orchestrator | Completion deadline exceeded |
+| `validation_timeout` | Orchestrator | Hard validation timeout hit |
+| `trait_drift` | Orchestrator | Post-completion trait regression |
+
+Downstream consumers (alert-logger, dashboards) can filter by `alertType` without parsing message strings.
 
 ### Alert Levels
 
@@ -186,6 +202,9 @@ Alerts are emitted at these points in the lifecycle:
 | `TRIGGER_FAILED` | error | Trigger execution failed |
 | `RETRY_EXHAUSTED` | error | All retry attempts consumed |
 | `SCHEDULE_MISSED` | error | Pipeline schedule passed without evaluation (watchdog) |
+| `RUN_STUCK` | error | Run in non-terminal state beyond threshold (watchdog) |
+| `PIPELINE_COMPLETED` | info | Pipeline run finished successfully (lifecycle) |
+| `PIPELINE_FAILED` | error | Pipeline run finished with failure (lifecycle) |
 | `MONITORING_DRIFT_DETECTED` | warning | Post-completion trait regression |
 | `RETRY_SCHEDULED` | info | Automatic retry queued |
 | `MONITORING_STARTED` | info | Post-completion monitoring begins |
