@@ -247,12 +247,12 @@ func (e *Engine) CheckReadiness(ctx context.Context, pipelineID string) (*types.
 func (e *Engine) EvaluateTrait(ctx context.Context, pipelineID string, trait archetype.ResolvedTrait) (*types.TraitEvaluation, error) {
 	if trait.Evaluator == "" {
 		return &types.TraitEvaluation{
-			PipelineID:  pipelineID,
-			TraitType:   trait.Type,
+			PipelineID:      pipelineID,
+			TraitType:       trait.Type,
 			Status:          types.TraitError,
 			Reason:          "no evaluator configured",
 			FailureCategory: types.FailurePermanent,
-			EvaluatedAt: time.Now(),
+			EvaluatedAt:     time.Now(),
 		}, nil
 	}
 
