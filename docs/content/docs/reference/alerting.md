@@ -4,7 +4,7 @@ weight: 3
 description: Sink interface, 5 implementations, Dispatcher, and AlertConfig schema.
 ---
 
-Interlock dispatches alerts when SLA deadlines are breached, triggers fail, retries exhaust, or post-completion drift is detected. The alert system uses a pluggable sink architecture.
+Interlock dispatches alerts when SLA deadlines are breached, triggers fail, retries exhaust, post-completion drift is detected, or pipeline schedules are silently missed. The alert system uses a pluggable sink architecture.
 
 ## Alert Type
 
@@ -185,6 +185,7 @@ Alerts are emitted at these points in the lifecycle:
 | `SLA_BREACHED` | error | Evaluation or completion deadline exceeded |
 | `TRIGGER_FAILED` | error | Trigger execution failed |
 | `RETRY_EXHAUSTED` | error | All retry attempts consumed |
+| `SCHEDULE_MISSED` | error | Pipeline schedule passed without evaluation (watchdog) |
 | `MONITORING_DRIFT_DETECTED` | warning | Post-completion trait regression |
 | `RETRY_SCHEDULED` | info | Automatic retry queued |
 | `MONITORING_STARTED` | info | Post-completion monitoring begins |

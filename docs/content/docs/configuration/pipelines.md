@@ -213,6 +213,10 @@ alerts:
   - type: webhook
     url: https://hooks.slack.com/...
 
+watchdog:
+  enabled: true
+  interval: 5m
+
 archiver:
   enabled: true
   interval: 5m

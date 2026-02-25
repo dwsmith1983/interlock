@@ -121,6 +121,20 @@ The archiver uses an `UpsertRun`, `UpsertRunLog`, and `InsertEvents` interface a
 - `events` table — append-only event log
 - `cursors` table — tracks per-pipeline, per-data-type stream positions
 
+## Watchdog
+
+The watchdog runs as a background goroutine alongside the watcher, scanning for pipelines whose evaluation deadline has passed without a RunLog entry. It uses the same polling pattern as the archiver: ticker-based loop with immediate first scan.
+
+```yaml
+watchdog:
+  enabled: true
+  interval: 5m
+```
+
+When a missed schedule is detected, the watchdog fires a `SCHEDULE_MISSED` alert through the dispatcher and appends an audit event. A distributed lock (`watchdog:{pipeline}:{schedule}:{date}`) ensures one alert per pipeline per schedule per day.
+
+See [Watchdog](../watchdog) for the full algorithm and dedup details.
+
 ## Docker Compose
 
 The local demo environment runs all components in Docker:

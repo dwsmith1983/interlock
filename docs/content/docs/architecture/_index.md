@@ -8,6 +8,7 @@ Interlock applies the STAMP (Systems-Theoretic Accident Model and Processes) saf
 
 {{< cards >}}
   {{< card link="overview" title="Overview" subtitle="STAMP model, three-level checks, and the run state machine." >}}
-  {{< card link="aws" title="AWS" subtitle="DynamoDB single-table, Step Functions, and 5 Lambda handlers." >}}
+  {{< card link="aws" title="AWS" subtitle="DynamoDB single-table, Step Functions, and 6 Lambda handlers." >}}
   {{< card link="local" title="Local" subtitle="Redis provider, watcher loop, Postgres archiver, Docker Compose." >}}
+  {{< card link="watchdog" title="Watchdog" subtitle="Absence detection for silently missed pipeline schedules." >}}
 {{< /cards >}}

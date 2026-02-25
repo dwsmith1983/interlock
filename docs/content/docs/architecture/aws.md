@@ -4,7 +4,7 @@ weight: 2
 description: DynamoDB single-table design, Step Functions state machine, and Lambda handlers.
 ---
 
-The AWS variant replaces the local watcher loop with an event-driven architecture using DynamoDB Streams, Step Functions, and Lambda.
+The AWS variant replaces the local watcher loop with an event-driven architecture using DynamoDB Streams, Step Functions, and Lambda. A separate watchdog Lambda runs on an EventBridge schedule to detect silently missed pipelines.
 
 ## High-Level Flow
 
@@ -129,3 +129,9 @@ Executes the pipeline trigger with CAS state transitions:
 ### run-checker
 
 Delegates to `trigger.Runner.CheckStatus()` to poll the running job. Returns `running`, `succeeded`, or `failed` state.
+
+### watchdog
+
+Invoked by an EventBridge scheduled rule (default: every 5 minutes). Calls `watchdog.CheckMissedSchedules()` to scan all pipelines for schedules whose evaluation deadline has passed without a RunLog entry. Fires `SCHEDULE_MISSED` alerts via SNS and appends audit events to DynamoDB.
+
+The watchdog is **not** part of the Step Function state machine — it runs independently to detect when the Step Function _didn't_ start. See [Watchdog](../watchdog) for the full algorithm.

@@ -15,6 +15,7 @@ Interlock applies [STAMP](https://psas.scripts.mit.edu/home/stamp/) (Systems-The
 | Controller | Engine (evaluates traits, enforces rules) |
 | Controlled process | Pipeline (data transformation job) |
 | Feedback | Events, run state, SLA monitoring |
+| Absence of control action | Watchdog (missed schedule detection) |
 
 ## Three-Level Check System
 
@@ -100,5 +101,6 @@ All state changes emit immutable events to an append-only stream:
 | `RETRY_SCHEDULED` | Automatic retry queued |
 | `RETRY_EXHAUSTED` | All retry attempts consumed |
 | `MONITORING_DRIFT_DETECTED` | Post-completion trait regression |
+| `SCHEDULE_MISSED` | Pipeline schedule passed without evaluation |
 
 Events support the archiver (Redis → Postgres) and external observability integrations.

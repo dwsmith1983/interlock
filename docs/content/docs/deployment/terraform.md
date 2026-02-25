@@ -4,7 +4,7 @@ weight: 1
 description: Bootstrap state backend, configure variables, and deploy the full AWS stack.
 ---
 
-The AWS deployment is managed by Terraform files in `deploy/terraform/`. The stack includes DynamoDB, 5 Lambda functions, a Step Function state machine, SNS for alerts, and EventBridge for scheduling.
+The AWS deployment is managed by Terraform files in `deploy/terraform/`. The stack includes DynamoDB, 6 Lambda functions, a Step Function state machine, SNS for alerts, and EventBridge for scheduling.
 
 ## Prerequisites
 
@@ -32,7 +32,7 @@ This creates:
 make build-lambda
 ```
 
-This runs `deploy/build.sh`, which cross-compiles all 5 Lambda handlers for `linux/amd64` and packages them as zip archives.
+This runs `deploy/build.sh`, which cross-compiles all 6 Lambda handlers for `linux/arm64` and packages them as zip archives.
 
 ## Configure Variables
 
@@ -78,6 +78,7 @@ data_bucket_name = "my-interlock-data"
 | `lambda_timeout` | number | `60` | Lambda timeout (seconds) |
 | `evaluator_base_url` | string | `""` | HTTP evaluator base URL |
 | `archetype_dir` | string | `/var/task/archetypes` | Archetype YAML directory in Lambda |
+| `watchdog_interval` | string | `rate(5 minutes)` | EventBridge schedule for watchdog Lambda |
 
 ## Deploy
 
@@ -94,7 +95,7 @@ terraform apply
 |---|---|
 | DynamoDB table | Single-table with TTL on `expiresAt`, GSI1 for list queries |
 | DynamoDB Stream | Triggers `stream-router` Lambda on `MARKER#` writes |
-| 5 Lambda functions | stream-router, evaluator, orchestrator, trigger, run-checker |
+| 6 Lambda functions | stream-router, evaluator, orchestrator, trigger, run-checker, watchdog |
 | Lambda layers | Shared dependencies (Python `requests` for Python Lambdas) |
 | Step Function | 47-state machine orchestrating the full pipeline lifecycle |
 | SNS topic | Alert delivery |
@@ -104,7 +105,7 @@ terraform apply
 
 ### Resource Architecture
 
-The Terraform uses `for_each` for the core Lambda functions (evaluator, orchestrator, trigger, run-checker), keeping the configuration DRY. The `stream-router` is defined separately because it has a unique DynamoDB Stream event source mapping.
+The Terraform uses `for_each` for the core Lambda functions (evaluator, orchestrator, trigger, run-checker), keeping the configuration DRY. The `stream-router` is defined separately because it has a unique DynamoDB Stream event source mapping. The `watchdog` is also separate — it has its own EventBridge schedule trigger and is not part of the Step Function workflow.
 
 The Step Function ASL template uses `templatefile()` to substitute Lambda ARNs:
 
