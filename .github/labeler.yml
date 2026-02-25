@@ -8,6 +8,7 @@ docs:
           - "README.md"
           - "LICENSE"
           - "*.md"
+          - "docs/**"
 
 tests:
   - changed-files:
