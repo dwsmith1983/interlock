@@ -11,9 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
 	awslambda "github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	awssns "github.com/aws/aws-sdk-go-v2/service/sns"
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/metrics"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 var (
@@ -29,8 +33,10 @@ func getDeps() (*intlambda.Deps, error) {
 	return deps, depsErr
 }
 
-// handleStreamEvent processes DynamoDB Stream records and starts Step Function executions.
-func handleStreamEvent(ctx context.Context, client intlambda.SFNAPI, smARN string, event intlambda.StreamEvent) error {
+// handleStreamEvent processes DynamoDB Stream records, starts Step Function
+// executions for MARKER# records, and publishes lifecycle events for RUNLOG#
+// records that reach a terminal status.
+func handleStreamEvent(ctx context.Context, d *intlambda.Deps, event intlambda.StreamEvent) error {
 	logger := slog.Default()
 
 	for _, record := range event.Records {
@@ -49,74 +55,164 @@ func handleStreamEvent(ctx context.Context, client intlambda.SFNAPI, smARN strin
 		pk := pkAttr.String()
 		sk := skAttr.String()
 
-		// Only process MARKER# records (trait evaluations)
-		if !strings.HasPrefix(sk, "MARKER#") {
-			continue
-		}
-
-		// PK format: PIPELINE#<pipelineID>
-		pipelineID := strings.TrimPrefix(pk, "PIPELINE#")
-		if pipelineID == pk {
-			logger.Warn("unexpected PK format", "pk", pk)
-			continue
-		}
-
-		// Extract schedule from NewImage attribute, defaulting to "daily"
-		scheduleID := "daily"
-		if record.Change.NewImage != nil {
-			if schedAttr, ok := record.Change.NewImage["scheduleID"]; ok {
-				if s := schedAttr.String(); s != "" {
-					scheduleID = s
-				}
+		switch {
+		case strings.HasPrefix(sk, "MARKER#"):
+			if err := handleMarkerRecord(ctx, d, logger, pk, sk, record); err != nil {
+				return err
 			}
+		case strings.HasPrefix(sk, "RUNLOG#"):
+			publishLifecycleEvent(ctx, d, logger, pk, record)
 		}
-
-		markerParts := strings.SplitN(sk, "#", 3)
-		markerSource := ""
-		if len(markerParts) >= 2 {
-			markerSource = markerParts[1]
-		}
-
-		date := time.Now().UTC().Format("2006-01-02")
-
-		// Dedup execution name: pipelineID:date:scheduleID (replace invalid chars)
-		execName := sanitizeExecName(fmt.Sprintf("%s:%s:%s", pipelineID, date, scheduleID))
-
-		sfnInput, _ := json.Marshal(map[string]interface{}{
-			"pipelineID":   pipelineID,
-			"scheduleID":   scheduleID,
-			"markerSource": markerSource,
-			"date":         date,
-		})
-
-		_, err := client.StartExecution(ctx, &sfn.StartExecutionInput{
-			StateMachineArn: &smARN,
-			Name:            &execName,
-			Input:           strPtr(string(sfnInput)),
-		})
-		if err != nil {
-			// ExecutionAlreadyExists is expected for dedup — not an error
-			if strings.Contains(err.Error(), "ExecutionAlreadyExists") {
-				logger.Info("execution already exists (dedup)",
-					"pipeline", pipelineID, "date", date, "schedule", scheduleID)
-				continue
-			}
-			logger.Error("failed to start execution",
-				"pipeline", pipelineID,
-				"error", err,
-			)
-			return fmt.Errorf("starting execution for %s: %w", pipelineID, err)
-		}
-
-		logger.Info("started step function execution",
-			"pipeline", pipelineID,
-			"date", date,
-			"schedule", scheduleID,
-			"execName", execName,
-		)
 	}
 
 	return nil
+}
+
+// handleMarkerRecord starts a Step Function execution for a MARKER# DynamoDB stream record.
+func handleMarkerRecord(ctx context.Context, d *intlambda.Deps, logger *slog.Logger, pk, sk string, record events.DynamoDBEventRecord) error {
+	// PK format: PIPELINE#<pipelineID>
+	pipelineID := strings.TrimPrefix(pk, "PIPELINE#")
+	if pipelineID == pk {
+		logger.Warn("unexpected PK format", "pk", pk)
+		return nil
+	}
+
+	// Extract schedule from NewImage attribute, defaulting to "daily"
+	scheduleID := "daily"
+	if record.Change.NewImage != nil {
+		if schedAttr, ok := record.Change.NewImage["scheduleID"]; ok {
+			if s := schedAttr.String(); s != "" {
+				scheduleID = s
+			}
+		}
+	}
+
+	markerParts := strings.SplitN(sk, "#", 3)
+	markerSource := ""
+	if len(markerParts) >= 2 {
+		markerSource = markerParts[1]
+	}
+
+	date := time.Now().UTC().Format("2006-01-02")
+
+	// Dedup execution name: pipelineID:date:scheduleID (replace invalid chars)
+	execName := sanitizeExecName(fmt.Sprintf("%s:%s:%s", pipelineID, date, scheduleID))
+
+	sfnInput, _ := json.Marshal(map[string]interface{}{
+		"pipelineID":   pipelineID,
+		"scheduleID":   scheduleID,
+		"markerSource": markerSource,
+		"date":         date,
+	})
+
+	_, err := d.SFNClient.StartExecution(ctx, &sfn.StartExecutionInput{
+		StateMachineArn: &d.StateMachineARN,
+		Name:            &execName,
+		Input:           strPtr(string(sfnInput)),
+	})
+	if err != nil {
+		// ExecutionAlreadyExists is expected for dedup — not an error
+		if strings.Contains(err.Error(), "ExecutionAlreadyExists") {
+			logger.Info("execution already exists (dedup)",
+				"pipeline", pipelineID, "date", date, "schedule", scheduleID)
+			return nil
+		}
+		logger.Error("failed to start execution",
+			"pipeline", pipelineID,
+			"error", err,
+		)
+		return fmt.Errorf("starting execution for %s: %w", pipelineID, err)
+	}
+
+	logger.Info("started step function execution",
+		"pipeline", pipelineID,
+		"date", date,
+		"schedule", scheduleID,
+		"execName", execName,
+	)
+	return nil
+}
+
+// publishLifecycleEvent publishes a lifecycle event to SNS when a RUNLOG# record
+// transitions to COMPLETED or FAILED. Best-effort: errors are logged, not returned.
+// No-op when LIFECYCLE_TOPIC_ARN is not configured.
+func publishLifecycleEvent(ctx context.Context, d *intlambda.Deps, logger *slog.Logger, pk string, record events.DynamoDBEventRecord) {
+	if d.SNSClient == nil || d.LifecycleTopicARN == "" {
+		return
+	}
+
+	newImage := record.Change.NewImage
+	if newImage == nil {
+		return
+	}
+
+	// Extract status from NewImage
+	statusAttr, ok := newImage["status"]
+	if !ok {
+		return
+	}
+	status := statusAttr.String()
+
+	// Only publish for terminal statuses
+	if status != string(types.RunCompleted) && status != string(types.RunFailed) {
+		return
+	}
+
+	pipelineID := strings.TrimPrefix(pk, "PIPELINE#")
+	if pipelineID == pk {
+		return
+	}
+
+	eventType := types.EventPipelineCompleted
+	if status == string(types.RunFailed) {
+		eventType = types.EventPipelineFailed
+	}
+
+	// Extract optional fields from NewImage
+	scheduleID := ""
+	if attr, ok := newImage["scheduleID"]; ok {
+		scheduleID = attr.String()
+	}
+	date := ""
+	if attr, ok := newImage["date"]; ok {
+		date = attr.String()
+	}
+	runID := ""
+	if attr, ok := newImage["runId"]; ok {
+		runID = attr.String()
+	}
+
+	evt := intlambda.LifecycleEvent{
+		EventType:  eventType,
+		PipelineID: pipelineID,
+		ScheduleID: scheduleID,
+		Date:       date,
+		RunID:      runID,
+		Status:     status,
+		Timestamp:  time.Now(),
+	}
+
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		logger.Error("failed to marshal lifecycle event",
+			"pipeline", pipelineID, "error", err)
+		return
+	}
+
+	msg := string(payload)
+	_, err = d.SNSClient.Publish(ctx, &awssns.PublishInput{
+		TopicArn: &d.LifecycleTopicARN,
+		Message:  &msg,
+	})
+	if err != nil {
+		logger.Error("failed to publish lifecycle event",
+			"pipeline", pipelineID, "status", status, "error", err)
+		return
+	}
+
+	metrics.LifecycleEventsPublished.Add(1)
+	logger.Info("published lifecycle event",
+		"pipeline", pipelineID, "status", status, "eventType", eventType)
 }
 
 func handler(ctx context.Context, event intlambda.StreamEvent) error {
@@ -127,7 +223,7 @@ func handler(ctx context.Context, event intlambda.StreamEvent) error {
 	if d.SFNClient == nil {
 		return fmt.Errorf("STATE_MACHINE_ARN environment variable required")
 	}
-	return handleStreamEvent(ctx, d.SFNClient, d.StateMachineARN, event)
+	return handleStreamEvent(ctx, d, event)
 }
 
 // sanitizeExecName replaces characters invalid for SFN execution names.

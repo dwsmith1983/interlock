@@ -7,7 +7,9 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	awssns "github.com/aws/aws-sdk-go-v2/service/sns"
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,6 +22,28 @@ type mockSFN struct {
 func (m *mockSFN) StartExecution(_ context.Context, input *sfn.StartExecutionInput, _ ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
 	m.executions = append(m.executions, input)
 	return &sfn.StartExecutionOutput{}, m.err
+}
+
+type mockSNS struct {
+	messages []*awssns.PublishInput
+	err      error
+}
+
+func (m *mockSNS) Publish(_ context.Context, input *awssns.PublishInput, _ ...func(*awssns.Options)) (*awssns.PublishOutput, error) {
+	m.messages = append(m.messages, input)
+	return &awssns.PublishOutput{}, m.err
+}
+
+func testDeps(sfnMock *mockSFN, snsMock *mockSNS) *intlambda.Deps {
+	d := &intlambda.Deps{
+		SFNClient:       sfnMock,
+		StateMachineARN: "arn:aws:states:us-east-1:123:stateMachine:interlock",
+	}
+	if snsMock != nil {
+		d.SNSClient = snsMock
+		d.LifecycleTopicARN = "arn:aws:sns:us-east-1:123:lifecycle"
+	}
+	return d
 }
 
 func makeRecord(pk, sk, eventName string) events.DynamoDBEventRecord {
@@ -47,20 +71,25 @@ func makeRecordWithNewImage(pk, sk, eventName string, newImage map[string]events
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Existing MARKER# tests (refactored to use *Deps)
+// ---------------------------------------------------------------------------
+
 func TestHandleStreamEvent_MarkerRecord(t *testing.T) {
-	mock := &mockSFN{}
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil)
 	event := intlambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{
 			makeRecord("PIPELINE#my-pipeline", "MARKER#freshness#2026-02-22T10:00:00Z", "INSERT"),
 		},
 	}
 
-	err := handleStreamEvent(context.Background(), mock, "arn:aws:states:us-east-1:123:stateMachine:interlock", event)
+	err := handleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
-	require.Len(t, mock.executions, 1)
-	exec := mock.executions[0]
-	assert.Equal(t, "arn:aws:states:us-east-1:123:stateMachine:interlock", *exec.StateMachineArn)
+	require.Len(t, sfnMock.executions, 1)
+	exec := sfnMock.executions[0]
+	assert.Equal(t, d.StateMachineARN, *exec.StateMachineArn)
 	assert.Contains(t, *exec.Name, "my-pipeline")
 
 	var input map[string]interface{}
@@ -71,7 +100,8 @@ func TestHandleStreamEvent_MarkerRecord(t *testing.T) {
 }
 
 func TestHandleStreamEvent_SkipsNonMarker(t *testing.T) {
-	mock := &mockSFN{}
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil)
 	event := intlambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{
 			makeRecord("PIPELINE#my-pipeline", "TRAIT#freshness", "INSERT"),
@@ -79,26 +109,28 @@ func TestHandleStreamEvent_SkipsNonMarker(t *testing.T) {
 		},
 	}
 
-	err := handleStreamEvent(context.Background(), mock, "arn:aws:states:us-east-1:123:stateMachine:interlock", event)
+	err := handleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
-	assert.Empty(t, mock.executions)
+	assert.Empty(t, sfnMock.executions)
 }
 
 func TestHandleStreamEvent_SkipsDelete(t *testing.T) {
-	mock := &mockSFN{}
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil)
 	event := intlambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{
 			makeRecord("PIPELINE#my-pipeline", "MARKER#freshness", "REMOVE"),
 		},
 	}
 
-	err := handleStreamEvent(context.Background(), mock, "arn:aws:states:us-east-1:123:stateMachine:interlock", event)
+	err := handleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
-	assert.Empty(t, mock.executions)
+	assert.Empty(t, sfnMock.executions)
 }
 
 func TestHandleStreamEvent_MultipleRecords(t *testing.T) {
-	mock := &mockSFN{}
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil)
 	event := intlambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{
 			makeRecord("PIPELINE#pipe-a", "MARKER#freshness", "INSERT"),
@@ -107,13 +139,14 @@ func TestHandleStreamEvent_MultipleRecords(t *testing.T) {
 		},
 	}
 
-	err := handleStreamEvent(context.Background(), mock, "arn:aws:states:us-east-1:123:stateMachine:interlock", event)
+	err := handleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
-	assert.Len(t, mock.executions, 2)
+	assert.Len(t, sfnMock.executions, 2)
 }
 
 func TestHandleStreamEvent_ScheduleIDFromNewImage(t *testing.T) {
-	mock := &mockSFN{}
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil)
 	event := intlambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{
 			makeRecordWithNewImage(
@@ -129,11 +162,11 @@ func TestHandleStreamEvent_ScheduleIDFromNewImage(t *testing.T) {
 		},
 	}
 
-	err := handleStreamEvent(context.Background(), mock, "arn:aws:states:us-east-1:123:stateMachine:interlock", event)
+	err := handleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
-	require.Len(t, mock.executions, 1)
-	exec := mock.executions[0]
+	require.Len(t, sfnMock.executions, 1)
+	exec := sfnMock.executions[0]
 	assert.Contains(t, *exec.Name, "wikipedia-silver")
 	assert.Contains(t, *exec.Name, "h14")
 
@@ -145,25 +178,27 @@ func TestHandleStreamEvent_ScheduleIDFromNewImage(t *testing.T) {
 }
 
 func TestHandleStreamEvent_NoNewImage_DefaultsDaily(t *testing.T) {
-	mock := &mockSFN{}
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil)
 	event := intlambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{
 			makeRecord("PIPELINE#my-pipeline", "MARKER#freshness#2026-02-22T10:00:00Z", "INSERT"),
 		},
 	}
 
-	err := handleStreamEvent(context.Background(), mock, "arn:aws:states:us-east-1:123:stateMachine:interlock", event)
+	err := handleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
-	require.Len(t, mock.executions, 1)
-	exec := mock.executions[0]
+	require.Len(t, sfnMock.executions, 1)
+	exec := sfnMock.executions[0]
 	var input map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(*exec.Input), &input))
 	assert.Equal(t, "daily", input["scheduleID"])
 }
 
 func TestHandleStreamEvent_EmptyScheduleID_DefaultsDaily(t *testing.T) {
-	mock := &mockSFN{}
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil)
 	event := intlambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{
 			makeRecordWithNewImage(
@@ -179,11 +214,11 @@ func TestHandleStreamEvent_EmptyScheduleID_DefaultsDaily(t *testing.T) {
 		},
 	}
 
-	err := handleStreamEvent(context.Background(), mock, "arn:aws:states:us-east-1:123:stateMachine:interlock", event)
+	err := handleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
-	require.Len(t, mock.executions, 1)
-	exec := mock.executions[0]
+	require.Len(t, sfnMock.executions, 1)
+	exec := sfnMock.executions[0]
 	var input map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(*exec.Input), &input))
 	assert.Equal(t, "daily", input["scheduleID"])
@@ -198,4 +233,172 @@ func TestSanitizeExecName(t *testing.T) {
 		long += "a"
 	}
 	assert.Len(t, sanitizeExecName(long), 80)
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle event tests (RUNLOG#)
+// ---------------------------------------------------------------------------
+
+func TestLifecycleEvent_CompletedPublishes(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{}
+	d := testDeps(sfnMock, snsMock)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-a",
+				"RUNLOG#daily#2026-02-25",
+				"MODIFY",
+				map[string]events.DynamoDBAttributeValue{
+					"status":     events.NewStringAttribute("COMPLETED"),
+					"scheduleID": events.NewStringAttribute("daily"),
+					"date":       events.NewStringAttribute("2026-02-25"),
+					"runId":      events.NewStringAttribute("run-42"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	assert.Empty(t, sfnMock.executions, "RUNLOG should not trigger SFN")
+	require.Len(t, snsMock.messages, 1)
+
+	var evt intlambda.LifecycleEvent
+	require.NoError(t, json.Unmarshal([]byte(*snsMock.messages[0].Message), &evt))
+	assert.Equal(t, types.EventPipelineCompleted, evt.EventType)
+	assert.Equal(t, "pipe-a", evt.PipelineID)
+	assert.Equal(t, "daily", evt.ScheduleID)
+	assert.Equal(t, "2026-02-25", evt.Date)
+	assert.Equal(t, "run-42", evt.RunID)
+	assert.Equal(t, "COMPLETED", evt.Status)
+}
+
+func TestLifecycleEvent_FailedPublishes(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{}
+	d := testDeps(sfnMock, snsMock)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-b",
+				"RUNLOG#h14#2026-02-25",
+				"MODIFY",
+				map[string]events.DynamoDBAttributeValue{
+					"status":     events.NewStringAttribute("FAILED"),
+					"scheduleID": events.NewStringAttribute("h14"),
+					"date":       events.NewStringAttribute("2026-02-25"),
+					"runId":      events.NewStringAttribute("run-99"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	require.Len(t, snsMock.messages, 1)
+
+	var evt intlambda.LifecycleEvent
+	require.NoError(t, json.Unmarshal([]byte(*snsMock.messages[0].Message), &evt))
+	assert.Equal(t, types.EventPipelineFailed, evt.EventType)
+	assert.Equal(t, "pipe-b", evt.PipelineID)
+	assert.Equal(t, "FAILED", evt.Status)
+}
+
+func TestLifecycleEvent_PendingSkips(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{}
+	d := testDeps(sfnMock, snsMock)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-a",
+				"RUNLOG#daily#2026-02-25",
+				"INSERT",
+				map[string]events.DynamoDBAttributeValue{
+					"status": events.NewStringAttribute("PENDING"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	assert.Empty(t, snsMock.messages, "PENDING should not publish lifecycle event")
+}
+
+func TestLifecycleEvent_NoTopicSkips(t *testing.T) {
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil) // no SNS configured
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-a",
+				"RUNLOG#daily#2026-02-25",
+				"MODIFY",
+				map[string]events.DynamoDBAttributeValue{
+					"status": events.NewStringAttribute("COMPLETED"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	// No panic, no error — graceful no-op
+}
+
+func TestLifecycleEvent_SNSError_BestEffort(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{err: assert.AnError}
+	d := testDeps(sfnMock, snsMock)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-a",
+				"RUNLOG#daily#2026-02-25",
+				"MODIFY",
+				map[string]events.DynamoDBAttributeValue{
+					"status": events.NewStringAttribute("COMPLETED"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err, "SNS publish errors should not fail the batch")
+	require.Len(t, snsMock.messages, 1, "should have attempted publish")
+}
+
+func TestLifecycleEvent_MixedBatch(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{}
+	d := testDeps(sfnMock, snsMock)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			// MARKER record → SFN
+			makeRecord("PIPELINE#pipe-a", "MARKER#freshness#2026-02-25T10:00:00Z", "INSERT"),
+			// RUNLOG record → SNS lifecycle
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-b",
+				"RUNLOG#daily#2026-02-25",
+				"MODIFY",
+				map[string]events.DynamoDBAttributeValue{
+					"status": events.NewStringAttribute("COMPLETED"),
+					"runId":  events.NewStringAttribute("run-1"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	assert.Len(t, sfnMock.executions, 1, "MARKER should trigger SFN")
+	assert.Len(t, snsMock.messages, 1, "RUNLOG COMPLETED should publish lifecycle event")
 }
