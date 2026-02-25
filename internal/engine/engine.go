@@ -249,8 +249,9 @@ func (e *Engine) EvaluateTrait(ctx context.Context, pipelineID string, trait arc
 		return &types.TraitEvaluation{
 			PipelineID:  pipelineID,
 			TraitType:   trait.Type,
-			Status:      types.TraitFail,
-			Reason:      "no evaluator configured",
+			Status:          types.TraitError,
+			Reason:          "no evaluator configured",
+			FailureCategory: types.FailurePermanent,
 			EvaluatedAt: time.Now(),
 		}, nil
 	}

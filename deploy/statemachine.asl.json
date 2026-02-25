@@ -373,9 +373,82 @@
           "Variable": "$.checkReadiness.result",
           "StringEquals": "proceed",
           "Next": "TriggerPipeline"
+        },
+        {
+          "Variable": "$.checkReadiness.result",
+          "StringEquals": "error",
+          "Next": "LogEvaluatorError"
         }
       ],
       "Default": "LogNotReady"
+    },
+    "LogEvaluatorError": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "logResult",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "status": "FAILED",
+          "runID.$": "$.resolvePipeline.payload.runID",
+          "message": "evaluator errors — check evaluator configuration",
+          "failureCategory": "PERMANENT"
+        }
+      },
+      "ResultPath": "$.logEvaluatorError",
+      "Next": "AlertEvaluatorError",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
+    },
+    "AlertEvaluatorError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertTopicArn}",
+        "Subject.$": "States.Format('[EVALUATOR ERROR] {} / {}', $.pipelineID, $.scheduleID)",
+        "Message.$": "States.JsonToString($.checkReadiness.payload)"
+      },
+      "ResultPath": "$.alertEvaluatorResult",
+      "Next": "ReleaseLock",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.alertFailed",
+          "Next": "ReleaseLock"
+        }
+      ]
     },
     "LogNotReady": {
       "Type": "Task",

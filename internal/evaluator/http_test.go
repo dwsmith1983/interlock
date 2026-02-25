@@ -69,7 +69,7 @@ func TestHTTPRunner_ServerError(t *testing.T) {
 	runner := NewHTTPRunner("")
 	result, err := runner.Run(context.Background(), srv.URL, types.EvaluatorInput{}, 5*time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, types.TraitFail, result.Status)
+	assert.Equal(t, types.TraitError, result.Status)
 	assert.Contains(t, result.Reason, "EVALUATOR_HTTP_ERROR")
 	assert.Equal(t, types.FailureTransient, result.FailureCategory)
 }
@@ -83,7 +83,7 @@ func TestHTTPRunner_ClientError(t *testing.T) {
 	runner := NewHTTPRunner("")
 	result, err := runner.Run(context.Background(), srv.URL, types.EvaluatorInput{}, 5*time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, types.TraitFail, result.Status)
+	assert.Equal(t, types.TraitError, result.Status)
 	assert.Equal(t, types.FailurePermanent, result.FailureCategory)
 }
 
@@ -96,7 +96,7 @@ func TestHTTPRunner_InvalidJSON(t *testing.T) {
 	runner := NewHTTPRunner("")
 	result, err := runner.Run(context.Background(), srv.URL, types.EvaluatorInput{}, 5*time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, types.TraitFail, result.Status)
+	assert.Equal(t, types.TraitError, result.Status)
 	assert.Contains(t, result.Reason, "EVALUATOR_OUTPUT_INVALID")
 	assert.Equal(t, types.FailurePermanent, result.FailureCategory)
 }
@@ -118,7 +118,7 @@ func TestHTTPRunner_Timeout(t *testing.T) {
 	runner := NewHTTPRunner("")
 	result, err := runner.Run(context.Background(), srv.URL, types.EvaluatorInput{}, 50*time.Millisecond)
 	require.NoError(t, err)
-	assert.Equal(t, types.TraitFail, result.Status)
+	assert.Equal(t, types.TraitError, result.Status)
 	assert.Equal(t, "EVALUATOR_TIMEOUT", result.Reason)
 	assert.Equal(t, types.FailureTimeout, result.FailureCategory)
 }

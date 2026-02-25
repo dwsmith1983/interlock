@@ -59,7 +59,7 @@ func (r *HTTPRunner) Run(ctx context.Context, evaluatorPath string, input types.
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return &types.EvaluatorOutput{
-				Status:          types.TraitFail,
+				Status:          types.TraitError,
 				Reason:          "EVALUATOR_TIMEOUT",
 				FailureCategory: types.FailureTimeout,
 			}, nil
@@ -75,7 +75,7 @@ func (r *HTTPRunner) Run(ctx context.Context, evaluatorPath string, input types.
 
 	if resp.StatusCode >= 400 {
 		return &types.EvaluatorOutput{
-			Status:          types.TraitFail,
+			Status:          types.TraitError,
 			Reason:          fmt.Sprintf("EVALUATOR_HTTP_ERROR: status %d: %s", resp.StatusCode, string(respBody)),
 			FailureCategory: classifyHTTPStatus(resp.StatusCode),
 		}, nil
@@ -84,7 +84,7 @@ func (r *HTTPRunner) Run(ctx context.Context, evaluatorPath string, input types.
 	var output types.EvaluatorOutput
 	if err := json.Unmarshal(respBody, &output); err != nil {
 		return &types.EvaluatorOutput{
-			Status:          types.TraitFail,
+			Status:          types.TraitError,
 			Reason:          fmt.Sprintf("EVALUATOR_OUTPUT_INVALID: %v (body: %s)", err, string(respBody)),
 			FailureCategory: types.FailurePermanent,
 		}, nil
