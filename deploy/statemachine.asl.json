@@ -1,5 +1,5 @@
 {
-  "Comment": "Interlock pipeline lifecycle: evaluation, trigger, retry, monitoring, cascade (47 states)",
+  "Comment": "Interlock pipeline lifecycle: evaluation, trigger, retry, monitoring, cascade (52 states)",
   "StartAt": "InitDefaults",
   "States": {
     "InitDefaults": {
@@ -181,7 +181,44 @@
           "Next": "EvaluateTraits"
         }
       ],
-      "Default": "ReleaseLock"
+      "Default": "LogResolveFailed"
+    },
+    "LogResolveFailed": {
+      "Type": "Task",
+      "Resource": "${OrchestratorFunctionArn}",
+      "Parameters": {
+        "action": "logResult",
+        "pipelineID.$": "$.pipelineID",
+        "scheduleID.$": "$.scheduleID",
+        "payload": {
+          "status": "FAILED",
+          "runID": "",
+          "message.$": "$.resolvePipeline.message",
+          "failureCategory": "PERMANENT"
+        }
+      },
+      "ResultPath": "$.logResolveFailed",
+      "Next": "ReleaseLock",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "AlertError"
+        }
+      ]
     },
     "EvaluateTraits": {
       "Type": "Map",
@@ -380,6 +417,18 @@
           "Next": "LogEvaluatorError"
         }
       ],
+      "Default": "CheckIfFirstEvalAttempt"
+    },
+    "CheckIfFirstEvalAttempt": {
+      "Type": "Choice",
+      "Comment": "Route to LogNotReady on first eval attempt, skip re-logging on retries.",
+      "Choices": [
+        {
+          "Variable": "$.logNotReady",
+          "IsPresent": true,
+          "Next": "WaitForReadiness"
+        }
+      ],
       "Default": "LogNotReady"
     },
     "LogEvaluatorError": {
@@ -464,7 +513,7 @@
         }
       },
       "ResultPath": "$.logNotReady",
-      "Next": "ReleaseLock",
+      "Next": "WaitForReadiness",
       "Retry": [
         {
           "ErrorEquals": [
@@ -485,6 +534,11 @@
           "Next": "AlertError"
         }
       ]
+    },
+    "WaitForReadiness": {
+      "Type": "Wait",
+      "Seconds": 60,
+      "Next": "EvaluateTraits"
     },
     "TriggerPipeline": {
       "Type": "Task",

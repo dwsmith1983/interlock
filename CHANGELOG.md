@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-02-26
+
+### Fixed
+
+- **Evaluation retry loop**: Step Function now retries trait evaluation every 60s when traits aren't ready, terminating via the existing validation timeout. Previously in AWS event-driven mode, the SFN wrote a PENDING RUNLOG and exited immediately — the RUNLOG stayed PENDING indefinitely unless a new MARKER arrived. The local watcher loop was unaffected.
+- **ResolvePipeline error logging**: Step Function now writes a FAILED RUNLOG when `ResolvePipeline` returns an error (missing archetype, pipeline not found, archetype resolution failure). Previously these configuration errors caused a silent exit with no audit trail.
+- **`logResult` attempt counter**: `attemptNumber` now only increments when retrying after a terminal state (COMPLETED/FAILED/CANCELLED). Transitioning within the same attempt (e.g., PENDING → COMPLETED) preserves the counter.
+- **Validation timeout test**: Fixed midnight boundary edge case in `TestCheckValidationTimeout_NotBreached` where `now + 1h` wrapping past midnight caused a false positive.
+
+### Changed
+
+- Step Function state count: 49 → 52 (added `LogResolveFailed`, `CheckIfFirstEvalAttempt`, `WaitForReadiness`)
+
 ## [0.2.0] - 2026-02-25
 
 ### Added
@@ -114,6 +127,7 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.2.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.2.1
 [0.2.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.2.0
 [0.1.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.1.1
 [0.1.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.1.0

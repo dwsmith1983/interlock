@@ -629,8 +629,13 @@ func TestCheckValidationTimeout_NoSLA(t *testing.T) {
 func TestCheckValidationTimeout_NotBreached(t *testing.T) {
 	d := testDeps(t)
 
-	// Set validation timeout to 1 hour from now
-	deadline := time.Now().Add(1 * time.Hour).Format("15:04")
+	// Set validation timeout to 1 hour from now. Cap at 23:59 to avoid
+	// wrapping past midnight (ParseSLADeadline anchors HH:MM to today).
+	futureDeadline := time.Now().Add(1 * time.Hour)
+	if futureDeadline.Day() != time.Now().Day() {
+		futureDeadline = time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 23, 59, 0, 0, time.Now().Location())
+	}
+	deadline := futureDeadline.Format("15:04")
 	seedPipeline(t, d, types.PipelineConfig{
 		Name: "pipe-a",
 		SLA:  &types.SLAConfig{ValidationTimeout: deadline},

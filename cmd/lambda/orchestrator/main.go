@@ -15,6 +15,7 @@ import (
 	awslambda "github.com/aws/aws-lambda-go/lambda"
 	"github.com/dwsmith1983/interlock/internal/archetype"
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/lifecycle"
 	"github.com/dwsmith1983/interlock/internal/schedule"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -383,8 +384,15 @@ func logResult(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrato
 	attemptNumber := 1
 	var retryHistory []types.RetryAttempt
 	if existing != nil {
-		attemptNumber = existing.AttemptNumber + 1
 		retryHistory = existing.RetryHistory
+		// Only increment attempt counter when retrying after a terminal state.
+		// Transitioning within the same attempt (e.g., PENDING → COMPLETED)
+		// preserves the counter.
+		if lifecycle.IsTerminal(existing.Status) {
+			attemptNumber = existing.AttemptNumber + 1
+		} else {
+			attemptNumber = existing.AttemptNumber
+		}
 	}
 
 	entry := types.RunLogEntry{
