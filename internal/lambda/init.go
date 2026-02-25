@@ -27,16 +27,16 @@ type SFNAPI interface {
 
 // Deps holds shared dependencies for Lambda handlers.
 type Deps struct {
-	Provider            provider.Provider
-	Engine              *engine.Engine
-	Runner              *trigger.Runner
-	ArchetypeReg        *archetype.Registry
-	AlertFn             func(types.Alert)
-	Logger              *slog.Logger
-	SFNClient           SFNAPI
-	StateMachineARN     string
-	SNSClient           SNSAPI
-	LifecycleTopicARN   string
+	Provider          provider.Provider
+	Engine            *engine.Engine
+	Runner            *trigger.Runner
+	ArchetypeReg      *archetype.Registry
+	AlertFn           func(types.Alert)
+	Logger            *slog.Logger
+	SFNClient         SFNAPI
+	StateMachineARN   string
+	SNSClient         SNSAPI
+	LifecycleTopicARN string
 }
 
 // Init creates shared dependencies from environment variables.

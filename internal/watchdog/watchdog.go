@@ -21,9 +21,9 @@ import (
 )
 
 const (
-	defaultInterval        = 5 * time.Minute
-	dedupLockTTL           = 24 * time.Hour
-	defaultStuckThreshold  = 30 * time.Minute
+	defaultInterval       = 5 * time.Minute
+	dedupLockTTL          = 24 * time.Hour
+	defaultStuckThreshold = 30 * time.Minute
 )
 
 // MissedSchedule records a single missed schedule detection.

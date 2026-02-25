@@ -458,7 +458,7 @@ type ArchiverConfig struct {
 // WatchdogConfig configures the SLA watchdog that detects missed pipeline schedules.
 type WatchdogConfig struct {
 	Enabled           bool   `yaml:"enabled" json:"enabled"`
-	Interval          string `yaml:"interval" json:"interval"`                                        // e.g. "5m"
+	Interval          string `yaml:"interval" json:"interval"`                                       // e.g. "5m"
 	StuckRunThreshold string `yaml:"stuckRunThreshold,omitempty" json:"stuckRunThreshold,omitempty"` // e.g. "30m"
 }
 
