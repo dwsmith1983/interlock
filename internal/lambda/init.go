@@ -17,6 +17,7 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	awssns "github.com/aws/aws-sdk-go-v2/service/sns"
 )
 
 // SFNAPI is the subset of the Step Functions client used by Lambda handlers.
@@ -26,14 +27,16 @@ type SFNAPI interface {
 
 // Deps holds shared dependencies for Lambda handlers.
 type Deps struct {
-	Provider        provider.Provider
-	Engine          *engine.Engine
-	Runner          *trigger.Runner
-	ArchetypeReg    *archetype.Registry
-	AlertFn         func(types.Alert)
-	Logger          *slog.Logger
-	SFNClient       SFNAPI
-	StateMachineARN string
+	Provider          provider.Provider
+	Engine            *engine.Engine
+	Runner            *trigger.Runner
+	ArchetypeReg      *archetype.Registry
+	AlertFn           func(types.Alert)
+	Logger            *slog.Logger
+	SFNClient         SFNAPI
+	StateMachineARN   string
+	SNSClient         SNSAPI
+	LifecycleTopicARN string
 }
 
 // Init creates shared dependencies from environment variables.
@@ -109,6 +112,16 @@ func Init(ctx context.Context) (*Deps, error) {
 		}
 		deps.SFNClient = sfn.NewFromConfig(awsCfg)
 		deps.StateMachineARN = smARN
+	}
+
+	// Initialize SNS client for lifecycle events if configured (opt-in).
+	if topicARN := os.Getenv("LIFECYCLE_TOPIC_ARN"); topicARN != "" {
+		awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("loading AWS config for SNS lifecycle: %w", err)
+		}
+		deps.SNSClient = awssns.NewFromConfig(awsCfg)
+		deps.LifecycleTopicARN = topicARN
 	}
 
 	return deps, nil

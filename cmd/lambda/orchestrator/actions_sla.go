@@ -33,6 +33,7 @@ func checkEvaluationSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 	if schedule.IsBreached(deadline, now) {
 		d.AlertFn(types.Alert{
 			Level:      types.AlertLevelWarning,
+			Category:   "evaluation_sla_breach",
 			PipelineID: req.PipelineID,
 			Message:    fmt.Sprintf("Evaluation SLA breached for %s (deadline: %s)", req.PipelineID, pipeline.SLA.EvaluationDeadline),
 			Timestamp:  now,
@@ -80,6 +81,7 @@ func checkCompletionSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 	if schedule.IsBreached(deadline, now) {
 		d.AlertFn(types.Alert{
 			Level:      types.AlertLevelWarning,
+			Category:   "completion_sla_breach",
 			PipelineID: req.PipelineID,
 			Message:    fmt.Sprintf("Completion SLA breached for %s schedule %s", req.PipelineID, scheduleID),
 			Timestamp:  now,
@@ -121,6 +123,7 @@ func checkValidationTimeout(ctx context.Context, d *intlambda.Deps, req intlambd
 	if schedule.IsBreached(deadline, now) {
 		d.AlertFn(types.Alert{
 			Level:      types.AlertLevelError,
+			Category:   "validation_timeout",
 			PipelineID: req.PipelineID,
 			Message:    fmt.Sprintf("Validation timeout for %s (deadline: %s)", req.PipelineID, pipeline.SLA.ValidationTimeout),
 			Timestamp:  now,

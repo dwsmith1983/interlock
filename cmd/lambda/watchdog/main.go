@@ -32,13 +32,16 @@ func handler(ctx context.Context) error {
 		return err
 	}
 
-	missed := watchdog.CheckMissedSchedules(ctx, watchdog.CheckOptions{
+	opts := watchdog.CheckOptions{
 		Provider: d.Provider,
 		AlertFn:  d.AlertFn,
 		Logger:   d.Logger,
-	})
+	}
 
-	d.Logger.Info("watchdog scan complete", "missed", len(missed))
+	missed := watchdog.CheckMissedSchedules(ctx, opts)
+	stuck := watchdog.CheckStuckRuns(ctx, opts)
+
+	d.Logger.Info("watchdog scan complete", "missed", len(missed), "stuck", len(stuck))
 	return nil
 }
 

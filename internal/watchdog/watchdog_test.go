@@ -185,6 +185,9 @@ func TestNoRunLog_FiresAlert(t *testing.T) {
 	if alerts[0].Level != types.AlertLevelError {
 		t.Errorf("expected error level, got %s", alerts[0].Level)
 	}
+	if alerts[0].Category != "schedule_missed" {
+		t.Errorf("expected category schedule_missed, got %s", alerts[0].Category)
+	}
 }
 
 func TestRunLogExists_NoAlert(t *testing.T) {
@@ -427,6 +430,268 @@ func TestDedup_SecondCallNoAlert(t *testing.T) {
 	alerts := getAlerts()
 	if len(alerts) != 1 {
 		t.Errorf("expected exactly 1 alert across both calls, got %d", len(alerts))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stuck-run detection tests
+// ---------------------------------------------------------------------------
+
+func TestStuckRun_RunningPastThreshold(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		Status:    types.RunRunning,
+		RunID:     "run-1",
+		UpdatedAt: now.Add(-45 * time.Minute), // 45 min ago
+	}
+
+	alertFn, getAlerts := collectAlerts(t)
+	stuck := CheckStuckRuns(context.Background(), CheckOptions{
+		Provider: mp,
+		AlertFn:  alertFn,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+
+	if len(stuck) != 1 {
+		t.Fatalf("expected 1 stuck run, got %d", len(stuck))
+	}
+	if stuck[0].PipelineID != "p1" {
+		t.Errorf("expected pipeline p1, got %s", stuck[0].PipelineID)
+	}
+	if stuck[0].Status != types.RunRunning {
+		t.Errorf("expected RUNNING status, got %s", stuck[0].Status)
+	}
+	alerts := getAlerts()
+	if len(alerts) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(alerts))
+	}
+	if alerts[0].Category != "stuck_run" {
+		t.Errorf("expected category stuck_run, got %s", alerts[0].Category)
+	}
+}
+
+func TestStuckRun_NotYetStuck(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		Status:    types.RunRunning,
+		UpdatedAt: now.Add(-10 * time.Minute), // only 10 min ago
+	}
+
+	alertFn, getAlerts := collectAlerts(t)
+	stuck := CheckStuckRuns(context.Background(), CheckOptions{
+		Provider: mp,
+		AlertFn:  alertFn,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+
+	if len(stuck) != 0 {
+		t.Fatalf("expected 0 stuck runs, got %d", len(stuck))
+	}
+	if len(getAlerts()) != 0 {
+		t.Error("expected no alerts for run not yet stuck")
+	}
+}
+
+func TestStuckRun_CompletedRun_NotStuck(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		Status:    types.RunCompleted,
+		UpdatedAt: now.Add(-60 * time.Minute),
+	}
+
+	alertFn, getAlerts := collectAlerts(t)
+	stuck := CheckStuckRuns(context.Background(), CheckOptions{
+		Provider: mp,
+		AlertFn:  alertFn,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+
+	if len(stuck) != 0 {
+		t.Fatalf("expected 0 stuck runs, got %d", len(stuck))
+	}
+	if len(getAlerts()) != 0 {
+		t.Error("expected no alerts for completed run")
+	}
+}
+
+func TestStuckRun_NoRunLog(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+	}}
+
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	alertFn, getAlerts := collectAlerts(t)
+	stuck := CheckStuckRuns(context.Background(), CheckOptions{
+		Provider: mp,
+		AlertFn:  alertFn,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+
+	if len(stuck) != 0 {
+		t.Fatalf("expected 0 stuck runs (no run log), got %d", len(stuck))
+	}
+	if len(getAlerts()) != 0 {
+		t.Error("expected no alerts when no run log exists")
+	}
+}
+
+func TestStuckRun_Dedup(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		Status:    types.RunRunning,
+		RunID:     "run-1",
+		UpdatedAt: now.Add(-45 * time.Minute),
+	}
+
+	alertFn, getAlerts := collectAlerts(t)
+	opts := CheckOptions{
+		Provider: mp,
+		AlertFn:  alertFn,
+		Logger:   slog.Default(),
+		Now:      now,
+	}
+
+	stuck1 := CheckStuckRuns(context.Background(), opts)
+	if len(stuck1) != 1 {
+		t.Fatalf("first call: expected 1 stuck, got %d", len(stuck1))
+	}
+
+	stuck2 := CheckStuckRuns(context.Background(), opts)
+	if len(stuck2) != 0 {
+		t.Fatalf("second call: expected 0 stuck (dedup), got %d", len(stuck2))
+	}
+
+	if len(getAlerts()) != 1 {
+		t.Errorf("expected exactly 1 alert across both calls, got %d", len(getAlerts()))
+	}
+}
+
+func TestStuckRun_PendingStatus(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		Status:    types.RunPending,
+		RunID:     "run-1",
+		UpdatedAt: now.Add(-40 * time.Minute),
+	}
+
+	alertFn, getAlerts := collectAlerts(t)
+	stuck := CheckStuckRuns(context.Background(), CheckOptions{
+		Provider: mp,
+		AlertFn:  alertFn,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+
+	if len(stuck) != 1 {
+		t.Fatalf("expected 1 stuck run (PENDING), got %d", len(stuck))
+	}
+	if stuck[0].Status != types.RunPending {
+		t.Errorf("expected PENDING status, got %s", stuck[0].Status)
+	}
+	if len(getAlerts()) != 1 {
+		t.Errorf("expected 1 alert, got %d", len(getAlerts()))
+	}
+}
+
+func TestStuckRun_CustomThreshold(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		Status:    types.RunRunning,
+		RunID:     "run-1",
+		UpdatedAt: now.Add(-20 * time.Minute), // 20 min ago
+	}
+
+	alertFn, getAlerts := collectAlerts(t)
+
+	// Default 30m threshold: not stuck
+	stuck := CheckStuckRuns(context.Background(), CheckOptions{
+		Provider: mp,
+		AlertFn:  alertFn,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+	if len(stuck) != 0 {
+		t.Fatalf("expected 0 stuck with default threshold, got %d", len(stuck))
+	}
+
+	// Custom 15m threshold: stuck
+	stuck = CheckStuckRuns(context.Background(), CheckOptions{
+		Provider:          mp,
+		AlertFn:           alertFn,
+		Logger:            slog.Default(),
+		Now:               now,
+		StuckRunThreshold: 15 * time.Minute,
+	})
+	if len(stuck) != 1 {
+		t.Fatalf("expected 1 stuck with 15m threshold, got %d", len(stuck))
+	}
+	if len(getAlerts()) != 1 {
+		t.Errorf("expected 1 alert, got %d", len(getAlerts()))
+	}
+}
+
+func TestStuckRun_WatchDisabled(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+		Watch:   &types.PipelineWatchConfig{Enabled: boolPtr(false)},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		Status:    types.RunRunning,
+		UpdatedAt: now.Add(-60 * time.Minute),
+	}
+
+	alertFn, getAlerts := collectAlerts(t)
+	stuck := CheckStuckRuns(context.Background(), CheckOptions{
+		Provider: mp,
+		AlertFn:  alertFn,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+
+	if len(stuck) != 0 {
+		t.Fatalf("expected 0 stuck when watch disabled, got %d", len(stuck))
+	}
+	if len(getAlerts()) != 0 {
+		t.Error("expected no alerts when watch disabled")
 	}
 }
 
