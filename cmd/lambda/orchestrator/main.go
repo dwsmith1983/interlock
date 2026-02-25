@@ -312,7 +312,9 @@ func checkReadiness(_ context.Context, _ *intlambda.Deps, req intlambda.Orchestr
 	traitResults, _ := req.Payload["traitResults"].([]interface{})
 
 	var blocking []string
+	var errorTraits []string
 	allPass := true
+	hasErrors := false
 
 	for _, tr := range traitResults {
 		traitMap, ok := tr.(map[string]interface{})
@@ -322,11 +324,31 @@ func checkReadiness(_ context.Context, _ *intlambda.Deps, req intlambda.Orchestr
 		status, _ := traitMap["status"].(string)
 		required, _ := traitMap["required"].(bool)
 		traitType, _ := traitMap["traitType"].(string)
+		reason, _ := traitMap["reason"].(string)
+
+		if status == string(types.TraitError) {
+			hasErrors = true
+			errorTraits = append(errorTraits, fmt.Sprintf("%s: %s", traitType, reason))
+		}
 
 		if status != string(types.TraitPass) && required {
 			blocking = append(blocking, traitType)
 			allPass = false
 		}
+	}
+
+	// Evaluator errors (HTTP failures, timeouts, crashes) are distinct from
+	// "data not ready" — they indicate infrastructure or config problems
+	// and should be alerted on rather than silently retried.
+	if hasErrors {
+		return intlambda.OrchestratorResponse{
+			Action: req.Action,
+			Result: "error",
+			Payload: map[string]interface{}{
+				"reason":      "evaluator errors",
+				"errorTraits": errorTraits,
+			},
+		}, nil
 	}
 
 	if !allPass {

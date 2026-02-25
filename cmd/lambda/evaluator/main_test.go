@@ -91,7 +91,7 @@ func TestHandleEvaluate_NoEvaluator(t *testing.T) {
 		Required:   true,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, types.TraitFail, resp.Status)
+	assert.Equal(t, types.TraitError, resp.Status)
 	assert.Equal(t, "no evaluator configured", resp.Reason)
 }
 
@@ -111,7 +111,7 @@ func TestHandleEvaluate_ServerError(t *testing.T) {
 		Required:   true,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, types.TraitFail, resp.Status)
+	assert.Equal(t, types.TraitError, resp.Status)
 	assert.Contains(t, resp.Reason, "EVALUATOR_HTTP_ERROR")
 }
 
@@ -172,7 +172,7 @@ func TestHandleEvaluate_Timeout(t *testing.T) {
 	})
 	require.NoError(t, err)
 	// The HTTPRunner returns EVALUATOR_TIMEOUT on deadline exceeded
-	assert.Equal(t, types.TraitFail, resp.Status)
+	assert.Equal(t, types.TraitError, resp.Status)
 	assert.Contains(t, resp.Reason, "EVALUATOR_TIMEOUT")
 }
 
@@ -229,7 +229,7 @@ func TestHandleEvaluate_InvalidEvaluatorPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 	// EvaluateTrait returns the error as FAIL status
-	assert.Equal(t, types.TraitFail, resp.Status)
+	assert.Equal(t, types.TraitError, resp.Status)
 	assert.Contains(t, resp.Reason, "not a URL")
 }
 
@@ -274,7 +274,7 @@ func TestHandleEvaluate_InvalidJSON(t *testing.T) {
 		Required:   true,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, types.TraitFail, resp.Status)
+	assert.Equal(t, types.TraitError, resp.Status)
 	assert.Contains(t, resp.Reason, "EVALUATOR_OUTPUT_INVALID")
 }
 
@@ -344,7 +344,7 @@ func TestHandleEvaluate_ClientError(t *testing.T) {
 		Required:   true,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, types.TraitFail, resp.Status)
+	assert.Equal(t, types.TraitError, resp.Status)
 	assert.Contains(t, resp.Reason, "EVALUATOR_HTTP_ERROR")
 }
 

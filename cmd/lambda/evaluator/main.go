@@ -10,6 +10,7 @@ import (
 	awslambda "github.com/aws/aws-lambda-go/lambda"
 	"github.com/dwsmith1983/interlock/internal/archetype"
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 var (
@@ -44,19 +45,21 @@ func handleEvaluate(ctx context.Context, d *intlambda.Deps, req intlambda.Evalua
 			"error", err,
 		)
 		return intlambda.EvaluatorResponse{
-			TraitType: req.TraitType,
-			Status:    "FAIL",
-			Reason:    err.Error(),
-			Required:  req.Required,
+			TraitType:       req.TraitType,
+			Status:          types.TraitError,
+			Reason:          err.Error(),
+			Required:        req.Required,
+			FailureCategory: types.FailurePermanent,
 		}, nil
 	}
 
 	return intlambda.EvaluatorResponse{
-		TraitType: req.TraitType,
-		Status:    result.Status,
-		Value:     result.Value,
-		Reason:    result.Reason,
-		Required:  req.Required,
+		TraitType:       req.TraitType,
+		Status:          result.Status,
+		Value:           result.Value,
+		Reason:          result.Reason,
+		Required:        req.Required,
+		FailureCategory: result.FailureCategory,
 	}, nil
 }
 

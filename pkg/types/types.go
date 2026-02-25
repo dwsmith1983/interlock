@@ -30,6 +30,7 @@ type TraitStatus string
 const (
 	TraitPass  TraitStatus = "PASS"
 	TraitFail  TraitStatus = "FAIL"
+	TraitError TraitStatus = "ERROR"
 	TraitStale TraitStatus = "STALE"
 )
 

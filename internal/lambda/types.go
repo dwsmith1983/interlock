@@ -39,11 +39,12 @@ type EvaluatorRequest struct {
 
 // EvaluatorResponse is the output of the evaluator Lambda.
 type EvaluatorResponse struct {
-	TraitType string            `json:"traitType"`
-	Status    types.TraitStatus `json:"status"`
-	Value     interface{}       `json:"value,omitempty"`
-	Reason    string            `json:"reason,omitempty"`
-	Required  bool              `json:"required"`
+	TraitType       string                `json:"traitType"`
+	Status          types.TraitStatus     `json:"status"`
+	Value           interface{}           `json:"value,omitempty"`
+	Reason          string                `json:"reason,omitempty"`
+	Required        bool                  `json:"required"`
+	FailureCategory types.FailureCategory `json:"failureCategory,omitempty"`
 }
 
 // TriggerRequest is the input to the trigger Lambda.
