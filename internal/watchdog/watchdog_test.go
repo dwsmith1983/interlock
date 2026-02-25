@@ -185,6 +185,9 @@ func TestNoRunLog_FiresAlert(t *testing.T) {
 	if alerts[0].Level != types.AlertLevelError {
 		t.Errorf("expected error level, got %s", alerts[0].Level)
 	}
+	if alerts[0].Category != "schedule_missed" {
+		t.Errorf("expected category schedule_missed, got %s", alerts[0].Category)
+	}
 }
 
 func TestRunLogExists_NoAlert(t *testing.T) {

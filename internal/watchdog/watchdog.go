@@ -134,6 +134,7 @@ func checkSchedule(ctx context.Context, opts CheckOptions, pl types.PipelineConf
 	if opts.AlertFn != nil {
 		opts.AlertFn(types.Alert{
 			Level:      types.AlertLevelError,
+			Category:   "schedule_missed",
 			PipelineID: pl.Name,
 			Message: fmt.Sprintf("Pipeline %s schedule %s missed: no evaluation started by deadline %s on %s",
 				pl.Name, sched.Name, deadlineStr, date),

@@ -263,7 +263,8 @@ func TestCheckEvaluationSLA_Breached(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "proceed", resp.Result)
 	assert.Equal(t, true, resp.Payload["breached"])
-	assert.Len(t, alerts, 1)
+	require.Len(t, alerts, 1)
+	assert.Equal(t, "evaluation_sla_breach", alerts[0].Category)
 }
 
 // --- checkCompletionSLA ---
@@ -360,7 +361,8 @@ func TestCheckDrift_DriftDetected(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "proceed", resp.Result)
 	assert.Equal(t, true, resp.Payload["driftDetected"])
-	assert.Len(t, alerts, 1)
+	require.Len(t, alerts, 1)
+	assert.Equal(t, "trait_drift", alerts[0].Category)
 }
 
 // --- resolvePipeline ---
@@ -662,8 +664,9 @@ func TestCheckValidationTimeout_Breached(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "proceed", resp.Result)
 	assert.Equal(t, true, resp.Payload["validationTimedOut"])
-	assert.Len(t, alerts, 1)
+	require.Len(t, alerts, 1)
 	assert.Equal(t, types.AlertLevelError, alerts[0].Level)
+	assert.Equal(t, "validation_timeout", alerts[0].Category)
 }
 
 // --- checkMonitoringExpired ---

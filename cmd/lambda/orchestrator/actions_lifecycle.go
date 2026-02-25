@@ -75,6 +75,7 @@ func checkDrift(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrat
 	if len(drifted) > 0 {
 		d.AlertFn(types.Alert{
 			Level:      types.AlertLevelWarning,
+			Category:   "trait_drift",
 			PipelineID: req.PipelineID,
 			Message:    fmt.Sprintf("Trait drift detected for %s: %v", req.PipelineID, drifted),
 			Details:    map[string]interface{}{"drifted": drifted, "runID": runID},
