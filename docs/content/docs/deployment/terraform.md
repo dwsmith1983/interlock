@@ -79,6 +79,7 @@ data_bucket_name = "my-interlock-data"
 | `evaluator_base_url` | string | `""` | HTTP evaluator base URL |
 | `archetype_dir` | string | `/var/task/archetypes` | Archetype YAML directory in Lambda |
 | `watchdog_interval` | string | `rate(5 minutes)` | EventBridge schedule for watchdog Lambda |
+| `lifecycle_topic` | — | Auto-created | SNS topic for pipeline lifecycle events (COMPLETED/FAILED) |
 
 ## Deploy
 
@@ -98,7 +99,8 @@ terraform apply
 | 6 Lambda functions | stream-router, evaluator, orchestrator, trigger, run-checker, watchdog |
 | Lambda layers | Shared dependencies (Python `requests` for Python Lambdas) |
 | Step Function | 47-state machine orchestrating the full pipeline lifecycle |
-| SNS topic | Alert delivery |
+| SNS topic (alerts) | Alert delivery |
+| SNS topic (lifecycle) | Pipeline lifecycle events (COMPLETED/FAILED) |
 | EventBridge rules | Scheduled MARKER writes to trigger pipeline evaluation |
 | IAM roles | Least-privilege policies for each Lambda |
 | CloudWatch Log Groups | Per-Lambda log groups |
@@ -128,7 +130,7 @@ All IAM roles and policies are centralized in `iam.tf`:
 - DynamoDB access is scoped to the specific table
 - SNS publish is scoped to the alert topic
 - Step Functions has permission to invoke all 4 downstream Lambdas
-- `stream-router` has permission to start Step Function executions
+- `stream-router` has permission to start Step Function executions and publish to the lifecycle SNS topic
 
 ## Tear Down
 

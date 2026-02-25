@@ -94,7 +94,13 @@ The ASL template at `deploy/statemachine.asl.json` uses four substitution variab
 
 ### stream-router
 
-Processes DynamoDB Stream events. Filters for `MARKER#` records (written when a pipeline needs evaluation), extracts `pipelineID`, `date`, and `scheduleID` from the record, and starts a Step Function execution with a deterministic name for dedup.
+Processes DynamoDB Stream events and handles two record types:
+
+**MARKER# records** — Extracts `pipelineID`, `date`, and `scheduleID` from the record and starts a Step Function execution with a deterministic name for dedup.
+
+**RUNLOG# records** — Publishes lifecycle events to an SNS topic when a run reaches a terminal status (COMPLETED or FAILED). This enables downstream consumers (monitoring dashboards, notification systems, active recovery) to react to pipeline completion without polling DynamoDB.
+
+Lifecycle event publishing requires the `LIFECYCLE_TOPIC_ARN` environment variable. It is best-effort — errors are logged, not propagated. When the variable is not set, lifecycle publishing is silently disabled.
 
 ### orchestrator
 
@@ -132,6 +138,11 @@ Delegates to `trigger.Runner.CheckStatus()` to poll the running job. Returns `ru
 
 ### watchdog
 
-Invoked by an EventBridge scheduled rule (default: every 5 minutes). Calls `watchdog.CheckMissedSchedules()` to scan all pipelines for schedules whose evaluation deadline has passed without a RunLog entry. Fires `SCHEDULE_MISSED` alerts via SNS and appends audit events to DynamoDB.
+Invoked by an EventBridge scheduled rule (default: every 5 minutes). Performs two scans:
 
-The watchdog is **not** part of the Step Function state machine — it runs independently to detect when the Step Function _didn't_ start. See [Watchdog](../watchdog) for the full algorithm.
+1. **`CheckMissedSchedules()`** — scans all pipelines for schedules whose evaluation deadline has passed without a RunLog entry. Fires `SCHEDULE_MISSED` alerts.
+2. **`CheckStuckRuns()`** — scans all pipelines for runs stuck in non-terminal states (PENDING, TRIGGERING, RUNNING) beyond a configurable threshold (default: 30 minutes). Fires `RUN_STUCK` alerts.
+
+Both checks fire alerts via SNS and append audit events to DynamoDB. Dedup locks prevent duplicate alerts per pipeline/schedule/day.
+
+The watchdog is **not** part of the Step Function state machine — it runs independently to detect when the Step Function _didn't_ start or when it started but got stuck. See [Watchdog](../watchdog) for the full algorithm.

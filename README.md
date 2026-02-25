@@ -110,21 +110,23 @@ Interlock runs in two modes: **local** (Redis + subprocess evaluators) and **AWS
 ### AWS Mode
 
 ```
-┌──────────────────┐     DynamoDB Stream     ┌──────────────────┐
-│    DynamoDB      │ ──────────────────────► │  stream-router   │
-│  (single table)  │                         │  (MARKER# → SFN) │
-└────────┬─────────┘                         └────────┬─────────┘
-         │                                            │
-         │                               ┌────────────▼─────────────┐
-         │                               │    Step Function         │
-         │                               │  (47-state lifecycle)    │
-         │                               └──┬────┬────┬─────┬───────┘
-         │                                  │    │    │     │
-    ┌────▼─────┐  ┌──────────┐  ┌───────────┴┐  ┌┴────▼──┐ ┌┴───────────┐
-    │orchestr- │  │evaluator │  │  trigger   │  │  run-  │ │    SNS     │
-    │  ator    │  │(per-trait│  │(job launch)│  │checker │ │  (alerts)  │
-    │(14 acts) │  │  eval)   │  │            │  │(poll)  │ │            │
-    └──────────┘  └──────────┘  └────────────┘  └────────┘ └────────────┘
+┌──────────────────┐     DynamoDB Stream     ┌──────────────────────────────┐
+│    DynamoDB      │ ──────────────────────► │       stream-router          │
+│  (single table)  │                         │  MARKER# → SFN              │
+└────────┬─────────┘                         │  RUNLOG# → lifecycle events  │
+         │                                   └──────┬──────────┬────────────┘
+         │                                          │          │
+         │                             ┌────────────▼───┐   ┌──▼──────────┐
+         │                             │ Step Function  │   │  SNS        │
+         │                             │ (47-state      │   │ (lifecycle) │
+         │                             │  lifecycle)    │   └─────────────┘
+         │                             └┬───┬───┬───┬───┘
+         │                              │   │   │   │
+    ┌────▼─────┐  ┌──────────┐  ┌───────┴┐ ┌┴───▼──┐ ┌──────────┐ ┌──────────┐
+    │orchestr- │  │evaluator │  │trigger │ │ run-  │ │   SNS    │ │ watchdog │
+    │  ator    │  │(per-trait│  │(launch)│ │checker│ │ (alerts) │ │(EventBr) │
+    │(14 acts) │  │  eval)   │  │        │ │(poll) │ │          │ │stuck+miss│
+    └──────────┘  └──────────┘  └────────┘ └───────┘ └──────────┘ └──────────┘
 ```
 
 ### Cloud Support
@@ -188,6 +190,39 @@ sla:
   completionDeadline: "12:00"
   timezone: America/New_York
 ```
+
+### Watchdog (Absence Detection)
+
+The watchdog runs independently to detect two classes of silent failures:
+
+- **Missed schedules** — upstream ingestion failed silently, no MARKER arrived, no evaluation started by the deadline
+- **Stuck runs** — a run started but has been in PENDING/TRIGGERING/RUNNING longer than the threshold (default: 30 minutes)
+
+```yaml
+watchdog:
+  enabled: true
+  interval: 5m
+  stuckRunThreshold: 30m
+```
+
+On AWS, the watchdog runs as a separate Lambda on an EventBridge schedule. It is intentionally outside the Step Function — its job is to detect when the Step Function _didn't_ start.
+
+### Lifecycle Events
+
+When a pipeline run reaches a terminal status (COMPLETED or FAILED), the stream-router publishes an SNS event to a lifecycle topic. Downstream consumers can subscribe for active recovery, observability, or notification workflows.
+
+### Alert Categorization
+
+All alerts carry a machine-readable `alertType` field for filtering and routing:
+
+| Category | Source | Meaning |
+|---|---|---|
+| `schedule_missed` | Watchdog | No evaluation started by deadline |
+| `stuck_run` | Watchdog | Run in non-terminal state beyond threshold |
+| `evaluation_sla_breach` | Orchestrator | Evaluation deadline exceeded |
+| `completion_sla_breach` | Orchestrator | Completion deadline exceeded |
+| `validation_timeout` | Orchestrator | Hard validation timeout hit |
+| `trait_drift` | Orchestrator | Post-completion trait regression |
 
 ## Multi-Schedule Support
 
@@ -275,7 +310,8 @@ interlock/
 │       ├── orchestrator/      #   Multi-action workflow logic
 │       ├── evaluator/         #   Single trait evaluation
 │       ├── trigger/           #   Job execution + state machine
-│       └── run-checker/       #   External job status polling
+│       ├── run-checker/       #   External job status polling
+│       └── watchdog/          #   Missed schedule + stuck-run detection
 ├── pkg/types/                 # Public domain types
 ├── internal/
 │   ├── engine/                # Readiness evaluation engine
