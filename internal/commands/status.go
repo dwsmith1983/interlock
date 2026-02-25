@@ -13,6 +13,8 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+const statusTimeout = 10 * time.Second
+
 // NewStatusCmd creates the status command.
 func NewStatusCmd() *cobra.Command {
 	var pipelineName string
@@ -41,7 +43,7 @@ func runStatus(pipelineName string) error {
 	if err != nil {
 		return fmt.Errorf("creating provider: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)
 	defer cancel()
 
 	if err := prov.Start(ctx); err != nil {

@@ -14,6 +14,8 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+const runTimeout = 5 * time.Minute
+
 // NewRunCmd creates the run command.
 func NewRunCmd() *cobra.Command {
 	return &cobra.Command{
@@ -38,7 +40,7 @@ func runPipeline(pipelineName string) error {
 	}
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	defer cancel()
 
 	// Step 1: Evaluate readiness

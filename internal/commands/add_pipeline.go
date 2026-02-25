@@ -15,6 +15,8 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+const addPipelineTimeout = 10 * time.Second
+
 // NewAddPipelineCmd creates the add-pipeline command.
 func NewAddPipelineCmd() *cobra.Command {
 	var (
@@ -84,7 +86,7 @@ func runAddPipeline(name, archetypeName string, tier int, triggerType, triggerCo
 	if err != nil {
 		return fmt.Errorf("creating provider: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), addPipelineTimeout)
 	defer cancel()
 
 	if err := prov.Start(ctx); err != nil {

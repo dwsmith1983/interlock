@@ -24,7 +24,7 @@ type HTTPRunner struct {
 // If baseURL is provided, relative evaluator paths are resolved against it.
 func NewHTTPRunner(baseURL string) *HTTPRunner {
 	return &HTTPRunner{
-		client:  &http.Client{},
+		client:  &http.Client{Timeout: 60 * time.Second},
 		baseURL: strings.TrimRight(baseURL, "/"),
 	}
 }

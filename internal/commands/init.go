@@ -12,6 +12,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const initPipelineTimeout = 60 * time.Second
+
 // NewInitCmd creates the init command.
 func NewInitCmd() *cobra.Command {
 	var skipValkey bool
@@ -148,7 +150,7 @@ func startValkey() error {
 	}
 
 	// Create and start new container
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), initPipelineTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "docker", "run", "-d",

@@ -145,7 +145,7 @@ func checkSchedule(ctx context.Context, opts CheckOptions, pl types.PipelineConf
 	}
 
 	// Append audit event.
-	_ = opts.Provider.AppendEvent(ctx, types.Event{
+	if err := opts.Provider.AppendEvent(ctx, types.Event{
 		Kind:       types.EventScheduleMissed,
 		PipelineID: pl.Name,
 		Message: fmt.Sprintf("schedule %s missed: deadline %s on %s",
@@ -156,7 +156,10 @@ func checkSchedule(ctx context.Context, opts CheckOptions, pl types.PipelineConf
 			"deadline":   deadlineStr,
 		},
 		Timestamp: opts.Now,
-	})
+	}); err != nil {
+		opts.Logger.Error("watchdog: failed to append event",
+			"pipeline", pl.Name, "schedule", sched.Name, "error", err)
+	}
 
 	metrics.SchedulesMissed.Add(1)
 

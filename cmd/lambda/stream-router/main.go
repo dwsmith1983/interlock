@@ -12,44 +12,25 @@ import (
 	"time"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
 )
 
-// SFNAPI is the subset of the Step Functions client we use.
-type SFNAPI interface {
-	StartExecution(ctx context.Context, input *sfn.StartExecutionInput, opts ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error)
-}
-
 var (
-	sfnClient       SFNAPI
-	sfnClientOnce   sync.Once
-	stateMachineARN string
+	deps     *intlambda.Deps
+	depsOnce sync.Once
+	depsErr  error
 )
 
-func getSFNClient() (SFNAPI, error) {
-	var err error
-	sfnClientOnce.Do(func() {
-		stateMachineARN = os.Getenv("STATE_MACHINE_ARN")
-		if stateMachineARN == "" {
-			err = fmt.Errorf("STATE_MACHINE_ARN environment variable required")
-			return
-		}
-		var cfg interface{ Region() string }
-		_ = cfg
-		awsCfg, loadErr := awsconfig.LoadDefaultConfig(context.Background())
-		if loadErr != nil {
-			err = fmt.Errorf("loading AWS config: %w", loadErr)
-			return
-		}
-		sfnClient = sfn.NewFromConfig(awsCfg)
+func getDeps() (*intlambda.Deps, error) {
+	depsOnce.Do(func() {
+		deps, depsErr = intlambda.Init(context.Background())
 	})
-	return sfnClient, err
+	return deps, depsErr
 }
 
 // handleStreamEvent processes DynamoDB Stream records and starts Step Function executions.
-func handleStreamEvent(ctx context.Context, client SFNAPI, smARN string, event intlambda.StreamEvent) error {
+func handleStreamEvent(ctx context.Context, client intlambda.SFNAPI, smARN string, event intlambda.StreamEvent) error {
 	logger := slog.Default()
 
 	for _, record := range event.Records {
@@ -139,11 +120,14 @@ func handleStreamEvent(ctx context.Context, client SFNAPI, smARN string, event i
 }
 
 func handler(ctx context.Context, event intlambda.StreamEvent) error {
-	client, err := getSFNClient()
+	d, err := getDeps()
 	if err != nil {
 		return err
 	}
-	return handleStreamEvent(ctx, client, stateMachineARN, event)
+	if d.SFNClient == nil {
+		return fmt.Errorf("STATE_MACHINE_ARN environment variable required")
+	}
+	return handleStreamEvent(ctx, d.SFNClient, d.StateMachineARN, event)
 }
 
 // sanitizeExecName replaces characters invalid for SFN execution names.

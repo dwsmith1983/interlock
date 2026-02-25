@@ -64,6 +64,9 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 		return StatusResult{}, fmt.Errorf("glue status: GetJobRun failed: %w", err)
 	}
 
+	if out.JobRun == nil {
+		return StatusResult{}, fmt.Errorf("glue status: GetJobRun returned nil JobRun")
+	}
 	state := out.JobRun.JobRunState
 	switch state {
 	case gluetypes.JobRunStateSucceeded:

@@ -17,6 +17,8 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+const evaluateTimeout = 2 * time.Minute
+
 // NewEvaluateCmd creates the evaluate command.
 func NewEvaluateCmd() *cobra.Command {
 	return &cobra.Command{
@@ -41,7 +43,7 @@ func runEvaluate(pipelineName string) error {
 	}
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), evaluateTimeout)
 	defer cancel()
 
 	result, err := eng.Evaluate(ctx, pipelineName)
