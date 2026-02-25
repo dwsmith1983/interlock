@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dwsmith1983/interlock/internal/calendar"
+	"github.com/dwsmith1983/interlock/internal/lifecycle"
 	"github.com/dwsmith1983/interlock/internal/metrics"
 	"github.com/dwsmith1983/interlock/internal/provider"
 	"github.com/dwsmith1983/interlock/internal/schedule"
@@ -20,8 +21,9 @@ import (
 )
 
 const (
-	defaultInterval = 5 * time.Minute
-	dedupLockTTL    = 24 * time.Hour
+	defaultInterval        = 5 * time.Minute
+	dedupLockTTL           = 24 * time.Hour
+	defaultStuckThreshold  = 30 * time.Minute
 )
 
 // MissedSchedule records a single missed schedule detection.
@@ -34,11 +36,12 @@ type MissedSchedule struct {
 
 // CheckOptions configures a single watchdog scan pass.
 type CheckOptions struct {
-	Provider    provider.Provider
-	CalendarReg *calendar.Registry
-	AlertFn     func(types.Alert)
-	Logger      *slog.Logger
-	Now         time.Time // injectable for testing
+	Provider          provider.Provider
+	CalendarReg       *calendar.Registry
+	AlertFn           func(types.Alert)
+	Logger            *slog.Logger
+	Now               time.Time     // injectable for testing
+	StuckRunThreshold time.Duration // defaults to 30m if zero
 }
 
 // CheckMissedSchedules scans all registered pipelines for schedules whose
@@ -202,6 +205,145 @@ func resolveWatchdogDeadline(sched types.ScheduleConfig, pl types.PipelineConfig
 }
 
 // ---------------------------------------------------------------------------
+// Stuck-run detection
+// ---------------------------------------------------------------------------
+
+// StuckRun records a pipeline run that has been in a non-terminal state too long.
+type StuckRun struct {
+	PipelineID string
+	ScheduleID string
+	Date       string
+	Status     types.RunStatus
+	Duration   time.Duration
+}
+
+// CheckStuckRuns scans all registered pipelines for runs that have been in a
+// non-terminal state (PENDING, TRIGGERING, RUNNING) longer than the threshold.
+func CheckStuckRuns(ctx context.Context, opts CheckOptions) []StuckRun {
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+	threshold := opts.StuckRunThreshold
+	if threshold <= 0 {
+		threshold = defaultStuckThreshold
+	}
+
+	pipelines, err := opts.Provider.ListPipelines(ctx)
+	if err != nil {
+		opts.Logger.Error("watchdog: failed to list pipelines for stuck-run check", "error", err)
+		return nil
+	}
+
+	var stuck []StuckRun
+
+	for _, pl := range pipelines {
+		if ctx.Err() != nil {
+			return stuck
+		}
+
+		// Skip pipelines without a trigger or with watch explicitly disabled.
+		if pl.Trigger == nil {
+			continue
+		}
+		if pl.Watch != nil && pl.Watch.Enabled != nil && !*pl.Watch.Enabled {
+			continue
+		}
+
+		date := opts.Now.UTC().Format("2006-01-02")
+
+		for _, sched := range types.ResolveSchedules(pl) {
+			entry, err := opts.Provider.GetRunLog(ctx, pl.Name, date, sched.Name)
+			if err != nil {
+				opts.Logger.Error("watchdog: failed to get run log for stuck check",
+					"pipeline", pl.Name, "schedule", sched.Name, "error", err)
+				continue
+			}
+			if entry == nil {
+				continue // no run started
+			}
+
+			if lifecycle.IsTerminal(entry.Status) {
+				continue
+			}
+
+			age := opts.Now.Sub(entry.UpdatedAt)
+			if age < threshold {
+				continue
+			}
+
+			// Dedup lock: one stuck alert per pipeline/schedule/day.
+			lockKey := fmt.Sprintf("watchdog:stuck:%s:%s:%s", pl.Name, sched.Name, date)
+			acquired, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
+			if err != nil {
+				opts.Logger.Error("watchdog: failed to acquire stuck dedup lock",
+					"key", lockKey, "error", err)
+				continue
+			}
+			if !acquired {
+				continue
+			}
+
+			// Fire alert.
+			if opts.AlertFn != nil {
+				opts.AlertFn(types.Alert{
+					Level:      types.AlertLevelError,
+					Category:   "stuck_run",
+					PipelineID: pl.Name,
+					Message: fmt.Sprintf("Pipeline %s schedule %s run stuck in %s for %s on %s",
+						pl.Name, sched.Name, entry.Status, age.Truncate(time.Second), date),
+					Details: map[string]interface{}{
+						"scheduleId": sched.Name,
+						"date":       date,
+						"status":     string(entry.Status),
+						"duration":   age.String(),
+						"runId":      entry.RunID,
+					},
+					Timestamp: opts.Now,
+				})
+			}
+
+			// Append audit event.
+			if err := opts.Provider.AppendEvent(ctx, types.Event{
+				Kind:       types.EventRunStuck,
+				PipelineID: pl.Name,
+				RunID:      entry.RunID,
+				Status:     string(entry.Status),
+				Message: fmt.Sprintf("run stuck in %s for %s",
+					entry.Status, age.Truncate(time.Second)),
+				Details: map[string]interface{}{
+					"scheduleId": sched.Name,
+					"date":       date,
+					"duration":   age.String(),
+				},
+				Timestamp: opts.Now,
+			}); err != nil {
+				opts.Logger.Error("watchdog: failed to append stuck-run event",
+					"pipeline", pl.Name, "schedule", sched.Name, "error", err)
+			}
+
+			metrics.RunsStuck.Add(1)
+
+			opts.Logger.Warn("watchdog: stuck run detected",
+				"pipeline", pl.Name, "schedule", sched.Name,
+				"status", entry.Status, "age", age.String(), "date", date)
+
+			stuck = append(stuck, StuckRun{
+				PipelineID: pl.Name,
+				ScheduleID: sched.Name,
+				Date:       date,
+				Status:     entry.Status,
+				Duration:   age,
+			})
+		}
+	}
+
+	return stuck
+}
+
+// ---------------------------------------------------------------------------
 // Watchdog — polling wrapper for local mode
 // ---------------------------------------------------------------------------
 
@@ -266,10 +408,12 @@ func (w *Watchdog) loop(ctx context.Context) {
 }
 
 func (w *Watchdog) scan(ctx context.Context) {
-	CheckMissedSchedules(ctx, CheckOptions{
+	opts := CheckOptions{
 		Provider:    w.provider,
 		CalendarReg: w.calendarReg,
 		AlertFn:     w.alertFn,
 		Logger:      w.logger,
-	})
+	}
+	CheckMissedSchedules(ctx, opts)
+	CheckStuckRuns(ctx, opts)
 }
