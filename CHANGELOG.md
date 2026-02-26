@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-27
+
+### Added
+
+- **Post-Completion Monitoring Expiry**: watchdog handles `COMPLETED_MONITORING → COMPLETED` transitions
+  - `CheckCompletedMonitoring()` pure function scans for runs in `COMPLETED_MONITORING` whose monitoring window has elapsed
+  - Uses `RunLogEntry.UpdatedAt` as the monitoring start time — no schema changes required
+  - Transitions expired runs to `COMPLETED` via `PutRunLog`, appends `EventMonitoringCompleted` audit event
+  - Monitoring window duration read from `Watch.Monitoring.Duration` per-pipeline config
+  - Wired into both local-mode `Watchdog.scan()` and Lambda handler
+  - Offloads the monitoring wait from Step Function executions to the watchdog's 5-minute scan, freeing SFN capacity immediately after the Glue job succeeds
+  - `MonitoringResult` exported type for callers to inspect results
+  - 3 unit tests: expired → transitions, still-in-window → skips, already-completed → ignores
+
 ## [0.2.1] - 2026-02-26
 
 ### Fixed
@@ -127,6 +141,7 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.3.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.3.0
 [0.2.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.2.1
 [0.2.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.2.0
 [0.1.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.1.1
