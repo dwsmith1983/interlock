@@ -135,25 +135,25 @@ The recommended state machine flow combining both patterns:
 ```
 AcquireLock → CheckRunLog → ResolvePipeline → EvaluateTraits → CheckReadiness
                                                                     │
-                                                        ┌──────────┼──────────┐
-                                                        │          │          │
-                                                    proceed    not_ready    error
-                                                        │          │          │
-                                                   TriggerJob  Wait(60s)  Alert+Skip
-                                                        │          │
-                                                   PollStatus  → AcquireLock
-                                                        │
-                                                  ┌─────┼─────┐
-                                                  │           │
-                                              succeeded    failed
-                                                  │           │
-                                             LogCompleted  LogFailed
-                                                              │
-                                                        ┌─────┼─────┐
-                                                        │           │
-                                                    retryable  non-retryable
-                                                        │           │
-                                                   Wait(backoff)  Cleanup
-                                                        │
-                                                   AcquireLock
+                                                         ┌──────────┼──────────┐
+                                                         │          │          │
+                                                     proceed    not_ready    error
+                                                         │          │          │
+                                                    TriggerJob  Wait(60s)  Alert+Skip
+                                                         │          │
+                                                    PollStatus  → AcquireLock
+                                                         │
+                                                   ┌─────┼─────┐
+                                                   │           │
+                                               succeeded    failed
+                                                   │           │
+                                              LogCompleted  LogFailed
+                                                               │
+                                                         ┌─────┼─────┐
+                                                         │           │
+                                                     retryable  non-retryable
+                                                         │           │
+                                                    Wait(backoff)  Cleanup
+                                                         │
+                                                    AcquireLock
 ```
