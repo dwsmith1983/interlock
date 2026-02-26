@@ -134,11 +134,15 @@ func (r *Runner) checkDatabricksStatus(ctx context.Context, metadata map[string]
 		if resultState == "SUCCESS" {
 			return StatusResult{State: RunCheckSucceeded, Message: msg}, nil
 		}
-		return StatusResult{State: RunCheckFailed, Message: msg}, nil
+		return StatusResult{State: RunCheckFailed, Message: msg, FailureCategory: types.FailureTransient}, nil
 	}
 
-	if lifeCycleState == "INTERNAL_ERROR" || lifeCycleState == "SKIPPED" {
-		return StatusResult{State: RunCheckFailed, Message: msg}, nil
+	if lifeCycleState == "SKIPPED" {
+		return StatusResult{State: RunCheckFailed, Message: msg, FailureCategory: types.FailurePermanent}, nil
+	}
+
+	if lifeCycleState == "INTERNAL_ERROR" {
+		return StatusResult{State: RunCheckFailed, Message: msg, FailureCategory: types.FailureTransient}, nil
 	}
 
 	return StatusResult{State: RunCheckRunning, Message: msg}, nil

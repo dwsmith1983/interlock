@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	sfntypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
+
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -74,8 +75,10 @@ func (r *Runner) checkSFNStatus(ctx context.Context, metadata map[string]interfa
 	switch state {
 	case sfntypes.ExecutionStatusSucceeded:
 		return StatusResult{State: RunCheckSucceeded, Message: string(state)}, nil
-	case sfntypes.ExecutionStatusFailed, sfntypes.ExecutionStatusTimedOut, sfntypes.ExecutionStatusAborted:
-		return StatusResult{State: RunCheckFailed, Message: string(state)}, nil
+	case sfntypes.ExecutionStatusTimedOut:
+		return StatusResult{State: RunCheckFailed, Message: string(state), FailureCategory: types.FailureTimeout}, nil
+	case sfntypes.ExecutionStatusFailed, sfntypes.ExecutionStatusAborted:
+		return StatusResult{State: RunCheckFailed, Message: string(state), FailureCategory: types.FailureTransient}, nil
 	default:
 		return StatusResult{State: RunCheckRunning, Message: string(state)}, nil
 	}

@@ -94,6 +94,7 @@ type RunCheckRequest struct {
 
 // RunCheckResponse is the output of the run-checker Lambda.
 type RunCheckResponse struct {
-	State   trigger.RunCheckState `json:"state"`
-	Message string                `json:"message"`
+	State           trigger.RunCheckState `json:"state"`
+	Message         string                `json:"message"`
+	FailureCategory types.FailureCategory `json:"failureCategory,omitempty"`
 }

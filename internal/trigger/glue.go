@@ -71,9 +71,10 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 	switch state {
 	case gluetypes.JobRunStateSucceeded:
 		return StatusResult{State: RunCheckSucceeded, Message: string(state)}, nil
-	case gluetypes.JobRunStateFailed, gluetypes.JobRunStateTimeout,
-		gluetypes.JobRunStateStopped, gluetypes.JobRunStateError:
-		return StatusResult{State: RunCheckFailed, Message: string(state)}, nil
+	case gluetypes.JobRunStateTimeout:
+		return StatusResult{State: RunCheckFailed, Message: string(state), FailureCategory: types.FailureTimeout}, nil
+	case gluetypes.JobRunStateFailed, gluetypes.JobRunStateStopped, gluetypes.JobRunStateError:
+		return StatusResult{State: RunCheckFailed, Message: string(state), FailureCategory: types.FailureTransient}, nil
 	default:
 		return StatusResult{State: RunCheckRunning, Message: string(state)}, nil
 	}

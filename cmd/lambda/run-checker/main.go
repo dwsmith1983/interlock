@@ -42,8 +42,9 @@ func handleRunCheck(ctx context.Context, d *intlambda.Deps, req intlambda.RunChe
 	}
 
 	return intlambda.RunCheckResponse{
-		State:   result.State,
-		Message: result.Message,
+		State:           result.State,
+		Message:         result.Message,
+		FailureCategory: result.FailureCategory,
 	}, nil
 }
 

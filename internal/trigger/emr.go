@@ -95,7 +95,7 @@ func (r *Runner) checkEMRStatus(ctx context.Context, metadata map[string]interfa
 	case emrtypes.StepStateCompleted:
 		return StatusResult{State: RunCheckSucceeded, Message: string(state)}, nil
 	case emrtypes.StepStateFailed, emrtypes.StepStateCancelled, emrtypes.StepStateInterrupted:
-		return StatusResult{State: RunCheckFailed, Message: string(state)}, nil
+		return StatusResult{State: RunCheckFailed, Message: string(state), FailureCategory: types.FailureTransient}, nil
 	default:
 		return StatusResult{State: RunCheckRunning, Message: string(state)}, nil
 	}

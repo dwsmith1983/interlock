@@ -75,7 +75,7 @@ func (r *Runner) checkEMRServerlessStatus(ctx context.Context, metadata map[stri
 	case emrtypes.JobRunStateSuccess:
 		return StatusResult{State: RunCheckSucceeded, Message: string(state)}, nil
 	case emrtypes.JobRunStateFailed, emrtypes.JobRunStateCancelled:
-		return StatusResult{State: RunCheckFailed, Message: string(state)}, nil
+		return StatusResult{State: RunCheckFailed, Message: string(state), FailureCategory: types.FailureTransient}, nil
 	default:
 		return StatusResult{State: RunCheckRunning, Message: string(state)}, nil
 	}

@@ -74,17 +74,18 @@ func TestExecuteEMRServerless_APIError(t *testing.T) {
 
 func TestCheckEMRServerlessStatus(t *testing.T) {
 	tests := []struct {
-		name     string
-		state    emrtypes.JobRunState
-		expected RunCheckState
+		name            string
+		state           emrtypes.JobRunState
+		expected        RunCheckState
+		failureCategory types.FailureCategory
 	}{
-		{"success", emrtypes.JobRunStateSuccess, RunCheckSucceeded},
-		{"failed", emrtypes.JobRunStateFailed, RunCheckFailed},
-		{"cancelled", emrtypes.JobRunStateCancelled, RunCheckFailed},
-		{"running", emrtypes.JobRunStateRunning, RunCheckRunning},
-		{"pending", emrtypes.JobRunStatePending, RunCheckRunning},
-		{"submitted", emrtypes.JobRunStateSubmitted, RunCheckRunning},
-		{"scheduled", emrtypes.JobRunStateScheduled, RunCheckRunning},
+		{"success", emrtypes.JobRunStateSuccess, RunCheckSucceeded, ""},
+		{"failed", emrtypes.JobRunStateFailed, RunCheckFailed, types.FailureTransient},
+		{"cancelled", emrtypes.JobRunStateCancelled, RunCheckFailed, types.FailureTransient},
+		{"running", emrtypes.JobRunStateRunning, RunCheckRunning, ""},
+		{"pending", emrtypes.JobRunStatePending, RunCheckRunning, ""},
+		{"submitted", emrtypes.JobRunStateSubmitted, RunCheckRunning, ""},
+		{"scheduled", emrtypes.JobRunStateScheduled, RunCheckRunning, ""},
 	}
 
 	for _, tt := range tests {
@@ -105,6 +106,7 @@ func TestCheckEMRServerlessStatus(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result.State)
 			assert.Equal(t, string(tt.state), result.Message)
+			assert.Equal(t, tt.failureCategory, result.FailureCategory)
 		})
 	}
 }
