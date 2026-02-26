@@ -355,10 +355,11 @@ func checkReadiness(_ context.Context, _ *intlambda.Deps, req intlambda.Orchestr
 	if !allPass {
 		return intlambda.OrchestratorResponse{
 			Action: req.Action,
-			Result: "skip",
+			Result: "not_ready",
 			Payload: map[string]interface{}{
-				"reason":   "not ready",
-				"blocking": blocking,
+				"pollAdvised":  true,
+				"failedTraits": blocking,
+				"message":      fmt.Sprintf("blocked by %d traits", len(blocking)),
 			},
 		}, nil
 	}
@@ -408,6 +409,9 @@ func logResult(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrato
 	}
 
 	if status == string(types.RunFailed) {
+		if failureCategory == "" {
+			failureCategory = string(types.FailureTransient)
+		}
 		entry.FailureMessage = message
 		entry.FailureCategory = types.FailureCategory(failureCategory)
 

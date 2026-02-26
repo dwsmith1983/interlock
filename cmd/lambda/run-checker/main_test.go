@@ -177,18 +177,19 @@ func TestHandleRunCheck_UnknownType(t *testing.T) {
 
 func TestHandleRunCheck_GlueStatusMapping(t *testing.T) {
 	tests := []struct {
-		name     string
-		state    gluetypes.JobRunState
-		expected trigger.RunCheckState
+		name            string
+		state           gluetypes.JobRunState
+		expected        trigger.RunCheckState
+		failureCategory types.FailureCategory
 	}{
-		{"succeeded", gluetypes.JobRunStateSucceeded, trigger.RunCheckSucceeded},
-		{"failed", gluetypes.JobRunStateFailed, trigger.RunCheckFailed},
-		{"timeout", gluetypes.JobRunStateTimeout, trigger.RunCheckFailed},
-		{"stopped", gluetypes.JobRunStateStopped, trigger.RunCheckFailed},
-		{"error", gluetypes.JobRunStateError, trigger.RunCheckFailed},
-		{"running", gluetypes.JobRunStateRunning, trigger.RunCheckRunning},
-		{"starting", gluetypes.JobRunStateStarting, trigger.RunCheckRunning},
-		{"waiting", gluetypes.JobRunStateWaiting, trigger.RunCheckRunning},
+		{"succeeded", gluetypes.JobRunStateSucceeded, trigger.RunCheckSucceeded, ""},
+		{"failed", gluetypes.JobRunStateFailed, trigger.RunCheckFailed, types.FailureTransient},
+		{"timeout", gluetypes.JobRunStateTimeout, trigger.RunCheckFailed, types.FailureTimeout},
+		{"stopped", gluetypes.JobRunStateStopped, trigger.RunCheckFailed, types.FailureTransient},
+		{"error", gluetypes.JobRunStateError, trigger.RunCheckFailed, types.FailureTransient},
+		{"running", gluetypes.JobRunStateRunning, trigger.RunCheckRunning, ""},
+		{"starting", gluetypes.JobRunStateStarting, trigger.RunCheckRunning, ""},
+		{"waiting", gluetypes.JobRunStateWaiting, trigger.RunCheckRunning, ""},
 	}
 
 	for _, tt := range tests {
@@ -215,6 +216,7 @@ func TestHandleRunCheck_GlueStatusMapping(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, resp.State)
 			assert.Equal(t, string(tt.state), resp.Message)
+			assert.Equal(t, tt.failureCategory, resp.FailureCategory)
 		})
 	}
 }

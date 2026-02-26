@@ -83,16 +83,17 @@ func TestExecuteEMR_APIError(t *testing.T) {
 
 func TestCheckEMRStatus(t *testing.T) {
 	tests := []struct {
-		name     string
-		state    emrtypes.StepState
-		expected RunCheckState
+		name            string
+		state           emrtypes.StepState
+		expected        RunCheckState
+		failureCategory types.FailureCategory
 	}{
-		{"completed", emrtypes.StepStateCompleted, RunCheckSucceeded},
-		{"failed", emrtypes.StepStateFailed, RunCheckFailed},
-		{"cancelled", emrtypes.StepStateCancelled, RunCheckFailed},
-		{"interrupted", emrtypes.StepStateInterrupted, RunCheckFailed},
-		{"running", emrtypes.StepStateRunning, RunCheckRunning},
-		{"pending", emrtypes.StepStatePending, RunCheckRunning},
+		{"completed", emrtypes.StepStateCompleted, RunCheckSucceeded, ""},
+		{"failed", emrtypes.StepStateFailed, RunCheckFailed, types.FailureTransient},
+		{"cancelled", emrtypes.StepStateCancelled, RunCheckFailed, types.FailureTransient},
+		{"interrupted", emrtypes.StepStateInterrupted, RunCheckFailed, types.FailureTransient},
+		{"running", emrtypes.StepStateRunning, RunCheckRunning, ""},
+		{"pending", emrtypes.StepStatePending, RunCheckRunning, ""},
 	}
 
 	for _, tt := range tests {
@@ -115,6 +116,7 @@ func TestCheckEMRStatus(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result.State)
 			assert.Equal(t, string(tt.state), result.Message)
+			assert.Equal(t, tt.failureCategory, result.FailureCategory)
 		})
 	}
 }

@@ -69,6 +69,18 @@ func TestIsRetryable(t *testing.T) {
 	}
 }
 
+func TestIsRetryable_EmptyCategory(t *testing.T) {
+	policy := DefaultRetryPolicy()
+	assert.True(t, IsRetryable(policy, ""))
+}
+
+func TestIsRetryable_EmptyCategory_CustomPolicy(t *testing.T) {
+	policy := types.RetryPolicy{
+		RetryableFailures: []types.FailureCategory{types.FailureTransient},
+	}
+	assert.True(t, IsRetryable(policy, ""))
+}
+
 func TestIsRetryable_EmptyPolicyDefaults(t *testing.T) {
 	policy := types.RetryPolicy{}
 

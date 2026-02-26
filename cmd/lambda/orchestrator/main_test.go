@@ -206,9 +206,10 @@ func TestCheckReadiness_HasBlocking(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "skip", resp.Result)
-	blocking := resp.Payload["blocking"].([]string)
-	assert.Contains(t, blocking, "schema")
+	assert.Equal(t, "not_ready", resp.Result)
+	assert.Equal(t, true, resp.Payload["pollAdvised"])
+	failedTraits := resp.Payload["failedTraits"].([]string)
+	assert.Contains(t, failedTraits, "schema")
 }
 
 func TestCheckReadiness_OptionalFail(t *testing.T) {
@@ -299,6 +300,57 @@ func TestLogResult(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "proceed", resp.Result)
+}
+
+func TestLogResult_FailedWithCategory(t *testing.T) {
+	d := testDeps(t)
+	seedPipeline(t, d, types.PipelineConfig{Name: "pipe-a"})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "logResult",
+		PipelineID: "pipe-a",
+		ScheduleID: "daily",
+		Payload: map[string]interface{}{
+			"status":          string(types.RunFailed),
+			"runID":           "run-2",
+			"message":         "glue timeout",
+			"failureCategory": string(types.FailureTimeout),
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	assert.Equal(t, true, resp.Payload["retryable"])
+
+	// Verify category was persisted
+	date := time.Now().UTC().Format("2006-01-02")
+	entry, err := d.Provider.GetRunLog(context.Background(), "pipe-a", date, "daily")
+	require.NoError(t, err)
+	assert.Equal(t, types.FailureTimeout, entry.FailureCategory)
+}
+
+func TestLogResult_FailedEmptyCategoryDefaultsTransient(t *testing.T) {
+	d := testDeps(t)
+	seedPipeline(t, d, types.PipelineConfig{Name: "pipe-a"})
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "logResult",
+		PipelineID: "pipe-a",
+		ScheduleID: "daily",
+		Payload: map[string]interface{}{
+			"status":  string(types.RunFailed),
+			"runID":   "run-3",
+			"message": "unknown error",
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	assert.Equal(t, true, resp.Payload["retryable"])
+
+	// Verify empty category defaulted to transient
+	date := time.Now().UTC().Format("2006-01-02")
+	entry, err := d.Provider.GetRunLog(context.Background(), "pipe-a", date, "daily")
+	require.NoError(t, err)
+	assert.Equal(t, types.FailureTransient, entry.FailureCategory)
 }
 
 // --- releaseLock ---

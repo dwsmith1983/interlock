@@ -80,15 +80,16 @@ func TestExecuteSFN_APIError(t *testing.T) {
 
 func TestCheckSFNStatus(t *testing.T) {
 	tests := []struct {
-		name     string
-		status   sfntypes.ExecutionStatus
-		expected RunCheckState
+		name            string
+		status          sfntypes.ExecutionStatus
+		expected        RunCheckState
+		failureCategory types.FailureCategory
 	}{
-		{"succeeded", sfntypes.ExecutionStatusSucceeded, RunCheckSucceeded},
-		{"failed", sfntypes.ExecutionStatusFailed, RunCheckFailed},
-		{"timed_out", sfntypes.ExecutionStatusTimedOut, RunCheckFailed},
-		{"aborted", sfntypes.ExecutionStatusAborted, RunCheckFailed},
-		{"running", sfntypes.ExecutionStatusRunning, RunCheckRunning},
+		{"succeeded", sfntypes.ExecutionStatusSucceeded, RunCheckSucceeded, ""},
+		{"failed", sfntypes.ExecutionStatusFailed, RunCheckFailed, types.FailureTransient},
+		{"timed_out", sfntypes.ExecutionStatusTimedOut, RunCheckFailed, types.FailureTimeout},
+		{"aborted", sfntypes.ExecutionStatusAborted, RunCheckFailed, types.FailureTransient},
+		{"running", sfntypes.ExecutionStatusRunning, RunCheckRunning, ""},
 	}
 
 	for _, tt := range tests {
@@ -106,6 +107,7 @@ func TestCheckSFNStatus(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result.State)
 			assert.Equal(t, string(tt.status), result.Message)
+			assert.Equal(t, tt.failureCategory, result.FailureCategory)
 		})
 	}
 }

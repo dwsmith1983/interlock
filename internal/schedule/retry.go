@@ -40,9 +40,14 @@ func CalculateBackoff(policy types.RetryPolicy, attempt int) time.Duration {
 }
 
 // IsRetryable returns whether a failure category should be retried.
+// An empty category defaults to retryable — better to retry once too many
+// than silently drop a run that could have recovered.
 func IsRetryable(policy types.RetryPolicy, category types.FailureCategory) bool {
 	if category == types.FailurePermanent {
 		return false
+	}
+	if category == "" {
+		return true
 	}
 	if len(policy.RetryableFailures) == 0 {
 		// Default: retry transient and timeout

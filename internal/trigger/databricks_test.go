@@ -93,19 +93,20 @@ func TestExecuteDatabricks_ServerError(t *testing.T) {
 
 func TestCheckDatabricksStatus(t *testing.T) {
 	tests := []struct {
-		name           string
-		lifeCycleState string
-		resultState    string
-		expected       RunCheckState
+		name            string
+		lifeCycleState  string
+		resultState     string
+		expected        RunCheckState
+		failureCategory types.FailureCategory
 	}{
-		{"terminated_success", "TERMINATED", "SUCCESS", RunCheckSucceeded},
-		{"terminated_failure", "TERMINATED", "FAILED", RunCheckFailed},
-		{"terminated_timedout", "TERMINATED", "TIMEDOUT", RunCheckFailed},
-		{"terminated_cancelled", "TERMINATED", "CANCELED", RunCheckFailed},
-		{"internal_error", "INTERNAL_ERROR", "", RunCheckFailed},
-		{"skipped", "SKIPPED", "", RunCheckFailed},
-		{"running", "RUNNING", "", RunCheckRunning},
-		{"pending", "PENDING", "", RunCheckRunning},
+		{"terminated_success", "TERMINATED", "SUCCESS", RunCheckSucceeded, ""},
+		{"terminated_failure", "TERMINATED", "FAILED", RunCheckFailed, types.FailureTransient},
+		{"terminated_timedout", "TERMINATED", "TIMEDOUT", RunCheckFailed, types.FailureTransient},
+		{"terminated_cancelled", "TERMINATED", "CANCELED", RunCheckFailed, types.FailureTransient},
+		{"internal_error", "INTERNAL_ERROR", "", RunCheckFailed, types.FailureTransient},
+		{"skipped", "SKIPPED", "", RunCheckFailed, types.FailurePermanent},
+		{"running", "RUNNING", "", RunCheckRunning, ""},
+		{"pending", "PENDING", "", RunCheckRunning, ""},
 	}
 
 	for _, tt := range tests {
@@ -136,6 +137,7 @@ func TestCheckDatabricksStatus(t *testing.T) {
 			}, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result.State)
+			assert.Equal(t, tt.failureCategory, result.FailureCategory)
 		})
 	}
 }

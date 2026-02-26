@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/glue"
 	gluetypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+
 	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -69,18 +70,19 @@ func TestExecuteGlue_APIError(t *testing.T) {
 
 func TestCheckGlueStatus(t *testing.T) {
 	tests := []struct {
-		name     string
-		state    gluetypes.JobRunState
-		expected RunCheckState
+		name            string
+		state           gluetypes.JobRunState
+		expected        RunCheckState
+		failureCategory types.FailureCategory
 	}{
-		{"succeeded", gluetypes.JobRunStateSucceeded, RunCheckSucceeded},
-		{"failed", gluetypes.JobRunStateFailed, RunCheckFailed},
-		{"timeout", gluetypes.JobRunStateTimeout, RunCheckFailed},
-		{"stopped", gluetypes.JobRunStateStopped, RunCheckFailed},
-		{"error", gluetypes.JobRunStateError, RunCheckFailed},
-		{"running", gluetypes.JobRunStateRunning, RunCheckRunning},
-		{"starting", gluetypes.JobRunStateStarting, RunCheckRunning},
-		{"waiting", gluetypes.JobRunStateWaiting, RunCheckRunning},
+		{"succeeded", gluetypes.JobRunStateSucceeded, RunCheckSucceeded, ""},
+		{"failed", gluetypes.JobRunStateFailed, RunCheckFailed, types.FailureTransient},
+		{"timeout", gluetypes.JobRunStateTimeout, RunCheckFailed, types.FailureTimeout},
+		{"stopped", gluetypes.JobRunStateStopped, RunCheckFailed, types.FailureTransient},
+		{"error", gluetypes.JobRunStateError, RunCheckFailed, types.FailureTransient},
+		{"running", gluetypes.JobRunStateRunning, RunCheckRunning, ""},
+		{"starting", gluetypes.JobRunStateStarting, RunCheckRunning, ""},
+		{"waiting", gluetypes.JobRunStateWaiting, RunCheckRunning, ""},
 	}
 
 	for _, tt := range tests {
@@ -101,6 +103,7 @@ func TestCheckGlueStatus(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result.State)
 			assert.Equal(t, string(tt.state), result.Message)
+			assert.Equal(t, tt.failureCategory, result.FailureCategory)
 		})
 	}
 }
