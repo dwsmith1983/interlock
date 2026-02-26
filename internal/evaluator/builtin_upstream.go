@@ -33,6 +33,9 @@ func NewUpstreamJobLogHandler(prov provider.Provider) BuiltinHandler {
 
 		upstreamSchedule, _ := input.Config["upstreamSchedule"].(string)
 		if upstreamSchedule == "" {
+			upstreamSchedule, _ = input.Config["scheduleID"].(string)
+		}
+		if upstreamSchedule == "" {
 			upstreamSchedule = types.DefaultScheduleID
 		}
 
