@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"fmt"
 	"math"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -86,14 +85,4 @@ func evalMajorityPass(rule types.ReadinessRule, results []traitResult) (status t
 		return types.Ready, nil
 	}
 	return types.NotReady, blocking
-}
-
-// RegisterReadinessEvaluator registers a custom readiness evaluation function.
-// This is primarily useful for testing or plugin-style extensions.
-func RegisterReadinessEvaluator(ruleType types.ReadinessRuleType, eval ReadinessEvaluator) error {
-	if _, exists := readinessEvaluators[ruleType]; exists {
-		return fmt.Errorf("readiness evaluator %q already registered", ruleType)
-	}
-	readinessEvaluators[ruleType] = eval
-	return nil
 }

@@ -58,6 +58,37 @@ func TestParseSLADeadline_InvalidTimezone(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestParseSLADeadline_Duration_RelativeToReference(t *testing.T) {
+	now := time.Date(2026, 2, 21, 12, 0, 0, 0, time.UTC)
+	ref := time.Date(2026, 2, 21, 10, 0, 0, 0, time.UTC)
+
+	deadline, err := ParseSLADeadline("+20m", "", now, ref)
+	require.NoError(t, err)
+	assert.Equal(t, 10, deadline.Hour())
+	assert.Equal(t, 20, deadline.Minute())
+}
+
+func TestParseSLADeadline_Duration_ZeroReference_Midnight(t *testing.T) {
+	now := time.Date(2026, 2, 21, 12, 0, 0, 0, time.UTC)
+
+	// Zero reference (default time.Time{}) → falls back to midnight.
+	deadline, err := ParseSLADeadline("+20m", "", now, time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, deadline.Hour())
+	assert.Equal(t, 20, deadline.Minute())
+}
+
+func TestParseSLADeadline_TimeOfDay_IgnoresReference(t *testing.T) {
+	now := time.Date(2026, 2, 21, 12, 0, 0, 0, time.UTC)
+	ref := time.Date(2026, 2, 21, 10, 0, 0, 0, time.UTC)
+
+	// HH:MM format should ignore the reference time entirely.
+	deadline, err := ParseSLADeadline("14:00", "", now, ref)
+	require.NoError(t, err)
+	assert.Equal(t, 14, deadline.Hour())
+	assert.Equal(t, 0, deadline.Minute())
+}
+
 func TestIsBreached(t *testing.T) {
 	deadline := time.Date(2026, 2, 21, 6, 0, 0, 0, time.UTC)
 
