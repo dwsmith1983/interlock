@@ -9,14 +9,19 @@ import (
 
 // PK/SK prefix constants.
 const (
-	prefixPipeline = "PIPELINE#"
-	prefixRun      = "RUN#"
-	prefixRerun    = "RERUN#"
-	prefixLock     = "LOCK#"
-	prefixTrait    = "TRAIT#"
-	prefixRunLog   = "RUNLOG#"
-	prefixEvent    = "EVENT#"
-	prefixType     = "TYPE#"
+	prefixPipeline    = "PIPELINE#"
+	prefixRun         = "RUN#"
+	prefixRerun       = "RERUN#"
+	prefixLock        = "LOCK#"
+	prefixTrait       = "TRAIT#"
+	prefixRunLog      = "RUNLOG#"
+	prefixEvent       = "EVENT#"
+	prefixType        = "TYPE#"
+	prefixAlert       = "ALERT#"
+	prefixTraitHist   = "TRAITHIST#"
+	prefixEvalSession = "EVALSESSION#"
+	prefixDep         = "DEP#"
+	prefixSensor      = "SENSOR#"
 
 	skConfig    = "CONFIG"
 	skReadiness = "READINESS"
@@ -51,6 +56,28 @@ func eventSK(ts time.Time) string {
 
 func rerunSK(rerunID string) string { return prefixRerun + rerunID }
 func lockSK() string                { return skLock }
+
+func alertSK(ts time.Time) string {
+	millis := ts.UnixMilli()
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	return fmt.Sprintf("%s%013d#%s", prefixAlert, millis, hex.EncodeToString(nonce))
+}
+
+func traitHistSK(traitType string, ts time.Time) string {
+	millis := ts.UnixMilli()
+	nonce := make([]byte, 4)
+	_, _ = rand.Read(nonce)
+	return fmt.Sprintf("%s%s#%013d#%s", prefixTraitHist, traitType, millis, hex.EncodeToString(nonce))
+}
+
+func evalSessionSK(sessionID string, ts time.Time) string {
+	return prefixEvalSession + ts.UTC().Format(time.RFC3339) + "#" + sessionID
+}
+
+func depPK(upstreamID string) string    { return prefixDep + upstreamID }
+func depSK(downstreamID string) string  { return prefixDep + downstreamID }
+func sensorSK(sensorType string) string { return prefixSensor + sensorType }
 
 func ttlEpoch(d time.Duration) int64 {
 	return time.Now().Add(d).Unix()

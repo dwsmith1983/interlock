@@ -93,6 +93,41 @@ func TestUpstreamJobLogHandler_Fail_NoRunLog(t *testing.T) {
 	assert.Contains(t, out.Reason, "no run log")
 }
 
+func TestUpstreamJobLogHandler_FallsBackToScheduleID(t *testing.T) {
+	prov := testutil.NewMockProvider()
+	ctx := context.Background()
+
+	// Set up upstream as completed for schedule h14
+	now := time.Now()
+	require.NoError(t, prov.PutRunLog(ctx, types.RunLogEntry{
+		PipelineID:  "silver-pipeline",
+		Date:        "2026-02-23",
+		ScheduleID:  "h14",
+		Status:      types.RunCompleted,
+		RunID:       "run-789",
+		StartedAt:   now,
+		CompletedAt: &now,
+		UpdatedAt:   now,
+	}))
+
+	handler := NewUpstreamJobLogHandler(prov)
+
+	// No upstreamSchedule, but scheduleID is set (injected by orchestrator)
+	out, err := handler(ctx, types.EvaluatorInput{
+		PipelineID: "gold-pipeline",
+		TraitType:  "upstream",
+		Config: map[string]interface{}{
+			"upstreamPipeline": "silver-pipeline",
+			"date":             "2026-02-23",
+			"scheduleID":       "h14",
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, types.TraitPass, out.Status)
+	assert.Contains(t, out.Reason, "completed")
+}
+
 func TestUpstreamJobLogHandler_MissingConfig(t *testing.T) {
 	prov := testutil.NewMockProvider()
 	handler := NewUpstreamJobLogHandler(prov)

@@ -16,8 +16,9 @@ type BuiltinHandler func(ctx context.Context, input types.EvaluatorInput) (*type
 // underlying HTTP runner. Paths prefixed with "builtin:" are dispatched to
 // registered Go handlers; everything else falls through to HTTP.
 type CompositeRunner struct {
-	http     *HTTPRunner
-	builtins map[string]BuiltinHandler
+	http           *HTTPRunner
+	builtins       map[string]BuiltinHandler
+	circuitBreaker *CircuitBreaker
 }
 
 // NewCompositeRunner creates a CompositeRunner wrapping the given HTTPRunner.
@@ -28,6 +29,11 @@ func NewCompositeRunner(http *HTTPRunner) *CompositeRunner {
 	}
 }
 
+// SetCircuitBreaker enables circuit breaker protection for evaluator calls.
+func (c *CompositeRunner) SetCircuitBreaker(cb *CircuitBreaker) {
+	c.circuitBreaker = cb
+}
+
 // Register adds a built-in handler for the given name (e.g. "upstream-job-log").
 // The evaluator path "builtin:upstream-job-log" will dispatch to this handler.
 func (c *CompositeRunner) Register(name string, handler BuiltinHandler) {
@@ -35,7 +41,36 @@ func (c *CompositeRunner) Register(name string, handler BuiltinHandler) {
 }
 
 // Run dispatches to a builtin handler or the HTTP runner.
+// If a circuit breaker is configured and the circuit is open, it returns a
+// fail-fast result without calling the evaluator.
 func (c *CompositeRunner) Run(ctx context.Context, evaluatorPath string, input types.EvaluatorInput, timeout time.Duration) (*types.EvaluatorOutput, error) {
+	// Circuit breaker check.
+	if c.circuitBreaker != nil && !c.circuitBreaker.Allow(evaluatorPath) {
+		return &types.EvaluatorOutput{
+			Status:          types.TraitFail,
+			Reason:          fmt.Sprintf("circuit breaker open for %s", evaluatorPath),
+			FailureCategory: types.FailureTransient,
+		}, nil
+	}
+
+	out, err := c.dispatch(ctx, evaluatorPath, input, timeout)
+
+	// Record result for circuit breaker.
+	if c.circuitBreaker != nil {
+		switch {
+		case err != nil:
+			c.circuitBreaker.RecordFailure(evaluatorPath, types.FailureTransient)
+		case out != nil && out.Status != types.TraitPass:
+			c.circuitBreaker.RecordFailure(evaluatorPath, out.FailureCategory)
+		case out != nil:
+			c.circuitBreaker.RecordSuccess(evaluatorPath)
+		}
+	}
+
+	return out, err
+}
+
+func (c *CompositeRunner) dispatch(ctx context.Context, evaluatorPath string, input types.EvaluatorInput, timeout time.Duration) (*types.EvaluatorOutput, error) {
 	if strings.HasPrefix(evaluatorPath, "builtin:") {
 		name := strings.TrimPrefix(evaluatorPath, "builtin:")
 		handler, ok := c.builtins[name]

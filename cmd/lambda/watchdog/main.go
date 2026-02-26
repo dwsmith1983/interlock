@@ -40,8 +40,9 @@ func handler(ctx context.Context) error {
 
 	missed := watchdog.CheckMissedSchedules(ctx, opts)
 	stuck := watchdog.CheckStuckRuns(ctx, opts)
+	expired := watchdog.CheckCompletedMonitoring(ctx, opts)
 
-	d.Logger.Info("watchdog scan complete", "missed", len(missed), "stuck", len(stuck))
+	d.Logger.Info("watchdog scan complete", "missed", len(missed), "stuck", len(stuck), "monitoringExpired", len(expired))
 	return nil
 }
 

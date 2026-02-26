@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 
 	"github.com/dwsmith1983/interlock/internal/alert"
 	"github.com/dwsmith1983/interlock/internal/archetype"
@@ -71,12 +72,33 @@ func Init(ctx context.Context) (*Deps, error) {
 		}
 		dispatcher.AddSink(s3Sink)
 	}
-	alertFn := dispatcher.AlertFunc()
+	originalAlertFn := dispatcher.AlertFunc()
+	// Wrap alert function to also persist alerts to the provider.
+	alertFn := func(a types.Alert) {
+		originalAlertFn(a)
+		if err := prov.PutAlert(context.Background(), a); err != nil {
+			logger.Warn("failed to persist alert", "pipeline", a.PipelineID, "error", err)
+		}
+	}
 
 	// Create composite evaluator runner for Lambda (HTTP + built-in handlers)
 	httpRunner := evaluator.NewHTTPRunner(envOrDefault("EVALUATOR_BASE_URL", ""))
 	composite := evaluator.NewCompositeRunner(httpRunner)
 	composite.Register("upstream-job-log", evaluator.NewUpstreamJobLogHandler(prov))
+	composite.Register("sensor-threshold", evaluator.NewSensorThresholdHandler(prov))
+	composite.Register("sensor-freshness", evaluator.NewSensorFreshnessHandler(prov))
+	composite.Register("window-completeness", evaluator.NewWindowCompletenessHandler(prov))
+	composite.Register("data-quality", evaluator.NewDataQualityHandler(prov))
+
+	// Circuit breaker opt-in via env var.
+	if cbThreshold := envOrDefault("CIRCUIT_BREAKER_THRESHOLD", ""); cbThreshold != "" {
+		config := evaluator.DefaultCircuitBreakerConfig()
+		if n, err := strconv.Atoi(cbThreshold); err == nil && n > 0 {
+			config.FailThreshold = n
+		}
+		composite.SetCircuitBreaker(evaluator.NewCircuitBreaker(config))
+	}
+
 	var runner engine.TraitRunner = composite
 
 	// Load archetype registry

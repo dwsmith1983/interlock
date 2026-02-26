@@ -10,6 +10,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/dwsmith1983/interlock/internal/lifecycle"
+	"github.com/dwsmith1983/interlock/internal/provider"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -42,6 +43,37 @@ func (p *RedisProvider) traitPattern(pipelineID string) string {
 	return p.prefix + "trait:" + pipelineID + ":*"
 }
 
+func (p *RedisProvider) traitHistKey(pipelineID, traitType string) string {
+	return p.prefix + "traithist:" + pipelineID + ":" + traitType
+}
+
+// ListTraitHistory returns historical trait evaluations, newest first.
+func (p *RedisProvider) ListTraitHistory(ctx context.Context, pipelineID, traitType string, limit int) ([]types.TraitEvaluation, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	members, err := p.client.ZRangeArgs(ctx, goredis.ZRangeArgs{
+		Key:   p.traitHistKey(pipelineID, traitType),
+		Start: 0,
+		Stop:  int64(limit - 1),
+		Rev:   true,
+	}).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	var evals []types.TraitEvaluation
+	for _, m := range members {
+		var te types.TraitEvaluation
+		if err := json.Unmarshal([]byte(m), &te); err != nil {
+			p.logger.Warn("skipping corrupt trait history entry", "error", err)
+			continue
+		}
+		evals = append(evals, te)
+	}
+	return evals, nil
+}
+
 func (p *RedisProvider) runKey(runID string) string {
 	return p.prefix + "run:" + runID
 }
@@ -69,7 +101,17 @@ func (p *RedisProvider) RegisterPipeline(ctx context.Context, config types.Pipel
 	pipe.Set(ctx, p.pipelineKey(config.Name), data, 0)
 	pipe.SAdd(ctx, p.pipelineIndexKey(), config.Name)
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Sync dependency index.
+	for _, upstream := range provider.ExtractUpstreams(&config) {
+		if err := p.PutDependency(ctx, upstream, config.Name); err != nil {
+			p.logger.Warn("failed to sync dependency", "upstream", upstream, "downstream", config.Name, "error", err)
+		}
+	}
+	return nil
 }
 
 // GetPipeline retrieves a pipeline configuration.
@@ -108,25 +150,50 @@ func (p *RedisProvider) ListPipelines(ctx context.Context) ([]types.PipelineConf
 	return pipelines, nil
 }
 
-// DeletePipeline removes a pipeline configuration.
+// DeletePipeline removes a pipeline configuration and cleans up its dependency index.
 func (p *RedisProvider) DeletePipeline(ctx context.Context, id string) error {
+	// Load config first to clean up dependencies.
+	config, err := p.GetPipeline(ctx, id)
+	if err == nil && config != nil {
+		for _, upstream := range provider.ExtractUpstreams(config) {
+			if err := p.RemoveDependency(ctx, upstream, id); err != nil {
+				p.logger.Warn("failed to clean dependency", "upstream", upstream, "downstream", id, "error", err)
+			}
+		}
+	}
+
 	pipe := p.client.Pipeline()
 	pipe.Del(ctx, p.pipelineKey(id))
 	pipe.SRem(ctx, p.pipelineIndexKey(), id)
-	_, err := pipe.Exec(ctx)
+	_, err = pipe.Exec(ctx)
 	return err
 }
 
-// PutTrait stores a trait evaluation result with TTL.
+// PutTrait stores a trait evaluation result with TTL, and appends to trait history.
 func (p *RedisProvider) PutTrait(ctx context.Context, pipelineID string, trait types.TraitEvaluation, ttl time.Duration) error {
 	data, err := json.Marshal(trait)
 	if err != nil {
 		return err
 	}
 	if ttl <= 0 {
-		return p.client.Set(ctx, p.traitKey(pipelineID, trait.TraitType), data, 0).Err()
+		err = p.client.Set(ctx, p.traitKey(pipelineID, trait.TraitType), data, 0).Err()
+	} else {
+		err = p.client.Set(ctx, p.traitKey(pipelineID, trait.TraitType), data, ttl).Err()
 	}
-	return p.client.Set(ctx, p.traitKey(pipelineID, trait.TraitType), data, ttl).Err()
+	if err != nil {
+		return err
+	}
+
+	// Dual-write: append history record (best-effort).
+	histKey := p.traitHistKey(pipelineID, trait.TraitType)
+	score := float64(trait.EvaluatedAt.UnixMilli())
+	if err := p.client.ZAdd(ctx, histKey, goredis.Z{Score: score, Member: string(data)}).Err(); err != nil {
+		p.logger.Warn("failed to write trait history", "pipeline", pipelineID, "trait", trait.TraitType, "error", err)
+	}
+	// Trim to keep history bounded.
+	p.client.ZRemRangeByRank(ctx, histKey, 0, -101) // keep last 100
+
+	return nil
 }
 
 // GetTrait retrieves a single trait evaluation.

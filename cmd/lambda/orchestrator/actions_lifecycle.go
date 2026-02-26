@@ -10,36 +10,45 @@ import (
 )
 
 func notifyDownstream(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
-	pipelines, err := d.Provider.ListPipelines(ctx)
-	if err != nil {
-		return errorResponse(req.Action, fmt.Sprintf("listing pipelines: %v", err)), nil
-	}
-
 	date := time.Now().UTC().Format("2006-01-02")
 	if req.Date != "" {
 		date = req.Date
 	}
 
-	var notified []string
-	for _, p := range pipelines {
-		if p.Name == req.PipelineID {
-			continue // skip self
+	// Use dependency index for O(1) downstream lookup.
+	dependents, err := d.Provider.ListDependents(ctx, req.PipelineID)
+	if err != nil {
+		d.Logger.Warn("ListDependents failed, falling back to scan", "pipeline", req.PipelineID, "error", err)
+	}
+
+	// Fallback to full scan if dependency index returns empty (bootstrap period).
+	if len(dependents) == 0 {
+		dependents, err = scanDependents(ctx, d, req.PipelineID)
+		if err != nil {
+			return errorResponse(req.Action, fmt.Sprintf("scanning dependents: %v", err)), nil
 		}
-		for _, tc := range p.Traits {
-			upstreamPipeline, _ := tc.Config["upstreamPipeline"].(string)
-			if upstreamPipeline == req.PipelineID {
-				// Cascade only the matching schedule. Writing markers for all
-				// downstream schedules causes premature triggers (e.g. silver h06
-				// completing triggers gold h07 before silver h07 finishes) and the
-				// dedup key prevents re-triggering when silver h07 actually completes.
-				if err := d.Provider.WriteCascadeMarker(ctx, p.Name, req.ScheduleID, date, req.PipelineID); err != nil {
-					d.Logger.Error("failed to write cascade marker",
-						"downstream", p.Name, "schedule", req.ScheduleID, "error", err)
-				} else {
-					notified = append(notified, p.Name+"/"+req.ScheduleID)
-				}
-				break // found the trait, move to next pipeline
-			}
+	}
+
+	// Resolve cascade backpressure delay.
+	var cascadeDelay time.Duration
+	pipeline, err := d.Provider.GetPipeline(ctx, req.PipelineID)
+	if err == nil && pipeline != nil && pipeline.Cascade != nil && pipeline.Cascade.DelayBetween != "" {
+		if d, parseErr := time.ParseDuration(pipeline.Cascade.DelayBetween); parseErr == nil {
+			cascadeDelay = d
+		}
+	}
+
+	var notified []string
+	for i, downstream := range dependents {
+		// Apply backpressure delay between cascade writes.
+		if cascadeDelay > 0 && i > 0 {
+			time.Sleep(cascadeDelay)
+		}
+		if writeErr := d.Provider.WriteCascadeMarker(ctx, downstream, req.ScheduleID, date, req.PipelineID); writeErr != nil {
+			d.Logger.Error("failed to write cascade marker",
+				"downstream", downstream, "schedule", req.ScheduleID, "error", writeErr)
+		} else {
+			notified = append(notified, downstream+"/"+req.ScheduleID)
 		}
 	}
 
@@ -50,6 +59,28 @@ func notifyDownstream(ctx context.Context, d *intlambda.Deps, req intlambda.Orch
 			"notified": notified,
 		},
 	}, nil
+}
+
+// scanDependents performs a full pipeline scan to find downstreams (fallback path).
+func scanDependents(ctx context.Context, d *intlambda.Deps, upstreamID string) ([]string, error) {
+	pipelines, err := d.Provider.ListPipelines(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var dependents []string
+	for _, p := range pipelines {
+		if p.Name == upstreamID {
+			continue
+		}
+		for _, tc := range p.Traits {
+			up, _ := tc.Config["upstreamPipeline"].(string)
+			if up == upstreamID {
+				dependents = append(dependents, p.Name)
+				break
+			}
+		}
+	}
+	return dependents, nil
 }
 
 func checkDrift(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {

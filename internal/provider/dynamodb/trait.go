@@ -34,7 +34,27 @@ func (p *DynamoDBProvider) PutTrait(ctx context.Context, pipelineID string, trai
 		TableName: &p.tableName,
 		Item:      item,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Dual-write: append history record (best-effort, non-transactional).
+	histItem := map[string]ddbtypes.AttributeValue{
+		"PK":   &ddbtypes.AttributeValueMemberS{Value: pipelinePK(pipelineID)},
+		"SK":   &ddbtypes.AttributeValueMemberS{Value: traitHistSK(trait.TraitType, trait.EvaluatedAt)},
+		"data": &ddbtypes.AttributeValueMemberS{Value: string(data)},
+	}
+	if p.retentionTTL > 0 {
+		histItem["ttl"] = &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttlEpoch(p.retentionTTL))}
+	}
+	if _, err := p.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &p.tableName,
+		Item:      histItem,
+	}); err != nil {
+		p.logger.Warn("failed to write trait history", "pipeline", pipelineID, "trait", trait.TraitType, "error", err)
+	}
+
+	return nil
 }
 
 // GetTrait retrieves a single trait evaluation.

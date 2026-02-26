@@ -15,11 +15,12 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockProvider struct {
-	pipelines []types.PipelineConfig
-	runLogs   map[string]*types.RunLogEntry // key: "pipeline:date:schedule"
-	locks     map[string]bool
-	events    []types.Event
-	mu        sync.Mutex
+	pipelines      []types.PipelineConfig
+	runLogs        map[string]*types.RunLogEntry // key: "pipeline:date:schedule"
+	locks          map[string]bool
+	events         []types.Event
+	putRunLogCalls []types.RunLogEntry
+	mu             sync.Mutex
 }
 
 func newMockProvider() *mockProvider {
@@ -88,7 +89,15 @@ func (m *mockProvider) ListEvents(context.Context, string, int) ([]types.Event, 
 func (m *mockProvider) ReadEventsSince(context.Context, string, string, int64) ([]types.EventRecord, error) {
 	return nil, nil
 }
-func (m *mockProvider) PutRunLog(context.Context, types.RunLogEntry) error { return nil }
+func (m *mockProvider) PutRunLog(_ context.Context, entry types.RunLogEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := entry.PipelineID + ":" + entry.Date + ":" + entry.ScheduleID
+	entryCopy := entry
+	m.runLogs[key] = &entryCopy
+	m.putRunLogCalls = append(m.putRunLogCalls, entry)
+	return nil
+}
 func (m *mockProvider) ListRunLogs(context.Context, string, int) ([]types.RunLogEntry, error) {
 	return nil, nil
 }
@@ -125,11 +134,52 @@ func (m *mockProvider) Start(context.Context) error { return nil }
 func (m *mockProvider) Stop(context.Context) error  { return nil }
 func (m *mockProvider) Ping(context.Context) error  { return nil }
 
+// New sub-interface stubs (unused by watchdog).
+func (m *mockProvider) PutAlert(context.Context, types.Alert) error { return nil }
+func (m *mockProvider) ListAlerts(context.Context, string, int) ([]types.Alert, error) {
+	return nil, nil
+}
+func (m *mockProvider) ListAllAlerts(context.Context, int) ([]types.Alert, error) { return nil, nil }
+func (m *mockProvider) ListTraitHistory(context.Context, string, string, int) ([]types.TraitEvaluation, error) {
+	return nil, nil
+}
+func (m *mockProvider) PutEvaluationSession(context.Context, types.EvaluationSession) error {
+	return nil
+}
+func (m *mockProvider) GetEvaluationSession(context.Context, string) (*types.EvaluationSession, error) {
+	return nil, nil
+}
+func (m *mockProvider) ListEvaluationSessions(context.Context, string, int) ([]types.EvaluationSession, error) {
+	return nil, nil
+}
+func (m *mockProvider) PutDependency(context.Context, string, string) error    { return nil }
+func (m *mockProvider) RemoveDependency(context.Context, string, string) error { return nil }
+func (m *mockProvider) ListDependents(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (m *mockProvider) PutSensorData(context.Context, types.SensorData) error { return nil }
+func (m *mockProvider) GetSensorData(context.Context, string, string) (*types.SensorData, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helper builders
 // ---------------------------------------------------------------------------
 
 func boolPtr(v bool) *bool { return &v }
+
+func pipelineWithMonitoring(duration string) types.PipelineConfig {
+	return types.PipelineConfig{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+		Watch: &types.PipelineWatchConfig{
+			Monitoring: &types.MonitoringConfig{
+				Enabled:  true,
+				Duration: duration,
+			},
+		},
+	}
+}
 
 func pipelineWithDeadline(deadline string) types.PipelineConfig {
 	return types.PipelineConfig{
@@ -621,6 +671,122 @@ func TestStuckRun_PendingStatus(t *testing.T) {
 	}
 	if len(getAlerts()) != 1 {
 		t.Errorf("expected 1 alert, got %d", len(getAlerts()))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Completed-monitoring expiry tests
+// ---------------------------------------------------------------------------
+
+func TestCheckCompletedMonitoring_Expired(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{pipelineWithMonitoring("20m")}
+
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T11:00:00Z")
+	// Run entered COMPLETED_MONITORING 25 minutes ago (past the 20m window).
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		PipelineID: "p1",
+		Date:       "2026-02-24",
+		ScheduleID: "daily",
+		Status:     types.RunCompletedMonitoring,
+		RunID:      "run-1",
+		UpdatedAt:  now.Add(-25 * time.Minute),
+	}
+
+	results := CheckCompletedMonitoring(context.Background(), CheckOptions{
+		Provider: mp,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 monitoring result, got %d", len(results))
+	}
+	if results[0].Action != "expired" {
+		t.Errorf("expected action 'expired', got %s", results[0].Action)
+	}
+	if results[0].PipelineID != "p1" {
+		t.Errorf("expected pipeline p1, got %s", results[0].PipelineID)
+	}
+
+	// Verify run was transitioned to COMPLETED.
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	if len(mp.putRunLogCalls) != 1 {
+		t.Fatalf("expected 1 PutRunLog call, got %d", len(mp.putRunLogCalls))
+	}
+	if mp.putRunLogCalls[0].Status != types.RunCompleted {
+		t.Errorf("expected COMPLETED status in PutRunLog, got %s", mp.putRunLogCalls[0].Status)
+	}
+	// Verify audit event.
+	if len(mp.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(mp.events))
+	}
+	if mp.events[0].Kind != types.EventMonitoringCompleted {
+		t.Errorf("expected MONITORING_COMPLETED event, got %s", mp.events[0].Kind)
+	}
+}
+
+func TestCheckCompletedMonitoring_StillInWindow(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{pipelineWithMonitoring("20m")}
+
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T11:00:00Z")
+	// Run entered COMPLETED_MONITORING only 10 minutes ago (within 20m window).
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		PipelineID: "p1",
+		Date:       "2026-02-24",
+		ScheduleID: "daily",
+		Status:     types.RunCompletedMonitoring,
+		RunID:      "run-1",
+		UpdatedAt:  now.Add(-10 * time.Minute),
+	}
+
+	results := CheckCompletedMonitoring(context.Background(), CheckOptions{
+		Provider: mp,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results (still in window), got %d", len(results))
+	}
+	// Verify no PutRunLog call was made.
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	if len(mp.putRunLogCalls) != 0 {
+		t.Errorf("expected 0 PutRunLog calls, got %d", len(mp.putRunLogCalls))
+	}
+}
+
+func TestCheckCompletedMonitoring_IgnoresCompleted(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{pipelineWithMonitoring("20m")}
+
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T11:00:00Z")
+	// Run is already COMPLETED — should be ignored.
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		PipelineID: "p1",
+		Date:       "2026-02-24",
+		ScheduleID: "daily",
+		Status:     types.RunCompleted,
+		RunID:      "run-1",
+		UpdatedAt:  now.Add(-60 * time.Minute),
+	}
+
+	results := CheckCompletedMonitoring(context.Background(), CheckOptions{
+		Provider: mp,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results (already completed), got %d", len(results))
+	}
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	if len(mp.putRunLogCalls) != 0 {
+		t.Errorf("expected 0 PutRunLog calls, got %d", len(mp.putRunLogCalls))
 	}
 }
 

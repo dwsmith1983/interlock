@@ -345,6 +345,130 @@ func CheckStuckRuns(ctx context.Context, opts CheckOptions) []StuckRun {
 }
 
 // ---------------------------------------------------------------------------
+// Post-completion monitoring expiry
+// ---------------------------------------------------------------------------
+
+// MonitoringResult records a single completed-monitoring expiry action.
+type MonitoringResult struct {
+	PipelineID string
+	ScheduleID string
+	Date       string
+	Action     string // "expired"
+}
+
+// CheckCompletedMonitoring scans all registered pipelines for runs in
+// COMPLETED_MONITORING state whose monitoring window has expired, and
+// transitions them to COMPLETED.  This offloads the monitoring wait from
+// the Step Function execution to the watchdog's periodic scan.
+func CheckCompletedMonitoring(ctx context.Context, opts CheckOptions) []MonitoringResult {
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+
+	pipelines, err := opts.Provider.ListPipelines(ctx)
+	if err != nil {
+		opts.Logger.Error("watchdog: failed to list pipelines for monitoring check", "error", err)
+		return nil
+	}
+
+	var results []MonitoringResult
+
+	for _, pl := range pipelines {
+		if ctx.Err() != nil {
+			return results
+		}
+
+		// Only relevant for pipelines with monitoring enabled.
+		if pl.Watch == nil || pl.Watch.Monitoring == nil || !pl.Watch.Monitoring.Enabled {
+			continue
+		}
+
+		duration, err := time.ParseDuration(pl.Watch.Monitoring.Duration)
+		if err != nil || duration <= 0 {
+			opts.Logger.Warn("watchdog: invalid monitoring duration",
+				"pipeline", pl.Name, "duration", pl.Watch.Monitoring.Duration, "error", err)
+			continue
+		}
+
+		date := opts.Now.UTC().Format("2006-01-02")
+
+		for _, sched := range types.ResolveSchedules(pl) {
+			r := checkMonitoringExpiry(ctx, opts, pl, sched, date, duration)
+			if r != nil {
+				results = append(results, *r)
+			}
+		}
+	}
+
+	return results
+}
+
+func checkMonitoringExpiry(ctx context.Context, opts CheckOptions, pl types.PipelineConfig, sched types.ScheduleConfig, date string, monitorDuration time.Duration) *MonitoringResult {
+	entry, err := opts.Provider.GetRunLog(ctx, pl.Name, date, sched.Name)
+	if err != nil {
+		opts.Logger.Error("watchdog: failed to get run log for monitoring check",
+			"pipeline", pl.Name, "schedule", sched.Name, "error", err)
+		return nil
+	}
+	if entry == nil || entry.Status != types.RunCompletedMonitoring {
+		return nil
+	}
+
+	// Use UpdatedAt as the monitoring start time (set when status changed
+	// to COMPLETED_MONITORING).
+	elapsed := opts.Now.Sub(entry.UpdatedAt)
+	if elapsed < monitorDuration {
+		return nil // still within monitoring window
+	}
+
+	// Monitoring window expired — transition to COMPLETED.
+	now := opts.Now
+	entry.Status = types.RunCompleted
+	entry.CompletedAt = &now
+	entry.UpdatedAt = now
+
+	if err := opts.Provider.PutRunLog(ctx, *entry); err != nil {
+		opts.Logger.Error("watchdog: failed to transition monitoring run to COMPLETED",
+			"pipeline", pl.Name, "schedule", sched.Name, "error", err)
+		return nil
+	}
+
+	// Append audit event.
+	if err := opts.Provider.AppendEvent(ctx, types.Event{
+		Kind:       types.EventMonitoringCompleted,
+		PipelineID: pl.Name,
+		RunID:      entry.RunID,
+		Status:     string(types.RunCompleted),
+		Message: fmt.Sprintf("monitoring window expired after %s, transitioned to COMPLETED",
+			monitorDuration),
+		Details: map[string]interface{}{
+			"scheduleId":       sched.Name,
+			"date":             date,
+			"monitorDuration":  monitorDuration.String(),
+			"elapsedInMonitor": elapsed.Truncate(time.Second).String(),
+		},
+		Timestamp: opts.Now,
+	}); err != nil {
+		opts.Logger.Error("watchdog: failed to append monitoring-completed event",
+			"pipeline", pl.Name, "schedule", sched.Name, "error", err)
+	}
+
+	opts.Logger.Info("watchdog: monitoring window expired, run transitioned to COMPLETED",
+		"pipeline", pl.Name, "schedule", sched.Name, "date", date,
+		"elapsed", elapsed.Truncate(time.Second))
+
+	return &MonitoringResult{
+		PipelineID: pl.Name,
+		ScheduleID: sched.Name,
+		Date:       date,
+		Action:     "expired",
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Watchdog — polling wrapper for local mode
 // ---------------------------------------------------------------------------
 
@@ -417,4 +541,5 @@ func (w *Watchdog) scan(ctx context.Context) {
 	}
 	CheckMissedSchedules(ctx, opts)
 	CheckStuckRuns(ctx, opts)
+	CheckCompletedMonitoring(ctx, opts)
 }

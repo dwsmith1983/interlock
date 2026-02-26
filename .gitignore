@@ -1,5 +1,6 @@
 # Binaries
 /interlock
+/orchestrator
 /dist/
 *.exe
 *.exe~

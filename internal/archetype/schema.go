@@ -38,7 +38,11 @@ func ValidateArchetype(arch *types.Archetype) error {
 	if arch.ReadinessRule.Type == "" {
 		return fmt.Errorf("readinessRule.type is required")
 	}
-	if arch.ReadinessRule.Type != types.AllRequiredPass {
+	validRuleTypes := map[types.ReadinessRuleType]bool{
+		types.AllRequiredPass: true,
+		types.MajorityPass:    true,
+	}
+	if !validRuleTypes[arch.ReadinessRule.Type] {
 		return fmt.Errorf("unsupported readiness rule type %q", arch.ReadinessRule.Type)
 	}
 

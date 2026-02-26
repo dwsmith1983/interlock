@@ -63,6 +63,7 @@ type ReadinessRuleType string
 // ReadinessRuleType values define the supported readiness evaluation strategies.
 const (
 	AllRequiredPass ReadinessRuleType = "all-required-pass"
+	MajorityPass    ReadinessRuleType = "majority-pass"
 )
 
 // TriggerType defines how a pipeline is triggered.
@@ -122,7 +123,8 @@ type TraitDefinition struct {
 
 // ReadinessRule defines how trait results combine into a readiness decision.
 type ReadinessRule struct {
-	Type ReadinessRuleType `yaml:"type" json:"type"`
+	Type       ReadinessRuleType      `yaml:"type" json:"type"`
+	Parameters map[string]interface{} `yaml:"parameters,omitempty" json:"parameters,omitempty"`
 }
 
 // Archetype defines a STAMP archetype — a template of required safety checks.
@@ -209,6 +211,11 @@ type ExclusionConfig struct {
 	Dates    []string `yaml:"dates,omitempty" json:"dates,omitempty"`       // inline date overrides
 }
 
+// CascadeConfig controls backpressure for downstream cascade notifications.
+type CascadeConfig struct {
+	DelayBetween string `yaml:"delayBetween,omitempty" json:"delayBetween,omitempty"` // e.g. "2s", "500ms"
+}
+
 // PipelineConfig is the full configuration for a registered pipeline.
 type PipelineConfig struct {
 	Name       string                 `yaml:"name" json:"name"`
@@ -221,6 +228,7 @@ type PipelineConfig struct {
 	Watch      *PipelineWatchConfig   `yaml:"watch,omitempty" json:"watch,omitempty"`
 	Schedules  []ScheduleConfig       `yaml:"schedules,omitempty" json:"schedules,omitempty"`
 	Exclusions *ExclusionConfig       `yaml:"exclusions,omitempty" json:"exclusions,omitempty"`
+	Cascade    *CascadeConfig         `yaml:"cascade,omitempty" json:"cascade,omitempty"`
 }
 
 // TraitEvaluation is the result of evaluating a single trait.
@@ -282,6 +290,7 @@ type AlertConfig struct {
 
 // Alert represents an alert event to be dispatched.
 type Alert struct {
+	AlertID    string                 `json:"alertId,omitempty"`
 	Level      AlertLevel             `json:"level"`
 	Category   string                 `json:"alertType,omitempty"`
 	PipelineID string                 `json:"pipelineId,omitempty"`
@@ -305,26 +314,28 @@ type EventKind string
 
 // EventKind values enumerate the categories of recorded events.
 const (
-	EventTraitEvaluated      EventKind = "TRAIT_EVALUATED"
-	EventReadinessChecked    EventKind = "READINESS_CHECKED"
-	EventRunStateChanged     EventKind = "RUN_STATE_CHANGED"
-	EventTriggerFired        EventKind = "TRIGGER_FIRED"
-	EventTriggerFailed       EventKind = "TRIGGER_FAILED"
-	EventCallbackReceived    EventKind = "CALLBACK_RECEIVED"
-	EventRetryScheduled      EventKind = "RETRY_SCHEDULED"
-	EventRetryExhausted      EventKind = "RETRY_EXHAUSTED"
-	EventSLABreached         EventKind = "SLA_BREACHED"
-	EventWatcherEvaluation   EventKind = "WATCHER_EVALUATION"
-	EventTraitPushed         EventKind = "TRAIT_PUSHED"
-	EventRerunRequested      EventKind = "RERUN_REQUESTED"
-	EventRerunCompleted      EventKind = "RERUN_COMPLETED"
-	EventMonitoringStarted   EventKind = "MONITORING_STARTED"
-	EventMonitoringDrift     EventKind = "MONITORING_DRIFT_DETECTED"
-	EventMonitoringCompleted EventKind = "MONITORING_COMPLETED"
-	EventScheduleMissed      EventKind = "SCHEDULE_MISSED"
-	EventPipelineCompleted   EventKind = "PIPELINE_COMPLETED"
-	EventPipelineFailed      EventKind = "PIPELINE_FAILED"
-	EventRunStuck            EventKind = "RUN_STUCK"
+	EventTraitEvaluated        EventKind = "TRAIT_EVALUATED"
+	EventReadinessChecked      EventKind = "READINESS_CHECKED"
+	EventRunStateChanged       EventKind = "RUN_STATE_CHANGED"
+	EventTriggerFired          EventKind = "TRIGGER_FIRED"
+	EventTriggerFailed         EventKind = "TRIGGER_FAILED"
+	EventCallbackReceived      EventKind = "CALLBACK_RECEIVED"
+	EventRetryScheduled        EventKind = "RETRY_SCHEDULED"
+	EventRetryExhausted        EventKind = "RETRY_EXHAUSTED"
+	EventSLABreached           EventKind = "SLA_BREACHED"
+	EventWatcherEvaluation     EventKind = "WATCHER_EVALUATION"
+	EventTraitPushed           EventKind = "TRAIT_PUSHED"
+	EventRerunRequested        EventKind = "RERUN_REQUESTED"
+	EventRerunCompleted        EventKind = "RERUN_COMPLETED"
+	EventMonitoringStarted     EventKind = "MONITORING_STARTED"
+	EventMonitoringDrift       EventKind = "MONITORING_DRIFT_DETECTED"
+	EventMonitoringCompleted   EventKind = "MONITORING_COMPLETED"
+	EventScheduleMissed        EventKind = "SCHEDULE_MISSED"
+	EventPipelineCompleted     EventKind = "PIPELINE_COMPLETED"
+	EventPipelineFailed        EventKind = "PIPELINE_FAILED"
+	EventRunStuck              EventKind = "RUN_STUCK"
+	EventReadinessCacheChecked EventKind = "READINESS_CACHE_CHECKED"
+	EventCircuitBreakerTripped EventKind = "CIRCUIT_BREAKER_TRIPPED"
 )
 
 // Event is an append-only audit log entry recording what happened and when.
@@ -466,6 +477,38 @@ type WatchdogConfig struct {
 type EventRecord struct {
 	StreamID string `json:"streamId"`
 	Event    Event  `json:"event"`
+}
+
+// SensorData holds externally-landed sensor readings (e.g., lag, window IDs,
+// record counts). Data engineers write sensor data; interlock reads it via
+// trait evaluators.
+type SensorData struct {
+	PipelineID string                 `json:"pipelineId"`
+	SensorType string                 `json:"sensorType"`
+	Value      map[string]interface{} `json:"value"`
+	UpdatedAt  time.Time              `json:"updatedAt"`
+}
+
+// EvaluationSessionStatus tracks the lifecycle of an evaluation session.
+type EvaluationSessionStatus string
+
+const (
+	SessionRunning   EvaluationSessionStatus = "RUNNING"
+	SessionCompleted EvaluationSessionStatus = "COMPLETED"
+	SessionFailed    EvaluationSessionStatus = "FAILED"
+)
+
+// EvaluationSession tracks a single evaluation pass — all trait results,
+// readiness outcome, and timing for audit and debugging.
+type EvaluationSession struct {
+	SessionID     string                  `json:"sessionId"`
+	PipelineID    string                  `json:"pipelineId"`
+	TriggerSource string                  `json:"triggerSource,omitempty"`
+	Status        EvaluationSessionStatus `json:"status"`
+	TraitResults  []TraitEvaluation       `json:"traitResults,omitempty"`
+	Readiness     ReadinessStatus         `json:"readiness,omitempty"`
+	StartedAt     time.Time               `json:"startedAt"`
+	CompletedAt   *time.Time              `json:"completedAt,omitempty"`
 }
 
 // ServerConfig holds HTTP server settings.
