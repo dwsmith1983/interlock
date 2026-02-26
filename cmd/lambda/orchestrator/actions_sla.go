@@ -25,7 +25,8 @@ func checkEvaluationSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 	}
 
 	now := time.Now()
-	deadline, err := schedule.ParseSLADeadline(pipeline.SLA.EvaluationDeadline, pipeline.SLA.Timezone, now)
+	refTime := extractExecutionStartTime(req)
+	deadline, err := schedule.ParseSLADeadline(pipeline.SLA.EvaluationDeadline, pipeline.SLA.Timezone, now, refTime)
 	if err != nil {
 		return errorResponse(req.Action, fmt.Sprintf("parsing SLA deadline: %v", err)), nil
 	}
@@ -69,7 +70,8 @@ func checkCompletionSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 	}
 
 	now := time.Now()
-	deadline, ok := schedule.ScheduleDeadline(sched, *pipeline, now)
+	refTime := extractExecutionStartTime(req)
+	deadline, ok := schedule.ScheduleDeadline(sched, *pipeline, now, refTime)
 	if !ok {
 		return intlambda.OrchestratorResponse{
 			Action:  req.Action,
@@ -115,7 +117,8 @@ func checkValidationTimeout(ctx context.Context, d *intlambda.Deps, req intlambd
 	}
 
 	now := time.Now()
-	deadline, err := schedule.ParseSLADeadline(pipeline.SLA.ValidationTimeout, pipeline.SLA.Timezone, now)
+	refTime := extractExecutionStartTime(req)
+	deadline, err := schedule.ParseSLADeadline(pipeline.SLA.ValidationTimeout, pipeline.SLA.Timezone, now, refTime)
 	if err != nil {
 		return errorResponse(req.Action, fmt.Sprintf("parsing validation timeout: %v", err)), nil
 	}
@@ -140,4 +143,26 @@ func checkValidationTimeout(ctx context.Context, d *intlambda.Deps, req intlambd
 		Result:  "proceed",
 		Payload: map[string]interface{}{"validationTimedOut": false},
 	}, nil
+}
+
+// extractExecutionStartTime extracts the execution start time from the request
+// payload. This is injected by the Step Functions ASL InitDefaults state as
+// $$.Execution.StartTime. Returns zero time if not present or unparseable.
+func extractExecutionStartTime(req intlambda.OrchestratorRequest) time.Time {
+	if req.Payload == nil {
+		return time.Time{}
+	}
+	v, ok := req.Payload["executionStartTime"]
+	if !ok {
+		return time.Time{}
+	}
+	s, ok := v.(string)
+	if !ok {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }

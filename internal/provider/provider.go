@@ -77,6 +77,38 @@ type ReplayStore interface {
 	ListReplays(ctx context.Context, limit int) ([]types.ReplayRequest, error)
 }
 
+// AlertStore handles persisted alert storage.
+type AlertStore interface {
+	PutAlert(ctx context.Context, alert types.Alert) error
+	ListAlerts(ctx context.Context, pipelineID string, limit int) ([]types.Alert, error)
+	ListAllAlerts(ctx context.Context, limit int) ([]types.Alert, error)
+}
+
+// TraitHistoryStore provides access to historical trait evaluations.
+type TraitHistoryStore interface {
+	ListTraitHistory(ctx context.Context, pipelineID, traitType string, limit int) ([]types.TraitEvaluation, error)
+}
+
+// EvaluationSessionStore tracks evaluation session lifecycle.
+type EvaluationSessionStore interface {
+	PutEvaluationSession(ctx context.Context, session types.EvaluationSession) error
+	GetEvaluationSession(ctx context.Context, sessionID string) (*types.EvaluationSession, error)
+	ListEvaluationSessions(ctx context.Context, pipelineID string, limit int) ([]types.EvaluationSession, error)
+}
+
+// DependencyStore maintains a pipeline dependency index for O(1) downstream lookup.
+type DependencyStore interface {
+	PutDependency(ctx context.Context, upstreamID, downstreamID string) error
+	RemoveDependency(ctx context.Context, upstreamID, downstreamID string) error
+	ListDependents(ctx context.Context, upstreamID string) ([]string, error)
+}
+
+// SensorStore handles externally-landed sensor data.
+type SensorStore interface {
+	PutSensorData(ctx context.Context, data types.SensorData) error
+	GetSensorData(ctx context.Context, pipelineID, sensorType string) (*types.SensorData, error)
+}
+
 // Provider is the storage backend interface. Phase 1 implements Redis/Valkey;
 // future phases add DynamoDB, etcd, Firestore, and Cosmos.
 type Provider interface {
@@ -90,6 +122,11 @@ type Provider interface {
 	LateArrivalStore
 	ReplayStore
 	Locker
+	AlertStore
+	TraitHistoryStore
+	EvaluationSessionStore
+	DependencyStore
+	SensorStore
 
 	// Readiness caching
 	PutReadiness(ctx context.Context, result types.ReadinessResult) error
@@ -99,4 +136,32 @@ type Provider interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 	Ping(ctx context.Context) error
+}
+
+// ExtractUpstreams scans a pipeline's trait configs for upstreamPipeline values,
+// returning a deduplicated list of upstream pipeline IDs.
+func ExtractUpstreams(config *types.PipelineConfig) []string {
+	if config == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var upstreams []string
+	for _, tc := range config.Traits {
+		if tc.Config == nil {
+			continue
+		}
+		v, ok := tc.Config["upstreamPipeline"]
+		if !ok {
+			continue
+		}
+		id, ok := v.(string)
+		if !ok || id == "" {
+			continue
+		}
+		if !seen[id] {
+			seen[id] = true
+			upstreams = append(upstreams, id)
+		}
+	}
+	return upstreams
 }

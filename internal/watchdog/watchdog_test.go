@@ -125,6 +125,34 @@ func (m *mockProvider) Start(context.Context) error { return nil }
 func (m *mockProvider) Stop(context.Context) error  { return nil }
 func (m *mockProvider) Ping(context.Context) error  { return nil }
 
+// New sub-interface stubs (unused by watchdog).
+func (m *mockProvider) PutAlert(context.Context, types.Alert) error { return nil }
+func (m *mockProvider) ListAlerts(context.Context, string, int) ([]types.Alert, error) {
+	return nil, nil
+}
+func (m *mockProvider) ListAllAlerts(context.Context, int) ([]types.Alert, error) { return nil, nil }
+func (m *mockProvider) ListTraitHistory(context.Context, string, string, int) ([]types.TraitEvaluation, error) {
+	return nil, nil
+}
+func (m *mockProvider) PutEvaluationSession(context.Context, types.EvaluationSession) error {
+	return nil
+}
+func (m *mockProvider) GetEvaluationSession(context.Context, string) (*types.EvaluationSession, error) {
+	return nil, nil
+}
+func (m *mockProvider) ListEvaluationSessions(context.Context, string, int) ([]types.EvaluationSession, error) {
+	return nil, nil
+}
+func (m *mockProvider) PutDependency(context.Context, string, string) error    { return nil }
+func (m *mockProvider) RemoveDependency(context.Context, string, string) error { return nil }
+func (m *mockProvider) ListDependents(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (m *mockProvider) PutSensorData(context.Context, types.SensorData) error { return nil }
+func (m *mockProvider) GetSensorData(context.Context, string, string) (*types.SensorData, error) {
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helper builders
 // ---------------------------------------------------------------------------

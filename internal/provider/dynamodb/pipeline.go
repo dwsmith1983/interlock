@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	"github.com/dwsmith1983/interlock/internal/provider"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -30,7 +31,17 @@ func (p *DynamoDBProvider) RegisterPipeline(ctx context.Context, config types.Pi
 			"data":   &ddbtypes.AttributeValueMemberS{Value: string(data)},
 		},
 	})
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Sync dependency index: register this pipeline as a dependent of its upstreams.
+	for _, upstream := range provider.ExtractUpstreams(&config) {
+		if err := p.PutDependency(ctx, upstream, config.Name); err != nil {
+			p.logger.Warn("failed to sync dependency", "upstream", upstream, "downstream", config.Name, "error", err)
+		}
+	}
+	return nil
 }
 
 // GetPipeline retrieves a pipeline configuration.
@@ -91,9 +102,19 @@ func (p *DynamoDBProvider) ListPipelines(ctx context.Context) ([]types.PipelineC
 	return pipelines, nil
 }
 
-// DeletePipeline removes a pipeline configuration.
+// DeletePipeline removes a pipeline configuration and cleans up its dependency index.
 func (p *DynamoDBProvider) DeletePipeline(ctx context.Context, id string) error {
-	_, err := p.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+	// Load config first to clean up dependency index.
+	config, err := p.GetPipeline(ctx, id)
+	if err == nil && config != nil {
+		for _, upstream := range provider.ExtractUpstreams(config) {
+			if err := p.RemoveDependency(ctx, upstream, id); err != nil {
+				p.logger.Warn("failed to clean dependency", "upstream", upstream, "downstream", id, "error", err)
+			}
+		}
+	}
+
+	_, err = p.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: &p.tableName,
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": &ddbtypes.AttributeValueMemberS{Value: pipelinePK(id)},

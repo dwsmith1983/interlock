@@ -69,7 +69,8 @@ func ParseTimeOfDay(hhmm string, ref time.Time, loc *time.Location) (time.Time, 
 
 // ScheduleDeadline resolves the SLA deadline for a schedule window.
 // It prefers the schedule-level Deadline, falling back to the pipeline SLA.
-func ScheduleDeadline(sched types.ScheduleConfig, pipeline types.PipelineConfig, now time.Time) (time.Time, bool) {
+// An optional referenceTime controls duration-based SLA offset (event-driven mode).
+func ScheduleDeadline(sched types.ScheduleConfig, pipeline types.PipelineConfig, now time.Time, referenceTime ...time.Time) (time.Time, bool) {
 	if sched.Deadline != "" {
 		loc := time.UTC
 		if sched.Timezone != "" {
@@ -83,7 +84,7 @@ func ScheduleDeadline(sched types.ScheduleConfig, pipeline types.PipelineConfig,
 	}
 	// Fall back to pipeline SLA completion deadline
 	if pipeline.SLA != nil && pipeline.SLA.CompletionDeadline != "" {
-		if t, err := ParseSLADeadline(pipeline.SLA.CompletionDeadline, pipeline.SLA.Timezone, now); err == nil {
+		if t, err := ParseSLADeadline(pipeline.SLA.CompletionDeadline, pipeline.SLA.Timezone, now, referenceTime...); err == nil {
 			return t, true
 		}
 	}

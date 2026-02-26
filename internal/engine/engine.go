@@ -3,6 +3,8 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -64,14 +66,31 @@ func (e *Engine) SetDefaultTimeout(d time.Duration) {
 // Evaluate runs all trait evaluators for a pipeline and determines readiness.
 func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.ReadinessResult, error) {
 	metrics.EvaluationsTotal.Add(1)
+
+	// Create evaluation session.
+	sessionID := generateSessionID()
+	sessionStart := time.Now()
+	session := types.EvaluationSession{
+		SessionID:     sessionID,
+		PipelineID:    pipelineID,
+		TriggerSource: "evaluate",
+		Status:        types.SessionRunning,
+		StartedAt:     sessionStart,
+	}
+	if err := e.provider.PutEvaluationSession(ctx, session); err != nil {
+		e.logger.Warn("failed to create evaluation session", "sessionID", sessionID, "error", err)
+	}
+
 	pipeline, err := e.provider.GetPipeline(ctx, pipelineID)
 	if err != nil {
 		metrics.EvaluationErrors.Add(1)
+		e.completeSession(ctx, sessionID, pipelineID, sessionStart, nil, "", types.SessionFailed)
 		return nil, fmt.Errorf("loading pipeline %q: %w", pipelineID, err)
 	}
 
 	arch, err := e.registry.Get(pipeline.Archetype)
 	if err != nil {
+		e.completeSession(ctx, sessionID, pipelineID, sessionStart, nil, "", types.SessionFailed)
 		return nil, fmt.Errorf("resolving archetype %q: %w", pipeline.Archetype, err)
 	}
 
@@ -98,11 +117,10 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 
 	wg.Wait()
 
-	// Collect results and determine readiness
+	// Collect results and build trait result list for readiness dispatch.
 	var (
-		traitEvals []types.TraitEvaluation
-		blocking   []string
-		allPass    = true
+		traitEvals   []types.TraitEvaluation
+		traitResults []traitResult
 	)
 
 	for _, r := range results {
@@ -116,10 +134,11 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 				EvaluatedAt: time.Now(),
 			}
 			traitEvals = append(traitEvals, te)
-			if r.trait.Required {
-				blocking = append(blocking, r.trait.Type)
-				allPass = false
-			}
+			traitResults = append(traitResults, traitResult{
+				TraitType: r.trait.Type,
+				Required:  r.trait.Required,
+				Status:    types.TraitFail,
+			})
 			e.fireAlert(types.Alert{
 				Level:      types.AlertLevelError,
 				PipelineID: pipelineID,
@@ -131,10 +150,13 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 		}
 
 		traitEvals = append(traitEvals, *r.eval)
+		traitResults = append(traitResults, traitResult{
+			TraitType: r.trait.Type,
+			Required:  r.trait.Required,
+			Status:    r.eval.Status,
+		})
 
 		if r.eval.Status != types.TraitPass && r.trait.Required {
-			blocking = append(blocking, r.trait.Type)
-			allPass = false
 			e.fireAlert(types.Alert{
 				Level:      types.AlertLevelWarning,
 				PipelineID: pipelineID,
@@ -145,10 +167,8 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 		}
 	}
 
-	status := types.Ready
-	if !allPass {
-		status = types.NotReady
-	}
+	// Dispatch readiness evaluation using the archetype's rule.
+	status, blocking := EvaluateReadiness(arch.ReadinessRule, traitResults)
 
 	result := &types.ReadinessResult{
 		PipelineID:  pipelineID,
@@ -166,11 +186,14 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 		Kind:       types.EventReadinessChecked,
 		PipelineID: pipelineID,
 		Status:     string(status),
-		Details:    map[string]interface{}{"blocking": blocking},
+		Details:    map[string]interface{}{"blocking": blocking, "sessionID": sessionID},
 		Timestamp:  time.Now(),
 	}); err != nil {
 		e.logger.Error("failed to append event", "pipeline", pipelineID, "event", "READINESS_CHECKED", "error", err)
 	}
+
+	// Complete evaluation session.
+	e.completeSession(ctx, sessionID, pipelineID, sessionStart, traitEvals, status, types.SessionCompleted)
 
 	if status == types.NotReady {
 		e.fireAlert(types.Alert{
@@ -185,6 +208,7 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 }
 
 // CheckReadiness checks cached trait state without running evaluators.
+// It uses the archetype's readiness rule for dispatch and appends an audit event.
 func (e *Engine) CheckReadiness(ctx context.Context, pipelineID string) (*types.ReadinessResult, error) {
 	pipeline, err := e.provider.GetPipeline(ctx, pipelineID)
 	if err != nil {
@@ -199,47 +223,72 @@ func (e *Engine) CheckReadiness(ctx context.Context, pipelineID string) (*types.
 	resolved := archetype.ResolveTraits(arch, pipeline)
 
 	var (
-		traitEvals []types.TraitEvaluation
-		blocking   []string
-		allPass    = true
+		traitEvals   []types.TraitEvaluation
+		traitResults []traitResult
 	)
 
 	for _, rt := range resolved {
 		existing, err := e.provider.GetTrait(ctx, pipelineID, rt.Type)
 		if err != nil || existing == nil {
-			traitEvals = append(traitEvals, types.TraitEvaluation{
+			te := types.TraitEvaluation{
 				PipelineID:  pipelineID,
 				TraitType:   rt.Type,
 				Status:      types.TraitStale,
 				Reason:      "no evaluation found or expired",
 				EvaluatedAt: time.Now(),
-			})
-			if rt.Required {
-				blocking = append(blocking, rt.Type+" (STALE)")
-				allPass = false
 			}
+			traitEvals = append(traitEvals, te)
+			traitResults = append(traitResults, traitResult{
+				TraitType: rt.Type,
+				Required:  rt.Required,
+				Status:    types.TraitStale,
+			})
 			continue
 		}
 
 		traitEvals = append(traitEvals, *existing)
-		if existing.Status != types.TraitPass && rt.Required {
-			blocking = append(blocking, rt.Type)
-			allPass = false
+		traitResults = append(traitResults, traitResult{
+			TraitType: rt.Type,
+			Required:  rt.Required,
+			Status:    existing.Status,
+		})
+	}
+
+	status, blocking := EvaluateReadiness(arch.ReadinessRule, traitResults)
+
+	// Annotate stale traits in blocking list for diagnostics.
+	for i, b := range blocking {
+		for _, tr := range traitResults {
+			if tr.TraitType == b && tr.Status == types.TraitStale {
+				blocking[i] = b + " (STALE)"
+				break
+			}
 		}
 	}
 
-	status := types.Ready
-	if !allPass {
-		status = types.NotReady
-	}
-
-	return &types.ReadinessResult{
+	result := &types.ReadinessResult{
 		PipelineID:  pipelineID,
 		Status:      status,
 		Traits:      traitEvals,
 		Blocking:    blocking,
 		EvaluatedAt: time.Now(),
-	}, nil
+	}
+
+	// Store readiness and append audit event.
+	if err := e.provider.PutReadiness(ctx, *result); err != nil {
+		e.logger.Warn("failed to cache readiness result", "pipeline", pipelineID, "error", err)
+	}
+	if err := e.provider.AppendEvent(ctx, types.Event{
+		Kind:       types.EventReadinessCacheChecked,
+		PipelineID: pipelineID,
+		Status:     string(status),
+		Details:    map[string]interface{}{"blocking": blocking},
+		Timestamp:  time.Now(),
+	}); err != nil {
+		e.logger.Warn("failed to append event", "pipeline", pipelineID, "event", "READINESS_CACHE_CHECKED", "error", err)
+	}
+
+	return result, nil
 }
 
 // EvaluateTrait evaluates a single trait for a pipeline. It runs the evaluator,
@@ -312,4 +361,29 @@ func (e *Engine) fireAlert(alert types.Alert) {
 	if e.alertFn != nil {
 		e.alertFn(alert)
 	}
+}
+
+// completeSession updates an evaluation session with final results.
+func (e *Engine) completeSession(ctx context.Context, sessionID, pipelineID string, startedAt time.Time, traitResults []types.TraitEvaluation, readiness types.ReadinessStatus, status types.EvaluationSessionStatus) {
+	now := time.Now()
+	session := types.EvaluationSession{
+		SessionID:     sessionID,
+		PipelineID:    pipelineID,
+		TriggerSource: "evaluate",
+		Status:        status,
+		TraitResults:  traitResults,
+		Readiness:     readiness,
+		StartedAt:     startedAt,
+		CompletedAt:   &now,
+	}
+	if err := e.provider.PutEvaluationSession(ctx, session); err != nil {
+		e.logger.Warn("failed to complete evaluation session", "sessionID", sessionID, "error", err)
+	}
+}
+
+// generateSessionID creates a unique session identifier.
+func generateSessionID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("ses-%d-%s", time.Now().UnixMilli(), hex.EncodeToString(b))
 }

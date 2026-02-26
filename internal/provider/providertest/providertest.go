@@ -31,4 +31,9 @@ func RunAll(t *testing.T, prov provider.Provider) {
 	t.Run("WriteCascadeMarker", func(t *testing.T) { TestWriteCascadeMarker(t, prov) })
 	t.Run("LateArrivalPutList", func(t *testing.T) { TestLateArrivalPutList(t, prov) })
 	t.Run("ReplayCRUD", func(t *testing.T) { TestReplayCRUD(t, prov) })
+	t.Run("AlertPutList", func(t *testing.T) { TestAlertPutList(t, prov) })
+	t.Run("SensorPutGet", func(t *testing.T) { TestSensorPutGet(t, prov) })
+	t.Run("DependencyCRUD", func(t *testing.T) { TestDependencyCRUD(t, prov) })
+	t.Run("EvaluationSessionCRUD", func(t *testing.T) { TestEvaluationSessionCRUD(t, prov) })
+	t.Run("TraitHistory", func(t *testing.T) { TestTraitHistory(t, prov) })
 }

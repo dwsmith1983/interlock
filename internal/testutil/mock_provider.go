@@ -20,6 +20,7 @@ type MockProvider struct {
 	mu           sync.Mutex
 	pipelines    map[string]types.PipelineConfig
 	traits       map[string]types.TraitEvaluation
+	traitHistory map[string][]types.TraitEvaluation // key: "pipelineID:traitType"
 	runs         map[string]types.RunState
 	runIndex     map[string][]string
 	readiness    map[string]types.ReadinessResult
@@ -30,6 +31,10 @@ type MockProvider struct {
 	cascades     []cascadeMarker
 	lateArrivals []types.LateArrival
 	replays      map[string]types.ReplayRequest // key: "pipelineID:date:scheduleID"
+	alerts       []types.Alert
+	evalSessions map[string]types.EvaluationSession // key: sessionID
+	dependencies map[string]map[string]bool         // key: upstreamID -> set of downstreamIDs
+	sensors      map[string]types.SensorData        // key: "pipelineID:sensorType"
 
 	pollCount atomic.Int64 // incremented on each ListPipelines call
 }
@@ -44,15 +49,19 @@ type cascadeMarker struct {
 // NewMockProvider creates a new in-memory mock provider.
 func NewMockProvider() *MockProvider {
 	return &MockProvider{
-		pipelines: make(map[string]types.PipelineConfig),
-		traits:    make(map[string]types.TraitEvaluation),
-		runs:      make(map[string]types.RunState),
-		runIndex:  make(map[string][]string),
-		readiness: make(map[string]types.ReadinessResult),
-		runLogs:   make(map[string]types.RunLogEntry),
-		locks:     make(map[string]bool),
-		reruns:    make(map[string]types.RerunRecord),
-		replays:   make(map[string]types.ReplayRequest),
+		pipelines:    make(map[string]types.PipelineConfig),
+		traits:       make(map[string]types.TraitEvaluation),
+		traitHistory: make(map[string][]types.TraitEvaluation),
+		runs:         make(map[string]types.RunState),
+		runIndex:     make(map[string][]string),
+		readiness:    make(map[string]types.ReadinessResult),
+		runLogs:      make(map[string]types.RunLogEntry),
+		locks:        make(map[string]bool),
+		reruns:       make(map[string]types.RerunRecord),
+		replays:      make(map[string]types.ReplayRequest),
+		evalSessions: make(map[string]types.EvaluationSession),
+		dependencies: make(map[string]map[string]bool),
+		sensors:      make(map[string]types.SensorData),
 	}
 }
 
@@ -60,6 +69,13 @@ func (m *MockProvider) RegisterPipeline(_ context.Context, config types.Pipeline
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pipelines[config.Name] = config
+	// Sync dependency index.
+	for _, upstream := range provider.ExtractUpstreams(&config) {
+		if m.dependencies[upstream] == nil {
+			m.dependencies[upstream] = make(map[string]bool)
+		}
+		m.dependencies[upstream][config.Name] = true
+	}
 	return nil
 }
 
@@ -93,6 +109,14 @@ func (m *MockProvider) PollCount() int64 {
 func (m *MockProvider) DeletePipeline(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	config, ok := m.pipelines[id]
+	if ok {
+		for _, upstream := range provider.ExtractUpstreams(&config) {
+			if deps, exists := m.dependencies[upstream]; exists {
+				delete(deps, id)
+			}
+		}
+	}
 	delete(m.pipelines, id)
 	return nil
 }
@@ -101,6 +125,9 @@ func (m *MockProvider) PutTrait(_ context.Context, pipelineID string, trait type
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.traits[pipelineID+":"+trait.TraitType] = trait
+	// Dual-write history.
+	histKey := pipelineID + ":" + trait.TraitType
+	m.traitHistory[histKey] = append(m.traitHistory[histKey], trait)
 	return nil
 }
 
@@ -425,6 +452,149 @@ func (m *MockProvider) CascadeMarkers() []cascadeMarker {
 	out := make([]cascadeMarker, len(m.cascades))
 	copy(out, m.cascades)
 	return out
+}
+
+// --- AlertStore ---
+
+func (m *MockProvider) PutAlert(_ context.Context, alert types.Alert) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if alert.AlertID == "" {
+		alert.AlertID = fmt.Sprintf("%d", alert.Timestamp.UnixMilli())
+	}
+	m.alerts = append(m.alerts, alert)
+	return nil
+}
+
+func (m *MockProvider) ListAlerts(_ context.Context, pipelineID string, limit int) ([]types.Alert, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []types.Alert
+	// Iterate in reverse for newest first.
+	for i := len(m.alerts) - 1; i >= 0; i-- {
+		if m.alerts[i].PipelineID == pipelineID {
+			result = append(result, m.alerts[i])
+			if limit > 0 && len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func (m *MockProvider) ListAllAlerts(_ context.Context, limit int) ([]types.Alert, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []types.Alert
+	for i := len(m.alerts) - 1; i >= 0; i-- {
+		result = append(result, m.alerts[i])
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+// --- TraitHistoryStore ---
+
+func (m *MockProvider) ListTraitHistory(_ context.Context, pipelineID, traitType string, limit int) ([]types.TraitEvaluation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	histKey := pipelineID + ":" + traitType
+	history := m.traitHistory[histKey]
+	// Return newest first.
+	var result []types.TraitEvaluation
+	for i := len(history) - 1; i >= 0; i-- {
+		result = append(result, history[i])
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+// --- EvaluationSessionStore ---
+
+func (m *MockProvider) PutEvaluationSession(_ context.Context, session types.EvaluationSession) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.evalSessions[session.SessionID] = session
+	return nil
+}
+
+func (m *MockProvider) GetEvaluationSession(_ context.Context, sessionID string) (*types.EvaluationSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.evalSessions[sessionID]
+	if !ok {
+		return nil, nil
+	}
+	return &s, nil
+}
+
+func (m *MockProvider) ListEvaluationSessions(_ context.Context, pipelineID string, limit int) ([]types.EvaluationSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []types.EvaluationSession
+	for _, s := range m.evalSessions {
+		if s.PipelineID == pipelineID {
+			result = append(result, s)
+			if limit > 0 && len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+// --- DependencyStore ---
+
+func (m *MockProvider) PutDependency(_ context.Context, upstreamID, downstreamID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dependencies[upstreamID] == nil {
+		m.dependencies[upstreamID] = make(map[string]bool)
+	}
+	m.dependencies[upstreamID][downstreamID] = true
+	return nil
+}
+
+func (m *MockProvider) RemoveDependency(_ context.Context, upstreamID, downstreamID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if deps, ok := m.dependencies[upstreamID]; ok {
+		delete(deps, downstreamID)
+	}
+	return nil
+}
+
+func (m *MockProvider) ListDependents(_ context.Context, upstreamID string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []string
+	for id := range m.dependencies[upstreamID] {
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+// --- SensorStore ---
+
+func (m *MockProvider) PutSensorData(_ context.Context, data types.SensorData) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sensors[data.PipelineID+":"+data.SensorType] = data
+	return nil
+}
+
+func (m *MockProvider) GetSensorData(_ context.Context, pipelineID, sensorType string) (*types.SensorData, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sd, ok := m.sensors[pipelineID+":"+sensorType]
+	if !ok {
+		return nil, nil
+	}
+	return &sd, nil
 }
 
 func (m *MockProvider) Start(_ context.Context) error { return nil }
