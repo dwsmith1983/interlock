@@ -111,10 +111,38 @@ func handleMarkerRecord(ctx context.Context, d *intlambda.Deps, logger *slog.Log
 		Input:           strPtr(string(sfnInput)),
 	})
 	if err != nil {
-		// ExecutionAlreadyExists is expected for dedup — not an error
 		if strings.Contains(err.Error(), "ExecutionAlreadyExists") {
 			logger.Info("execution already exists (dedup)",
 				"pipeline", pipelineID, "date", date, "schedule", scheduleID)
+			// Check if previous run failed — if so, start a retry execution
+			if d.Provider != nil {
+				entry, getErr := d.Provider.GetRunLog(ctx, pipelineID, date, scheduleID)
+				if getErr != nil {
+					logger.Warn("failed to check run log for retry",
+						"pipeline", pipelineID, "error", getErr)
+				} else if entry != nil && entry.Status == types.RunFailed {
+					retryName := sanitizeExecName(fmt.Sprintf("%s:%s:%s:a%d",
+						pipelineID, date, scheduleID, entry.AttemptNumber+1))
+					_, retryErr := d.SFNClient.StartExecution(ctx, &sfn.StartExecutionInput{
+						StateMachineArn: &d.StateMachineARN,
+						Name:            &retryName,
+						Input:           strPtr(string(sfnInput)),
+					})
+					if retryErr != nil {
+						if strings.Contains(retryErr.Error(), "ExecutionAlreadyExists") {
+							logger.Info("retry execution already exists",
+								"pipeline", pipelineID, "retryName", retryName)
+						} else {
+							logger.Error("failed to start retry execution",
+								"pipeline", pipelineID, "retryName", retryName, "error", retryErr)
+						}
+					} else {
+						logger.Info("started retry execution after failed run",
+							"pipeline", pipelineID, "retryName", retryName,
+							"attempt", entry.AttemptNumber+1)
+					}
+				}
+			}
 			return nil
 		}
 		logger.Error("failed to start execution",
