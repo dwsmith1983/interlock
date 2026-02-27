@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	awssns "github.com/aws/aws-sdk-go-v2/service/sns"
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/testutil"
 	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -375,6 +378,31 @@ func TestLifecycleEvent_SNSError_BestEffort(t *testing.T) {
 	require.Len(t, snsMock.messages, 1, "should have attempted publish")
 }
 
+// mockSFNSequenced returns errors from a sequence; once exhausted, returns nil.
+type mockSFNSequenced struct {
+	executions []*sfn.StartExecutionInput
+	errs       []error
+	callIdx    int
+}
+
+func (m *mockSFNSequenced) StartExecution(_ context.Context, input *sfn.StartExecutionInput, _ ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
+	m.executions = append(m.executions, input)
+	var err error
+	if m.callIdx < len(m.errs) {
+		err = m.errs[m.callIdx]
+	}
+	m.callIdx++
+	return &sfn.StartExecutionOutput{}, err
+}
+
+func testDepsWithProvider(sfnClient intlambda.SFNAPI, prov *testutil.MockProvider) *intlambda.Deps {
+	return &intlambda.Deps{
+		SFNClient:       sfnClient,
+		StateMachineARN: "arn:aws:states:us-east-1:123:stateMachine:interlock",
+		Provider:        prov,
+	}
+}
+
 func TestLifecycleEvent_MixedBatch(t *testing.T) {
 	sfnMock := &mockSFN{}
 	snsMock := &mockSNS{}
@@ -401,4 +429,119 @@ func TestLifecycleEvent_MixedBatch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, sfnMock.executions, 1, "MARKER should trigger SFN")
 	assert.Len(t, snsMock.messages, 1, "RUNLOG COMPLETED should publish lifecycle event")
+}
+
+// ---------------------------------------------------------------------------
+// Retry on ExecutionAlreadyExists tests
+// ---------------------------------------------------------------------------
+
+func TestRetryOnFailedRun(t *testing.T) {
+	today := time.Now().UTC().Format("2006-01-02")
+	// First StartExecution → ExecutionAlreadyExists; second (retry) → success
+	sfnMock := &mockSFNSequenced{
+		errs: []error{
+			fmt.Errorf("ExecutionAlreadyExists: execution already exists"),
+			nil,
+		},
+	}
+	prov := testutil.NewMockProvider()
+	_ = prov.PutRunLog(context.Background(), types.RunLogEntry{
+		PipelineID:    "earthquake-gold",
+		Date:          today,
+		ScheduleID:    "h16",
+		Status:        types.RunFailed,
+		AttemptNumber: 1,
+	})
+	d := testDepsWithProvider(sfnMock, prov)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#earthquake-gold",
+				"MARKER#freshness#2026-02-27T16:00:00Z",
+				"INSERT",
+				map[string]events.DynamoDBAttributeValue{
+					"PK":         events.NewStringAttribute("PIPELINE#earthquake-gold"),
+					"SK":         events.NewStringAttribute("MARKER#freshness#2026-02-27T16:00:00Z"),
+					"scheduleID": events.NewStringAttribute("h16"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	require.Len(t, sfnMock.executions, 2, "should have base + retry execution")
+	retryExec := sfnMock.executions[1]
+	assert.Contains(t, *retryExec.Name, "_a2", "retry name should contain attempt suffix")
+}
+
+func TestNoRetryOnCompletedRun(t *testing.T) {
+	today := time.Now().UTC().Format("2006-01-02")
+	sfnMock := &mockSFNSequenced{
+		errs: []error{
+			fmt.Errorf("ExecutionAlreadyExists: execution already exists"),
+		},
+	}
+	prov := testutil.NewMockProvider()
+	_ = prov.PutRunLog(context.Background(), types.RunLogEntry{
+		PipelineID:    "earthquake-gold",
+		Date:          today,
+		ScheduleID:    "h16",
+		Status:        types.RunCompleted,
+		AttemptNumber: 1,
+	})
+	d := testDepsWithProvider(sfnMock, prov)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#earthquake-gold",
+				"MARKER#freshness#2026-02-27T16:00:00Z",
+				"INSERT",
+				map[string]events.DynamoDBAttributeValue{
+					"PK":         events.NewStringAttribute("PIPELINE#earthquake-gold"),
+					"SK":         events.NewStringAttribute("MARKER#freshness#2026-02-27T16:00:00Z"),
+					"scheduleID": events.NewStringAttribute("h16"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	assert.Len(t, sfnMock.executions, 1, "should not start retry for completed run")
+}
+
+func TestNoRetryOnRunning(t *testing.T) {
+	sfnMock := &mockSFNSequenced{
+		errs: []error{
+			fmt.Errorf("ExecutionAlreadyExists: execution already exists"),
+		},
+	}
+	// No run log entry → nil returned → no retry
+	prov := testutil.NewMockProvider()
+	d := testDepsWithProvider(sfnMock, prov)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#earthquake-gold",
+				"MARKER#freshness#2026-02-27T16:00:00Z",
+				"INSERT",
+				map[string]events.DynamoDBAttributeValue{
+					"PK":         events.NewStringAttribute("PIPELINE#earthquake-gold"),
+					"SK":         events.NewStringAttribute("MARKER#freshness#2026-02-27T16:00:00Z"),
+					"scheduleID": events.NewStringAttribute("h16"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	assert.Len(t, sfnMock.executions, 1, "should not start retry when no run log exists")
 }
