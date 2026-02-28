@@ -237,12 +237,12 @@ func TestAcquireLock_Success(t *testing.T) {
 	}
 	p := newTestProvider(mock)
 
-	acquired, err := p.AcquireLock(context.Background(), "my-lock", 30*time.Second)
+	token, err := p.AcquireLock(context.Background(), "my-lock", 30*time.Second)
 	if err != nil {
 		t.Fatalf("AcquireLock: %v", err)
 	}
-	if !acquired {
-		t.Error("expected lock to be acquired")
+	if token == "" {
+		t.Error("expected non-empty token on acquire")
 	}
 
 	// Verify conditional expression is set
@@ -258,6 +258,12 @@ func TestAcquireLock_Success(t *testing.T) {
 	if pk != "LOCK#my-lock" {
 		t.Errorf("PK = %q, want %q", pk, "LOCK#my-lock")
 	}
+
+	// Verify token attribute is stored
+	tokenAttr := captured.Item["token"].(*ddbtypes.AttributeValueMemberS).Value
+	if tokenAttr != token {
+		t.Errorf("stored token = %q, want %q", tokenAttr, token)
+	}
 }
 
 func TestAcquireLock_AlreadyHeld(t *testing.T) {
@@ -270,12 +276,12 @@ func TestAcquireLock_AlreadyHeld(t *testing.T) {
 	}
 	p := newTestProvider(mock)
 
-	acquired, err := p.AcquireLock(context.Background(), "held-lock", time.Minute)
+	token, err := p.AcquireLock(context.Background(), "held-lock", time.Minute)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if acquired {
-		t.Error("expected lock NOT to be acquired")
+	if token != "" {
+		t.Error("expected empty token when lock NOT acquired")
 	}
 }
 
@@ -303,7 +309,7 @@ func TestReleaseLock_DeletesCorrectKey(t *testing.T) {
 	}
 	p := newTestProvider(mock)
 
-	err := p.ReleaseLock(context.Background(), "my-lock")
+	err := p.ReleaseLock(context.Background(), "my-lock", "test-token")
 	if err != nil {
 		t.Fatalf("ReleaseLock: %v", err)
 	}
@@ -315,6 +321,34 @@ func TestReleaseLock_DeletesCorrectKey(t *testing.T) {
 	}
 	if sk != "LOCK" {
 		t.Errorf("SK = %q, want %q", sk, "LOCK")
+	}
+
+	// Verify condition expression checks token
+	if captured.ConditionExpression == nil {
+		t.Fatal("expected ConditionExpression to be set")
+	}
+	if *captured.ConditionExpression != "#token = :token" {
+		t.Errorf("condition = %q, want %q", *captured.ConditionExpression, "#token = :token")
+	}
+	tokenVal := captured.ExpressionAttributeValues[":token"].(*ddbtypes.AttributeValueMemberS).Value
+	if tokenVal != "test-token" {
+		t.Errorf("token value = %q, want %q", tokenVal, "test-token")
+	}
+}
+
+func TestReleaseLock_TokenMismatch(t *testing.T) {
+	mock := &mockDDB{
+		deleteItemFn: func(_ context.Context, _ *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
+			return nil, &ddbtypes.ConditionalCheckFailedException{
+				Message: strPtr("The conditional request failed"),
+			}
+		},
+	}
+	p := newTestProvider(mock)
+
+	err := p.ReleaseLock(context.Background(), "my-lock", "wrong-token")
+	if err != nil {
+		t.Fatalf("expected no error on token mismatch, got: %v", err)
 	}
 }
 

@@ -36,7 +36,7 @@ func checkEvaluationSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		leadTime, ltErr := time.ParseDuration(pipeline.SLA.AtRiskLeadTime)
 		if ltErr == nil && schedule.IsAtRisk(deadline, now, leadTime) {
 			lockKey := fmt.Sprintf("sla-at-risk:eval:%s:%s:%s", req.PipelineID, req.ScheduleID, now.UTC().Format("2006-01-02"))
-			if acquired, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); acquired {
+			if token, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); token != "" {
 				d.AlertFn(ctx, types.Alert{
 					Level:      types.AlertLevelWarning,
 					Category:   "evaluation_sla_at_risk",
@@ -102,7 +102,7 @@ func checkCompletionSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		leadTime, ltErr := time.ParseDuration(pipeline.SLA.AtRiskLeadTime)
 		if ltErr == nil && schedule.IsAtRisk(deadline, now, leadTime) {
 			lockKey := fmt.Sprintf("sla-at-risk:comp:%s:%s:%s", req.PipelineID, req.ScheduleID, now.UTC().Format("2006-01-02"))
-			if acquired, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); acquired {
+			if token, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); token != "" {
 				d.AlertFn(ctx, types.Alert{
 					Level:      types.AlertLevelWarning,
 					Category:   "completion_sla_at_risk",

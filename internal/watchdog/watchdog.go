@@ -130,13 +130,13 @@ func checkSchedule(ctx context.Context, opts CheckOptions, pl types.PipelineConf
 
 	// Dedup lock: one alert per pipeline/schedule/day.
 	lockKey := fmt.Sprintf("watchdog:%s:%s:%s", pl.Name, sched.Name, date)
-	acquired, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
+	token, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
 	if err != nil {
 		opts.Logger.Error("watchdog: failed to acquire dedup lock",
 			"key", lockKey, "error", err)
 		return nil
 	}
-	if !acquired {
+	if token == "" {
 		return nil // already alerted
 	}
 
@@ -289,13 +289,13 @@ func CheckStuckRuns(ctx context.Context, opts CheckOptions) []StuckRun {
 
 			// Dedup lock: one stuck alert per pipeline/schedule/day.
 			lockKey := fmt.Sprintf("watchdog:stuck:%s:%s:%s", pl.Name, sched.Name, date)
-			acquired, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
+			token, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
 			if err != nil {
 				opts.Logger.Error("watchdog: failed to acquire stuck dedup lock",
 					"key", lockKey, "error", err)
 				continue
 			}
-			if !acquired {
+			if token == "" {
 				continue
 			}
 
@@ -555,13 +555,13 @@ func CheckFailedRuns(ctx context.Context, opts CheckOptions) []RetriggeredRun {
 			// Dedup lock: one retrigger per pipeline/schedule/day/attempt.
 			nextAttempt := entry.AttemptNumber + 1
 			lockKey := fmt.Sprintf("watchdog:retrigger:%s:%s:%s:%d", pl.Name, sched.Name, date, nextAttempt)
-			acquired, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
+			token, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
 			if err != nil {
 				opts.Logger.Error("watchdog: failed to acquire retrigger dedup lock",
 					"key", lockKey, "error", err)
 				continue
 			}
-			if !acquired {
+			if token == "" {
 				continue
 			}
 

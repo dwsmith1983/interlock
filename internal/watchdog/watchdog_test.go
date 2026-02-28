@@ -2,6 +2,7 @@ package watchdog
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -17,7 +18,7 @@ import (
 type mockProvider struct {
 	pipelines      []types.PipelineConfig
 	runLogs        map[string]*types.RunLogEntry // key: "pipeline:date:schedule"
-	locks          map[string]bool
+	locks          map[string]string
 	events         []types.Event
 	putRunLogCalls []types.RunLogEntry
 	mu             sync.Mutex
@@ -26,7 +27,7 @@ type mockProvider struct {
 func newMockProvider() *mockProvider {
 	return &mockProvider{
 		runLogs: make(map[string]*types.RunLogEntry),
-		locks:   make(map[string]bool),
+		locks:   make(map[string]string),
 	}
 }
 
@@ -41,14 +42,15 @@ func (m *mockProvider) GetRunLog(_ context.Context, pipelineID, date, scheduleID
 	return m.runLogs[key], nil
 }
 
-func (m *mockProvider) AcquireLock(_ context.Context, key string, _ time.Duration) (bool, error) {
+func (m *mockProvider) AcquireLock(_ context.Context, key string, _ time.Duration) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.locks[key] {
-		return false, nil
+	if m.locks[key] != "" {
+		return "", nil
 	}
-	m.locks[key] = true
-	return true, nil
+	token := fmt.Sprintf("mock-%d", time.Now().UnixNano())
+	m.locks[key] = token
+	return token, nil
 }
 
 func (m *mockProvider) AppendEvent(_ context.Context, event types.Event) error {
@@ -111,7 +113,7 @@ func (m *mockProvider) ListReruns(context.Context, string, int) ([]types.RerunRe
 func (m *mockProvider) ListAllReruns(context.Context, int) ([]types.RerunRecord, error) {
 	return nil, nil
 }
-func (m *mockProvider) ReleaseLock(context.Context, string) error { return nil }
+func (m *mockProvider) ReleaseLock(context.Context, string, string) error { return nil }
 func (m *mockProvider) WriteCascadeMarker(context.Context, string, string, string, string) error {
 	return nil
 }

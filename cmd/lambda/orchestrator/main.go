@@ -90,12 +90,12 @@ func checkExclusion(ctx context.Context, d *intlambda.Deps, req intlambda.Orches
 
 func acquireLock(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
 	lockKey := schedule.LockKey(req.PipelineID, req.ScheduleID)
-	acquired, err := d.Provider.AcquireLock(ctx, lockKey, 5*time.Minute)
+	token, err := d.Provider.AcquireLock(ctx, lockKey, 5*time.Minute)
 	if err != nil {
 		return errorResponse(req.Action, fmt.Sprintf("acquiring lock: %v", err)), nil
 	}
 
-	if !acquired {
+	if token == "" {
 		return intlambda.OrchestratorResponse{
 			Action: req.Action,
 			Result: "skip",
@@ -108,6 +108,9 @@ func acquireLock(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestra
 	return intlambda.OrchestratorResponse{
 		Action: req.Action,
 		Result: "proceed",
+		Payload: map[string]interface{}{
+			"lockToken": token,
+		},
 	}, nil
 }
 
@@ -549,7 +552,8 @@ func logResult(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrato
 
 func releaseLock(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
 	lockKey := schedule.LockKey(req.PipelineID, req.ScheduleID)
-	if err := d.Provider.ReleaseLock(ctx, lockKey); err != nil {
+	token, _ := req.Payload["lockToken"].(string)
+	if err := d.Provider.ReleaseLock(ctx, lockKey, token); err != nil {
 		d.Logger.Error("failed to release lock", "key", lockKey, "error", err)
 	}
 

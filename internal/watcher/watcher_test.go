@@ -288,9 +288,9 @@ func TestWatcher_LockPreventsDoubleEval(t *testing.T) {
 	pipeline := readyPipeline("lock-test")
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	acquired, err := prov.AcquireLock(ctx, "eval:lock-test:daily", 10*time.Second)
+	token, err := prov.AcquireLock(ctx, "eval:lock-test:daily", 10*time.Second)
 	require.NoError(t, err)
-	require.True(t, acquired)
+	require.NotEmpty(t, token)
 
 	w, _ := setupWatcher(t, prov)
 	w.Start(ctx)

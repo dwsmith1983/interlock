@@ -54,9 +54,14 @@ type RerunStore interface {
 }
 
 // Locker handles distributed locking.
+//
+// AcquireLock returns an owner token on success (non-empty string) or ""
+// if the lock was not acquired. ReleaseLock only deletes the lock if the
+// provided token matches the current owner, preventing a process from
+// releasing a lock it no longer holds (e.g. after a GC pause + TTL expiry).
 type Locker interface {
-	AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error)
-	ReleaseLock(ctx context.Context, key string) error
+	AcquireLock(ctx context.Context, key string, ttl time.Duration) (string, error)
+	ReleaseLock(ctx context.Context, key string, token string) error
 }
 
 // CascadeStore handles downstream pipeline notification.

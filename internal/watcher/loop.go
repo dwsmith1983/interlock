@@ -128,10 +128,11 @@ func computeLockTTL(pipeline types.PipelineConfig, fallback time.Duration) time.
 func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, interval time.Duration, sched types.ScheduleConfig) {
 	now := time.Now()
 
-	if !w.acquireLock(ctx, pipeline, sched, interval) {
+	token := w.acquireLock(ctx, pipeline, sched, interval)
+	if token == "" {
 		return
 	}
-	defer w.releaseLock(ctx, pipeline, sched)
+	defer w.releaseLock(ctx, pipeline, sched, token)
 
 	if w.handleActiveRun(ctx, pipeline, sched, now) {
 		return
@@ -151,20 +152,21 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 }
 
 // acquireLock attempts to acquire the evaluation lock for the pipeline and schedule.
-func (w *Watcher) acquireLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, interval time.Duration) bool {
+// Returns the owner token on success, or "" if the lock was not acquired.
+func (w *Watcher) acquireLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, interval time.Duration) string {
 	lockKey := schedule.LockKey(pipeline.Name, sched.Name)
-	acquired, err := w.provider.AcquireLock(ctx, lockKey, computeLockTTL(pipeline, interval))
+	token, err := w.provider.AcquireLock(ctx, lockKey, computeLockTTL(pipeline, interval))
 	if err != nil {
 		w.logger.Error("failed to acquire lock", "pipeline", pipeline.Name, "schedule", sched.Name, "error", err)
-		return false
+		return ""
 	}
-	return acquired
+	return token
 }
 
 // releaseLock releases the evaluation lock for the pipeline and schedule.
-func (w *Watcher) releaseLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig) {
+func (w *Watcher) releaseLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, token string) {
 	lockKey := schedule.LockKey(pipeline.Name, sched.Name)
-	if err := w.provider.ReleaseLock(ctx, lockKey); err != nil {
+	if err := w.provider.ReleaseLock(ctx, lockKey, token); err != nil {
 		w.logger.Error("failed to release lock", "pipeline", pipeline.Name, "schedule", sched.Name, "error", err)
 	}
 }

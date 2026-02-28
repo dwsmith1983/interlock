@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -441,14 +442,38 @@ func lastColon(s string) int {
 }
 
 // AcquireLock attempts to acquire a distributed lock with the given key and TTL.
-func (p *RedisProvider) AcquireLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
-	ok, err := p.client.SetNX(ctx, p.lockKey(key), "1", ttl).Result() //nolint:staticcheck // SetNX is cleaner than SetArgs for lock semantics
-	return ok, err
+// Returns a non-empty owner token on success, or "" if the lock was not acquired.
+func (p *RedisProvider) AcquireLock(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	token, err := generateToken()
+	if err != nil {
+		return "", fmt.Errorf("generating lock token: %w", err)
+	}
+	ok, err := p.client.SetNX(ctx, p.lockKey(key), token, ttl).Result() //nolint:staticcheck // SetNX is cleaner than SetArgs for lock semantics
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", nil
+	}
+	return token, nil
 }
 
-// ReleaseLock releases a distributed lock.
-func (p *RedisProvider) ReleaseLock(ctx context.Context, key string) error {
-	return p.client.Del(ctx, p.lockKey(key)).Err()
+// ReleaseLock releases a distributed lock only if the token matches the current owner.
+func (p *RedisProvider) ReleaseLock(ctx context.Context, key string, token string) error {
+	_, err := p.releaseLockScript.Run(ctx, p.client, []string{p.lockKey(key)}, token).Int()
+	return err
+}
+
+// generateToken produces a UUID v4 string using crypto/rand.
+func generateToken() (string, error) {
+	var uuid [16]byte
+	if _, err := rand.Read(uuid[:]); err != nil {
+		return "", err
+	}
+	uuid[6] = (uuid[6] & 0x0f) | 0x40 // version 4
+	uuid[8] = (uuid[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:16]), nil
 }
 
 func (p *RedisProvider) rerunKey(rerunID string) string {

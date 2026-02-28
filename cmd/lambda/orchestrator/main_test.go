@@ -97,6 +97,21 @@ func TestAcquireLock_Success(t *testing.T) {
 	assert.Equal(t, "proceed", resp.Result)
 }
 
+func TestAcquireLock_ReturnsToken(t *testing.T) {
+	d := testDeps(t)
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "acquireLock",
+		PipelineID: "pipe-a",
+		ScheduleID: "daily",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	token, ok := resp.Payload["lockToken"].(string)
+	assert.True(t, ok, "expected lockToken in payload")
+	assert.NotEmpty(t, token, "expected non-empty lock token")
+}
+
 func TestAcquireLock_AlreadyHeld(t *testing.T) {
 	d := testDeps(t)
 
@@ -359,19 +374,22 @@ func TestReleaseLock(t *testing.T) {
 	d := testDeps(t)
 
 	// Acquire then release
-	_, _ = d.Provider.AcquireLock(context.Background(), "eval:pipe-a:daily", 5*time.Minute)
+	token, _ := d.Provider.AcquireLock(context.Background(), "eval:pipe-a:daily", 5*time.Minute)
 
 	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
 		Action:     "releaseLock",
 		PipelineID: "pipe-a",
 		ScheduleID: "daily",
+		Payload: map[string]interface{}{
+			"lockToken": token,
+		},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "proceed", resp.Result)
 
 	// Lock should be released — can re-acquire
-	acquired, _ := d.Provider.AcquireLock(context.Background(), "eval:pipe-a:daily", 5*time.Minute)
-	assert.True(t, acquired)
+	reacquired, _ := d.Provider.AcquireLock(context.Background(), "eval:pipe-a:daily", 5*time.Minute)
+	assert.NotEmpty(t, reacquired)
 }
 
 // --- checkDrift ---

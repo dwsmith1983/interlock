@@ -26,7 +26,7 @@ type MockProvider struct {
 	readiness    map[string]types.ReadinessResult
 	events       []types.Event
 	runLogs      map[string]types.RunLogEntry // key: "pipelineID:date:scheduleID"
-	locks        map[string]bool
+	locks        map[string]string
 	reruns       map[string]types.RerunRecord
 	cascades     []cascadeMarker
 	lateArrivals []types.LateArrival
@@ -57,7 +57,7 @@ func NewMockProvider() *MockProvider {
 		runIndex:     make(map[string][]string),
 		readiness:    make(map[string]types.ReadinessResult),
 		runLogs:      make(map[string]types.RunLogEntry),
-		locks:        make(map[string]bool),
+		locks:        make(map[string]string),
 		reruns:       make(map[string]types.RerunRecord),
 		replays:      make(map[string]types.ReplayRequest),
 		evalSessions: make(map[string]types.EvaluationSession),
@@ -322,20 +322,23 @@ func (m *MockProvider) ListRunLogs(_ context.Context, pipelineID string, limit i
 	return entries, nil
 }
 
-func (m *MockProvider) AcquireLock(_ context.Context, key string, _ time.Duration) (bool, error) {
+func (m *MockProvider) AcquireLock(_ context.Context, key string, _ time.Duration) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.locks[key] {
-		return false, nil
+	if m.locks[key] != "" {
+		return "", nil
 	}
-	m.locks[key] = true
-	return true, nil
+	token := fmt.Sprintf("mock-%d", time.Now().UnixNano())
+	m.locks[key] = token
+	return token, nil
 }
 
-func (m *MockProvider) ReleaseLock(_ context.Context, key string) error {
+func (m *MockProvider) ReleaseLock(_ context.Context, key string, token string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.locks, key)
+	if m.locks[key] == token {
+		delete(m.locks, key)
+	}
 	return nil
 }
 

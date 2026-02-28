@@ -16,28 +16,37 @@ func TestLocking(t *testing.T, prov provider.Provider) {
 	ctx := context.Background()
 
 	// Acquire
-	ok, err := prov.AcquireLock(ctx, "ct-lock:pipe1:daily", 30*time.Second)
+	token, err := prov.AcquireLock(ctx, "ct-lock:pipe1:daily", 30*time.Second)
 	require.NoError(t, err)
-	assert.True(t, ok)
+	assert.NotEmpty(t, token, "expected non-empty token on acquire")
 
 	// Double acquire fails
-	ok, err = prov.AcquireLock(ctx, "ct-lock:pipe1:daily", 30*time.Second)
+	token2, err := prov.AcquireLock(ctx, "ct-lock:pipe1:daily", 30*time.Second)
 	require.NoError(t, err)
-	assert.False(t, ok)
+	assert.Empty(t, token2, "expected empty token on double-acquire")
 
 	// Different key succeeds
-	ok, err = prov.AcquireLock(ctx, "ct-lock:pipe2:daily", 30*time.Second)
+	token3, err := prov.AcquireLock(ctx, "ct-lock:pipe2:daily", 30*time.Second)
 	require.NoError(t, err)
-	assert.True(t, ok)
+	assert.NotEmpty(t, token3, "expected non-empty token for different key")
 
-	// Release
-	err = prov.ReleaseLock(ctx, "ct-lock:pipe1:daily")
+	// Release with correct token
+	err = prov.ReleaseLock(ctx, "ct-lock:pipe1:daily", token)
 	require.NoError(t, err)
 
 	// Re-acquire after release
-	ok, err = prov.AcquireLock(ctx, "ct-lock:pipe1:daily", 30*time.Second)
+	token4, err := prov.AcquireLock(ctx, "ct-lock:pipe1:daily", 30*time.Second)
 	require.NoError(t, err)
-	assert.True(t, ok)
+	assert.NotEmpty(t, token4, "expected non-empty token after release")
+
+	// Release with wrong token should not release
+	err = prov.ReleaseLock(ctx, "ct-lock:pipe1:daily", "wrong-token")
+	require.NoError(t, err)
+
+	// Lock should still be held
+	token5, err := prov.AcquireLock(ctx, "ct-lock:pipe1:daily", 30*time.Second)
+	require.NoError(t, err)
+	assert.Empty(t, token5, "expected lock to still be held after wrong-token release")
 }
 
 // TestLockExpiry verifies locks expire after their TTL.
@@ -45,20 +54,20 @@ func TestLockExpiry(t *testing.T, prov provider.Provider) {
 	ctx := context.Background()
 
 	// Acquire with short TTL
-	ok, err := prov.AcquireLock(ctx, "ct-expiring-lock", 2*time.Second)
+	token, err := prov.AcquireLock(ctx, "ct-expiring-lock", 2*time.Second)
 	require.NoError(t, err)
-	assert.True(t, ok)
+	assert.NotEmpty(t, token)
 
 	// Immediately re-acquire fails
-	ok, err = prov.AcquireLock(ctx, "ct-expiring-lock", 2*time.Second)
+	token2, err := prov.AcquireLock(ctx, "ct-expiring-lock", 2*time.Second)
 	require.NoError(t, err)
-	assert.False(t, ok)
+	assert.Empty(t, token2)
 
 	// Wait for TTL to expire
 	time.Sleep(3 * time.Second)
 
 	// Re-acquire succeeds after expiry
-	ok, err = prov.AcquireLock(ctx, "ct-expiring-lock", 30*time.Second)
+	token3, err := prov.AcquireLock(ctx, "ct-expiring-lock", 30*time.Second)
 	require.NoError(t, err)
-	assert.True(t, ok)
+	assert.NotEmpty(t, token3)
 }
