@@ -104,7 +104,7 @@ func checkDrift(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrat
 	}
 
 	if len(drifted) > 0 {
-		d.AlertFn(types.Alert{
+		d.AlertFn(ctx, types.Alert{
 			Level:      types.AlertLevelWarning,
 			Category:   "trait_drift",
 			PipelineID: req.PipelineID,

@@ -23,7 +23,7 @@ func testDeps(t *testing.T) *intlambda.Deps {
 		Provider:     prov,
 		Runner:       trigger.NewRunner(),
 		ArchetypeReg: archetype.NewRegistry(),
-		AlertFn:      func(a types.Alert) {},
+		AlertFn:      func(_ context.Context, a types.Alert) {},
 		Logger:       slog.Default(),
 	}
 }
@@ -247,7 +247,7 @@ func TestCheckEvaluationSLA_NoSLA(t *testing.T) {
 func TestCheckEvaluationSLA_Breached(t *testing.T) {
 	d := testDeps(t)
 	var alerts []types.Alert
-	d.AlertFn = func(a types.Alert) { alerts = append(alerts, a) }
+	d.AlertFn = func(_ context.Context, a types.Alert) { alerts = append(alerts, a) }
 
 	// Set deadline to 1 hour ago
 	now := time.Now()
@@ -397,7 +397,7 @@ func TestCheckDrift_NoDrift(t *testing.T) {
 func TestCheckDrift_DriftDetected(t *testing.T) {
 	d := testDeps(t)
 	var alerts []types.Alert
-	d.AlertFn = func(a types.Alert) { alerts = append(alerts, a) }
+	d.AlertFn = func(_ context.Context, a types.Alert) { alerts = append(alerts, a) }
 
 	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
 		Action:     "checkDrift",
@@ -650,7 +650,7 @@ func TestNotifyDownstream_ListPipelinesError(t *testing.T) {
 		Provider:     ep,
 		Runner:       trigger.NewRunner(),
 		ArchetypeReg: archetype.NewRegistry(),
-		AlertFn:      func(a types.Alert) {},
+		AlertFn:      func(_ context.Context, a types.Alert) {},
 		Logger:       slog.Default(),
 	}
 
@@ -705,7 +705,7 @@ func TestCheckValidationTimeout_NotBreached(t *testing.T) {
 func TestCheckValidationTimeout_Breached(t *testing.T) {
 	d := testDeps(t)
 	var alerts []types.Alert
-	d.AlertFn = func(a types.Alert) { alerts = append(alerts, a) }
+	d.AlertFn = func(_ context.Context, a types.Alert) { alerts = append(alerts, a) }
 
 	// Set validation timeout to 1 hour ago
 	deadline := time.Now().Add(-1 * time.Hour).Format("15:04")
@@ -849,7 +849,7 @@ func TestHandleLateArrival_PutLateArrivalError(t *testing.T) {
 		Provider:     ep,
 		Runner:       trigger.NewRunner(),
 		ArchetypeReg: archetype.NewRegistry(),
-		AlertFn:      func(a types.Alert) {},
+		AlertFn:      func(_ context.Context, a types.Alert) {},
 		Logger:       slog.Default(),
 	}
 

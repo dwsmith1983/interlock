@@ -38,7 +38,7 @@ type MissedSchedule struct {
 type CheckOptions struct {
 	Provider          provider.Provider
 	CalendarReg       *calendar.Registry
-	AlertFn           func(types.Alert)
+	AlertFn           func(context.Context, types.Alert)
 	Logger            *slog.Logger
 	Now               time.Time                                                      // injectable for testing
 	StuckRunThreshold time.Duration                                                  // defaults to 30m if zero
@@ -133,7 +133,7 @@ func checkSchedule(ctx context.Context, opts CheckOptions, pl types.PipelineConf
 
 	// Fire alert.
 	if opts.AlertFn != nil {
-		opts.AlertFn(types.Alert{
+		opts.AlertFn(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			Category:   "schedule_missed",
 			PipelineID: pl.Name,
@@ -290,7 +290,7 @@ func CheckStuckRuns(ctx context.Context, opts CheckOptions) []StuckRun {
 
 			// Fire alert.
 			if opts.AlertFn != nil {
-				opts.AlertFn(types.Alert{
+				opts.AlertFn(ctx, types.Alert{
 					Level:      types.AlertLevelError,
 					Category:   "stuck_run",
 					PipelineID: pl.Name,
@@ -558,7 +558,7 @@ func CheckFailedRuns(ctx context.Context, opts CheckOptions) []RetriggeredRun {
 
 			// Fire info alert.
 			if opts.AlertFn != nil {
-				opts.AlertFn(types.Alert{
+				opts.AlertFn(ctx, types.Alert{
 					Level:      types.AlertLevelInfo,
 					Category:   "watchdog_retrigger",
 					PipelineID: pl.Name,
@@ -631,7 +631,7 @@ func isRetryableCategory(category types.FailureCategory, retryable []types.Failu
 type Watchdog struct {
 	provider    provider.Provider
 	calendarReg *calendar.Registry
-	alertFn     func(types.Alert)
+	alertFn     func(context.Context, types.Alert)
 	logger      *slog.Logger
 	interval    time.Duration
 	cancel      context.CancelFunc
@@ -639,7 +639,7 @@ type Watchdog struct {
 }
 
 // New creates a new Watchdog.
-func New(prov provider.Provider, calReg *calendar.Registry, alertFn func(types.Alert), logger *slog.Logger, interval time.Duration) *Watchdog {
+func New(prov provider.Provider, calReg *calendar.Registry, alertFn func(context.Context, types.Alert), logger *slog.Logger, interval time.Duration) *Watchdog {
 	if interval <= 0 {
 		interval = defaultInterval
 	}

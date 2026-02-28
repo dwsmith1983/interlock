@@ -121,7 +121,7 @@ func handleLambdaTriggerFailure(ctx context.Context, d *intlambda.Deps, req intl
 		d.Logger.Error("PutRunLog failed", "runID", req.RunID, "error", logErr)
 	}
 
-	d.AlertFn(types.Alert{
+	d.AlertFn(ctx, types.Alert{
 		Level:      types.AlertLevelError,
 		PipelineID: req.PipelineID,
 		Message:    fmt.Sprintf("Trigger failed for %s: %v", req.PipelineID, trigErr),

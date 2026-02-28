@@ -195,11 +195,11 @@ func pipelineWithDeadline(deadline string) types.PipelineConfig {
 	}
 }
 
-func collectAlerts(t *testing.T) (alertFn func(types.Alert), getAlerts func() []types.Alert) {
+func collectAlerts(t *testing.T) (alertFn func(context.Context, types.Alert), getAlerts func() []types.Alert) {
 	t.Helper()
 	var mu sync.Mutex
 	var alerts []types.Alert
-	return func(a types.Alert) {
+	return func(_ context.Context, a types.Alert) {
 			mu.Lock()
 			alerts = append(alerts, a)
 			mu.Unlock()

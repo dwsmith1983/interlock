@@ -32,7 +32,7 @@ type Deps struct {
 	Engine                *engine.Engine
 	Runner                *trigger.Runner
 	ArchetypeReg          *archetype.Registry
-	AlertFn               func(types.Alert)
+	AlertFn               func(context.Context, types.Alert)
 	Logger                *slog.Logger
 	SFNClient             SFNAPI
 	StateMachineARN       string
@@ -75,9 +75,11 @@ func Init(ctx context.Context) (*Deps, error) {
 	}
 	originalAlertFn := dispatcher.AlertFunc()
 	// Wrap alert function to also persist alerts to the provider.
-	alertFn := func(a types.Alert) {
+	// Accepts context so PutAlert uses the caller's context (e.g. the Lambda
+	// invocation context) instead of context.Background().
+	alertFn := func(ctx context.Context, a types.Alert) {
 		originalAlertFn(a)
-		if err := prov.PutAlert(context.Background(), a); err != nil {
+		if err := prov.PutAlert(ctx, a); err != nil {
 			logger.Warn("failed to persist alert", "pipeline", a.PipelineID, "error", err)
 		}
 	}
@@ -111,8 +113,11 @@ func Init(ctx context.Context) (*Deps, error) {
 		}
 	}
 
-	// Create engine
-	eng := engine.New(prov, archetypeReg, runner, alertFn)
+	// Create engine — engine's alertFn is context-free; context propagation
+	// through the engine's alert path is tracked as a future improvement.
+	eng := engine.New(prov, archetypeReg, runner, func(a types.Alert) {
+		alertFn(context.Background(), a)
+	})
 	eng.SetLogger(logger)
 
 	// Create trigger runner

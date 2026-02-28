@@ -37,7 +37,7 @@ func checkEvaluationSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		if ltErr == nil && schedule.IsAtRisk(deadline, now, leadTime) {
 			lockKey := fmt.Sprintf("sla-at-risk:eval:%s:%s:%s", req.PipelineID, req.ScheduleID, now.UTC().Format("2006-01-02"))
 			if acquired, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); acquired {
-				d.AlertFn(types.Alert{
+				d.AlertFn(ctx, types.Alert{
 					Level:      types.AlertLevelWarning,
 					Category:   "evaluation_sla_at_risk",
 					PipelineID: req.PipelineID,
@@ -49,7 +49,7 @@ func checkEvaluationSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 	}
 
 	if schedule.IsBreached(deadline, now) {
-		d.AlertFn(types.Alert{
+		d.AlertFn(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			Category:   "evaluation_sla_breach",
 			PipelineID: req.PipelineID,
@@ -103,7 +103,7 @@ func checkCompletionSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		if ltErr == nil && schedule.IsAtRisk(deadline, now, leadTime) {
 			lockKey := fmt.Sprintf("sla-at-risk:comp:%s:%s:%s", req.PipelineID, req.ScheduleID, now.UTC().Format("2006-01-02"))
 			if acquired, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); acquired {
-				d.AlertFn(types.Alert{
+				d.AlertFn(ctx, types.Alert{
 					Level:      types.AlertLevelWarning,
 					Category:   "completion_sla_at_risk",
 					PipelineID: req.PipelineID,
@@ -115,7 +115,7 @@ func checkCompletionSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 	}
 
 	if schedule.IsBreached(deadline, now) {
-		d.AlertFn(types.Alert{
+		d.AlertFn(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			Category:   "completion_sla_breach",
 			PipelineID: req.PipelineID,
@@ -158,7 +158,7 @@ func checkValidationTimeout(ctx context.Context, d *intlambda.Deps, req intlambd
 	}
 
 	if schedule.IsBreached(deadline, now) {
-		d.AlertFn(types.Alert{
+		d.AlertFn(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			Category:   "validation_timeout",
 			PipelineID: req.PipelineID,

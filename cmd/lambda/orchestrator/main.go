@@ -533,7 +533,7 @@ func checkQuarantine(ctx context.Context, d *intlambda.Deps, req intlambda.Orche
 	}
 
 	// Fire alert with quarantine receipt
-	d.AlertFn(types.Alert{
+	d.AlertFn(ctx, types.Alert{
 		Level:      types.AlertLevelWarning,
 		Category:   "data_quarantined",
 		PipelineID: req.PipelineID,
