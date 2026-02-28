@@ -68,6 +68,15 @@ func collectAlerts(t *testing.T) (alertFn func(context.Context, types.Alert), ge
 		}
 }
 
+func mustPutRunLog(t *testing.T, p interface {
+	PutRunLog(context.Context, types.RunLogEntry) error
+}, entry types.RunLogEntry) {
+	t.Helper()
+	if err := p.PutRunLog(context.Background(), entry); err != nil {
+		t.Fatalf("PutRunLog: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -106,7 +115,7 @@ func TestNoRunLog_FiresAlert(t *testing.T) {
 
 func TestRunLogExists_NoAlert(t *testing.T) {
 	mp := testutil.NewMockProvider()
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status: types.RunPending,
 	})
@@ -132,7 +141,7 @@ func TestRunLogExists_NoAlert(t *testing.T) {
 
 func TestFailedRunLog_NoAlert(t *testing.T) {
 	mp := testutil.NewMockProvider()
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status: types.RunFailed,
 	})
@@ -296,7 +305,7 @@ func TestMultiScheduleIndependent(t *testing.T) {
 		},
 	}
 	// h10 has a run log entry; h14 does not.
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "h10",
 		Status: types.RunCompleted,
 	})
@@ -389,7 +398,7 @@ func TestStuckRun_RunningPastThreshold(t *testing.T) {
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunRunning,
 		RunID:     "run-1",
@@ -430,7 +439,7 @@ func TestStuckRun_NotYetStuck(t *testing.T) {
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunRunning,
 		UpdatedAt: now.Add(-10 * time.Minute), // only 10 min ago
@@ -460,7 +469,7 @@ func TestStuckRun_CompletedRun_NotStuck(t *testing.T) {
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunCompleted,
 		UpdatedAt: now.Add(-60 * time.Minute),
@@ -515,7 +524,7 @@ func TestStuckRun_Dedup(t *testing.T) {
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunRunning,
 		RunID:     "run-1",
@@ -553,7 +562,7 @@ func TestStuckRun_PendingStatus(t *testing.T) {
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunPending,
 		RunID:     "run-1",
@@ -590,7 +599,7 @@ func TestCheckCompletedMonitoring_Expired(t *testing.T) {
 
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T11:00:00Z")
 	// Run entered COMPLETED_MONITORING 25 minutes ago (past the 20m window).
-	mp.MockProvider.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp.MockProvider, types.RunLogEntry{
 		PipelineID: "p1",
 		Date:       "2026-02-24",
 		ScheduleID: "daily",
@@ -626,7 +635,7 @@ func TestCheckCompletedMonitoring_Expired(t *testing.T) {
 		t.Errorf("expected COMPLETED status in PutRunLog, got %s", mp.putRunLogCalls[0].Status)
 	}
 	// Verify audit event.
-	events := mp.MockProvider.Events()
+	events := mp.Events()
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -641,7 +650,7 @@ func TestCheckCompletedMonitoring_StillInWindow(t *testing.T) {
 
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T11:00:00Z")
 	// Run entered COMPLETED_MONITORING only 10 minutes ago (within 20m window).
-	mp.MockProvider.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp.MockProvider, types.RunLogEntry{
 		PipelineID: "p1",
 		Date:       "2026-02-24",
 		ScheduleID: "daily",
@@ -674,7 +683,7 @@ func TestCheckCompletedMonitoring_IgnoresCompleted(t *testing.T) {
 
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T11:00:00Z")
 	// Run is already COMPLETED — should be ignored.
-	mp.MockProvider.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp.MockProvider, types.RunLogEntry{
 		PipelineID: "p1",
 		Date:       "2026-02-24",
 		ScheduleID: "daily",
@@ -707,7 +716,7 @@ func TestStuckRun_CustomThreshold(t *testing.T) {
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunRunning,
 		RunID:     "run-1",
@@ -753,7 +762,7 @@ func TestStuckRun_WatchDisabled(t *testing.T) {
 		Watch:   &types.PipelineWatchConfig{Enabled: boolPtr(false)},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunRunning,
 		UpdatedAt: now.Add(-60 * time.Minute),
@@ -791,7 +800,7 @@ func TestCheckFailedRuns_Retrigger(t *testing.T) {
 		},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID:      "p1",
 		Date:            "2026-02-24",
 		ScheduleID:      "daily",
@@ -846,7 +855,7 @@ func TestCheckFailedRuns_NilRetriggerFn(t *testing.T) {
 		Retry:   &types.RetryPolicy{MaxAttempts: 3},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1",
 		Date:       "2026-02-24",
 		ScheduleID: "daily",
@@ -877,7 +886,7 @@ func TestCheckFailedRuns_MaxAttempts(t *testing.T) {
 		},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID:      "p1",
 		Date:            "2026-02-24",
 		ScheduleID:      "daily",
@@ -911,7 +920,7 @@ func TestCheckFailedRuns_NonRetryableCategory(t *testing.T) {
 		},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.PutRunLog(context.Background(), types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID:      "p1",
 		Date:            "2026-02-24",
 		ScheduleID:      "daily",
@@ -939,7 +948,9 @@ func TestStartStop(t *testing.T) {
 	// Use a deadline 2 minutes in the past so it falls within the lookback window.
 	// Use local time (not UTC) since ParseSLADeadline uses now.Location().
 	recentDeadline := time.Now().Add(-2 * time.Minute).Format("15:04")
-	mp.RegisterPipeline(context.Background(), pipelineWithDeadline(recentDeadline))
+	if err := mp.RegisterPipeline(context.Background(), pipelineWithDeadline(recentDeadline)); err != nil {
+		t.Fatalf("RegisterPipeline: %v", err)
+	}
 
 	alertFn, _ := collectAlerts(t)
 	w := New(mp, nil, alertFn, slog.Default(), 50*time.Millisecond)

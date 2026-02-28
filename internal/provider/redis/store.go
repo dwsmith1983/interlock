@@ -462,7 +462,7 @@ func (p *RedisProvider) AcquireLock(ctx context.Context, key string, ttl time.Du
 }
 
 // ReleaseLock releases a distributed lock only if the token matches the current owner.
-func (p *RedisProvider) ReleaseLock(ctx context.Context, key string, token string) error {
+func (p *RedisProvider) ReleaseLock(ctx context.Context, key, token string) error {
 	_, err := p.releaseLockScript.Run(ctx, p.client, []string{p.lockKey(key)}, token).Int()
 	if err != nil {
 		return fmt.Errorf("releasing lock %q: %w", key, err)

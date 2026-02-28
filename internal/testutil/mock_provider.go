@@ -398,7 +398,7 @@ func (m *MockProvider) AcquireLock(_ context.Context, key string, _ time.Duratio
 	return token, nil
 }
 
-func (m *MockProvider) ReleaseLock(_ context.Context, key string, token string) error {
+func (m *MockProvider) ReleaseLock(_ context.Context, key, token string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.Errors["ReleaseLock"]; err != nil {

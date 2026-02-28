@@ -62,7 +62,7 @@ func (p *DynamoDBProvider) AcquireLock(ctx context.Context, key string, ttl time
 
 // ReleaseLock releases a distributed lock only if the token matches the current owner.
 // If the token does not match (e.g. lock expired and was re-acquired), this is a no-op.
-func (p *DynamoDBProvider) ReleaseLock(ctx context.Context, key string, token string) error {
+func (p *DynamoDBProvider) ReleaseLock(ctx context.Context, key, token string) error {
 	_, err := p.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: &p.tableName,
 		Key: map[string]ddbtypes.AttributeValue{

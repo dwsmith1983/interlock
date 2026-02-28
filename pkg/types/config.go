@@ -51,16 +51,16 @@ type TraitConfig struct {
 // TriggerConfig defines how to trigger a pipeline.
 // Only the variant pointer matching Type should be non-nil.
 type TriggerConfig struct {
-	Type          TriggerType                `yaml:"type" json:"type"`
-	PollInterval  string                     `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty"`
-	HTTP          *HTTPTriggerConfig         `yaml:"http,omitempty" json:"http,omitempty"`
-	Command       *CommandTriggerConfig      `yaml:"command,omitempty" json:"command,omitempty"`
-	Airflow       *AirflowTriggerConfig      `yaml:"airflow,omitempty" json:"airflow,omitempty"`
-	Glue          *GlueTriggerConfig         `yaml:"glue,omitempty" json:"glue,omitempty"`
-	EMR           *EMRTriggerConfig          `yaml:"emr,omitempty" json:"emr,omitempty"`
+	Type          TriggerType                 `yaml:"type" json:"type"`
+	PollInterval  string                      `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty"`
+	HTTP          *HTTPTriggerConfig          `yaml:"http,omitempty" json:"http,omitempty"`
+	Command       *CommandTriggerConfig       `yaml:"command,omitempty" json:"command,omitempty"`
+	Airflow       *AirflowTriggerConfig       `yaml:"airflow,omitempty" json:"airflow,omitempty"`
+	Glue          *GlueTriggerConfig          `yaml:"glue,omitempty" json:"glue,omitempty"`
+	EMR           *EMRTriggerConfig           `yaml:"emr,omitempty" json:"emr,omitempty"`
 	EMRServerless *EMRServerlessTriggerConfig `yaml:"emr_serverless,omitempty" json:"emrServerless,omitempty"`
-	StepFunction  *StepFunctionTriggerConfig `yaml:"step_function,omitempty" json:"stepFunction,omitempty"`
-	Databricks    *DatabricksTriggerConfig   `yaml:"databricks,omitempty" json:"databricks,omitempty"`
+	StepFunction  *StepFunctionTriggerConfig  `yaml:"step_function,omitempty" json:"stepFunction,omitempty"`
+	Databricks    *DatabricksTriggerConfig    `yaml:"databricks,omitempty" json:"databricks,omitempty"`
 }
 
 // HTTPTriggerConfig holds configuration for HTTP triggers.

@@ -431,7 +431,6 @@ func (w *Watcher) handleTriggerFailure(ctx context.Context, pipeline types.Pipel
 func (w *Watcher) completeTrigger(ctx context.Context, pipeline types.PipelineConfig,
 	run *types.RunState, entry *types.RunLogEntry, targetStatus types.RunStatus,
 	triggerMeta map[string]interface{}) {
-
 	// Merge trigger metadata into run state.
 	if triggerMeta != nil {
 		if run.Metadata == nil {
@@ -507,7 +506,6 @@ func (w *Watcher) handleTriggerSuccess(ctx context.Context, pipeline types.Pipel
 // checkRunStatus.
 func (w *Watcher) finalizeRun(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig,
 	run *types.RunState, succeeded bool, message string, now time.Time) {
-
 	today := now.Format("2006-01-02")
 
 	if succeeded {

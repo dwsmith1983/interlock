@@ -19,7 +19,7 @@ type SLACheckResult struct {
 // CheckEvaluationSLA determines if the evaluation SLA is breached or at-risk
 // for the given pipeline. Returns a zero-value result with no error if the
 // pipeline has no evaluation SLA configured.
-func CheckEvaluationSLA(pipeline types.PipelineConfig, now time.Time, refTime time.Time) (SLACheckResult, error) {
+func CheckEvaluationSLA(pipeline types.PipelineConfig, now, refTime time.Time) (SLACheckResult, error) {
 	if pipeline.SLA == nil || pipeline.SLA.EvaluationDeadline == "" {
 		return SLACheckResult{}, nil
 	}
@@ -45,7 +45,7 @@ func CheckEvaluationSLA(pipeline types.PipelineConfig, now time.Time, refTime ti
 // CheckCompletionSLA determines if the completion SLA is breached or at-risk
 // for the given pipeline and schedule. Returns a zero-value result with no
 // error if no completion deadline is configured.
-func CheckCompletionSLA(pipeline types.PipelineConfig, scheduleID string, now time.Time, refTime time.Time) (SLACheckResult, error) {
+func CheckCompletionSLA(pipeline types.PipelineConfig, scheduleID string, now, refTime time.Time) (SLACheckResult, error) {
 	var sched types.ScheduleConfig
 	for _, s := range types.ResolveSchedules(pipeline) {
 		if s.Name == scheduleID {
@@ -75,7 +75,7 @@ func CheckCompletionSLA(pipeline types.PipelineConfig, scheduleID string, now ti
 // CheckValidationTimeout determines if the validation timeout has been
 // exceeded for the given pipeline. Returns (false, nil) if the pipeline
 // has no validation timeout configured.
-func CheckValidationTimeout(pipeline types.PipelineConfig, now time.Time, refTime time.Time) (bool, error) {
+func CheckValidationTimeout(pipeline types.PipelineConfig, now, refTime time.Time) (bool, error) {
 	if pipeline.SLA == nil || pipeline.SLA.ValidationTimeout == "" {
 		return false, nil
 	}
