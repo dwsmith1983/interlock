@@ -77,7 +77,7 @@ func handleReplayEvent(ctx context.Context, client SFNAPI, smARN string, event i
 
 		// Unique execution name for replay
 		ts := time.Now().UnixMilli()
-		execName := sanitizeExecName(fmt.Sprintf("replay_%s_%s_%s_%d", pipelineID, date, scheduleID, ts))
+		execName := intlambda.SanitizeExecName(fmt.Sprintf("replay_%s_%s_%s_%d", pipelineID, date, scheduleID, ts))
 
 		sfnInput, err := json.Marshal(map[string]interface{}{
 			"pipelineID": pipelineID,
@@ -125,23 +125,6 @@ func handler(ctx context.Context, event intlambda.StreamEvent) error {
 		return fmt.Errorf("replay init: %w", err)
 	}
 	return handleReplayEvent(ctx, client, stateMachineARN, event)
-}
-
-func sanitizeExecName(name string) string {
-	var b strings.Builder
-	for _, c := range name {
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
-			b.WriteRune(c)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	s := b.String()
-	if len(s) > 80 {
-		s = s[:80]
-	}
-	return s
 }
 
 func strPtr(s string) *string { return &s }

@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
@@ -19,19 +18,6 @@ import (
 	"github.com/dwsmith1983/interlock/internal/schedule"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
-
-var (
-	deps     *intlambda.Deps
-	depsOnce sync.Once
-	depsErr  error
-)
-
-func getDeps() (*intlambda.Deps, error) {
-	depsOnce.Do(func() {
-		deps, depsErr = intlambda.Init(context.Background())
-	})
-	return deps, depsErr
-}
 
 // handleOrchestrator dispatches to action-specific handlers.
 func handleOrchestrator(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
@@ -597,7 +583,7 @@ func errorResponse(action, msg string) intlambda.OrchestratorResponse {
 }
 
 func handler(ctx context.Context, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
-	d, err := getDeps()
+	d, err := intlambda.GetDeps()
 	if err != nil {
 		return intlambda.OrchestratorResponse{}, err
 	}

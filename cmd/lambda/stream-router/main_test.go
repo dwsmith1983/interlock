@@ -291,14 +291,14 @@ func TestHandleStreamEvent_DateFallsBackToNow(t *testing.T) {
 }
 
 func TestSanitizeExecName(t *testing.T) {
-	assert.Equal(t, "my-pipe_2026-02-22_daily", sanitizeExecName("my-pipe:2026-02-22:daily"))
-	assert.Equal(t, "pipe_with_spaces", sanitizeExecName("pipe with spaces"))
+	assert.Equal(t, "my-pipe_2026-02-22_daily", intlambda.SanitizeExecName("my-pipe:2026-02-22:daily"))
+	assert.Equal(t, "pipe_with_spaces", intlambda.SanitizeExecName("pipe with spaces"))
 
 	long := ""
 	for i := 0; i < 100; i++ {
 		long += "a"
 	}
-	assert.Len(t, sanitizeExecName(long), 80)
+	assert.Len(t, intlambda.SanitizeExecName(long), 80)
 }
 
 // ---------------------------------------------------------------------------

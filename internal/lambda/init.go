@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"sync"
 
 	"github.com/dwsmith1983/interlock/internal/alert"
 	"github.com/dwsmith1983/interlock/internal/archetype"
@@ -199,4 +200,21 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// Shared singleton for Lambda cold-start initialization.
+var (
+	globalDeps     *Deps
+	globalDepsOnce sync.Once
+	globalDepsErr  error
+)
+
+// GetDeps returns the shared Deps singleton, initializing on first call.
+// All Lambda handlers should call this instead of maintaining their own
+// sync.Once boilerplate.
+func GetDeps() (*Deps, error) {
+	globalDepsOnce.Do(func() {
+		globalDeps, globalDepsErr = Init(context.Background())
+	})
+	return globalDeps, globalDepsErr
 }

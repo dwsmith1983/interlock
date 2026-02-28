@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -20,19 +19,6 @@ import (
 	"github.com/dwsmith1983/interlock/internal/metrics"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
-
-var (
-	deps     *intlambda.Deps
-	depsOnce sync.Once
-	depsErr  error
-)
-
-func getDeps() (*intlambda.Deps, error) {
-	depsOnce.Do(func() {
-		deps, depsErr = intlambda.Init(context.Background())
-	})
-	return deps, depsErr
-}
 
 // handleStreamEvent processes DynamoDB Stream records, starts Step Function
 // executions for MARKER# records, and publishes lifecycle events for RUNLOG#
@@ -107,7 +93,7 @@ func handleMarkerRecord(ctx context.Context, d *intlambda.Deps, logger *slog.Log
 	}
 
 	// Dedup execution name: pipelineID:date:scheduleID (replace invalid chars)
-	execName := sanitizeExecName(fmt.Sprintf("%s:%s:%s", pipelineID, date, scheduleID))
+	execName := intlambda.SanitizeExecName(fmt.Sprintf("%s:%s:%s", pipelineID, date, scheduleID))
 
 	sfnInput, err := json.Marshal(map[string]interface{}{
 		"pipelineID":   pipelineID,
@@ -135,7 +121,7 @@ func handleMarkerRecord(ctx context.Context, d *intlambda.Deps, logger *slog.Log
 					logger.Warn("failed to check run log for retry",
 						"pipeline", pipelineID, "error", getErr)
 				} else if entry != nil && entry.Status == types.RunFailed {
-					retryName := sanitizeExecName(fmt.Sprintf("%s:%s:%s:a%d",
+					retryName := intlambda.SanitizeExecName(fmt.Sprintf("%s:%s:%s:a%d",
 						pipelineID, date, scheduleID, entry.AttemptNumber+1))
 					_, retryErr := d.SFNClient.StartExecution(ctx, &sfn.StartExecutionInput{
 						StateMachineArn: &d.StateMachineARN,
@@ -406,7 +392,7 @@ func publishObservabilityEvent(ctx context.Context, d *intlambda.Deps, logger *s
 }
 
 func handler(ctx context.Context, event intlambda.StreamEvent) error {
-	d, err := getDeps()
+	d, err := intlambda.GetDeps()
 	if err != nil {
 		return fmt.Errorf("stream-router init: %w", err)
 	}
@@ -416,24 +402,6 @@ func handler(ctx context.Context, event intlambda.StreamEvent) error {
 	return handleStreamEvent(ctx, d, event)
 }
 
-// sanitizeExecName replaces characters invalid for SFN execution names.
-// Valid: a-z, A-Z, 0-9, -, _  (max 80 chars)
-func sanitizeExecName(name string) string {
-	var b strings.Builder
-	for _, c := range name {
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
-			b.WriteRune(c)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	s := b.String()
-	if len(s) > 80 {
-		s = s[:80]
-	}
-	return s
-}
 
 func strPtr(s string) *string { return &s }
 

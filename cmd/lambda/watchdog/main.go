@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sync"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -18,21 +17,8 @@ import (
 	"github.com/dwsmith1983/interlock/internal/watchdog"
 )
 
-var (
-	deps     *intlambda.Deps
-	depsOnce sync.Once
-	depsErr  error
-)
-
-func getDeps() (*intlambda.Deps, error) {
-	depsOnce.Do(func() {
-		deps, depsErr = intlambda.Init(context.Background())
-	})
-	return deps, depsErr
-}
-
 func handler(ctx context.Context) error {
-	d, err := getDeps()
+	d, err := intlambda.GetDeps()
 	if err != nil {
 		return fmt.Errorf("watchdog init: %w", err)
 	}
