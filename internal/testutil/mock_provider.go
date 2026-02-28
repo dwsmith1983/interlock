@@ -35,6 +35,7 @@ type MockProvider struct {
 	evalSessions map[string]types.EvaluationSession // key: sessionID
 	dependencies map[string]map[string]bool         // key: upstreamID -> set of downstreamIDs
 	sensors      map[string]types.SensorData        // key: "pipelineID:sensorType"
+	quarantines  map[string]types.QuarantineRecord  // key: "pipelineID:date:hour"
 
 	pollCount atomic.Int64 // incremented on each ListPipelines call
 }
@@ -62,6 +63,7 @@ func NewMockProvider() *MockProvider {
 		evalSessions: make(map[string]types.EvaluationSession),
 		dependencies: make(map[string]map[string]bool),
 		sensors:      make(map[string]types.SensorData),
+		quarantines:  make(map[string]types.QuarantineRecord),
 	}
 }
 
@@ -595,6 +597,27 @@ func (m *MockProvider) GetSensorData(_ context.Context, pipelineID, sensorType s
 		return nil, nil
 	}
 	return &sd, nil
+}
+
+// --- QuarantineStore ---
+
+func (m *MockProvider) PutQuarantineRecord(_ context.Context, record types.QuarantineRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := record.PipelineID + ":" + record.Date + ":" + record.Hour
+	m.quarantines[key] = record
+	return nil
+}
+
+func (m *MockProvider) GetQuarantineRecord(_ context.Context, pipelineID, date, hour string) (*types.QuarantineRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := pipelineID + ":" + date + ":" + hour
+	r, ok := m.quarantines[key]
+	if !ok {
+		return nil, nil
+	}
+	return &r, nil
 }
 
 func (m *MockProvider) Start(_ context.Context) error { return nil }

@@ -161,6 +161,12 @@ func (m *mockProvider) PutSensorData(context.Context, types.SensorData) error { 
 func (m *mockProvider) GetSensorData(context.Context, string, string) (*types.SensorData, error) {
 	return nil, nil
 }
+func (m *mockProvider) PutQuarantineRecord(context.Context, types.QuarantineRecord) error {
+	return nil
+}
+func (m *mockProvider) GetQuarantineRecord(context.Context, string, string, string) (*types.QuarantineRecord, error) {
+	return nil, nil
+}
 
 // ---------------------------------------------------------------------------
 // Helper builders

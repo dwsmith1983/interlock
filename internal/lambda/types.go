@@ -11,6 +11,23 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+// ObservabilityEvent is published to the observability SNS topic for all
+// eligible DynamoDB stream records. Consumers (e.g., event-exporter) persist
+// these to S3/Delta for queryable historical analysis.
+type ObservabilityEvent struct {
+	EventID    string                 `json:"eventId"`
+	RecordType string                 `json:"recordType"`
+	EventType  string                 `json:"eventType"`
+	PipelineID string                 `json:"pipelineId"`
+	ScheduleID string                 `json:"scheduleId,omitempty"`
+	RunID      string                 `json:"runId,omitempty"`
+	Date       string                 `json:"date,omitempty"`
+	Status     string                 `json:"status,omitempty"`
+	Message    string                 `json:"message,omitempty"`
+	Detail     map[string]interface{} `json:"detail,omitempty"`
+	Timestamp  time.Time              `json:"timestamp"`
+}
+
 // SNSAPI is the subset of the SNS client used for publishing lifecycle events.
 type SNSAPI interface {
 	Publish(ctx context.Context, input *sns.PublishInput, opts ...func(*sns.Options)) (*sns.PublishOutput, error)

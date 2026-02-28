@@ -22,6 +22,7 @@ const (
 	prefixEvalSession = "EVALSESSION#"
 	prefixDep         = "DEP#"
 	prefixSensor      = "SENSOR#"
+	prefixQuarantine  = "QUARANTINE#"
 
 	skConfig    = "CONFIG"
 	skReadiness = "READINESS"
@@ -75,9 +76,10 @@ func evalSessionSK(sessionID string, ts time.Time) string {
 	return prefixEvalSession + ts.UTC().Format(time.RFC3339) + "#" + sessionID
 }
 
-func depPK(upstreamID string) string    { return prefixDep + upstreamID }
-func depSK(downstreamID string) string  { return prefixDep + downstreamID }
-func sensorSK(sensorType string) string { return prefixSensor + sensorType }
+func depPK(upstreamID string) string        { return prefixDep + upstreamID }
+func depSK(downstreamID string) string      { return prefixDep + downstreamID }
+func sensorSK(sensorType string) string     { return prefixSensor + sensorType }
+func quarantineSK(date, hour string) string { return prefixQuarantine + date + "#" + hour }
 
 func ttlEpoch(d time.Duration) int64 {
 	return time.Now().Add(d).Unix()

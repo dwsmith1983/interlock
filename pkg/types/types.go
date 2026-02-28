@@ -230,6 +230,23 @@ type PipelineConfig struct {
 	Schedules  []ScheduleConfig       `yaml:"schedules,omitempty" json:"schedules,omitempty"`
 	Exclusions *ExclusionConfig       `yaml:"exclusions,omitempty" json:"exclusions,omitempty"`
 	Cascade    *CascadeConfig         `yaml:"cascade,omitempty" json:"cascade,omitempty"`
+	Quarantine *QuarantineConfig      `yaml:"quarantine,omitempty" json:"quarantine,omitempty"`
+}
+
+// QuarantineConfig controls how quarantined records affect pipeline status.
+type QuarantineConfig struct {
+	Blocking bool `yaml:"blocking" json:"blocking"` // true = fail pipeline on quarantine, false = proceed with alert
+}
+
+// QuarantineRecord tracks quarantined records written by a Glue ETL job.
+type QuarantineRecord struct {
+	PipelineID     string    `json:"pipelineId"`
+	Date           string    `json:"date"`
+	Hour           string    `json:"hour"`
+	Count          int       `json:"count"`
+	QuarantinePath string    `json:"quarantinePath"`
+	Reasons        []string  `json:"reasons"`
+	Timestamp      time.Time `json:"timestamp"`
 }
 
 // TraitEvaluation is the result of evaluating a single trait.
@@ -338,6 +355,7 @@ const (
 	EventReadinessCacheChecked EventKind = "READINESS_CACHE_CHECKED"
 	EventCircuitBreakerTripped EventKind = "CIRCUIT_BREAKER_TRIPPED"
 	EventWatchdogRetrigger     EventKind = "WATCHDOG_RETRIGGER"
+	EventDataQuarantined       EventKind = "DATA_QUARANTINED"
 )
 
 // Event is an append-only audit log entry recording what happened and when.
