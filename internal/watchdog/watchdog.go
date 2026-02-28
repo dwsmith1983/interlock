@@ -40,8 +40,8 @@ type CheckOptions struct {
 	CalendarReg       *calendar.Registry
 	AlertFn           func(types.Alert)
 	Logger            *slog.Logger
-	Now               time.Time     // injectable for testing
-	StuckRunThreshold time.Duration // defaults to 30m if zero
+	Now               time.Time                                                      // injectable for testing
+	StuckRunThreshold time.Duration                                                  // defaults to 30m if zero
 	RetriggerFn       func(ctx context.Context, pipelineID, scheduleID string) error // nil = alert-only
 }
 
