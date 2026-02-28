@@ -20,7 +20,7 @@ type Watcher struct {
 	engine      *engine.Engine
 	calendarReg *calendar.Registry
 	runner      *trigger.Runner
-	alertFn     func(types.Alert)
+	alertFn     func(context.Context, types.Alert)
 	logger      *slog.Logger
 	config      types.WatcherConfig
 
@@ -29,7 +29,7 @@ type Watcher struct {
 }
 
 // New creates a new Watcher.
-func New(prov provider.Provider, eng *engine.Engine, calReg *calendar.Registry, runner *trigger.Runner, alertFn func(types.Alert), logger *slog.Logger, cfg types.WatcherConfig) *Watcher {
+func New(prov provider.Provider, eng *engine.Engine, calReg *calendar.Registry, runner *trigger.Runner, alertFn func(context.Context, types.Alert), logger *slog.Logger, cfg types.WatcherConfig) *Watcher {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -147,8 +147,8 @@ func (w *Watcher) poll(ctx context.Context, defaultInterval time.Duration) {
 	}
 }
 
-func (w *Watcher) fireAlert(alert types.Alert) {
+func (w *Watcher) fireAlert(ctx context.Context, alert types.Alert) {
 	if w.alertFn != nil {
-		w.alertFn(alert)
+		w.alertFn(ctx, alert)
 	}
 }

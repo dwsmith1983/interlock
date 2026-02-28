@@ -1148,7 +1148,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 
 	var capturedAlerts []types.Alert
 	var alertMu sync.Mutex
-	alertFn := func(a types.Alert) {
+	alertFn := func(_ context.Context, a types.Alert) {
 		alertMu.Lock()
 		defer alertMu.Unlock()
 		capturedAlerts = append(capturedAlerts, a)

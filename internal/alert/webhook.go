@@ -2,6 +2,7 @@ package alert
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,8 +14,7 @@ import (
 
 // Webhook HTTP delivery defaults.
 const (
-	webhookTimeout    = 10 * time.Second
-	webhookRetryDelay = 2 * time.Second
+	webhookTimeout = 10 * time.Second
 )
 
 // WebhookSink sends alerts as JSON POST requests to a URL.
@@ -39,21 +39,14 @@ func NewWebhookSink(url string) *WebhookSink {
 func (s *WebhookSink) Name() string { return "webhook" }
 
 // Send posts the alert as JSON to the configured webhook URL.
-// On failure, it retries once after a 2-second delay.
-func (s *WebhookSink) Send(alert types.Alert) error {
+func (s *WebhookSink) Send(_ context.Context, alert types.Alert) error {
 	data, err := json.Marshal(alert)
 	if err != nil {
 		return err
 	}
 
-	err = s.doPost(data)
-	if err != nil {
-		s.logger.Warn("webhook first attempt failed, retrying", "url", s.url, "error", err)
-		time.Sleep(webhookRetryDelay)
-		err = s.doPost(data)
-		if err != nil {
-			return fmt.Errorf("webhook POST failed after retry: %w", err)
-		}
+	if err := s.doPost(data); err != nil {
+		return fmt.Errorf("webhook POST failed: %w", err)
 	}
 	return nil
 }

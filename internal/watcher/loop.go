@@ -235,7 +235,7 @@ func (w *Watcher) checkRunLog(ctx context.Context, pipeline types.PipelineConfig
 	// Max retries exhausted
 	if runLog.AttemptNumber >= retryPolicy.MaxAttempts {
 		if !runLog.AlertSent {
-			w.fireAlert(types.Alert{
+			w.fireAlert(ctx, types.Alert{
 				Level:      types.AlertLevelError,
 				PipelineID: pipeline.Name,
 				Message:    fmt.Sprintf("Pipeline %s exhausted %d retry attempts", pipeline.Name, retryPolicy.MaxAttempts),
@@ -261,7 +261,7 @@ func (w *Watcher) checkRunLog(ctx context.Context, pipeline types.PipelineConfig
 	// Check if failure is retryable
 	if runLog.FailureCategory != "" && !IsRetryable(retryPolicy, runLog.FailureCategory) {
 		if !runLog.AlertSent {
-			w.fireAlert(types.Alert{
+			w.fireAlert(ctx, types.Alert{
 				Level:      types.AlertLevelError,
 				PipelineID: pipeline.Name,
 				Message:    fmt.Sprintf("Pipeline %s failed with non-retryable error: %s (%s)", pipeline.Name, runLog.FailureMessage, runLog.FailureCategory),
@@ -602,7 +602,7 @@ func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineCon
 		}); err != nil {
 			w.logger.Error("failed to update run log", "pipeline", pipeline.Name, "error", err)
 		}
-		w.fireAlert(types.Alert{
+		w.fireAlert(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,
 			Message:    fmt.Sprintf("Run %s failed for pipeline %s (provider state: %s)", run.RunID, pipeline.Name, result.Message),
@@ -664,7 +664,7 @@ func (w *Watcher) checkEvaluationSLA(ctx context.Context, pipeline types.Pipelin
 
 	if IsBreached(deadline, now) {
 		metrics.SLABreaches.Add(1)
-		w.fireAlert(types.Alert{
+		w.fireAlert(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,
 			Message:    fmt.Sprintf("Pipeline %s evaluation SLA breached: not ready by %s", pipeline.Name, deadlineLabel),
@@ -708,7 +708,7 @@ func (w *Watcher) checkCompletionSLA(ctx context.Context, pipeline types.Pipelin
 
 	if IsBreached(deadline, now) {
 		metrics.SLABreaches.Add(1)
-		w.fireAlert(types.Alert{
+		w.fireAlert(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,
 			Message:    fmt.Sprintf("Pipeline %s completion SLA breached: run %s still %s past %s", pipeline.Name, run.RunID, run.Status, deadlineLabel),
@@ -832,7 +832,7 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 		w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
 	}
 
-	w.fireAlert(types.Alert{
+	w.fireAlert(ctx, types.Alert{
 		Level:      types.AlertLevelWarning,
 		PipelineID: pipeline.Name,
 		Message:    fmt.Sprintf("Pipeline %s: trait drift detected during monitoring, rerun %s requested", pipeline.Name, rerunID),

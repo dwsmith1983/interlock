@@ -38,7 +38,7 @@ type alertCollector struct {
 	alerts []types.Alert
 }
 
-func (a *alertCollector) collect(alert types.Alert) {
+func (a *alertCollector) collect(_ context.Context, alert types.Alert) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.alerts = append(a.alerts, alert)

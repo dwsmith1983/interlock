@@ -62,7 +62,7 @@ func (s *S3Sink) Name() string { return "s3" }
 
 // Send archives the alert as JSON to S3.
 // Key format: {prefix}/{date}/{pipelineID}/{scheduleID}/{unix_millis}-{level}.json
-func (s *S3Sink) Send(alert types.Alert) error {
+func (s *S3Sink) Send(ctx context.Context, alert types.Alert) error {
 	data, err := json.Marshal(alert)
 	if err != nil {
 		return fmt.Errorf("marshaling alert: %w", err)
@@ -83,7 +83,7 @@ func (s *S3Sink) Send(alert types.Alert) error {
 		now.UnixMilli(), alert.Level)
 	key = strings.TrimLeft(key, "/")
 
-	_, err = s.client.PutObject(context.Background(), &s3.PutObjectInput{
+	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(s.bucketName),
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(data),

@@ -36,7 +36,7 @@ func TestEngine_EvaluateAllPass(t *testing.T) {
 
 	runner := evaluator.NewRunner()
 	var alerts []types.Alert
-	eng := New(prov, reg, runner, func(a types.Alert) { alerts = append(alerts, a) })
+	eng := New(prov, reg, runner, func(_ context.Context, a types.Alert) { alerts = append(alerts, a) })
 
 	result, err := eng.Evaluate(context.Background(), "test-pipe")
 	require.NoError(t, err)

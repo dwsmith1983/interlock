@@ -33,7 +33,7 @@ func TestSNSSink_Send(t *testing.T) {
 		Timestamp:  time.Date(2026, 2, 22, 10, 0, 0, 0, time.UTC),
 	}
 
-	err = sink.Send(alert)
+	err = sink.Send(context.Background(), alert)
 	require.NoError(t, err)
 
 	require.Len(t, mock.published, 1)
@@ -73,7 +73,7 @@ func TestSNSSink_SubjectTruncation(t *testing.T) {
 		Timestamp:  time.Now(),
 	}
 
-	err = sink.Send(alert)
+	err = sink.Send(context.Background(), alert)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(*mock.published[0].Subject), 100)
 }
