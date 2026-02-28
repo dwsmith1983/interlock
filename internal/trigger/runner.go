@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/emr"
 	"github.com/aws/aws-sdk-go-v2/service/emrserverless"
@@ -19,7 +20,8 @@ import (
 type Runner struct {
 	httpClient *http.Client
 
-	mu sync.Mutex
+	mu     sync.Mutex
+	awsCfg *aws.Config // shared AWS config, loaded lazily
 
 	glueClient  GlueAPI
 	emrClient   EMRAPI
@@ -182,21 +184,35 @@ func (r *Runner) checkAirflowStatus(ctx context.Context, metadata map[string]int
 	}
 }
 
+// getAWSConfig returns the shared AWS config, loading it lazily on first call.
+// The caller must hold r.mu.
+func (r *Runner) getAWSConfig(region string) (aws.Config, error) {
+	if r.awsCfg != nil {
+		return *r.awsCfg, nil
+	}
+	var opts []func(*awsconfig.LoadOptions) error
+	if region != "" {
+		opts = append(opts, awsconfig.WithRegion(region))
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("loading AWS config: %w", err)
+	}
+	r.awsCfg = &cfg
+	return cfg, nil
+}
+
 func (r *Runner) getGlueClient(region string) (GlueAPI, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.glueClient != nil {
 		return r.glueClient, nil
 	}
-	opts := []func(*glue.Options){}
-	if region != "" {
-		opts = append(opts, func(o *glue.Options) { o.Region = region })
-	}
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background())
+	cfg, err := r.getAWSConfig(region)
 	if err != nil {
-		return nil, fmt.Errorf("loading AWS config: %w", err)
+		return nil, err
 	}
-	r.glueClient = glue.NewFromConfig(cfg, opts...)
+	r.glueClient = glue.NewFromConfig(cfg)
 	return r.glueClient, nil
 }
 
@@ -206,15 +222,11 @@ func (r *Runner) getEMRClient(region string) (EMRAPI, error) {
 	if r.emrClient != nil {
 		return r.emrClient, nil
 	}
-	opts := []func(*emr.Options){}
-	if region != "" {
-		opts = append(opts, func(o *emr.Options) { o.Region = region })
-	}
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background())
+	cfg, err := r.getAWSConfig(region)
 	if err != nil {
-		return nil, fmt.Errorf("loading AWS config: %w", err)
+		return nil, err
 	}
-	r.emrClient = emr.NewFromConfig(cfg, opts...)
+	r.emrClient = emr.NewFromConfig(cfg)
 	return r.emrClient, nil
 }
 
@@ -224,15 +236,11 @@ func (r *Runner) getEMRServerlessClient(region string) (EMRServerlessAPI, error)
 	if r.emrSLClient != nil {
 		return r.emrSLClient, nil
 	}
-	opts := []func(*emrserverless.Options){}
-	if region != "" {
-		opts = append(opts, func(o *emrserverless.Options) { o.Region = region })
-	}
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background())
+	cfg, err := r.getAWSConfig(region)
 	if err != nil {
-		return nil, fmt.Errorf("loading AWS config: %w", err)
+		return nil, err
 	}
-	r.emrSLClient = emrserverless.NewFromConfig(cfg, opts...)
+	r.emrSLClient = emrserverless.NewFromConfig(cfg)
 	return r.emrSLClient, nil
 }
 
@@ -242,14 +250,10 @@ func (r *Runner) getSFNClient(region string) (SFNAPI, error) {
 	if r.sfnClient != nil {
 		return r.sfnClient, nil
 	}
-	opts := []func(*sfn.Options){}
-	if region != "" {
-		opts = append(opts, func(o *sfn.Options) { o.Region = region })
-	}
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background())
+	cfg, err := r.getAWSConfig(region)
 	if err != nil {
-		return nil, fmt.Errorf("loading AWS config: %w", err)
+		return nil, err
 	}
-	r.sfnClient = sfn.NewFromConfig(cfg, opts...)
+	r.sfnClient = sfn.NewFromConfig(cfg)
 	return r.sfnClient, nil
 }
