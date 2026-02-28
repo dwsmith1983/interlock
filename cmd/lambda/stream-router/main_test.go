@@ -230,6 +230,41 @@ func TestHandleStreamEvent_EmptyScheduleID_DefaultsDaily(t *testing.T) {
 func TestHandleStreamEvent_DateFromRecord(t *testing.T) {
 	sfnMock := &mockSFN{}
 	d := testDeps(sfnMock, nil)
+	today := time.Now().UTC().Format("2006-01-02")
+	todayCompact := time.Now().UTC().Format("20060102")
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#crypto-silver",
+				"MARKER#crypto#complete#"+todayCompact+"#23",
+				"INSERT",
+				map[string]events.DynamoDBAttributeValue{
+					"PK":         events.NewStringAttribute("PIPELINE#crypto-silver"),
+					"SK":         events.NewStringAttribute("MARKER#crypto#complete#" + todayCompact + "#23"),
+					"scheduleID": events.NewStringAttribute("h23"),
+					"date":       events.NewStringAttribute(today),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	require.Len(t, sfnMock.executions, 1)
+	exec := sfnMock.executions[0]
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*exec.Input), &input))
+	assert.Equal(t, today, input["date"], "should use date from record")
+	assert.Equal(t, "h23", input["scheduleID"])
+	assert.Equal(t, "crypto-silver", input["pipelineID"])
+	assert.Contains(t, *exec.Name, today, "exec name should contain record date")
+}
+
+func TestHandleStreamEvent_StaleMarkerSkipped(t *testing.T) {
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil)
 	event := intlambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{
 			makeRecordWithNewImage(
@@ -249,15 +284,7 @@ func TestHandleStreamEvent_DateFromRecord(t *testing.T) {
 	err := handleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
-	require.Len(t, sfnMock.executions, 1)
-	exec := sfnMock.executions[0]
-
-	var input map[string]interface{}
-	require.NoError(t, json.Unmarshal([]byte(*exec.Input), &input))
-	assert.Equal(t, "2026-02-27", input["date"], "should use date from record, not time.Now()")
-	assert.Equal(t, "h23", input["scheduleID"])
-	assert.Equal(t, "crypto-silver", input["pipelineID"])
-	assert.Contains(t, *exec.Name, "2026-02-27", "exec name should contain record date")
+	assert.Empty(t, sfnMock.executions, "stale marker (date != today) should not trigger execution")
 }
 
 func TestHandleStreamEvent_DateFallsBackToNow(t *testing.T) {
