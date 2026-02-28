@@ -79,14 +79,17 @@ func handleReplayEvent(ctx context.Context, client SFNAPI, smARN string, event i
 		ts := time.Now().UnixMilli()
 		execName := sanitizeExecName(fmt.Sprintf("replay_%s_%s_%s_%d", pipelineID, date, scheduleID, ts))
 
-		sfnInput, _ := json.Marshal(map[string]interface{}{
+		sfnInput, err := json.Marshal(map[string]interface{}{
 			"pipelineID": pipelineID,
 			"scheduleID": scheduleID,
 			"date":       date,
 			"replay":     true,
 		})
+		if err != nil {
+			return fmt.Errorf("marshaling replay input for %s: %w", pipelineID, err)
+		}
 
-		_, err := client.StartExecution(ctx, &sfn.StartExecutionInput{
+		_, err = client.StartExecution(ctx, &sfn.StartExecutionInput{
 			StateMachineArn: &smARN,
 			Name:            &execName,
 			Input:           strPtr(string(sfnInput)),
@@ -119,7 +122,7 @@ func ddbAttrString(attrs map[string]events.DynamoDBAttributeValue, key string) s
 func handler(ctx context.Context, event intlambda.StreamEvent) error {
 	client, err := getSFNClient()
 	if err != nil {
-		return err
+		return fmt.Errorf("replay init: %w", err)
 	}
 	return handleReplayEvent(ctx, client, stateMachineARN, event)
 }

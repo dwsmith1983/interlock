@@ -34,7 +34,7 @@ func getDeps() (*intlambda.Deps, error) {
 func handler(ctx context.Context) error {
 	d, err := getDeps()
 	if err != nil {
-		return err
+		return fmt.Errorf("watchdog init: %w", err)
 	}
 
 	opts := watchdog.CheckOptions{
@@ -46,11 +46,14 @@ func handler(ctx context.Context) error {
 	// Wire SFN re-trigger if state machine ARN is configured.
 	if d.SFNClient != nil && d.StateMachineARN != "" {
 		opts.RetriggerFn = func(ctx context.Context, pipelineID, scheduleID string) error {
-			input, _ := json.Marshal(map[string]string{
+			input, err := json.Marshal(map[string]string{
 				"pipelineID": pipelineID,
 				"scheduleID": scheduleID,
 			})
-			_, err := d.SFNClient.StartExecution(ctx, &sfn.StartExecutionInput{
+			if err != nil {
+				return fmt.Errorf("marshaling retrigger input for %s/%s: %w", pipelineID, scheduleID, err)
+			}
+			_, err = d.SFNClient.StartExecution(ctx, &sfn.StartExecutionInput{
 				StateMachineArn: aws.String(d.StateMachineARN),
 				Input:           aws.String(string(input)),
 				Name:            aws.String(fmt.Sprintf("watchdog-%s-%s", pipelineID, scheduleID)),

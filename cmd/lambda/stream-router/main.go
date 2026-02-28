@@ -109,14 +109,17 @@ func handleMarkerRecord(ctx context.Context, d *intlambda.Deps, logger *slog.Log
 	// Dedup execution name: pipelineID:date:scheduleID (replace invalid chars)
 	execName := sanitizeExecName(fmt.Sprintf("%s:%s:%s", pipelineID, date, scheduleID))
 
-	sfnInput, _ := json.Marshal(map[string]interface{}{
+	sfnInput, err := json.Marshal(map[string]interface{}{
 		"pipelineID":   pipelineID,
 		"scheduleID":   scheduleID,
 		"markerSource": markerSource,
 		"date":         date,
 	})
+	if err != nil {
+		return fmt.Errorf("marshaling SFN input for %s: %w", pipelineID, err)
+	}
 
-	_, err := d.SFNClient.StartExecution(ctx, &sfn.StartExecutionInput{
+	_, err = d.SFNClient.StartExecution(ctx, &sfn.StartExecutionInput{
 		StateMachineArn: &d.StateMachineARN,
 		Name:            &execName,
 		Input:           strPtr(string(sfnInput)),
@@ -405,7 +408,7 @@ func publishObservabilityEvent(ctx context.Context, d *intlambda.Deps, logger *s
 func handler(ctx context.Context, event intlambda.StreamEvent) error {
 	d, err := getDeps()
 	if err != nil {
-		return err
+		return fmt.Errorf("stream-router init: %w", err)
 	}
 	if d.SFNClient == nil {
 		return fmt.Errorf("STATE_MACHINE_ARN environment variable required")
