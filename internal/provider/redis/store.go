@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -60,7 +61,7 @@ func (p *RedisProvider) ListTraitHistory(ctx context.Context, pipelineID, traitT
 		Rev:   true,
 	}).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing trait history: %w", err)
 	}
 
 	var evals []types.TraitEvaluation
@@ -103,7 +104,7 @@ func (p *RedisProvider) RegisterPipeline(ctx context.Context, config types.Pipel
 	pipe.SAdd(ctx, p.pipelineIndexKey(), config.Name)
 	_, err = pipe.Exec(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("registering pipeline %q: %w", config.Name, err)
 	}
 
 	// Sync dependency index.
@@ -122,12 +123,12 @@ func (p *RedisProvider) GetPipeline(ctx context.Context, id string) (*types.Pipe
 		return nil, fmt.Errorf("pipeline %q not found", id)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting pipeline %q: %w", id, err)
 	}
 
 	var config types.PipelineConfig
 	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling pipeline %q: %w", id, err)
 	}
 	return &config, nil
 }
@@ -136,7 +137,7 @@ func (p *RedisProvider) GetPipeline(ctx context.Context, id string) (*types.Pipe
 func (p *RedisProvider) ListPipelines(ctx context.Context) ([]types.PipelineConfig, error) {
 	names, err := p.client.SMembers(ctx, p.pipelineIndexKey()).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing pipelines: %w", err)
 	}
 
 	var pipelines []types.PipelineConfig
@@ -167,14 +168,17 @@ func (p *RedisProvider) DeletePipeline(ctx context.Context, id string) error {
 	pipe.Del(ctx, p.pipelineKey(id))
 	pipe.SRem(ctx, p.pipelineIndexKey(), id)
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return fmt.Errorf("deleting pipeline %q: %w", id, err)
+	}
+	return nil
 }
 
 // PutTrait stores a trait evaluation result with TTL, and appends to trait history.
 func (p *RedisProvider) PutTrait(ctx context.Context, pipelineID string, trait types.TraitEvaluation, ttl time.Duration) error {
 	data, err := json.Marshal(trait)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling trait %q: %w", trait.TraitType, err)
 	}
 	if ttl <= 0 {
 		err = p.client.Set(ctx, p.traitKey(pipelineID, trait.TraitType), data, 0).Err()
@@ -182,7 +186,7 @@ func (p *RedisProvider) PutTrait(ctx context.Context, pipelineID string, trait t
 		err = p.client.Set(ctx, p.traitKey(pipelineID, trait.TraitType), data, ttl).Err()
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("storing trait %q for pipeline %q: %w", trait.TraitType, pipelineID, err)
 	}
 
 	// Dual-write: append history record (best-effort).
@@ -204,12 +208,12 @@ func (p *RedisProvider) GetTrait(ctx context.Context, pipelineID, traitType stri
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting trait %q for pipeline %q: %w", traitType, pipelineID, err)
 	}
 
 	var te types.TraitEvaluation
 	if err := json.Unmarshal(data, &te); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling trait %q for pipeline %q: %w", traitType, pipelineID, err)
 	}
 	return &te, nil
 }
@@ -223,7 +227,7 @@ func (p *RedisProvider) GetTraits(ctx context.Context, pipelineID string) ([]typ
 	for {
 		keys, nextCursor, err := p.client.Scan(ctx, cursor, pattern, scanBatchSize).Result()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning traits for pipeline %q: %w", pipelineID, err)
 		}
 
 		for _, key := range keys {
@@ -253,7 +257,7 @@ func (p *RedisProvider) GetTraits(ctx context.Context, pipelineID string) ([]typ
 func (p *RedisProvider) PutRunState(ctx context.Context, run types.RunState) error {
 	data, err := json.Marshal(run)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling run state %q: %w", run.RunID, err)
 	}
 
 	pipe := p.client.Pipeline()
@@ -261,7 +265,10 @@ func (p *RedisProvider) PutRunState(ctx context.Context, run types.RunState) err
 	pipe.LPush(ctx, p.runIndexKey(run.PipelineID), run.RunID)
 	pipe.LTrim(ctx, p.runIndexKey(run.PipelineID), 0, p.runIndexLimit-1)
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return fmt.Errorf("storing run state %q: %w", run.RunID, err)
+	}
+	return nil
 }
 
 // GetRunState retrieves a run state.
@@ -271,12 +278,12 @@ func (p *RedisProvider) GetRunState(ctx context.Context, runID string) (*types.R
 		return nil, fmt.Errorf("run %q not found", runID)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting run state %q: %w", runID, err)
 	}
 
 	var run types.RunState
 	if err := json.Unmarshal(data, &run); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling run state %q: %w", runID, err)
 	}
 	return &run, nil
 }
@@ -288,7 +295,7 @@ func (p *RedisProvider) ListRuns(ctx context.Context, pipelineID string, limit i
 	}
 	ids, err := p.client.LRange(ctx, p.runIndexKey(pipelineID), 0, int64(limit-1)).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing runs for pipeline %q: %w", pipelineID, err)
 	}
 
 	var runs []types.RunState
@@ -307,13 +314,13 @@ func (p *RedisProvider) ListRuns(ctx context.Context, pipelineID string, limit i
 func (p *RedisProvider) CompareAndSwapRunState(ctx context.Context, runID string, expectedVersion int, newState types.RunState) (bool, error) {
 	data, err := json.Marshal(newState)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("marshaling run state for CAS %q: %w", runID, err)
 	}
 
 	ttlMs := p.runKeyTTL(newState.Status).Milliseconds()
 	result, err := p.casScript.Run(ctx, p.client, []string{p.runKey(runID)}, expectedVersion, string(data), ttlMs).Int()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("CAS run state %q: %w", runID, err)
 	}
 	return result == 1, nil
 }
@@ -322,9 +329,12 @@ func (p *RedisProvider) CompareAndSwapRunState(ctx context.Context, runID string
 func (p *RedisProvider) PutReadiness(ctx context.Context, result types.ReadinessResult) error {
 	data, err := json.Marshal(result)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling readiness for pipeline %q: %w", result.PipelineID, err)
 	}
-	return p.client.Set(ctx, p.readinessKey(result.PipelineID), data, p.readinessTTL).Err()
+	if err := p.client.Set(ctx, p.readinessKey(result.PipelineID), data, p.readinessTTL).Err(); err != nil {
+		return fmt.Errorf("storing readiness for pipeline %q: %w", result.PipelineID, err)
+	}
+	return nil
 }
 
 // GetReadiness retrieves a cached readiness result.
@@ -334,12 +344,12 @@ func (p *RedisProvider) GetReadiness(ctx context.Context, pipelineID string) (*t
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting readiness for pipeline %q: %w", pipelineID, err)
 	}
 
 	var result types.ReadinessResult
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling readiness for pipeline %q: %w", pipelineID, err)
 	}
 	return &result, nil
 }
@@ -366,7 +376,7 @@ func (p *RedisProvider) PutRunLog(ctx context.Context, entry types.RunLogEntry) 
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling run log for pipeline %q: %w", entry.PipelineID, err)
 	}
 
 	indexMember := entry.Date + ":" + entry.ScheduleID
@@ -378,7 +388,10 @@ func (p *RedisProvider) PutRunLog(ctx context.Context, entry types.RunLogEntry) 
 	})
 	pipe.ZRemRangeByRank(ctx, p.runLogIndexKey(entry.PipelineID), 0, -(defaultRunLogIndexMax + 1))
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return fmt.Errorf("storing run log for pipeline %q: %w", entry.PipelineID, err)
+	}
+	return nil
 }
 
 // GetRunLog retrieves a run log entry for a pipeline, date, and schedule.
@@ -388,11 +401,11 @@ func (p *RedisProvider) GetRunLog(ctx context.Context, pipelineID, date, schedul
 		if errors.Is(err, goredis.Nil) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("getting run log for pipeline %q date %q: %w", pipelineID, date, err)
 	}
 	var entry types.RunLogEntry
 	if err := json.Unmarshal(data, &entry); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling run log for pipeline %q date %q: %w", pipelineID, date, err)
 	}
 	return &entry, nil
 }
@@ -409,14 +422,14 @@ func (p *RedisProvider) ListRunLogs(ctx context.Context, pipelineID string, limi
 		Rev:   true,
 	}).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing run logs for pipeline %q: %w", pipelineID, err)
 	}
 
 	var entries []types.RunLogEntry
 	for _, member := range members {
 		// member format: "date:scheduleID"
 		date, scheduleID := member, types.DefaultScheduleID
-		if idx := lastColon(member); idx > 0 {
+		if idx := strings.LastIndexByte(member, ':'); idx > 0 {
 			date, scheduleID = member[:idx], member[idx+1:]
 		}
 		entry, err := p.GetRunLog(ctx, pipelineID, date, scheduleID)
@@ -431,16 +444,6 @@ func (p *RedisProvider) ListRunLogs(ctx context.Context, pipelineID string, limi
 	return entries, nil
 }
 
-// lastColon returns the index of the last ':' in s, or -1 if not found.
-func lastColon(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == ':' {
-			return i
-		}
-	}
-	return -1
-}
-
 // AcquireLock attempts to acquire a distributed lock with the given key and TTL.
 // Returns a non-empty owner token on success, or "" if the lock was not acquired.
 func (p *RedisProvider) AcquireLock(ctx context.Context, key string, ttl time.Duration) (string, error) {
@@ -450,7 +453,7 @@ func (p *RedisProvider) AcquireLock(ctx context.Context, key string, ttl time.Du
 	}
 	ok, err := p.client.SetNX(ctx, p.lockKey(key), token, ttl).Result() //nolint:staticcheck // SetNX is cleaner than SetArgs for lock semantics
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("acquiring lock %q: %w", key, err)
 	}
 	if !ok {
 		return "", nil
@@ -461,7 +464,10 @@ func (p *RedisProvider) AcquireLock(ctx context.Context, key string, ttl time.Du
 // ReleaseLock releases a distributed lock only if the token matches the current owner.
 func (p *RedisProvider) ReleaseLock(ctx context.Context, key string, token string) error {
 	_, err := p.releaseLockScript.Run(ctx, p.client, []string{p.lockKey(key)}, token).Int()
-	return err
+	if err != nil {
+		return fmt.Errorf("releasing lock %q: %w", key, err)
+	}
+	return nil
 }
 
 // generateToken produces a UUID v4 string using crypto/rand.
@@ -492,7 +498,7 @@ func (p *RedisProvider) rerunGlobalIndexKey() string {
 func (p *RedisProvider) PutRerun(ctx context.Context, record types.RerunRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling rerun %q: %w", record.RerunID, err)
 	}
 
 	pipe := p.client.Pipeline()
@@ -508,7 +514,10 @@ func (p *RedisProvider) PutRerun(ctx context.Context, record types.RerunRecord) 
 	pipe.ZRemRangeByRank(ctx, p.rerunIndexKey(record.PipelineID), 0, -(defaultRerunIndexMax + 1))
 	pipe.ZRemRangeByRank(ctx, p.rerunGlobalIndexKey(), 0, -(defaultRerunGlobalMax + 1))
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return fmt.Errorf("storing rerun %q: %w", record.RerunID, err)
+	}
+	return nil
 }
 
 // GetRerun retrieves a rerun record.
@@ -518,11 +527,11 @@ func (p *RedisProvider) GetRerun(ctx context.Context, rerunID string) (*types.Re
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting rerun %q: %w", rerunID, err)
 	}
 	var record types.RerunRecord
 	if err := json.Unmarshal(data, &record); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling rerun %q: %w", rerunID, err)
 	}
 	return &record, nil
 }
@@ -539,7 +548,7 @@ func (p *RedisProvider) ListReruns(ctx context.Context, pipelineID string, limit
 		Rev:   true,
 	}).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing reruns for pipeline %q: %w", pipelineID, err)
 	}
 	return p.fetchReruns(ctx, ids)
 }
@@ -556,7 +565,7 @@ func (p *RedisProvider) ListAllReruns(ctx context.Context, limit int) ([]types.R
 		Rev:   true,
 	}).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing all reruns: %w", err)
 	}
 	return p.fetchReruns(ctx, ids)
 }
@@ -584,7 +593,7 @@ func (p *RedisProvider) eventStreamKey(pipelineID string) string {
 func (p *RedisProvider) AppendEvent(ctx context.Context, event types.Event) error {
 	data, err := json.Marshal(event)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling event for pipeline %q: %w", event.PipelineID, err)
 	}
 	streamKey := p.eventStreamKey(event.PipelineID)
 	minTimestamp := time.Now().Add(-p.retentionTTL).UnixMilli()
@@ -602,7 +611,10 @@ func (p *RedisProvider) AppendEvent(ctx context.Context, event types.Event) erro
 	})
 	pipe.XTrimMinID(ctx, streamKey, minID)
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return fmt.Errorf("appending event for pipeline %q: %w", event.PipelineID, err)
+	}
+	return nil
 }
 
 // ReadEventsSince reads events forward from after sinceID (exclusive).
@@ -616,7 +628,7 @@ func (p *RedisProvider) ReadEventsSince(ctx context.Context, pipelineID, sinceID
 	}
 	msgs, err := p.client.XRangeN(ctx, p.eventStreamKey(pipelineID), "("+sinceID, "+", count).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading events for pipeline %q since %q: %w", pipelineID, sinceID, err)
 	}
 
 	records := make([]types.EventRecord, 0, len(msgs))
@@ -646,7 +658,7 @@ func (p *RedisProvider) ListEvents(ctx context.Context, pipelineID string, limit
 	}
 	msgs, err := p.client.XRevRangeN(ctx, p.eventStreamKey(pipelineID), "+", "-", int64(limit)).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing events for pipeline %q: %w", pipelineID, err)
 	}
 
 	events := make([]types.Event, 0, len(msgs))

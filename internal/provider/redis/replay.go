@@ -23,7 +23,7 @@ func (p *RedisProvider) replayIndexKey() string {
 func (p *RedisProvider) PutReplay(ctx context.Context, entry types.ReplayRequest) error {
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling replay for pipeline %q: %w", entry.PipelineID, err)
 	}
 
 	key := p.replayKey(entry.PipelineID, entry.Date, entry.ScheduleID)
@@ -37,7 +37,10 @@ func (p *RedisProvider) PutReplay(ctx context.Context, entry types.ReplayRequest
 	})
 	pipe.ZRemRangeByRank(ctx, p.replayIndexKey(), 0, -501)
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return fmt.Errorf("storing replay for pipeline %q: %w", entry.PipelineID, err)
+	}
+	return nil
 }
 
 // GetReplay retrieves the most recent replay request for a pipeline/date/schedule.
@@ -48,12 +51,12 @@ func (p *RedisProvider) GetReplay(ctx context.Context, pipelineID, date, schedul
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting replay for pipeline %q: %w", pipelineID, err)
 	}
 
 	var req types.ReplayRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling replay for pipeline %q: %w", pipelineID, err)
 	}
 	return &req, nil
 }
@@ -70,7 +73,7 @@ func (p *RedisProvider) ListReplays(ctx context.Context, limit int) ([]types.Rep
 		Rev:   true,
 	}).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing replays: %w", err)
 	}
 
 	var replays []types.ReplayRequest

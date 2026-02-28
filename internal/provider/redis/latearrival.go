@@ -18,7 +18,7 @@ func (p *RedisProvider) lateArrivalKey(pipelineID, date, scheduleID string) stri
 func (p *RedisProvider) PutLateArrival(ctx context.Context, entry types.LateArrival) error {
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling late arrival for pipeline %q: %w", entry.PipelineID, err)
 	}
 
 	key := p.lateArrivalKey(entry.PipelineID, entry.Date, entry.ScheduleID)
@@ -31,7 +31,10 @@ func (p *RedisProvider) PutLateArrival(ctx context.Context, entry types.LateArri
 	})
 	pipe.Expire(ctx, key, p.retentionTTL)
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return fmt.Errorf("storing late arrival for pipeline %q: %w", entry.PipelineID, err)
+	}
+	return nil
 }
 
 // ListLateArrivals returns late-arrival records for a pipeline/date/schedule.
@@ -44,7 +47,7 @@ func (p *RedisProvider) ListLateArrivals(ctx context.Context, pipelineID, date, 
 		Rev:   true,
 	}).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing late arrivals for pipeline %q: %w", pipelineID, err)
 	}
 
 	var arrivals []types.LateArrival

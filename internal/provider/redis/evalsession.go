@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	goredis "github.com/redis/go-redis/v9"
 
@@ -24,7 +25,7 @@ const defaultEvalSessionIndexMax = 200
 func (p *RedisProvider) PutEvaluationSession(ctx context.Context, session types.EvaluationSession) error {
 	data, err := json.Marshal(session)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling eval session %q: %w", session.SessionID, err)
 	}
 
 	pipe := p.client.Pipeline()
@@ -35,7 +36,10 @@ func (p *RedisProvider) PutEvaluationSession(ctx context.Context, session types.
 	})
 	pipe.ZRemRangeByRank(ctx, p.evalSessionIndexKey(session.PipelineID), 0, -(defaultEvalSessionIndexMax + 1))
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return fmt.Errorf("storing eval session %q: %w", session.SessionID, err)
+	}
+	return nil
 }
 
 // GetEvaluationSession retrieves a session by ID.
@@ -45,11 +49,11 @@ func (p *RedisProvider) GetEvaluationSession(ctx context.Context, sessionID stri
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting eval session %q: %w", sessionID, err)
 	}
 	var session types.EvaluationSession
 	if err := json.Unmarshal(data, &session); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling eval session %q: %w", sessionID, err)
 	}
 	return &session, nil
 }
@@ -66,7 +70,7 @@ func (p *RedisProvider) ListEvaluationSessions(ctx context.Context, pipelineID s
 		Rev:   true,
 	}).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing eval sessions for pipeline %q: %w", pipelineID, err)
 	}
 
 	var sessions []types.EvaluationSession

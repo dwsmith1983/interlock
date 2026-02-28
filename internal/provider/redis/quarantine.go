@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	goredis "github.com/redis/go-redis/v9"
 
@@ -18,9 +19,12 @@ func (p *RedisProvider) quarantineKey(pipelineID, date, hour string) string {
 func (p *RedisProvider) PutQuarantineRecord(ctx context.Context, record types.QuarantineRecord) error {
 	raw, err := json.Marshal(record)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling quarantine record for pipeline %q: %w", record.PipelineID, err)
 	}
-	return p.client.Set(ctx, p.quarantineKey(record.PipelineID, record.Date, record.Hour), raw, 0).Err()
+	if err := p.client.Set(ctx, p.quarantineKey(record.PipelineID, record.Date, record.Hour), raw, 0).Err(); err != nil {
+		return fmt.Errorf("storing quarantine record for pipeline %q: %w", record.PipelineID, err)
+	}
+	return nil
 }
 
 // GetQuarantineRecord retrieves a quarantine record.
@@ -30,11 +34,11 @@ func (p *RedisProvider) GetQuarantineRecord(ctx context.Context, pipelineID, dat
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting quarantine record for pipeline %q: %w", pipelineID, err)
 	}
 	var record types.QuarantineRecord
 	if err := json.Unmarshal(raw, &record); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling quarantine record for pipeline %q: %w", pipelineID, err)
 	}
 	return &record, nil
 }
