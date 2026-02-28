@@ -16,7 +16,16 @@ func checkEvaluationSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		return errorResponse(req.Action, fmt.Sprintf("loading pipeline: %v", err)), nil
 	}
 
-	if pipeline.SLA == nil || pipeline.SLA.EvaluationDeadline == "" {
+	now := time.Now()
+	refTime := extractExecutionStartTime(req)
+
+	result, err := schedule.CheckEvaluationSLA(*pipeline, now, refTime)
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("parsing SLA deadline: %v", err)), nil
+	}
+
+	// No SLA configured — not breached.
+	if result.Deadline.IsZero() {
 		return intlambda.OrchestratorResponse{
 			Action:  req.Action,
 			Result:  "proceed",
@@ -24,31 +33,21 @@ func checkEvaluationSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		}, nil
 	}
 
-	now := time.Now()
-	refTime := extractExecutionStartTime(req)
-	deadline, err := schedule.ParseSLADeadline(pipeline.SLA.EvaluationDeadline, pipeline.SLA.Timezone, now, refTime)
-	if err != nil {
-		return errorResponse(req.Action, fmt.Sprintf("parsing SLA deadline: %v", err)), nil
-	}
-
-	// At-risk alerting (advance warning before breach).
-	if pipeline.SLA.AtRiskLeadTime != "" {
-		leadTime, ltErr := time.ParseDuration(pipeline.SLA.AtRiskLeadTime)
-		if ltErr == nil && schedule.IsAtRisk(deadline, now, leadTime) {
-			lockKey := fmt.Sprintf("sla-at-risk:eval:%s:%s:%s", req.PipelineID, req.ScheduleID, now.UTC().Format("2006-01-02"))
-			if token, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); token != "" {
-				d.AlertFn(ctx, types.Alert{
-					Level:      types.AlertLevelWarning,
-					Category:   "evaluation_sla_at_risk",
-					PipelineID: req.PipelineID,
-					Message:    fmt.Sprintf("Evaluation SLA at risk for %s (deadline: %s, lead: %s)", req.PipelineID, pipeline.SLA.EvaluationDeadline, pipeline.SLA.AtRiskLeadTime),
-					Timestamp:  now,
-				})
-			}
+	// At-risk alerting (advance warning before breach, deduped by daily lock).
+	if result.AtRisk {
+		lockKey := fmt.Sprintf("sla-at-risk:eval:%s:%s:%s", req.PipelineID, req.ScheduleID, now.UTC().Format("2006-01-02"))
+		if token, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); token != "" {
+			d.AlertFn(ctx, types.Alert{
+				Level:      types.AlertLevelWarning,
+				Category:   "evaluation_sla_at_risk",
+				PipelineID: req.PipelineID,
+				Message:    fmt.Sprintf("Evaluation SLA at risk for %s (deadline: %s, lead: %s)", req.PipelineID, pipeline.SLA.EvaluationDeadline, pipeline.SLA.AtRiskLeadTime),
+				Timestamp:  now,
+			})
 		}
 	}
 
-	if schedule.IsBreached(deadline, now) {
+	if result.Breached {
 		d.AlertFn(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			Category:   "evaluation_sla_breach",
@@ -76,20 +75,16 @@ func checkCompletionSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		return errorResponse(req.Action, fmt.Sprintf("loading pipeline: %v", err)), nil
 	}
 
-	// Resolve schedule for schedule-level deadline
-	scheduleID := req.ScheduleID
-	var sched types.ScheduleConfig
-	for _, s := range types.ResolveSchedules(*pipeline) {
-		if s.Name == scheduleID {
-			sched = s
-			break
-		}
-	}
-
 	now := time.Now()
 	refTime := extractExecutionStartTime(req)
-	deadline, ok := schedule.ScheduleDeadline(sched, *pipeline, now, refTime)
-	if !ok {
+
+	result, err := schedule.CheckCompletionSLA(*pipeline, req.ScheduleID, now, refTime)
+	if err != nil {
+		return errorResponse(req.Action, fmt.Sprintf("parsing completion SLA: %v", err)), nil
+	}
+
+	// No deadline configured — not breached.
+	if result.Deadline.IsZero() {
 		return intlambda.OrchestratorResponse{
 			Action:  req.Action,
 			Result:  "proceed",
@@ -97,29 +92,26 @@ func checkCompletionSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		}, nil
 	}
 
-	// At-risk alerting (advance warning before breach).
-	if pipeline.SLA != nil && pipeline.SLA.AtRiskLeadTime != "" {
-		leadTime, ltErr := time.ParseDuration(pipeline.SLA.AtRiskLeadTime)
-		if ltErr == nil && schedule.IsAtRisk(deadline, now, leadTime) {
-			lockKey := fmt.Sprintf("sla-at-risk:comp:%s:%s:%s", req.PipelineID, req.ScheduleID, now.UTC().Format("2006-01-02"))
-			if token, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); token != "" {
-				d.AlertFn(ctx, types.Alert{
-					Level:      types.AlertLevelWarning,
-					Category:   "completion_sla_at_risk",
-					PipelineID: req.PipelineID,
-					Message:    fmt.Sprintf("Completion SLA at risk for %s schedule %s", req.PipelineID, scheduleID),
-					Timestamp:  now,
-				})
-			}
+	// At-risk alerting (advance warning before breach, deduped by daily lock).
+	if result.AtRisk {
+		lockKey := fmt.Sprintf("sla-at-risk:comp:%s:%s:%s", req.PipelineID, req.ScheduleID, now.UTC().Format("2006-01-02"))
+		if token, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); token != "" {
+			d.AlertFn(ctx, types.Alert{
+				Level:      types.AlertLevelWarning,
+				Category:   "completion_sla_at_risk",
+				PipelineID: req.PipelineID,
+				Message:    fmt.Sprintf("Completion SLA at risk for %s schedule %s", req.PipelineID, req.ScheduleID),
+				Timestamp:  now,
+			})
 		}
 	}
 
-	if schedule.IsBreached(deadline, now) {
+	if result.Breached {
 		d.AlertFn(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			Category:   "completion_sla_breach",
 			PipelineID: req.PipelineID,
-			Message:    fmt.Sprintf("Completion SLA breached for %s schedule %s", req.PipelineID, scheduleID),
+			Message:    fmt.Sprintf("Completion SLA breached for %s schedule %s", req.PipelineID, req.ScheduleID),
 			Timestamp:  now,
 		})
 		return intlambda.OrchestratorResponse{
@@ -142,22 +134,15 @@ func checkValidationTimeout(ctx context.Context, d *intlambda.Deps, req intlambd
 		return errorResponse(req.Action, fmt.Sprintf("loading pipeline: %v", err)), nil
 	}
 
-	if pipeline.SLA == nil || pipeline.SLA.ValidationTimeout == "" {
-		return intlambda.OrchestratorResponse{
-			Action:  req.Action,
-			Result:  "proceed",
-			Payload: map[string]interface{}{"validationTimedOut": false},
-		}, nil
-	}
-
 	now := time.Now()
 	refTime := extractExecutionStartTime(req)
-	deadline, err := schedule.ParseSLADeadline(pipeline.SLA.ValidationTimeout, pipeline.SLA.Timezone, now, refTime)
+
+	timedOut, err := schedule.CheckValidationTimeout(*pipeline, now, refTime)
 	if err != nil {
 		return errorResponse(req.Action, fmt.Sprintf("parsing validation timeout: %v", err)), nil
 	}
 
-	if schedule.IsBreached(deadline, now) {
+	if timedOut {
 		d.AlertFn(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			Category:   "validation_timeout",
