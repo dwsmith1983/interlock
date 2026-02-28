@@ -112,7 +112,7 @@ Interlock runs in two modes: **local** (Redis + subprocess evaluators) and **AWS
 ```
 ┌──────────────────┐     DynamoDB Stream     ┌──────────────────────────────┐
 │    DynamoDB      │ ──────────────────────► │       stream-router          │
-│  (single table)  │                         │  MARKER# → SFN              │
+│  (single table)  │                         │  MARKER# → SFN               │
 └────────┬─────────┘                         │  RUNLOG# → lifecycle events  │
          │                                   └──────┬──────────┬────────────┘
          │                                          │          │
