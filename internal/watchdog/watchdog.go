@@ -24,6 +24,7 @@ const (
 	defaultInterval       = 5 * time.Minute
 	dedupLockTTL          = 24 * time.Hour
 	defaultStuckThreshold = 30 * time.Minute
+	defaultMissedLookback = 15 * time.Minute
 )
 
 // MissedSchedule records a single missed schedule detection.
@@ -42,6 +43,7 @@ type CheckOptions struct {
 	Logger            *slog.Logger
 	Now               time.Time                                                      // injectable for testing
 	StuckRunThreshold time.Duration                                                  // defaults to 30m if zero
+	MissedLookback    time.Duration                                                  // max age of a missed deadline to alert on; defaults to 15m
 	RetriggerFn       func(ctx context.Context, pipelineID, scheduleID string) error // nil = alert-only
 }
 
@@ -102,6 +104,15 @@ func checkSchedule(ctx context.Context, opts CheckOptions, pl types.PipelineConf
 
 	// Deadline hasn't passed yet.
 	if !opts.Now.After(deadline) {
+		return nil
+	}
+
+	// Skip historical deadlines — only alert on recent misses.
+	lookback := opts.MissedLookback
+	if lookback <= 0 {
+		lookback = defaultMissedLookback
+	}
+	if opts.Now.Sub(deadline) > lookback {
 		return nil
 	}
 

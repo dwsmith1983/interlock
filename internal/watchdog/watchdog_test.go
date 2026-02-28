@@ -219,7 +219,7 @@ func TestNoRunLog_FiresAlert(t *testing.T) {
 	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
 
 	alertFn, getAlerts := collectAlerts(t)
-	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:10:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
 		Provider: mp,
@@ -437,7 +437,7 @@ func TestMultiScheduleIndependent(t *testing.T) {
 	mp.runLogs["p1:2026-02-24:h10"] = &types.RunLogEntry{Status: types.RunCompleted}
 
 	alertFn, getAlerts := collectAlerts(t)
-	now, _ := time.Parse(time.RFC3339, "2026-02-24T15:00:00Z")
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T14:40:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
 		Provider: mp,
@@ -462,7 +462,7 @@ func TestDedup_SecondCallNoAlert(t *testing.T) {
 	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
 
 	alertFn, getAlerts := collectAlerts(t)
-	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:10:00Z")
 
 	opts := CheckOptions{
 		Provider: mp,
@@ -486,6 +486,29 @@ func TestDedup_SecondCallNoAlert(t *testing.T) {
 	alerts := getAlerts()
 	if len(alerts) != 1 {
 		t.Errorf("expected exactly 1 alert across both calls, got %d", len(alerts))
+	}
+}
+
+func TestHistoricalDeadline_NoAlert(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
+
+	alertFn, getAlerts := collectAlerts(t)
+	// Deadline was 2 hours ago — well outside the default 15m lookback.
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T12:00:00Z")
+
+	missed := CheckMissedSchedules(context.Background(), CheckOptions{
+		Provider: mp,
+		AlertFn:  alertFn,
+		Logger:   slog.Default(),
+		Now:      now,
+	})
+
+	if len(missed) != 0 {
+		t.Fatalf("expected 0 missed (historical deadline outside lookback), got %d", len(missed))
+	}
+	if len(getAlerts()) != 0 {
+		t.Error("expected no alerts for historical deadline")
 	}
 }
 
@@ -1021,7 +1044,10 @@ func TestCheckFailedRuns_NonRetryableCategory(t *testing.T) {
 
 func TestStartStop(t *testing.T) {
 	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("00:01")}
+	// Use a deadline 2 minutes in the past so it falls within the lookback window.
+	// Use local time (not UTC) since ParseSLADeadline uses now.Location().
+	recentDeadline := time.Now().Add(-2 * time.Minute).Format("15:04")
+	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline(recentDeadline)}
 
 	alertFn, _ := collectAlerts(t)
 	w := New(mp, nil, alertFn, slog.Default(), 50*time.Millisecond)
