@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,4 +122,76 @@ func TestHTTPRunner_Timeout(t *testing.T) {
 	assert.Equal(t, types.TraitError, result.Status)
 	assert.Equal(t, "EVALUATOR_TIMEOUT", result.Reason)
 	assert.Equal(t, types.FailureTimeout, result.FailureCategory)
+}
+
+func TestHTTPRunner_RetryOn503ThenSucceed(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n <= 2 {
+			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(types.EvaluatorOutput{Status: types.TraitPass, Reason: "ok"})
+	}))
+	defer srv.Close()
+
+	runner := NewHTTPRunner("")
+	result, err := runner.Run(context.Background(), srv.URL, types.EvaluatorInput{}, 30*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, types.TraitPass, result.Status)
+	assert.Equal(t, "ok", result.Reason)
+	assert.Equal(t, int32(3), calls.Load())
+}
+
+func TestHTTPRunner_RetryExhausted(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	runner := NewHTTPRunner("")
+	result, err := runner.Run(context.Background(), srv.URL, types.EvaluatorInput{}, 30*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, types.TraitError, result.Status)
+	assert.Contains(t, result.Reason, "503")
+	assert.Equal(t, types.FailureTransient, result.FailureCategory)
+	assert.Equal(t, int32(3), calls.Load())
+}
+
+func TestHTTPRunner_NoRetryOn400(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	runner := NewHTTPRunner("")
+	result, err := runner.Run(context.Background(), srv.URL, types.EvaluatorInput{}, 30*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, types.TraitError, result.Status)
+	assert.Equal(t, types.FailurePermanent, result.FailureCategory)
+	assert.Equal(t, int32(1), calls.Load())
+}
+
+func TestHTTPRunner_429IsTransient(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(types.EvaluatorOutput{Status: types.TraitPass})
+	}))
+	defer srv.Close()
+
+	runner := NewHTTPRunner("")
+	result, err := runner.Run(context.Background(), srv.URL, types.EvaluatorInput{}, 30*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, types.TraitPass, result.Status)
+	assert.Equal(t, int32(2), calls.Load())
 }
