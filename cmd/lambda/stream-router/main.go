@@ -83,13 +83,23 @@ func handleMarkerRecord(ctx context.Context, d *intlambda.Deps, logger *slog.Log
 		markerSource = markerParts[1]
 	}
 
-	date := time.Now().UTC().Format("2006-01-02")
+	today := time.Now().UTC().Format("2006-01-02")
+	date := today
 	if record.Change.NewImage != nil {
 		if dateAttr, ok := record.Change.NewImage["date"]; ok {
 			if d := dateAttr.String(); d != "" {
 				date = d
 			}
 		}
+	}
+
+	// Skip stale MARKERs — only trigger executions for today's data.
+	// Historical backfill should be run separately, not through live orchestration.
+	if date != today {
+		logger.Info("skipping stale marker (date != today)",
+			"pipeline", pipelineID, "date", date, "today", today,
+			"schedule", scheduleID)
+		return nil
 	}
 
 	// Dedup execution name: pipelineID:date:scheduleID (replace invalid chars)

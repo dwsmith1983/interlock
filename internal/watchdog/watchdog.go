@@ -299,14 +299,19 @@ func CheckStuckRuns(ctx context.Context, opts CheckOptions) []StuckRun {
 				continue
 			}
 
-			// Fire alert.
+			// Fire alert with actionable detail.
+			stuckMsg := fmt.Sprintf("Pipeline %s schedule %s run stuck in %s for %s on %s",
+				pl.Name, sched.Name, entry.Status, age.Truncate(time.Second), date)
+			if entry.Status == types.RunPending {
+				stuckMsg += " — traits may not be ready (check upstream dependencies and evaluator)"
+			}
+
 			if opts.AlertFn != nil {
 				opts.AlertFn(ctx, types.Alert{
 					Level:      types.AlertLevelError,
 					Category:   "stuck_run",
 					PipelineID: pl.Name,
-					Message: fmt.Sprintf("Pipeline %s schedule %s run stuck in %s for %s on %s",
-						pl.Name, sched.Name, entry.Status, age.Truncate(time.Second), date),
+					Message:    stuckMsg,
 					Details: map[string]interface{}{
 						"scheduleId": sched.Name,
 						"date":       date,
