@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -29,7 +28,7 @@ func (p *DynamoDBProvider) PutRunLog(ctx context.Context, entry types.RunLogEntr
 			"PK":   &ddbtypes.AttributeValueMemberS{Value: pipelinePK(entry.PipelineID)},
 			"SK":   &ddbtypes.AttributeValueMemberS{Value: runLogSK(entry.Date, entry.ScheduleID)},
 			"data": &ddbtypes.AttributeValueMemberS{Value: string(data)},
-			"ttl":  &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttlEpoch(30*24*time.Hour))},
+			"ttl":  &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttlEpoch(p.retentionTTL))},
 		},
 	})
 	return err
@@ -54,7 +53,7 @@ func (p *DynamoDBProvider) GetRunLog(ctx context.Context, pipelineID, date, sche
 		return nil, nil
 	}
 
-	ttlVal, _ := attributeInt(out.Item)
+	ttlVal, _ := extractTTL(out.Item)
 	if isExpired(ttlVal) {
 		return nil, nil
 	}
@@ -92,7 +91,7 @@ func (p *DynamoDBProvider) ListRunLogs(ctx context.Context, pipelineID string, l
 
 	var entries []types.RunLogEntry
 	for _, item := range out.Items {
-		ttlVal, _ := attributeInt(item)
+		ttlVal, _ := extractTTL(item)
 		if isExpired(ttlVal) {
 			continue
 		}

@@ -47,7 +47,7 @@ func (p *DynamoDBProvider) GetQuarantineRecord(ctx context.Context, pipelineID, 
 		return nil, nil
 	}
 
-	ttlVal, _ := attributeInt(out.Item)
+	ttlVal, _ := extractTTL(out.Item)
 	if isExpired(ttlVal) {
 		return nil, nil
 	}

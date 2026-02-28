@@ -73,7 +73,7 @@ func (p *DynamoDBProvider) GetTrait(ctx context.Context, pipelineID, traitType s
 		return nil, nil
 	}
 
-	ttlVal, _ := attributeInt(out.Item)
+	ttlVal, _ := extractTTL(out.Item)
 	if isExpired(ttlVal) {
 		return nil, nil
 	}
@@ -105,7 +105,7 @@ func (p *DynamoDBProvider) GetTraits(ctx context.Context, pipelineID string) ([]
 
 	var traits []types.TraitEvaluation
 	for _, item := range out.Items {
-		ttlVal, _ := attributeInt(item)
+		ttlVal, _ := extractTTL(item)
 		if isExpired(ttlVal) {
 			continue
 		}

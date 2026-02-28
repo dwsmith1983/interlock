@@ -56,7 +56,7 @@ func (p *DynamoDBProvider) ListEvents(ctx context.Context, pipelineID string, li
 	events := make([]types.Event, 0, len(out.Items))
 	for i := len(out.Items) - 1; i >= 0; i-- {
 		item := out.Items[i]
-		ttlVal, _ := attributeInt(item)
+		ttlVal, _ := extractTTL(item)
 		if isExpired(ttlVal) {
 			continue
 		}
@@ -88,18 +88,22 @@ func (p *DynamoDBProvider) ReadEventsSince(ctx context.Context, pipelineID, sinc
 		":pk": &ddbtypes.AttributeValueMemberS{Value: pipelinePK(pipelineID)},
 	}
 
+	var filterExpr *string
 	if sinceID == "" || sinceID == "0-0" {
 		keyCondition = "PK = :pk AND begins_with(SK, :prefix)"
 		exprValues[":prefix"] = &ddbtypes.AttributeValueMemberS{Value: prefixEvent}
 	} else {
 		keyCondition = "PK = :pk AND SK > :sinceID"
 		exprValues[":sinceID"] = &ddbtypes.AttributeValueMemberS{Value: sinceID}
+		exprValues[":prefix"] = &ddbtypes.AttributeValueMemberS{Value: prefixEvent}
+		filterExpr = aws.String("begins_with(SK, :prefix)")
 	}
 
 	out, err := p.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:                 &p.tableName,
 		KeyConditionExpression:    aws.String(keyCondition),
 		ExpressionAttributeValues: exprValues,
+		FilterExpression:          filterExpr,
 		ScanIndexForward:          aws.Bool(true),
 		Limit:                     aws.Int32(int32(count)),
 	})
@@ -109,7 +113,7 @@ func (p *DynamoDBProvider) ReadEventsSince(ctx context.Context, pipelineID, sinc
 
 	records := make([]types.EventRecord, 0, len(out.Items))
 	for _, item := range out.Items {
-		ttlVal, _ := attributeInt(item)
+		ttlVal, _ := extractTTL(item)
 		if isExpired(ttlVal) {
 			continue
 		}
