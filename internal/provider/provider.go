@@ -109,6 +109,13 @@ type SensorStore interface {
 	GetSensorData(ctx context.Context, pipelineID, sensorType string) (*types.SensorData, error)
 }
 
+// QuarantineStore handles quarantine record storage. Quarantine records are
+// written by ETL jobs when bad records are separated during processing.
+type QuarantineStore interface {
+	PutQuarantineRecord(ctx context.Context, record types.QuarantineRecord) error
+	GetQuarantineRecord(ctx context.Context, pipelineID, date, hour string) (*types.QuarantineRecord, error)
+}
+
 // Provider is the storage backend interface. Phase 1 implements Redis/Valkey;
 // future phases add DynamoDB, etcd, Firestore, and Cosmos.
 type Provider interface {
@@ -127,6 +134,7 @@ type Provider interface {
 	EvaluationSessionStore
 	DependencyStore
 	SensorStore
+	QuarantineStore
 
 	// Readiness caching
 	PutReadiness(ctx context.Context, result types.ReadinessResult) error

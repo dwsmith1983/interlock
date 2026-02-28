@@ -28,16 +28,17 @@ type SFNAPI interface {
 
 // Deps holds shared dependencies for Lambda handlers.
 type Deps struct {
-	Provider          provider.Provider
-	Engine            *engine.Engine
-	Runner            *trigger.Runner
-	ArchetypeReg      *archetype.Registry
-	AlertFn           func(types.Alert)
-	Logger            *slog.Logger
-	SFNClient         SFNAPI
-	StateMachineARN   string
-	SNSClient         SNSAPI
-	LifecycleTopicARN string
+	Provider              provider.Provider
+	Engine                *engine.Engine
+	Runner                *trigger.Runner
+	ArchetypeReg          *archetype.Registry
+	AlertFn               func(types.Alert)
+	Logger                *slog.Logger
+	SFNClient             SFNAPI
+	StateMachineARN       string
+	SNSClient             SNSAPI
+	LifecycleTopicARN     string
+	ObservabilityTopicARN string
 }
 
 // Init creates shared dependencies from environment variables.
@@ -144,6 +145,19 @@ func Init(ctx context.Context) (*Deps, error) {
 		}
 		deps.SNSClient = awssns.NewFromConfig(awsCfg)
 		deps.LifecycleTopicARN = topicARN
+	}
+
+	// Initialize observability topic ARN if configured (opt-in).
+	// Reuses the existing SNS client if already initialized.
+	if topicARN := os.Getenv("OBSERVABILITY_TOPIC_ARN"); topicARN != "" {
+		if deps.SNSClient == nil {
+			awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("loading AWS config for SNS observability: %w", err)
+			}
+			deps.SNSClient = awssns.NewFromConfig(awsCfg)
+		}
+		deps.ObservabilityTopicARN = topicARN
 	}
 
 	return deps, nil

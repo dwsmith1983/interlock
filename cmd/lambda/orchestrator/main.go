@@ -64,6 +64,8 @@ func handleOrchestrator(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		return checkMonitoringExpired(ctx, d, req)
 	case "handleLateArrival":
 		return handleLateArrival(ctx, d, req)
+	case "checkQuarantine":
+		return checkQuarantine(ctx, d, req)
 	default:
 		return intlambda.OrchestratorResponse{
 			Action: req.Action,
@@ -484,6 +486,105 @@ func releaseLock(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestra
 	return intlambda.OrchestratorResponse{
 		Action: req.Action,
 		Result: "proceed",
+	}, nil
+}
+
+func checkQuarantine(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
+	date := time.Now().UTC().Format("2006-01-02")
+	if req.Date != "" {
+		date = req.Date
+	}
+
+	// Derive par_day (YYYYMMDD) and hour from scheduleID/date
+	parDay := strings.ReplaceAll(date, "-", "")
+	hour := ""
+	if strings.HasPrefix(req.ScheduleID, "h") {
+		hour = req.ScheduleID[1:]
+	}
+
+	record, err := d.Provider.GetQuarantineRecord(ctx, req.PipelineID, parDay, hour)
+	if err != nil {
+		d.Logger.Error("failed to query quarantine record",
+			"pipeline", req.PipelineID, "date", parDay, "hour", hour, "error", err)
+		// Don't fail the pipeline on a quarantine check error
+		return intlambda.OrchestratorResponse{
+			Action: req.Action,
+			Result: "clean",
+		}, nil
+	}
+
+	if record == nil {
+		return intlambda.OrchestratorResponse{
+			Action: req.Action,
+			Result: "clean",
+		}, nil
+	}
+
+	// Quarantine found — check blocking config
+	pipeline, err := d.Provider.GetPipeline(ctx, req.PipelineID)
+	if err != nil {
+		d.Logger.Error("failed to load pipeline for quarantine check",
+			"pipeline", req.PipelineID, "error", err)
+	}
+
+	blocking := false
+	if pipeline != nil && pipeline.Quarantine != nil {
+		blocking = pipeline.Quarantine.Blocking
+	}
+
+	// Fire alert with quarantine receipt
+	d.AlertFn(types.Alert{
+		Level:      types.AlertLevelWarning,
+		Category:   "data_quarantined",
+		PipelineID: req.PipelineID,
+		Message:    fmt.Sprintf("%d records quarantined", record.Count),
+		Details: map[string]interface{}{
+			"count":          record.Count,
+			"quarantinePath": record.QuarantinePath,
+			"reasons":        record.Reasons,
+			"date":           parDay,
+			"hour":           hour,
+		},
+		Timestamp: time.Now(),
+	})
+
+	// Append event
+	if err := d.Provider.AppendEvent(ctx, types.Event{
+		Kind:       types.EventDataQuarantined,
+		PipelineID: req.PipelineID,
+		Status:     "QUARANTINED",
+		Message:    fmt.Sprintf("%d records quarantined: %v", record.Count, record.Reasons),
+		Details: map[string]interface{}{
+			"count":          record.Count,
+			"quarantinePath": record.QuarantinePath,
+			"reasons":        record.Reasons,
+		},
+		Timestamp: time.Now(),
+	}); err != nil {
+		d.Logger.Error("AppendEvent failed for quarantine",
+			"pipeline", req.PipelineID, "error", err)
+	}
+
+	if blocking {
+		return intlambda.OrchestratorResponse{
+			Action: req.Action,
+			Result: "blocked",
+			Payload: map[string]interface{}{
+				"count":          record.Count,
+				"quarantinePath": record.QuarantinePath,
+				"reasons":        record.Reasons,
+			},
+		}, nil
+	}
+
+	return intlambda.OrchestratorResponse{
+		Action: req.Action,
+		Result: "quarantined",
+		Payload: map[string]interface{}{
+			"count":          record.Count,
+			"quarantinePath": record.QuarantinePath,
+			"reasons":        record.Reasons,
+		},
 	}, nil
 }
 

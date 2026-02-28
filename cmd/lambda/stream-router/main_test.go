@@ -608,3 +608,154 @@ func TestNoRetryOnRunning(t *testing.T) {
 
 	assert.Len(t, sfnMock.executions, 1, "should not start retry when no run log exists")
 }
+
+// ---------------------------------------------------------------------------
+// Observability event tests
+// ---------------------------------------------------------------------------
+
+func testDepsWithObservability(sfnMock *mockSFN, snsMock *mockSNS) *intlambda.Deps {
+	d := &intlambda.Deps{
+		SFNClient:       sfnMock,
+		StateMachineARN: "arn:aws:states:us-east-1:123:stateMachine:interlock",
+	}
+	if snsMock != nil {
+		d.SNSClient = snsMock
+		d.LifecycleTopicARN = "arn:aws:sns:us-east-1:123:lifecycle"
+		d.ObservabilityTopicARN = "arn:aws:sns:us-east-1:123:observability"
+	}
+	return d
+}
+
+func TestPublishObservabilityEvent_EventRecord(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{}
+	d := testDepsWithObservability(sfnMock, snsMock)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-a",
+				"EVENT#1234567890123#abcd",
+				"INSERT",
+				map[string]events.DynamoDBAttributeValue{
+					"kind":       events.NewStringAttribute("TRAIT_EVALUATED"),
+					"scheduleID": events.NewStringAttribute("daily"),
+					"runId":      events.NewStringAttribute("run-1"),
+					"status":     events.NewStringAttribute("PASS"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should have published to observability topic (EVENT# records are eligible)
+	// Filter for observability messages (topic ARN contains "observability")
+	var obsMessages []*awssns.PublishInput
+	for _, msg := range snsMock.messages {
+		if msg.TopicArn != nil && *msg.TopicArn == "arn:aws:sns:us-east-1:123:observability" {
+			obsMessages = append(obsMessages, msg)
+		}
+	}
+	require.Len(t, obsMessages, 1)
+
+	var evt intlambda.ObservabilityEvent
+	require.NoError(t, json.Unmarshal([]byte(*obsMessages[0].Message), &evt))
+	assert.Equal(t, "EVENT", evt.RecordType)
+	assert.Equal(t, "TRAIT_EVALUATED", evt.EventType)
+	assert.Equal(t, "pipe-a", evt.PipelineID)
+	assert.Equal(t, "daily", evt.ScheduleID)
+	assert.Equal(t, "run-1", evt.RunID)
+}
+
+func TestPublishObservabilityEvent_RunlogRecord(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{}
+	d := testDepsWithObservability(sfnMock, snsMock)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-b",
+				"RUNLOG#daily#2026-02-25",
+				"MODIFY",
+				map[string]events.DynamoDBAttributeValue{
+					"status": events.NewStringAttribute("COMPLETED"),
+					"runId":  events.NewStringAttribute("run-42"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should have published to both lifecycle AND observability topics
+	var obsMessages []*awssns.PublishInput
+	for _, msg := range snsMock.messages {
+		if msg.TopicArn != nil && *msg.TopicArn == "arn:aws:sns:us-east-1:123:observability" {
+			obsMessages = append(obsMessages, msg)
+		}
+	}
+	require.Len(t, obsMessages, 1)
+
+	var evt intlambda.ObservabilityEvent
+	require.NoError(t, json.Unmarshal([]byte(*obsMessages[0].Message), &evt))
+	assert.Equal(t, "RUNLOG", evt.RecordType)
+	assert.Equal(t, "RUNLOG_UPDATED", evt.EventType)
+	assert.Equal(t, "pipe-b", evt.PipelineID)
+}
+
+func TestPublishObservabilityEvent_SkipsLockRecords(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{}
+	d := testDepsWithObservability(sfnMock, snsMock)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecord("PIPELINE#pipe-a", "LOCK#eval:pipe-a:daily", "INSERT"),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should NOT have published to observability topic
+	var obsMessages []*awssns.PublishInput
+	for _, msg := range snsMock.messages {
+		if msg.TopicArn != nil && *msg.TopicArn == "arn:aws:sns:us-east-1:123:observability" {
+			obsMessages = append(obsMessages, msg)
+		}
+	}
+	assert.Empty(t, obsMessages, "LOCK# records should be skipped")
+}
+
+func TestPublishObservabilityEvent_NoOpWhenNotConfigured(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{}
+	// Use testDeps which does NOT set ObservabilityTopicARN
+	d := testDeps(sfnMock, snsMock)
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-a",
+				"EVENT#1234567890123#abcd",
+				"INSERT",
+				map[string]events.DynamoDBAttributeValue{
+					"kind": events.NewStringAttribute("TRAIT_EVALUATED"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should only have lifecycle messages (if any), not observability
+	for _, msg := range snsMock.messages {
+		assert.NotEqual(t, "arn:aws:sns:us-east-1:123:observability", *msg.TopicArn,
+			"should not publish to observability when not configured")
+	}
+}
