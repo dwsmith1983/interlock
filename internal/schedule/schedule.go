@@ -5,7 +5,6 @@ package schedule
 import (
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
@@ -39,32 +38,12 @@ func IsScheduleActive(sched types.ScheduleConfig, now time.Time, logger *slog.Lo
 // ParseTimeOfDay parses an "HH:MM" string into a time.Time on the same day as ref,
 // in the given location.
 func ParseTimeOfDay(hhmm string, ref time.Time, loc *time.Location) (time.Time, error) {
-	if len(hhmm) < 4 || len(hhmm) > 5 {
-		return time.Time{}, fmt.Errorf("invalid time format %q: expected HH:MM", hhmm)
+	t, err := time.Parse("15:04", hhmm)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid time format %q: expected HH:MM: %w", hhmm, err)
 	}
-	// Find the colon
-	colonIdx := -1
-	for i, c := range hhmm {
-		if c == ':' {
-			colonIdx = i
-			break
-		}
-	}
-	if colonIdx < 0 {
-		return time.Time{}, fmt.Errorf("invalid time format %q: missing colon", hhmm)
-	}
-
-	hour, err := strconv.Atoi(hhmm[:colonIdx])
-	if err != nil || hour < 0 || hour > 23 {
-		return time.Time{}, fmt.Errorf("invalid hour in %q", hhmm)
-	}
-	minute, err := strconv.Atoi(hhmm[colonIdx+1:])
-	if err != nil || minute < 0 || minute > 59 {
-		return time.Time{}, fmt.Errorf("invalid minute in %q", hhmm)
-	}
-
 	refInLoc := ref.In(loc)
-	return time.Date(refInLoc.Year(), refInLoc.Month(), refInLoc.Day(), hour, minute, 0, 0, loc), nil
+	return time.Date(refInLoc.Year(), refInLoc.Month(), refInLoc.Day(), t.Hour(), t.Minute(), 0, 0, loc), nil
 }
 
 // ScheduleDeadline resolves the SLA deadline for a schedule window.

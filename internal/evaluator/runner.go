@@ -27,7 +27,7 @@ func (r *Runner) Run(ctx context.Context, evaluatorPath string, input types.Eval
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	inputJSON, err := json.Marshal(input.Config)
+	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling evaluator input: %w", err)
 	}
