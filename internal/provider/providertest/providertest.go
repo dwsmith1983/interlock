@@ -36,4 +36,6 @@ func RunAll(t *testing.T, prov provider.Provider) {
 	t.Run("DependencyCRUD", func(t *testing.T) { TestDependencyCRUD(t, prov) })
 	t.Run("EvaluationSessionCRUD", func(t *testing.T) { TestEvaluationSessionCRUD(t, prov) })
 	t.Run("TraitHistory", func(t *testing.T) { TestTraitHistory(t, prov) })
+	t.Run("QuarantineCRUD", func(t *testing.T) { TestQuarantineCRUD(t, prov) })
+	t.Run("ControlStatus", func(t *testing.T) { TestControlStatus(t, prov) })
 }
