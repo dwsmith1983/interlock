@@ -177,7 +177,7 @@ func newProvider() (provider.Provider, error) {
 		if region == "" {
 			return nil, fmt.Errorf("AWS_REGION environment variable required")
 		}
-		ddbCfg := types.DynamoDBConfig{
+		ddbCfg := dynamodb.Config{
 			TableName:    tableName,
 			Region:       region,
 			ReadinessTTL: envOrDefault("READINESS_TTL", "1h"),

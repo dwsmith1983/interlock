@@ -11,7 +11,6 @@ import (
 
 	"github.com/dwsmith1983/interlock/internal/provider"
 	luascripts "github.com/dwsmith1983/interlock/internal/provider/redis/lua"
-	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // Compile-time interface satisfaction check.
@@ -39,7 +38,7 @@ type RedisProvider struct {
 }
 
 // New creates a new RedisProvider.
-func New(cfg *types.RedisConfig) *RedisProvider {
+func New(cfg *Config) *RedisProvider {
 	client := goredis.NewClient(&goredis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,

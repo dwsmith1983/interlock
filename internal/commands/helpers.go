@@ -18,9 +18,17 @@ import (
 func newProvider(cfg *types.ProjectConfig) (provider.Provider, error) {
 	switch cfg.Provider {
 	case "redis":
-		return redis.New(cfg.Redis), nil
+		rc, ok := cfg.Redis.(*redis.Config)
+		if !ok || rc == nil {
+			return nil, fmt.Errorf("redis config is required when provider is redis")
+		}
+		return redis.New(rc), nil
 	case "dynamodb":
-		return ddbprov.New(cfg.DynamoDB)
+		dc, ok := cfg.DynamoDB.(*ddbprov.Config)
+		if !ok || dc == nil {
+			return nil, fmt.Errorf("dynamodb config is required when provider is dynamodb")
+		}
+		return ddbprov.New(dc)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
 	}

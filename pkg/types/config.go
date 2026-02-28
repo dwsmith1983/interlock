@@ -267,10 +267,15 @@ type EngineConfig struct {
 }
 
 // ProjectConfig represents the top-level interlock.yaml configuration.
+//
+// Redis and DynamoDB hold provider-specific configuration. After YAML
+// unmarshalling they are populated with concrete types from the internal
+// provider packages (e.g. *redis.Config, *dynamodb.Config) via a two-pass
+// decode in the config loader. Consumers should use type assertions.
 type ProjectConfig struct {
 	Provider      string          `yaml:"provider"`
-	Redis         *RedisConfig    `yaml:"redis,omitempty"`
-	DynamoDB      *DynamoDBConfig `yaml:"dynamodb,omitempty"`
+	Redis         any             `yaml:"redis,omitempty"`
+	DynamoDB      any             `yaml:"dynamodb,omitempty"`
 	Server        *ServerConfig   `yaml:"server,omitempty"`
 	Engine        *EngineConfig   `yaml:"engine,omitempty"`
 	ArchetypeDirs []string        `yaml:"archetypeDirs"`
@@ -281,28 +286,6 @@ type ProjectConfig struct {
 	Watcher       *WatcherConfig  `yaml:"watcher,omitempty"`
 	Archiver      *ArchiverConfig `yaml:"archiver,omitempty"`
 	Watchdog      *WatchdogConfig `yaml:"watchdog,omitempty"`
-}
-
-// RedisConfig holds Redis/Valkey connection settings.
-type RedisConfig struct {
-	Addr           string `yaml:"addr"`
-	Password       string `yaml:"password,omitempty"`
-	DB             int    `yaml:"db,omitempty"`
-	KeyPrefix      string `yaml:"keyPrefix"`
-	ReadinessTTL   string `yaml:"readinessTtl,omitempty" json:"readinessTtl,omitempty"`
-	RetentionTTL   string `yaml:"retentionTtl,omitempty" json:"retentionTtl,omitempty"` // default "168h" (7 days)
-	RunIndexLimit  int    `yaml:"runIndexLimit,omitempty" json:"runIndexLimit,omitempty"`
-	EventStreamMax int64  `yaml:"eventStreamMax,omitempty" json:"eventStreamMax,omitempty"`
-}
-
-// DynamoDBConfig holds DynamoDB connection and table settings.
-type DynamoDBConfig struct {
-	TableName    string `yaml:"tableName" json:"tableName"`
-	Region       string `yaml:"region" json:"region"`
-	Endpoint     string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
-	ReadinessTTL string `yaml:"readinessTtl,omitempty" json:"readinessTtl,omitempty"`
-	RetentionTTL string `yaml:"retentionTtl,omitempty" json:"retentionTtl,omitempty"`
-	CreateTable  bool   `yaml:"createTable,omitempty" json:"createTable,omitempty"`
 }
 
 // ArchiverConfig configures the background Postgres archiver.

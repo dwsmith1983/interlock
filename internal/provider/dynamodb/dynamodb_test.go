@@ -11,14 +11,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	"github.com/dwsmith1983/interlock/internal/provider/providertest"
-	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 func setupTestProvider(t *testing.T) *DynamoDBProvider {
 	t.Helper()
 	ctx := context.Background()
 	tableName := fmt.Sprintf("interlock-test-%d", time.Now().UnixNano())
-	cfg := &types.DynamoDBConfig{
+	cfg := &Config{
 		TableName:   tableName,
 		Region:      "us-east-1",
 		Endpoint:    "http://localhost:8000",

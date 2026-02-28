@@ -15,7 +15,6 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/dwsmith1983/interlock/internal/provider"
-	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // Compile-time interface satisfaction check.
@@ -38,7 +37,7 @@ type DynamoDBProvider struct {
 }
 
 // New creates a new DynamoDBProvider.
-func New(cfg *types.DynamoDBConfig) (*DynamoDBProvider, error) {
+func New(cfg *Config) (*DynamoDBProvider, error) {
 	var opts []func(*awsconfig.LoadOptions) error
 	if cfg.Region != "" {
 		opts = append(opts, awsconfig.WithRegion(cfg.Region))
