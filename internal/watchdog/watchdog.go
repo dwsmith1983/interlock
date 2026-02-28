@@ -36,7 +36,7 @@ type MissedSchedule struct {
 
 // CheckOptions configures a single watchdog scan pass.
 type CheckOptions struct {
-	Provider          provider.Provider
+	Provider          provider.WatchdogProvider
 	CalendarReg       *calendar.Registry
 	AlertFn           func(context.Context, types.Alert)
 	Logger            *slog.Logger
@@ -629,7 +629,7 @@ func isRetryableCategory(category types.FailureCategory, retryable []types.Failu
 
 // Watchdog runs CheckMissedSchedules on a regular interval.
 type Watchdog struct {
-	provider    provider.Provider
+	provider    provider.WatchdogProvider
 	calendarReg *calendar.Registry
 	alertFn     func(context.Context, types.Alert)
 	logger      *slog.Logger
@@ -639,7 +639,7 @@ type Watchdog struct {
 }
 
 // New creates a new Watchdog.
-func New(prov provider.Provider, calReg *calendar.Registry, alertFn func(context.Context, types.Alert), logger *slog.Logger, interval time.Duration) *Watchdog {
+func New(prov provider.WatchdogProvider, calReg *calendar.Registry, alertFn func(context.Context, types.Alert), logger *slog.Logger, interval time.Duration) *Watchdog {
 	if interval <= 0 {
 		interval = defaultInterval
 	}

@@ -116,6 +116,12 @@ type QuarantineStore interface {
 	GetQuarantineRecord(ctx context.Context, pipelineID, date, hour string) (*types.QuarantineRecord, error)
 }
 
+// ReadinessStore handles readiness caching.
+type ReadinessStore interface {
+	PutReadiness(ctx context.Context, result types.ReadinessResult) error
+	GetReadiness(ctx context.Context, pipelineID string) (*types.ReadinessResult, error)
+}
+
 // Provider is the storage backend interface. Phase 1 implements Redis/Valkey;
 // future phases add DynamoDB, etcd, Firestore, and Cosmos.
 type Provider interface {
@@ -135,15 +141,54 @@ type Provider interface {
 	DependencyStore
 	SensorStore
 	QuarantineStore
-
-	// Readiness caching
-	PutReadiness(ctx context.Context, result types.ReadinessResult) error
-	GetReadiness(ctx context.Context, pipelineID string) (*types.ReadinessResult, error)
+	ReadinessStore
 
 	// Lifecycle
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 	Ping(ctx context.Context) error
+}
+
+// ---------------------------------------------------------------------------
+// Consumer-scoped composite interfaces
+//
+// These document exactly which sub-interfaces each major consumer needs,
+// enabling focused mocks and making dependency requirements explicit.
+// ---------------------------------------------------------------------------
+
+// OrchestratorProvider is the subset needed by the orchestrator Lambda.
+type OrchestratorProvider interface {
+	PipelineStore
+	RunLogStore
+	EventStore
+	Locker
+	CascadeStore
+	DependencyStore
+	QuarantineStore
+}
+
+// TriggerProvider is the subset needed by the trigger Lambda.
+type TriggerProvider interface {
+	RunStore
+	RunLogStore
+	EventStore
+}
+
+// WatchdogProvider is the subset needed by the watchdog.
+type WatchdogProvider interface {
+	PipelineStore
+	RunLogStore
+	EventStore
+	Locker
+}
+
+// EngineProvider is the subset needed by the evaluation engine.
+type EngineProvider interface {
+	PipelineStore
+	TraitStore
+	EventStore
+	EvaluationSessionStore
+	ReadinessStore
 }
 
 // ExtractUpstreams scans a pipeline's trait configs for upstreamPipeline values,
