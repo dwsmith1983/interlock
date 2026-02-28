@@ -227,6 +227,69 @@ func TestHandleStreamEvent_EmptyScheduleID_DefaultsDaily(t *testing.T) {
 	assert.Equal(t, "daily", input["scheduleID"])
 }
 
+func TestHandleStreamEvent_DateFromRecord(t *testing.T) {
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil)
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#crypto-silver",
+				"MARKER#crypto#complete#20260227#23",
+				"INSERT",
+				map[string]events.DynamoDBAttributeValue{
+					"PK":         events.NewStringAttribute("PIPELINE#crypto-silver"),
+					"SK":         events.NewStringAttribute("MARKER#crypto#complete#20260227#23"),
+					"scheduleID": events.NewStringAttribute("h23"),
+					"date":       events.NewStringAttribute("2026-02-27"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	require.Len(t, sfnMock.executions, 1)
+	exec := sfnMock.executions[0]
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*exec.Input), &input))
+	assert.Equal(t, "2026-02-27", input["date"], "should use date from record, not time.Now()")
+	assert.Equal(t, "h23", input["scheduleID"])
+	assert.Equal(t, "crypto-silver", input["pipelineID"])
+	assert.Contains(t, *exec.Name, "2026-02-27", "exec name should contain record date")
+}
+
+func TestHandleStreamEvent_DateFallsBackToNow(t *testing.T) {
+	sfnMock := &mockSFN{}
+	d := testDeps(sfnMock, nil)
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// Record without date field — should fall back to time.Now()
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#earthquake-silver",
+				"MARKER#earthquake#2026-02-28T04:00:00Z",
+				"INSERT",
+				map[string]events.DynamoDBAttributeValue{
+					"PK":         events.NewStringAttribute("PIPELINE#earthquake-silver"),
+					"SK":         events.NewStringAttribute("MARKER#earthquake#2026-02-28T04:00:00Z"),
+					"scheduleID": events.NewStringAttribute("h04"),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	require.Len(t, sfnMock.executions, 1)
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	assert.Equal(t, today, input["date"], "should fall back to today when no date in record")
+}
+
 func TestSanitizeExecName(t *testing.T) {
 	assert.Equal(t, "my-pipe_2026-02-22_daily", sanitizeExecName("my-pipe:2026-02-22:daily"))
 	assert.Equal(t, "pipe_with_spaces", sanitizeExecName("pipe with spaces"))

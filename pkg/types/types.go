@@ -176,6 +176,7 @@ type SLAConfig struct {
 	CompletionDeadline string `yaml:"completionDeadline" json:"completionDeadline"`
 	Timezone           string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
 	ValidationTimeout  string `yaml:"validationTimeout,omitempty" json:"validationTimeout,omitempty"` // hard stop, e.g. "+45m"
+	AtRiskLeadTime     string `yaml:"atRiskLeadTime,omitempty" json:"atRiskLeadTime,omitempty"`       // e.g. "5m"
 }
 
 // WatcherConfig configures the reactive evaluation watcher.
@@ -336,6 +337,7 @@ const (
 	EventRunStuck              EventKind = "RUN_STUCK"
 	EventReadinessCacheChecked EventKind = "READINESS_CACHE_CHECKED"
 	EventCircuitBreakerTripped EventKind = "CIRCUIT_BREAKER_TRIPPED"
+	EventWatchdogRetrigger     EventKind = "WATCHDOG_RETRIGGER"
 )
 
 // Event is an append-only audit log entry recording what happened and when.

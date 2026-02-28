@@ -31,9 +31,26 @@ func checkEvaluationSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		return errorResponse(req.Action, fmt.Sprintf("parsing SLA deadline: %v", err)), nil
 	}
 
+	// At-risk alerting (advance warning before breach).
+	if pipeline.SLA.AtRiskLeadTime != "" {
+		leadTime, ltErr := time.ParseDuration(pipeline.SLA.AtRiskLeadTime)
+		if ltErr == nil && schedule.IsAtRisk(deadline, now, leadTime) {
+			lockKey := fmt.Sprintf("sla-at-risk:eval:%s:%s:%s", req.PipelineID, req.ScheduleID, now.UTC().Format("2006-01-02"))
+			if acquired, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); acquired {
+				d.AlertFn(types.Alert{
+					Level:      types.AlertLevelWarning,
+					Category:   "evaluation_sla_at_risk",
+					PipelineID: req.PipelineID,
+					Message:    fmt.Sprintf("Evaluation SLA at risk for %s (deadline: %s, lead: %s)", req.PipelineID, pipeline.SLA.EvaluationDeadline, pipeline.SLA.AtRiskLeadTime),
+					Timestamp:  now,
+				})
+			}
+		}
+	}
+
 	if schedule.IsBreached(deadline, now) {
 		d.AlertFn(types.Alert{
-			Level:      types.AlertLevelWarning,
+			Level:      types.AlertLevelError,
 			Category:   "evaluation_sla_breach",
 			PipelineID: req.PipelineID,
 			Message:    fmt.Sprintf("Evaluation SLA breached for %s (deadline: %s)", req.PipelineID, pipeline.SLA.EvaluationDeadline),
@@ -80,9 +97,26 @@ func checkCompletionSLA(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		}, nil
 	}
 
+	// At-risk alerting (advance warning before breach).
+	if pipeline.SLA != nil && pipeline.SLA.AtRiskLeadTime != "" {
+		leadTime, ltErr := time.ParseDuration(pipeline.SLA.AtRiskLeadTime)
+		if ltErr == nil && schedule.IsAtRisk(deadline, now, leadTime) {
+			lockKey := fmt.Sprintf("sla-at-risk:comp:%s:%s:%s", req.PipelineID, req.ScheduleID, now.UTC().Format("2006-01-02"))
+			if acquired, _ := d.Provider.AcquireLock(ctx, lockKey, 24*time.Hour); acquired {
+				d.AlertFn(types.Alert{
+					Level:      types.AlertLevelWarning,
+					Category:   "completion_sla_at_risk",
+					PipelineID: req.PipelineID,
+					Message:    fmt.Sprintf("Completion SLA at risk for %s schedule %s", req.PipelineID, scheduleID),
+					Timestamp:  now,
+				})
+			}
+		}
+	}
+
 	if schedule.IsBreached(deadline, now) {
 		d.AlertFn(types.Alert{
-			Level:      types.AlertLevelWarning,
+			Level:      types.AlertLevelError,
 			Category:   "completion_sla_breach",
 			PipelineID: req.PipelineID,
 			Message:    fmt.Sprintf("Completion SLA breached for %s schedule %s", req.PipelineID, scheduleID),

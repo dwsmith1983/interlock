@@ -861,6 +861,158 @@ func TestStuckRun_WatchDisabled(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Failed-run retrigger tests
+// ---------------------------------------------------------------------------
+
+func TestCheckFailedRuns_Retrigger(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+		Retry: &types.RetryPolicy{
+			MaxAttempts:       3,
+			RetryableFailures: []types.FailureCategory{types.FailureTimeout},
+		},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		PipelineID:      "p1",
+		Date:            "2026-02-24",
+		ScheduleID:      "daily",
+		Status:          types.RunFailed,
+		AttemptNumber:   1,
+		FailureCategory: types.FailureTimeout,
+		RunID:           "run-1",
+	}
+
+	alertFn, getAlerts := collectAlerts(t)
+	var retriggerCalls []string
+	retriggerFn := func(_ context.Context, pipelineID, scheduleID string) error {
+		retriggerCalls = append(retriggerCalls, pipelineID+":"+scheduleID)
+		return nil
+	}
+
+	result := CheckFailedRuns(context.Background(), CheckOptions{
+		Provider:    mp,
+		AlertFn:     alertFn,
+		Logger:      slog.Default(),
+		Now:         now,
+		RetriggerFn: retriggerFn,
+	})
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 retriggered run, got %d", len(result))
+	}
+	if result[0].PipelineID != "p1" {
+		t.Errorf("expected pipeline p1, got %s", result[0].PipelineID)
+	}
+	if result[0].Attempt != 2 {
+		t.Errorf("expected attempt 2, got %d", result[0].Attempt)
+	}
+	if len(retriggerCalls) != 1 || retriggerCalls[0] != "p1:daily" {
+		t.Errorf("expected retrigger call for p1:daily, got %v", retriggerCalls)
+	}
+	alerts := getAlerts()
+	if len(alerts) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(alerts))
+	}
+	if alerts[0].Category != "watchdog_retrigger" {
+		t.Errorf("expected category watchdog_retrigger, got %s", alerts[0].Category)
+	}
+}
+
+func TestCheckFailedRuns_NilRetriggerFn(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+		Retry:   &types.RetryPolicy{MaxAttempts: 3},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		PipelineID: "p1",
+		Status:     types.RunFailed,
+	}
+
+	result := CheckFailedRuns(context.Background(), CheckOptions{
+		Provider: mp,
+		Logger:   slog.Default(),
+		Now:      now,
+		// RetriggerFn is nil
+	})
+
+	if len(result) != 0 {
+		t.Fatalf("expected 0 retriggered runs with nil RetriggerFn, got %d", len(result))
+	}
+}
+
+func TestCheckFailedRuns_MaxAttempts(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+		Retry: &types.RetryPolicy{
+			MaxAttempts:       2,
+			RetryableFailures: []types.FailureCategory{types.FailureTimeout},
+		},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		PipelineID:      "p1",
+		Date:            "2026-02-24",
+		ScheduleID:      "daily",
+		Status:          types.RunFailed,
+		AttemptNumber:   2, // Already at max
+		FailureCategory: types.FailureTimeout,
+	}
+
+	retriggerFn := func(_ context.Context, _, _ string) error { return nil }
+	result := CheckFailedRuns(context.Background(), CheckOptions{
+		Provider:    mp,
+		Logger:      slog.Default(),
+		Now:         now,
+		RetriggerFn: retriggerFn,
+	})
+
+	if len(result) != 0 {
+		t.Fatalf("expected 0 retriggered runs (max attempts reached), got %d", len(result))
+	}
+}
+
+func TestCheckFailedRuns_NonRetryableCategory(t *testing.T) {
+	mp := newMockProvider()
+	mp.pipelines = []types.PipelineConfig{{
+		Name:    "p1",
+		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+		Retry: &types.RetryPolicy{
+			MaxAttempts:       3,
+			RetryableFailures: []types.FailureCategory{types.FailureTransient},
+		},
+	}}
+	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
+	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+		PipelineID:      "p1",
+		Date:            "2026-02-24",
+		ScheduleID:      "daily",
+		Status:          types.RunFailed,
+		AttemptNumber:   1,
+		FailureCategory: types.FailurePermanent, // Not in retryable list
+	}
+
+	retriggerFn := func(_ context.Context, _, _ string) error { return nil }
+	result := CheckFailedRuns(context.Background(), CheckOptions{
+		Provider:    mp,
+		Logger:      slog.Default(),
+		Now:         now,
+		RetriggerFn: retriggerFn,
+	})
+
+	if len(result) != 0 {
+		t.Fatalf("expected 0 retriggered runs (non-retryable category), got %d", len(result))
+	}
+}
+
 func TestStartStop(t *testing.T) {
 	mp := newMockProvider()
 	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("00:01")}

@@ -1,6 +1,8 @@
 # Binaries
 /interlock
 /orchestrator
+/stream-router
+/watchdog
 /dist/
 *.exe
 *.exe~

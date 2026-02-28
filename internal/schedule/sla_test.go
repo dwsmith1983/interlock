@@ -96,3 +96,26 @@ func TestIsBreached(t *testing.T) {
 	assert.False(t, IsBreached(deadline, time.Date(2026, 2, 21, 5, 0, 0, 0, time.UTC)))
 	assert.False(t, IsBreached(deadline, deadline))
 }
+
+func TestIsAtRisk(t *testing.T) {
+	deadline := time.Date(2026, 2, 21, 10, 0, 0, 0, time.UTC)
+	lead := 5 * time.Minute
+
+	// Within at-risk window (4 minutes before deadline).
+	assert.True(t, IsAtRisk(deadline, time.Date(2026, 2, 21, 9, 56, 0, 0, time.UTC), lead))
+
+	// Not yet at-risk (10 minutes before deadline, lead is 5m).
+	assert.False(t, IsAtRisk(deadline, time.Date(2026, 2, 21, 9, 50, 0, 0, time.UTC), lead))
+
+	// Already breached (past deadline).
+	assert.False(t, IsAtRisk(deadline, time.Date(2026, 2, 21, 10, 1, 0, 0, time.UTC), lead))
+
+	// Exactly at deadline boundary — still at-risk (not yet breached).
+	assert.True(t, IsAtRisk(deadline, deadline, lead))
+
+	// Zero lead time — feature disabled.
+	assert.False(t, IsAtRisk(deadline, time.Date(2026, 2, 21, 9, 58, 0, 0, time.UTC), 0))
+
+	// Negative lead time — feature disabled.
+	assert.False(t, IsAtRisk(deadline, time.Date(2026, 2, 21, 9, 58, 0, 0, time.UTC), -1*time.Minute))
+}
