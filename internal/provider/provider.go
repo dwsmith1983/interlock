@@ -116,6 +116,12 @@ type QuarantineStore interface {
 	GetQuarantineRecord(ctx context.Context, pipelineID, date, hour string) (*types.QuarantineRecord, error)
 }
 
+// ControlStore provides read access to CONTROL# pipeline health records
+// for circuit-breaker gating.
+type ControlStore interface {
+	GetControlStatus(ctx context.Context, pipelineID string) (*types.ControlRecord, error)
+}
+
 // ReadinessStore handles readiness caching.
 type ReadinessStore interface {
 	PutReadiness(ctx context.Context, result types.ReadinessResult) error
@@ -142,6 +148,7 @@ type Provider interface {
 	SensorStore
 	QuarantineStore
 	ReadinessStore
+	ControlStore
 
 	// Lifecycle
 	Start(ctx context.Context) error
@@ -165,6 +172,7 @@ type OrchestratorProvider interface {
 	CascadeStore
 	DependencyStore
 	QuarantineStore
+	ControlStore
 }
 
 // TriggerProvider is the subset needed by the trigger Lambda.

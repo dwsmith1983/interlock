@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,8 @@ func handleOrchestrator(ctx context.Context, d *intlambda.Deps, req intlambda.Or
 		return acquireLock(ctx, d, req)
 	case "checkRunLog":
 		return checkRunLog(ctx, d, req)
+	case "checkCircuitBreaker":
+		return checkCircuitBreaker(ctx, d, req)
 	case "resolvePipeline":
 		return resolvePipeline(ctx, d, req)
 	case "checkReadiness":
@@ -190,6 +193,87 @@ func checkRunLog(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestra
 		Payload: map[string]interface{}{
 			"attemptNumber": entry.AttemptNumber + 1,
 		},
+	}, nil
+}
+
+func checkCircuitBreaker(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {
+	threshold := 0
+	if v := os.Getenv("CIRCUIT_BREAKER_THRESHOLD"); v != "" {
+		threshold, _ = strconv.Atoi(v)
+	}
+	// Circuit breaker disabled if threshold is 0 or unset.
+	if threshold <= 0 {
+		return intlambda.OrchestratorResponse{
+			Action: req.Action,
+			Result: "proceed",
+		}, nil
+	}
+
+	record, err := d.Provider.GetControlStatus(ctx, req.PipelineID)
+	if err != nil {
+		d.Logger.Error("failed to read CONTROL record for circuit breaker",
+			"pipeline", req.PipelineID, "error", err)
+		// Fail open — don't block the pipeline on a read error.
+		return intlambda.OrchestratorResponse{
+			Action: req.Action,
+			Result: "proceed",
+		}, nil
+	}
+
+	if record == nil {
+		return intlambda.OrchestratorResponse{
+			Action: req.Action,
+			Result: "proceed",
+		}, nil
+	}
+
+	if !record.Enabled {
+		return intlambda.OrchestratorResponse{
+			Action: req.Action,
+			Result: "skip",
+			Payload: map[string]interface{}{
+				"reason": "pipeline disabled via CONTROL record",
+			},
+		}, nil
+	}
+
+	if record.ConsecutiveFailures >= threshold {
+		d.AlertFn(ctx, types.Alert{
+			Level:      types.AlertLevelError,
+			Category:   "circuit_breaker_open",
+			PipelineID: req.PipelineID,
+			Message:    fmt.Sprintf("Circuit breaker open: %d consecutive failures (threshold=%d)", record.ConsecutiveFailures, threshold),
+			Details: map[string]interface{}{
+				"consecutiveFailures": record.ConsecutiveFailures,
+				"threshold":           threshold,
+				"lastFailedRun":       record.LastFailedRun,
+			},
+			Timestamp: time.Now(),
+		})
+
+		if err := d.Provider.AppendEvent(ctx, types.Event{
+			Kind:       types.EventCircuitBreakerTripped,
+			PipelineID: req.PipelineID,
+			Message:    fmt.Sprintf("circuit breaker open: %d failures >= threshold %d", record.ConsecutiveFailures, threshold),
+			Timestamp:  time.Now(),
+		}); err != nil {
+			d.Logger.Error("AppendEvent failed for circuit breaker", "pipeline", req.PipelineID, "error", err)
+		}
+
+		return intlambda.OrchestratorResponse{
+			Action: req.Action,
+			Result: "skip",
+			Payload: map[string]interface{}{
+				"reason":              "circuit breaker open",
+				"consecutiveFailures": record.ConsecutiveFailures,
+				"threshold":           threshold,
+			},
+		}, nil
+	}
+
+	return intlambda.OrchestratorResponse{
+		Action: req.Action,
+		Result: "proceed",
 	}, nil
 }
 

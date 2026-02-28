@@ -599,6 +599,12 @@ func (m *MockProvider) GetSensorData(_ context.Context, pipelineID, sensorType s
 	return &sd, nil
 }
 
+// --- ControlStore ---
+
+func (m *MockProvider) GetControlStatus(_ context.Context, _ string) (*types.ControlRecord, error) {
+	return nil, nil
+}
+
 // --- QuarantineStore ---
 
 func (m *MockProvider) PutQuarantineRecord(_ context.Context, record types.QuarantineRecord) error {

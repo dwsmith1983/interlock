@@ -499,6 +499,16 @@ type EventRecord struct {
 	Event    Event  `json:"event"`
 }
 
+// ControlRecord tracks per-pipeline health status for circuit-breaker gating.
+type ControlRecord struct {
+	PipelineID          string `json:"pipelineId"`
+	ConsecutiveFailures int    `json:"consecutiveFailures"`
+	LastStatus          string `json:"lastStatus"`
+	LastSuccessfulRun   string `json:"lastSuccessfulRun,omitempty"`
+	LastFailedRun       string `json:"lastFailedRun,omitempty"`
+	Enabled             bool   `json:"enabled"`
+}
+
 // SensorData holds externally-landed sensor readings (e.g., lag, window IDs,
 // record counts). Data engineers write sensor data; interlock reads it via
 // trait evaluators.
