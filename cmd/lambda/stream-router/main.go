@@ -402,7 +402,6 @@ func handler(ctx context.Context, event intlambda.StreamEvent) error {
 	return handleStreamEvent(ctx, d, event)
 }
 
-
 func strPtr(s string) *string { return &s }
 
 func main() {
