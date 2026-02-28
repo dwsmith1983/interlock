@@ -27,7 +27,7 @@ func (p *RedisProvider) PutAlert(ctx context.Context, alert types.Alert) error {
 	}
 	data, err := json.Marshal(alert)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling alert for pipeline %q: %w", alert.PipelineID, err)
 	}
 
 	score := float64(alert.Timestamp.UnixMilli())
@@ -39,7 +39,10 @@ func (p *RedisProvider) PutAlert(ctx context.Context, alert types.Alert) error {
 	pipe.ZRemRangeByRank(ctx, p.alertKey(alert.PipelineID), 0, -(defaultAlertIndexMax + 1))
 	pipe.ZRemRangeByRank(ctx, p.alertGlobalKey(), 0, -(defaultAlertIndexMax + 1))
 	_, err = pipe.Exec(ctx)
-	return err
+	if err != nil {
+		return fmt.Errorf("storing alert for pipeline %q: %w", alert.PipelineID, err)
+	}
+	return nil
 }
 
 // ListAlerts returns recent alerts for a pipeline, newest first.
@@ -66,7 +69,7 @@ func (p *RedisProvider) fetchAlerts(ctx context.Context, key string, limit int) 
 		Rev:   true,
 	}).Result()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetching alerts: %w", err)
 	}
 
 	var alerts []types.Alert

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -78,7 +79,7 @@ func (p *DynamoDBProvider) GetRunState(ctx context.Context, runID string) (*type
 		return nil, fmt.Errorf("run %q not found", runID)
 	}
 
-	ttlVal, _ := attributeInt(out.Item)
+	ttlVal, _ := extractTTL(out.Item)
 	if isExpired(ttlVal) {
 		return nil, fmt.Errorf("run %q not found", runID)
 	}
@@ -116,7 +117,7 @@ func (p *DynamoDBProvider) ListRuns(ctx context.Context, pipelineID string, limi
 
 	var runs []types.RunState
 	for _, item := range out.Items {
-		ttlVal, _ := attributeInt(item)
+		ttlVal, _ := extractTTL(item)
 		if isExpired(ttlVal) {
 			continue
 		}
@@ -173,7 +174,7 @@ func (p *DynamoDBProvider) CompareAndSwapRunState(ctx context.Context, runID str
 	}
 
 	// Best-effort update of the list copy.
-	_, _ = p.client.PutItem(ctx, &dynamodb.PutItemInput{
+	if _, err := p.client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &p.tableName,
 		Item: map[string]ddbtypes.AttributeValue{
 			"PK":   &ddbtypes.AttributeValueMemberS{Value: pipelinePK(newState.PipelineID)},
@@ -181,7 +182,9 @@ func (p *DynamoDBProvider) CompareAndSwapRunState(ctx context.Context, runID str
 			"data": &ddbtypes.AttributeValueMemberS{Value: string(data)},
 			"ttl":  &ddbtypes.AttributeValueMemberN{Value: ttl},
 		},
-	})
+	}); err != nil {
+		slog.Warn("run list-copy update failed", "runID", runID, "pipeline", newState.PipelineID, "error", err)
+	}
 
 	return true, nil
 }

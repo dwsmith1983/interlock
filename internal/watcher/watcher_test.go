@@ -24,7 +24,7 @@ type alertCollector struct {
 	alerts []types.Alert
 }
 
-func (a *alertCollector) collect(alert types.Alert) {
+func (a *alertCollector) collect(_ context.Context, alert types.Alert) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.alerts = append(a.alerts, alert)
@@ -76,7 +76,7 @@ func readyPipeline(name string) types.PipelineConfig {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -114,7 +114,7 @@ func TestWatcher_NotReady_NoTrigger(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -288,9 +288,9 @@ func TestWatcher_LockPreventsDoubleEval(t *testing.T) {
 	pipeline := readyPipeline("lock-test")
 	require.NoError(t, prov.RegisterPipeline(ctx, pipeline))
 
-	acquired, err := prov.AcquireLock(ctx, "eval:lock-test:daily", 10*time.Second)
+	token, err := prov.AcquireLock(ctx, "eval:lock-test:daily", 10*time.Second)
 	require.NoError(t, err)
-	require.True(t, acquired)
+	require.NotEmpty(t, token)
 
 	w, _ := setupWatcher(t, prov)
 	w.Start(ctx)
@@ -315,7 +315,7 @@ func TestWatcher_EvaluationSLABreach(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 		SLA: &types.SLAConfig{
@@ -404,7 +404,7 @@ func monitoringPipeline(name string) types.PipelineConfig {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -518,7 +518,7 @@ func TestWatcher_MonitoringDrift_CreatesRerun(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -613,7 +613,7 @@ func TestWatcher_MultiSchedule_IndependentTriggers(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -687,7 +687,7 @@ func TestWatcher_MultiSchedule_InactiveSkipped(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -794,7 +794,7 @@ func TestWatcher_ExcludedDay_NothingFires(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -838,7 +838,7 @@ func TestWatcher_PerScheduleSLA_UsesScheduleDeadline(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 		Schedules: []types.ScheduleConfig{
@@ -885,7 +885,7 @@ func TestWatcher_ExcludedDay_SLANotChecked(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 		SLA: &types.SLAConfig{
@@ -933,7 +933,7 @@ func TestWatcher_ExcludedDay_ActiveRunIgnored(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 		SLA: &types.SLAConfig{

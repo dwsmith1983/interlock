@@ -26,8 +26,7 @@ func TestExecuteAirflow_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &types.TriggerConfig{
-		Type:  types.TriggerAirflow,
+	cfg := &types.AirflowTriggerConfig{
 		URL:   srv.URL,
 		DagID: "my_dag",
 	}
@@ -50,8 +49,7 @@ func TestExecuteAirflow_AuthHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &types.TriggerConfig{
-		Type:    types.TriggerAirflow,
+	cfg := &types.AirflowTriggerConfig{
 		URL:     srv.URL,
 		DagID:   "test_dag",
 		Headers: map[string]string{"Authorization": "Bearer my-token"},
@@ -69,8 +67,7 @@ func TestExecuteAirflow_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &types.TriggerConfig{
-		Type:  types.TriggerAirflow,
+	cfg := &types.AirflowTriggerConfig{
 		URL:   srv.URL,
 		DagID: "my_dag",
 	}

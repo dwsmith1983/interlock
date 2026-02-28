@@ -128,10 +128,11 @@ func computeLockTTL(pipeline types.PipelineConfig, fallback time.Duration) time.
 func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, interval time.Duration, sched types.ScheduleConfig) {
 	now := time.Now()
 
-	if !w.acquireLock(ctx, pipeline, sched, interval) {
+	token := w.acquireLock(ctx, pipeline, sched, interval)
+	if token == "" {
 		return
 	}
-	defer w.releaseLock(ctx, pipeline, sched)
+	defer w.releaseLock(ctx, pipeline, sched, token)
 
 	if w.handleActiveRun(ctx, pipeline, sched, now) {
 		return
@@ -151,20 +152,21 @@ func (w *Watcher) tick(ctx context.Context, pipeline types.PipelineConfig, inter
 }
 
 // acquireLock attempts to acquire the evaluation lock for the pipeline and schedule.
-func (w *Watcher) acquireLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, interval time.Duration) bool {
+// Returns the owner token on success, or "" if the lock was not acquired.
+func (w *Watcher) acquireLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, interval time.Duration) string {
 	lockKey := schedule.LockKey(pipeline.Name, sched.Name)
-	acquired, err := w.provider.AcquireLock(ctx, lockKey, computeLockTTL(pipeline, interval))
+	token, err := w.provider.AcquireLock(ctx, lockKey, computeLockTTL(pipeline, interval))
 	if err != nil {
 		w.logger.Error("failed to acquire lock", "pipeline", pipeline.Name, "schedule", sched.Name, "error", err)
-		return false
+		return ""
 	}
-	return acquired
+	return token
 }
 
 // releaseLock releases the evaluation lock for the pipeline and schedule.
-func (w *Watcher) releaseLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig) {
+func (w *Watcher) releaseLock(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, token string) {
 	lockKey := schedule.LockKey(pipeline.Name, sched.Name)
-	if err := w.provider.ReleaseLock(ctx, lockKey); err != nil {
+	if err := w.provider.ReleaseLock(ctx, lockKey, token); err != nil {
 		w.logger.Error("failed to release lock", "pipeline", pipeline.Name, "schedule", sched.Name, "error", err)
 	}
 }
@@ -233,7 +235,7 @@ func (w *Watcher) checkRunLog(ctx context.Context, pipeline types.PipelineConfig
 	// Max retries exhausted
 	if runLog.AttemptNumber >= retryPolicy.MaxAttempts {
 		if !runLog.AlertSent {
-			w.fireAlert(types.Alert{
+			w.fireAlert(ctx, types.Alert{
 				Level:      types.AlertLevelError,
 				PipelineID: pipeline.Name,
 				Message:    fmt.Sprintf("Pipeline %s exhausted %d retry attempts", pipeline.Name, retryPolicy.MaxAttempts),
@@ -259,7 +261,7 @@ func (w *Watcher) checkRunLog(ctx context.Context, pipeline types.PipelineConfig
 	// Check if failure is retryable
 	if runLog.FailureCategory != "" && !IsRetryable(retryPolicy, runLog.FailureCategory) {
 		if !runLog.AlertSent {
-			w.fireAlert(types.Alert{
+			w.fireAlert(ctx, types.Alert{
 				Level:      types.AlertLevelError,
 				PipelineID: pipeline.Name,
 				Message:    fmt.Sprintf("Pipeline %s failed with non-retryable error: %s (%s)", pipeline.Name, runLog.FailureMessage, runLog.FailureCategory),
@@ -423,8 +425,13 @@ func (w *Watcher) handleTriggerFailure(ctx context.Context, pipeline types.Pipel
 	w.logger.Warn("trigger failed", "pipeline", pipeline.Name, "attempt", attemptNum, "error", triggerErr, "category", fc)
 }
 
-// handleTriggerSuccess merges metadata, determines target status, CAS, and logs.
-func (w *Watcher) handleTriggerSuccess(ctx context.Context, pipeline types.PipelineConfig, run *types.RunState, entry *types.RunLogEntry, triggerMeta map[string]interface{}) {
+// completeTrigger performs the CAS transition, persists the run log, and appends
+// the trigger-fired event.  It consolidates the repeated CAS+PutRunLog+AppendEvent
+// sequence used by handleTriggerSuccess.
+func (w *Watcher) completeTrigger(ctx context.Context, pipeline types.PipelineConfig,
+	run *types.RunState, entry *types.RunLogEntry, targetStatus types.RunStatus,
+	triggerMeta map[string]interface{}) {
+	// Merge trigger metadata into run state.
 	if triggerMeta != nil {
 		if run.Metadata == nil {
 			run.Metadata = make(map[string]interface{})
@@ -434,96 +441,74 @@ func (w *Watcher) handleTriggerSuccess(ctx context.Context, pipeline types.Pipel
 		}
 	}
 
-	if pipeline.Trigger != nil && pipeline.Trigger.Type == types.TriggerCommand {
-		if monitoringEnabled(pipeline) {
-			entry.Status = types.RunCompletedMonitoring
-			if run.Metadata == nil {
-				run.Metadata = make(map[string]interface{})
-			}
-			run.Metadata["monitoringStartedAt"] = time.Now().Format(time.RFC3339)
-
-			run.Status = types.RunCompletedMonitoring
-			run.Version = 3
-			run.UpdatedAt = time.Now()
-			if ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, 2, *run); err != nil || !ok {
-				w.logger.Warn("failed to CAS run to COMPLETED_MONITORING", "pipeline", pipeline.Name, "runID", run.RunID, "error", err)
-			}
-		} else {
-			entry.Status = types.RunCompleted
-			completedAt := time.Now()
-			entry.CompletedAt = &completedAt
-
-			run.Status = types.RunCompleted
-			run.Version = 3
-			run.UpdatedAt = time.Now()
-			if ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, 2, *run); err != nil || !ok {
-				w.logger.Warn("failed to CAS run to COMPLETED", "pipeline", pipeline.Name, "runID", run.RunID, "error", err)
-			}
-		}
-	} else {
-		entry.Status = types.RunRunning
-
-		run.Status = types.RunRunning
-		run.Version = 3
-		run.UpdatedAt = time.Now()
-		if ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, 2, *run); err != nil || !ok {
-			w.logger.Warn("failed to CAS run to RUNNING", "pipeline", pipeline.Name, "runID", run.RunID, "error", err)
-		}
+	// CAS run state to target status.
+	run.Status = targetStatus
+	run.Version = 3
+	run.UpdatedAt = time.Now()
+	if ok, err := w.provider.CompareAndSwapRunState(ctx, run.RunID, 2, *run); err != nil || !ok {
+		w.logger.Warn("failed to CAS run", "pipeline", pipeline.Name, "runID", run.RunID, "targetStatus", targetStatus, "error", err)
 	}
 
+	// Update run log entry.
+	entry.Status = targetStatus
+	if targetStatus == types.RunCompleted {
+		completedAt := time.Now()
+		entry.CompletedAt = &completedAt
+	}
 	entry.UpdatedAt = time.Now()
 	if err := w.provider.PutRunLog(ctx, *entry); err != nil {
 		w.logger.Error("failed to persist run log", "pipeline", pipeline.Name, "error", err)
 	}
 
+	// Append trigger-fired event.
 	if err := w.appendEvent(ctx, types.Event{
 		Kind:       types.EventTriggerFired,
 		PipelineID: pipeline.Name,
 		RunID:      run.RunID,
-		Status:     string(entry.Status),
+		Status:     string(targetStatus),
 		Timestamp:  time.Now(),
 	}); err != nil {
 		w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
 	}
+}
 
-	if entry.Status == types.RunCompletedMonitoring {
-		if err := w.appendEvent(ctx, types.Event{
-			Kind:       types.EventMonitoringStarted,
-			PipelineID: pipeline.Name,
-			RunID:      run.RunID,
-			Message:    fmt.Sprintf("post-completion monitoring started (duration: %s)", monitoringDuration(pipeline)),
-			Timestamp:  time.Now(),
-		}); err != nil {
-			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+// handleTriggerSuccess merges metadata, determines target status, CAS, and logs.
+func (w *Watcher) handleTriggerSuccess(ctx context.Context, pipeline types.PipelineConfig, run *types.RunState, entry *types.RunLogEntry, triggerMeta map[string]interface{}) {
+	if pipeline.Trigger != nil && pipeline.Trigger.Type == types.TriggerCommand {
+		if monitoringEnabled(pipeline) {
+			if run.Metadata == nil {
+				run.Metadata = make(map[string]interface{})
+			}
+			run.Metadata["monitoringStartedAt"] = time.Now().Format(time.RFC3339)
+			w.completeTrigger(ctx, pipeline, run, entry, types.RunCompletedMonitoring, triggerMeta)
+
+			if err := w.appendEvent(ctx, types.Event{
+				Kind:       types.EventMonitoringStarted,
+				PipelineID: pipeline.Name,
+				RunID:      run.RunID,
+				Message:    fmt.Sprintf("post-completion monitoring started (duration: %s)", monitoringDuration(pipeline)),
+				Timestamp:  time.Now(),
+			}); err != nil {
+				w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
+			}
+		} else {
+			w.completeTrigger(ctx, pipeline, run, entry, types.RunCompleted, triggerMeta)
 		}
+	} else {
+		w.completeTrigger(ctx, pipeline, run, entry, types.RunRunning, triggerMeta)
 	}
 
 	w.logger.Info("trigger succeeded", "pipeline", pipeline.Name, "run", run.RunID, "attempt", entry.AttemptNumber)
 }
 
-// checkRunStatus polls the remote trigger system for run completion and transitions
-// the run state accordingly. On success it moves to COMPLETED (or COMPLETED_MONITORING),
-// on failure it marks FAILED with the provider state as failure message.
-func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, run types.RunState, now time.Time) {
-	if pipeline.Trigger == nil {
-		return
-	}
-
-	var headers map[string]string
-	if pipeline.Trigger != nil {
-		headers = pipeline.Trigger.Headers
-	}
-
-	result, err := w.runner.CheckStatus(ctx, pipeline.Trigger.Type, run.Metadata, headers)
-	if err != nil {
-		w.logger.Error("failed to check run status", "pipeline", pipeline.Name, "run", run.RunID, "triggerType", pipeline.Trigger.Type, "error", err)
-		return
-	}
-
+// finalizeRun performs the shared CAS transition, run-log update, event append,
+// and optional failure alert for both the succeeded and failed branches of
+// checkRunStatus.
+func (w *Watcher) finalizeRun(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig,
+	run *types.RunState, succeeded bool, message string, now time.Time) {
 	today := now.Format("2006-01-02")
 
-	switch result.State {
-	case trigger.RunCheckSucceeded:
+	if succeeded {
 		targetStatus := types.RunCompleted
 		var meta map[string]interface{}
 		if monitoringEnabled(pipeline) {
@@ -559,7 +544,7 @@ func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineCon
 			PipelineID: pipeline.Name,
 			RunID:      run.RunID,
 			Status:     string(targetStatus),
-			Message:    fmt.Sprintf("run completed successfully (provider state: %s)", result.Message),
+			Message:    fmt.Sprintf("run completed successfully (provider state: %s)", message),
 			Timestamp:  now,
 		}); err != nil {
 			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
@@ -575,9 +560,8 @@ func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineCon
 				w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
 			}
 		}
-		w.logger.Info("run completed", "pipeline", pipeline.Name, "run", run.RunID, "providerState", result.Message)
-
-	case trigger.RunCheckFailed:
+		w.logger.Info("run completed", "pipeline", pipeline.Name, "run", run.RunID, "providerState", message)
+	} else {
 		ok, err := w.transitionRun(ctx, runTransition{
 			RunID:           run.RunID,
 			ExpectedVersion: run.Version,
@@ -593,17 +577,17 @@ func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineCon
 			ScheduleID:      sched.Name,
 			RunID:           run.RunID,
 			Status:          types.RunFailed,
-			FailureMessage:  fmt.Sprintf("run failed (provider state: %s)", result.Message),
+			FailureMessage:  fmt.Sprintf("run failed (provider state: %s)", message),
 			FailureCategory: types.FailureTransient,
 			SetCompletedAt:  true,
 			UpdatedAt:       now,
 		}); err != nil {
 			w.logger.Error("failed to update run log", "pipeline", pipeline.Name, "error", err)
 		}
-		w.fireAlert(types.Alert{
+		w.fireAlert(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,
-			Message:    fmt.Sprintf("Run %s failed for pipeline %s (provider state: %s)", run.RunID, pipeline.Name, result.Message),
+			Message:    fmt.Sprintf("Run %s failed for pipeline %s (provider state: %s)", run.RunID, pipeline.Name, message),
 			Timestamp:  now,
 		})
 		if err := w.appendEvent(ctx, types.Event{
@@ -611,12 +595,39 @@ func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineCon
 			PipelineID: pipeline.Name,
 			RunID:      run.RunID,
 			Status:     string(types.RunFailed),
-			Message:    fmt.Sprintf("run failed (provider state: %s)", result.Message),
+			Message:    fmt.Sprintf("run failed (provider state: %s)", message),
 			Timestamp:  now,
 		}); err != nil {
 			w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
 		}
-		w.logger.Warn("run failed", "pipeline", pipeline.Name, "run", run.RunID, "providerState", result.Message)
+		w.logger.Warn("run failed", "pipeline", pipeline.Name, "run", run.RunID, "providerState", message)
+	}
+}
+
+// checkRunStatus polls the remote trigger system for run completion and transitions
+// the run state accordingly. On success it moves to COMPLETED (or COMPLETED_MONITORING),
+// on failure it marks FAILED with the provider state as failure message.
+func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineConfig, sched types.ScheduleConfig, run types.RunState, now time.Time) {
+	if pipeline.Trigger == nil {
+		return
+	}
+
+	var headers map[string]string
+	if pipeline.Trigger != nil {
+		headers = pipeline.Trigger.TriggerHeaders()
+	}
+
+	result, err := w.runner.CheckStatus(ctx, pipeline.Trigger.Type, run.Metadata, headers)
+	if err != nil {
+		w.logger.Error("failed to check run status", "pipeline", pipeline.Name, "run", run.RunID, "triggerType", pipeline.Trigger.Type, "error", err)
+		return
+	}
+
+	switch result.State {
+	case trigger.RunCheckSucceeded:
+		w.finalizeRun(ctx, pipeline, sched, &run, true, result.Message, now)
+	case trigger.RunCheckFailed:
+		w.finalizeRun(ctx, pipeline, sched, &run, false, result.Message, now)
 	}
 }
 
@@ -661,8 +672,16 @@ func (w *Watcher) checkEvaluationSLA(ctx context.Context, pipeline types.Pipelin
 	}
 
 	if IsBreached(deadline, now) {
+		// Dedup: one alert per pipeline/schedule/day.
+		date := now.UTC().Format("2006-01-02")
+		lockKey := fmt.Sprintf("sla-breach:%s:%s:%s:eval", pipeline.Name, sched.Name, date)
+		token, err := w.provider.AcquireLock(ctx, lockKey, 24*time.Hour)
+		if err != nil || token == "" {
+			return // already alerted today
+		}
+
 		metrics.SLABreaches.Add(1)
-		w.fireAlert(types.Alert{
+		w.fireAlert(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,
 			Message:    fmt.Sprintf("Pipeline %s evaluation SLA breached: not ready by %s", pipeline.Name, deadlineLabel),
@@ -705,8 +724,16 @@ func (w *Watcher) checkCompletionSLA(ctx context.Context, pipeline types.Pipelin
 	}
 
 	if IsBreached(deadline, now) {
+		// Dedup: one alert per pipeline/schedule/day.
+		date := now.UTC().Format("2006-01-02")
+		lockKey := fmt.Sprintf("sla-breach:%s:%s:%s:completion", pipeline.Name, sched.Name, date)
+		token, err := w.provider.AcquireLock(ctx, lockKey, 24*time.Hour)
+		if err != nil || token == "" {
+			return // already alerted today
+		}
+
 		metrics.SLABreaches.Add(1)
-		w.fireAlert(types.Alert{
+		w.fireAlert(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			PipelineID: pipeline.Name,
 			Message:    fmt.Sprintf("Pipeline %s completion SLA breached: run %s still %s past %s", pipeline.Name, run.RunID, run.Status, deadlineLabel),
@@ -830,7 +857,7 @@ func (w *Watcher) checkMonitoring(ctx context.Context, pipeline types.PipelineCo
 		w.logger.Error("failed to append event", "pipeline", pipeline.Name, "error", err)
 	}
 
-	w.fireAlert(types.Alert{
+	w.fireAlert(ctx, types.Alert{
 		Level:      types.AlertLevelWarning,
 		PipelineID: pipeline.Name,
 		Message:    fmt.Sprintf("Pipeline %s: trait drift detected during monitoring, rerun %s requested", pipeline.Name, rerunID),

@@ -60,7 +60,7 @@ func (c *CompositeRunner) Run(ctx context.Context, evaluatorPath string, input t
 		switch {
 		case err != nil:
 			c.circuitBreaker.RecordFailure(evaluatorPath, types.FailureTransient)
-		case out != nil && out.Status != types.TraitPass:
+		case out != nil && (out.Status == types.TraitError || out.Status == types.TraitFail):
 			c.circuitBreaker.RecordFailure(evaluatorPath, out.FailureCategory)
 		case out != nil:
 			c.circuitBreaker.RecordSuccess(evaluatorPath)

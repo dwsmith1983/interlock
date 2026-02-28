@@ -97,6 +97,21 @@ func TestAcquireLock_Success(t *testing.T) {
 	assert.Equal(t, "proceed", resp.Result)
 }
 
+func TestAcquireLock_ReturnsToken(t *testing.T) {
+	d := testDeps(t)
+
+	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
+		Action:     "acquireLock",
+		PipelineID: "pipe-a",
+		ScheduleID: "daily",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "proceed", resp.Result)
+	token, ok := resp.Payload["lockToken"].(string)
+	assert.True(t, ok, "expected lockToken in payload")
+	assert.NotEmpty(t, token, "expected non-empty lock token")
+}
+
 func TestAcquireLock_AlreadyHeld(t *testing.T) {
 	d := testDeps(t)
 
@@ -249,17 +264,19 @@ func TestCheckEvaluationSLA_Breached(t *testing.T) {
 	var alerts []types.Alert
 	d.AlertFn = func(_ context.Context, a types.Alert) { alerts = append(alerts, a) }
 
-	// Set deadline to 1 hour ago
-	now := time.Now()
-	deadline := now.Add(-1 * time.Hour).Format("15:04")
+	// Use duration format with executionStartTime 2h ago and deadline "1h"
+	// so the resolved deadline is 1h ago — always breached regardless of wall-clock time.
 	seedPipeline(t, d, types.PipelineConfig{
 		Name: "pipe-a",
-		SLA:  &types.SLAConfig{EvaluationDeadline: deadline},
+		SLA:  &types.SLAConfig{EvaluationDeadline: "1h"},
 	})
 
 	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
 		Action:     "checkEvaluationSLA",
 		PipelineID: "pipe-a",
+		Payload: map[string]interface{}{
+			"executionStartTime": time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+		},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "proceed", resp.Result)
@@ -359,19 +376,22 @@ func TestReleaseLock(t *testing.T) {
 	d := testDeps(t)
 
 	// Acquire then release
-	_, _ = d.Provider.AcquireLock(context.Background(), "eval:pipe-a:daily", 5*time.Minute)
+	token, _ := d.Provider.AcquireLock(context.Background(), "eval:pipe-a:daily", 5*time.Minute)
 
 	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
 		Action:     "releaseLock",
 		PipelineID: "pipe-a",
 		ScheduleID: "daily",
+		Payload: map[string]interface{}{
+			"lockToken": token,
+		},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "proceed", resp.Result)
 
 	// Lock should be released — can re-acquire
-	acquired, _ := d.Provider.AcquireLock(context.Background(), "eval:pipe-a:daily", 5*time.Minute)
-	assert.True(t, acquired)
+	reacquired, _ := d.Provider.AcquireLock(context.Background(), "eval:pipe-a:daily", 5*time.Minute)
+	assert.NotEmpty(t, reacquired)
 }
 
 // --- checkDrift ---
@@ -444,7 +464,7 @@ func TestResolvePipeline_Success(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type: types.TriggerHTTP,
-			URL:  "https://example.com/trigger",
+			HTTP: &types.HTTPTriggerConfig{URL: "https://example.com/trigger"},
 		},
 	})
 
@@ -707,16 +727,19 @@ func TestCheckValidationTimeout_Breached(t *testing.T) {
 	var alerts []types.Alert
 	d.AlertFn = func(_ context.Context, a types.Alert) { alerts = append(alerts, a) }
 
-	// Set validation timeout to 1 hour ago
-	deadline := time.Now().Add(-1 * time.Hour).Format("15:04")
+	// Use duration format with executionStartTime 2h ago and timeout "1h"
+	// so the resolved deadline is 1h ago — always timed out regardless of wall-clock time.
 	seedPipeline(t, d, types.PipelineConfig{
 		Name: "pipe-a",
-		SLA:  &types.SLAConfig{ValidationTimeout: deadline},
+		SLA:  &types.SLAConfig{ValidationTimeout: "1h"},
 	})
 
 	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
 		Action:     "checkValidationTimeout",
 		PipelineID: "pipe-a",
+		Payload: map[string]interface{}{
+			"executionStartTime": time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+		},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "proceed", resp.Result)

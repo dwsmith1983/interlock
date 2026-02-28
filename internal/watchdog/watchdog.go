@@ -45,6 +45,7 @@ type CheckOptions struct {
 	StuckRunThreshold time.Duration                                                  // defaults to 30m if zero
 	MissedLookback    time.Duration                                                  // max age of a missed deadline to alert on; defaults to 15m
 	RetriggerFn       func(ctx context.Context, pipelineID, scheduleID string) error // nil = alert-only
+	Pipelines         []types.PipelineConfig                                         // pre-loaded pipelines; if nil, loads from provider
 }
 
 // CheckMissedSchedules scans all registered pipelines for schedules whose
@@ -58,10 +59,14 @@ func CheckMissedSchedules(ctx context.Context, opts CheckOptions) []MissedSchedu
 		opts.Now = time.Now()
 	}
 
-	pipelines, err := opts.Provider.ListPipelines(ctx)
-	if err != nil {
-		opts.Logger.Error("watchdog: failed to list pipelines", "error", err)
-		return nil
+	pipelines := opts.Pipelines
+	if pipelines == nil {
+		var err error
+		pipelines, err = opts.Provider.ListPipelines(ctx)
+		if err != nil {
+			opts.Logger.Error("watchdog: failed to list pipelines", "error", err)
+			return nil
+		}
 	}
 
 	var missed []MissedSchedule
@@ -130,13 +135,13 @@ func checkSchedule(ctx context.Context, opts CheckOptions, pl types.PipelineConf
 
 	// Dedup lock: one alert per pipeline/schedule/day.
 	lockKey := fmt.Sprintf("watchdog:%s:%s:%s", pl.Name, sched.Name, date)
-	acquired, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
+	token, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
 	if err != nil {
 		opts.Logger.Error("watchdog: failed to acquire dedup lock",
 			"key", lockKey, "error", err)
 		return nil
 	}
-	if !acquired {
+	if token == "" {
 		return nil // already alerted
 	}
 
@@ -244,10 +249,14 @@ func CheckStuckRuns(ctx context.Context, opts CheckOptions) []StuckRun {
 		threshold = defaultStuckThreshold
 	}
 
-	pipelines, err := opts.Provider.ListPipelines(ctx)
-	if err != nil {
-		opts.Logger.Error("watchdog: failed to list pipelines for stuck-run check", "error", err)
-		return nil
+	pipelines := opts.Pipelines
+	if pipelines == nil {
+		var err error
+		pipelines, err = opts.Provider.ListPipelines(ctx)
+		if err != nil {
+			opts.Logger.Error("watchdog: failed to list pipelines for stuck-run check", "error", err)
+			return nil
+		}
 	}
 
 	var stuck []StuckRun
@@ -289,13 +298,13 @@ func CheckStuckRuns(ctx context.Context, opts CheckOptions) []StuckRun {
 
 			// Dedup lock: one stuck alert per pipeline/schedule/day.
 			lockKey := fmt.Sprintf("watchdog:stuck:%s:%s:%s", pl.Name, sched.Name, date)
-			acquired, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
+			token, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
 			if err != nil {
 				opts.Logger.Error("watchdog: failed to acquire stuck dedup lock",
 					"key", lockKey, "error", err)
 				continue
 			}
-			if !acquired {
+			if token == "" {
 				continue
 			}
 
@@ -385,10 +394,14 @@ func CheckCompletedMonitoring(ctx context.Context, opts CheckOptions) []Monitori
 		opts.Now = time.Now()
 	}
 
-	pipelines, err := opts.Provider.ListPipelines(ctx)
-	if err != nil {
-		opts.Logger.Error("watchdog: failed to list pipelines for monitoring check", "error", err)
-		return nil
+	pipelines := opts.Pipelines
+	if pipelines == nil {
+		var err error
+		pipelines, err = opts.Provider.ListPipelines(ctx)
+		if err != nil {
+			opts.Logger.Error("watchdog: failed to list pipelines for monitoring check", "error", err)
+			return nil
+		}
 	}
 
 	var results []MonitoringResult
@@ -513,10 +526,14 @@ func CheckFailedRuns(ctx context.Context, opts CheckOptions) []RetriggeredRun {
 		opts.Now = time.Now()
 	}
 
-	pipelines, err := opts.Provider.ListPipelines(ctx)
-	if err != nil {
-		opts.Logger.Error("watchdog: failed to list pipelines for failed-run check", "error", err)
-		return nil
+	pipelines := opts.Pipelines
+	if pipelines == nil {
+		var err error
+		pipelines, err = opts.Provider.ListPipelines(ctx)
+		if err != nil {
+			opts.Logger.Error("watchdog: failed to list pipelines for failed-run check", "error", err)
+			return nil
+		}
 	}
 
 	var retriggered []RetriggeredRun
@@ -555,13 +572,13 @@ func CheckFailedRuns(ctx context.Context, opts CheckOptions) []RetriggeredRun {
 			// Dedup lock: one retrigger per pipeline/schedule/day/attempt.
 			nextAttempt := entry.AttemptNumber + 1
 			lockKey := fmt.Sprintf("watchdog:retrigger:%s:%s:%s:%d", pl.Name, sched.Name, date, nextAttempt)
-			acquired, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
+			token, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
 			if err != nil {
 				opts.Logger.Error("watchdog: failed to acquire retrigger dedup lock",
 					"key", lockKey, "error", err)
 				continue
 			}
-			if !acquired {
+			if token == "" {
 				continue
 			}
 
@@ -704,11 +721,17 @@ func (w *Watchdog) loop(ctx context.Context) {
 }
 
 func (w *Watchdog) scan(ctx context.Context) {
+	pipelines, err := w.provider.ListPipelines(ctx)
+	if err != nil {
+		w.logger.Error("watchdog: failed to list pipelines", "error", err)
+		return
+	}
 	opts := CheckOptions{
 		Provider:    w.provider,
 		CalendarReg: w.calendarReg,
 		AlertFn:     w.alertFn,
 		Logger:      w.logger,
+		Pipelines:   pipelines,
 	}
 	CheckMissedSchedules(ctx, opts)
 	CheckStuckRuns(ctx, opts)

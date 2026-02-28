@@ -11,7 +11,6 @@ import (
 
 	"github.com/dwsmith1983/interlock/internal/provider"
 	luascripts "github.com/dwsmith1983/interlock/internal/provider/redis/lua"
-	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // Compile-time interface satisfaction check.
@@ -27,18 +26,19 @@ const (
 
 // RedisProvider implements the Provider interface backed by Redis/Valkey.
 type RedisProvider struct {
-	client         *goredis.Client
-	prefix         string
-	casScript      *goredis.Script
-	logger         *slog.Logger
-	readinessTTL   time.Duration
-	retentionTTL   time.Duration
-	runIndexLimit  int64
-	eventStreamMax int64
+	client            *goredis.Client
+	prefix            string
+	casScript         *goredis.Script
+	releaseLockScript *goredis.Script
+	logger            *slog.Logger
+	readinessTTL      time.Duration
+	retentionTTL      time.Duration
+	runIndexLimit     int64
+	eventStreamMax    int64
 }
 
 // New creates a new RedisProvider.
-func New(cfg *types.RedisConfig) *RedisProvider {
+func New(cfg *Config) *RedisProvider {
 	client := goredis.NewClient(&goredis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
@@ -72,14 +72,15 @@ func New(cfg *types.RedisConfig) *RedisProvider {
 	}
 
 	return &RedisProvider{
-		client:         client,
-		prefix:         prefix,
-		casScript:      goredis.NewScript(luascripts.CompareAndSwap),
-		logger:         slog.Default(),
-		readinessTTL:   readinessTTL,
-		retentionTTL:   retentionTTL,
-		runIndexLimit:  runIndexLimit,
-		eventStreamMax: eventStreamMax,
+		client:            client,
+		prefix:            prefix,
+		casScript:         goredis.NewScript(luascripts.CompareAndSwap),
+		releaseLockScript: goredis.NewScript(luascripts.ReleaseLock),
+		logger:            slog.Default(),
+		readinessTTL:      readinessTTL,
+		retentionTTL:      retentionTTL,
+		runIndexLimit:     runIndexLimit,
+		eventStreamMax:    eventStreamMax,
 	}
 }
 
@@ -89,14 +90,15 @@ func NewFromClient(client *goredis.Client, prefix string) *RedisProvider {
 		prefix = "interlock:"
 	}
 	return &RedisProvider{
-		client:         client,
-		prefix:         prefix,
-		casScript:      goredis.NewScript(luascripts.CompareAndSwap),
-		logger:         slog.Default(),
-		readinessTTL:   defaultReadinessTTL,
-		retentionTTL:   defaultRetentionTTL,
-		runIndexLimit:  defaultRunIndexLimit,
-		eventStreamMax: defaultEventStreamMax,
+		client:            client,
+		prefix:            prefix,
+		casScript:         goredis.NewScript(luascripts.CompareAndSwap),
+		releaseLockScript: goredis.NewScript(luascripts.ReleaseLock),
+		logger:            slog.Default(),
+		readinessTTL:      defaultReadinessTTL,
+		retentionTTL:      defaultRetentionTTL,
+		runIndexLimit:     defaultRunIndexLimit,
+		eventStreamMax:    defaultEventStreamMax,
 	}
 }
 

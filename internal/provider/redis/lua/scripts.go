@@ -5,3 +5,6 @@ import _ "embed"
 
 //go:embed compare_and_swap.lua
 var CompareAndSwap string
+
+//go:embed release_lock.lua
+var ReleaseLock string

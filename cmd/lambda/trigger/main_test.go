@@ -46,7 +46,7 @@ func TestHandleTrigger_CommandSuccess(t *testing.T) {
 		RunID:      "run-1",
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "echo hello",
+			Command: &types.CommandTriggerConfig{Command: "echo hello"},
 		},
 	})
 	require.NoError(t, err)
@@ -68,7 +68,7 @@ func TestHandleTrigger_CommandFailure(t *testing.T) {
 		RunID:      "run-2",
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "exit 1",
+			Command: &types.CommandTriggerConfig{Command: "exit 1"},
 		},
 	})
 	require.NoError(t, err)
@@ -90,7 +90,7 @@ func TestHandleTrigger_RunStateTransitions(t *testing.T) {
 		RunID:      "run-3",
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 	})
 	require.NoError(t, err)
@@ -112,7 +112,7 @@ func TestHandleTrigger_EmptyCommand(t *testing.T) {
 		RunID:      "run-4",
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "",
+			Command: &types.CommandTriggerConfig{Command: ""},
 		},
 	})
 	require.NoError(t, err)

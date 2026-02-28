@@ -30,7 +30,7 @@ func TestS3Sink_Send(t *testing.T) {
 	assert.Equal(t, "s3", sink.Name())
 
 	now := time.Date(2026, 2, 23, 14, 30, 0, 0, time.UTC)
-	err = sink.Send(types.Alert{
+	err = sink.Send(context.Background(), types.Alert{
 		Level:      types.AlertLevelWarning,
 		PipelineID: "test-pipeline",
 		Message:    "SLA breached",
@@ -56,7 +56,7 @@ func TestS3Sink_EmptyPipelineID(t *testing.T) {
 	sink, err := NewS3Sink("bucket", "alerts", WithS3Client(mock))
 	require.NoError(t, err)
 
-	err = sink.Send(types.Alert{
+	err = sink.Send(context.Background(), types.Alert{
 		Level:     types.AlertLevelError,
 		Message:   "system error",
 		Timestamp: time.Now(),

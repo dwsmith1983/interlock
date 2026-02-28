@@ -9,48 +9,17 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	awslambda "github.com/aws/aws-lambda-go/lambda"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
 )
 
-// SFNAPI is the subset of the Step Functions client we use.
-type SFNAPI interface {
-	StartExecution(ctx context.Context, input *sfn.StartExecutionInput, opts ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error)
-}
-
-var (
-	sfnClient       SFNAPI
-	sfnClientOnce   sync.Once
-	stateMachineARN string
-)
-
-func getSFNClient() (SFNAPI, error) {
-	var err error
-	sfnClientOnce.Do(func() {
-		stateMachineARN = os.Getenv("STATE_MACHINE_ARN")
-		if stateMachineARN == "" {
-			err = fmt.Errorf("STATE_MACHINE_ARN environment variable required")
-			return
-		}
-		awsCfg, loadErr := awsconfig.LoadDefaultConfig(context.Background())
-		if loadErr != nil {
-			err = fmt.Errorf("loading AWS config: %w", loadErr)
-			return
-		}
-		sfnClient = sfn.NewFromConfig(awsCfg)
-	})
-	return sfnClient, err
-}
-
 // handleReplayEvent processes DynamoDB Stream records from the replays table
 // and starts SFN executions with replay=true.
-func handleReplayEvent(ctx context.Context, client SFNAPI, smARN string, event intlambda.StreamEvent) error {
+func handleReplayEvent(ctx context.Context, client intlambda.SFNAPI, smARN string, event intlambda.StreamEvent) error {
 	logger := slog.Default()
 
 	for _, record := range event.Records {
@@ -120,11 +89,14 @@ func ddbAttrString(attrs map[string]events.DynamoDBAttributeValue, key string) s
 }
 
 func handler(ctx context.Context, event intlambda.StreamEvent) error {
-	client, err := getSFNClient()
+	d, err := intlambda.GetDeps()
 	if err != nil {
 		return fmt.Errorf("replay init: %w", err)
 	}
-	return handleReplayEvent(ctx, client, stateMachineARN, event)
+	if d.SFNClient == nil {
+		return fmt.Errorf("STATE_MACHINE_ARN environment variable required")
+	}
+	return handleReplayEvent(ctx, d.SFNClient, d.StateMachineARN, event)
 }
 
 func strPtr(s string) *string { return &s }

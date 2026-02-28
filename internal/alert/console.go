@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/fatih/color"
@@ -20,7 +21,7 @@ func NewConsoleSink() *ConsoleSink {
 func (s *ConsoleSink) Name() string { return "console" }
 
 // Send writes an alert to the terminal with color-coded severity.
-func (s *ConsoleSink) Send(alert types.Alert) error {
+func (s *ConsoleSink) Send(_ context.Context, alert types.Alert) error {
 	var prefix string
 	switch alert.Level {
 	case types.AlertLevelError:

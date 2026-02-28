@@ -46,7 +46,7 @@ func ExecuteCommand(ctx context.Context, command string) error {
 }
 
 // ExecuteHTTP fires an HTTP trigger.
-func ExecuteHTTP(ctx context.Context, cfg *types.TriggerConfig) error {
+func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 	method := cfg.Method
 	if method == "" {
 		method = "POST"

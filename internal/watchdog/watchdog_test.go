@@ -7,165 +7,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dwsmith1983/interlock/internal/testutil"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// ---------------------------------------------------------------------------
-// Minimal mock provider — only the methods the watchdog touches
-// ---------------------------------------------------------------------------
-
-type mockProvider struct {
-	pipelines      []types.PipelineConfig
-	runLogs        map[string]*types.RunLogEntry // key: "pipeline:date:schedule"
-	locks          map[string]bool
-	events         []types.Event
-	putRunLogCalls []types.RunLogEntry
+// monitoringMock wraps testutil.MockProvider to track PutRunLog calls,
+// used by completed-monitoring expiry tests that assert on call counts.
+type monitoringMock struct {
+	*testutil.MockProvider
 	mu             sync.Mutex
+	putRunLogCalls []types.RunLogEntry
 }
 
-func newMockProvider() *mockProvider {
-	return &mockProvider{
-		runLogs: make(map[string]*types.RunLogEntry),
-		locks:   make(map[string]bool),
-	}
-}
-
-func (m *mockProvider) ListPipelines(_ context.Context) ([]types.PipelineConfig, error) {
-	return m.pipelines, nil
-}
-
-func (m *mockProvider) GetRunLog(_ context.Context, pipelineID, date, scheduleID string) (*types.RunLogEntry, error) {
+func (m *monitoringMock) PutRunLog(ctx context.Context, entry types.RunLogEntry) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := pipelineID + ":" + date + ":" + scheduleID
-	return m.runLogs[key], nil
-}
-
-func (m *mockProvider) AcquireLock(_ context.Context, key string, _ time.Duration) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.locks[key] {
-		return false, nil
-	}
-	m.locks[key] = true
-	return true, nil
-}
-
-func (m *mockProvider) AppendEvent(_ context.Context, event types.Event) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.events = append(m.events, event)
-	return nil
-}
-
-// Stubs for the rest of provider.Provider — unused by watchdog.
-func (m *mockProvider) RegisterPipeline(context.Context, types.PipelineConfig) error { return nil }
-func (m *mockProvider) GetPipeline(context.Context, string) (*types.PipelineConfig, error) {
-	return nil, nil
-}
-func (m *mockProvider) DeletePipeline(context.Context, string) error { return nil }
-func (m *mockProvider) PutTrait(context.Context, string, types.TraitEvaluation, time.Duration) error {
-	return nil
-}
-func (m *mockProvider) GetTraits(context.Context, string) ([]types.TraitEvaluation, error) {
-	return nil, nil
-}
-func (m *mockProvider) GetTrait(context.Context, string, string) (*types.TraitEvaluation, error) {
-	return nil, nil
-}
-func (m *mockProvider) PutRunState(context.Context, types.RunState) error { return nil }
-func (m *mockProvider) GetRunState(context.Context, string) (*types.RunState, error) {
-	return nil, nil
-}
-func (m *mockProvider) ListRuns(context.Context, string, int) ([]types.RunState, error) {
-	return nil, nil
-}
-func (m *mockProvider) CompareAndSwapRunState(context.Context, string, int, types.RunState) (bool, error) {
-	return false, nil
-}
-func (m *mockProvider) ListEvents(context.Context, string, int) ([]types.Event, error) {
-	return nil, nil
-}
-func (m *mockProvider) ReadEventsSince(context.Context, string, string, int64) ([]types.EventRecord, error) {
-	return nil, nil
-}
-func (m *mockProvider) PutRunLog(_ context.Context, entry types.RunLogEntry) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := entry.PipelineID + ":" + entry.Date + ":" + entry.ScheduleID
-	entryCopy := entry
-	m.runLogs[key] = &entryCopy
 	m.putRunLogCalls = append(m.putRunLogCalls, entry)
-	return nil
-}
-func (m *mockProvider) ListRunLogs(context.Context, string, int) ([]types.RunLogEntry, error) {
-	return nil, nil
-}
-func (m *mockProvider) PutRerun(context.Context, types.RerunRecord) error { return nil }
-func (m *mockProvider) GetRerun(context.Context, string) (*types.RerunRecord, error) {
-	return nil, nil
-}
-func (m *mockProvider) ListReruns(context.Context, string, int) ([]types.RerunRecord, error) {
-	return nil, nil
-}
-func (m *mockProvider) ListAllReruns(context.Context, int) ([]types.RerunRecord, error) {
-	return nil, nil
-}
-func (m *mockProvider) ReleaseLock(context.Context, string) error { return nil }
-func (m *mockProvider) WriteCascadeMarker(context.Context, string, string, string, string) error {
-	return nil
-}
-func (m *mockProvider) PutLateArrival(context.Context, types.LateArrival) error { return nil }
-func (m *mockProvider) ListLateArrivals(context.Context, string, string, string) ([]types.LateArrival, error) {
-	return nil, nil
-}
-func (m *mockProvider) PutReplay(context.Context, types.ReplayRequest) error { return nil }
-func (m *mockProvider) GetReplay(context.Context, string, string, string) (*types.ReplayRequest, error) {
-	return nil, nil
-}
-func (m *mockProvider) ListReplays(context.Context, int) ([]types.ReplayRequest, error) {
-	return nil, nil
-}
-func (m *mockProvider) PutReadiness(context.Context, types.ReadinessResult) error { return nil }
-func (m *mockProvider) GetReadiness(context.Context, string) (*types.ReadinessResult, error) {
-	return nil, nil
-}
-func (m *mockProvider) Start(context.Context) error { return nil }
-func (m *mockProvider) Stop(context.Context) error  { return nil }
-func (m *mockProvider) Ping(context.Context) error  { return nil }
-
-// New sub-interface stubs (unused by watchdog).
-func (m *mockProvider) PutAlert(context.Context, types.Alert) error { return nil }
-func (m *mockProvider) ListAlerts(context.Context, string, int) ([]types.Alert, error) {
-	return nil, nil
-}
-func (m *mockProvider) ListAllAlerts(context.Context, int) ([]types.Alert, error) { return nil, nil }
-func (m *mockProvider) ListTraitHistory(context.Context, string, string, int) ([]types.TraitEvaluation, error) {
-	return nil, nil
-}
-func (m *mockProvider) PutEvaluationSession(context.Context, types.EvaluationSession) error {
-	return nil
-}
-func (m *mockProvider) GetEvaluationSession(context.Context, string) (*types.EvaluationSession, error) {
-	return nil, nil
-}
-func (m *mockProvider) ListEvaluationSessions(context.Context, string, int) ([]types.EvaluationSession, error) {
-	return nil, nil
-}
-func (m *mockProvider) PutDependency(context.Context, string, string) error    { return nil }
-func (m *mockProvider) RemoveDependency(context.Context, string, string) error { return nil }
-func (m *mockProvider) ListDependents(context.Context, string) ([]string, error) {
-	return nil, nil
-}
-func (m *mockProvider) PutSensorData(context.Context, types.SensorData) error { return nil }
-func (m *mockProvider) GetSensorData(context.Context, string, string) (*types.SensorData, error) {
-	return nil, nil
-}
-func (m *mockProvider) PutQuarantineRecord(context.Context, types.QuarantineRecord) error {
-	return nil
-}
-func (m *mockProvider) GetQuarantineRecord(context.Context, string, string, string) (*types.QuarantineRecord, error) {
-	return nil, nil
+	m.mu.Unlock()
+	return m.MockProvider.PutRunLog(ctx, entry)
 }
 
 // ---------------------------------------------------------------------------
@@ -210,22 +68,31 @@ func collectAlerts(t *testing.T) (alertFn func(context.Context, types.Alert), ge
 		}
 }
 
+func mustPutRunLog(t *testing.T, p interface {
+	PutRunLog(context.Context, types.RunLogEntry) error
+}, entry types.RunLogEntry) {
+	t.Helper()
+	if err := p.PutRunLog(context.Background(), entry); err != nil {
+		t.Fatalf("PutRunLog: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 func TestNoRunLog_FiresAlert(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
+	mp := testutil.NewMockProvider()
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:10:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: []types.PipelineConfig{pipelineWithDeadline("10:00")},
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(missed) != 1 {
@@ -247,18 +114,21 @@ func TestNoRunLog_FiresAlert(t *testing.T) {
 }
 
 func TestRunLogExists_NoAlert(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{Status: types.RunPending}
+	mp := testutil.NewMockProvider()
+	mustPutRunLog(t, mp, types.RunLogEntry{
+		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
+		Status: types.RunPending,
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: []types.PipelineConfig{pipelineWithDeadline("10:00")},
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(missed) != 0 {
@@ -270,18 +140,21 @@ func TestRunLogExists_NoAlert(t *testing.T) {
 }
 
 func TestFailedRunLog_NoAlert(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{Status: types.RunFailed}
+	mp := testutil.NewMockProvider()
+	mustPutRunLog(t, mp, types.RunLogEntry{
+		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
+		Status: types.RunFailed,
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: []types.PipelineConfig{pipelineWithDeadline("10:00")},
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(missed) != 0 {
@@ -293,17 +166,17 @@ func TestFailedRunLog_NoAlert(t *testing.T) {
 }
 
 func TestDeadlineNotPassed_NoAlert(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("15:00")}
+	mp := testutil.NewMockProvider()
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: []types.PipelineConfig{pipelineWithDeadline("15:00")},
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(missed) != 0 {
@@ -315,20 +188,20 @@ func TestDeadlineNotPassed_NoAlert(t *testing.T) {
 }
 
 func TestExcludedDay_NoAlert(t *testing.T) {
-	mp := newMockProvider()
+	mp := testutil.NewMockProvider()
 	// 2026-02-24 is a Tuesday
 	pl := pipelineWithDeadline("10:00")
 	pl.Exclusions = &types.ExclusionConfig{Days: []string{"tuesday"}}
-	mp.pipelines = []types.PipelineConfig{pl}
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: []types.PipelineConfig{pl},
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(missed) != 0 {
@@ -340,19 +213,19 @@ func TestExcludedDay_NoAlert(t *testing.T) {
 }
 
 func TestWatchDisabled_NoAlert(t *testing.T) {
-	mp := newMockProvider()
+	mp := testutil.NewMockProvider()
 	pl := pipelineWithDeadline("10:00")
 	pl.Watch = &types.PipelineWatchConfig{Enabled: boolPtr(false)}
-	mp.pipelines = []types.PipelineConfig{pl}
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: []types.PipelineConfig{pl},
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(missed) != 0 {
@@ -364,21 +237,20 @@ func TestWatchDisabled_NoAlert(t *testing.T) {
 }
 
 func TestNoDeadlineConfigured_NoAlert(t *testing.T) {
-	mp := newMockProvider()
-	// Pipeline with trigger but no SLA/deadline
-	mp.pipelines = []types.PipelineConfig{{
-		Name:    "p1",
-		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
-	}}
+	mp := testutil.NewMockProvider()
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
 		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Pipelines: []types.PipelineConfig{{
+			Name:    "p1",
+			Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
+		}},
+		AlertFn: alertFn,
+		Logger:  slog.Default(),
+		Now:     now,
 	})
 
 	if len(missed) != 0 {
@@ -390,7 +262,7 @@ func TestNoDeadlineConfigured_NoAlert(t *testing.T) {
 }
 
 func TestScheduleDeadlinePrecedence(t *testing.T) {
-	mp := newMockProvider()
+	mp := testutil.NewMockProvider()
 	// Schedule deadline at 14:00, SLA at 10:00. Now at 12:00.
 	// Schedule deadline hasn't passed yet (14:00) so no alert,
 	// even though SLA deadline (10:00) has passed.
@@ -402,16 +274,16 @@ func TestScheduleDeadlinePrecedence(t *testing.T) {
 			{Name: "h14", Deadline: "14:00"},
 		},
 	}
-	mp.pipelines = []types.PipelineConfig{pl}
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T12:00:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: []types.PipelineConfig{pl},
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(missed) != 0 {
@@ -423,7 +295,7 @@ func TestScheduleDeadlinePrecedence(t *testing.T) {
 }
 
 func TestMultiScheduleIndependent(t *testing.T) {
-	mp := newMockProvider()
+	mp := testutil.NewMockProvider()
 	pl := types.PipelineConfig{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
@@ -432,18 +304,21 @@ func TestMultiScheduleIndependent(t *testing.T) {
 			{Name: "h14", Deadline: "14:30"},
 		},
 	}
-	mp.pipelines = []types.PipelineConfig{pl}
 	// h10 has a run log entry; h14 does not.
-	mp.runLogs["p1:2026-02-24:h10"] = &types.RunLogEntry{Status: types.RunCompleted}
+	mustPutRunLog(t, mp, types.RunLogEntry{
+		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "h10",
+		Status: types.RunCompleted,
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T14:40:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: []types.PipelineConfig{pl},
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(missed) != 1 {
@@ -458,17 +333,17 @@ func TestMultiScheduleIndependent(t *testing.T) {
 }
 
 func TestDedup_SecondCallNoAlert(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
+	mp := testutil.NewMockProvider()
 
 	alertFn, getAlerts := collectAlerts(t)
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:10:00Z")
 
 	opts := CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: []types.PipelineConfig{pipelineWithDeadline("10:00")},
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	}
 
 	// First call should fire alert.
@@ -490,18 +365,18 @@ func TestDedup_SecondCallNoAlert(t *testing.T) {
 }
 
 func TestHistoricalDeadline_NoAlert(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline("10:00")}
+	mp := testutil.NewMockProvider()
 
 	alertFn, getAlerts := collectAlerts(t)
 	// Deadline was 2 hours ago — well outside the default 15m lookback.
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T12:00:00Z")
 
 	missed := CheckMissedSchedules(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: []types.PipelineConfig{pipelineWithDeadline("10:00")},
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(missed) != 0 {
@@ -517,24 +392,26 @@ func TestHistoricalDeadline_NoAlert(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStuckRun_RunningPastThreshold(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
+		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunRunning,
 		RunID:     "run-1",
 		UpdatedAt: now.Add(-45 * time.Minute), // 45 min ago
-	}
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 	stuck := CheckStuckRuns(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(stuck) != 1 {
@@ -556,23 +433,25 @@ func TestStuckRun_RunningPastThreshold(t *testing.T) {
 }
 
 func TestStuckRun_NotYetStuck(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
+		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunRunning,
 		UpdatedAt: now.Add(-10 * time.Minute), // only 10 min ago
-	}
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 	stuck := CheckStuckRuns(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(stuck) != 0 {
@@ -584,23 +463,25 @@ func TestStuckRun_NotYetStuck(t *testing.T) {
 }
 
 func TestStuckRun_CompletedRun_NotStuck(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
+		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunCompleted,
 		UpdatedAt: now.Add(-60 * time.Minute),
-	}
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 	stuck := CheckStuckRuns(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(stuck) != 0 {
@@ -612,8 +493,8 @@ func TestStuckRun_CompletedRun_NotStuck(t *testing.T) {
 }
 
 func TestStuckRun_NoRunLog(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
@@ -621,10 +502,11 @@ func TestStuckRun_NoRunLog(t *testing.T) {
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
 	alertFn, getAlerts := collectAlerts(t)
 	stuck := CheckStuckRuns(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(stuck) != 0 {
@@ -636,24 +518,26 @@ func TestStuckRun_NoRunLog(t *testing.T) {
 }
 
 func TestStuckRun_Dedup(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
+		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunRunning,
 		RunID:     "run-1",
 		UpdatedAt: now.Add(-45 * time.Minute),
-	}
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 	opts := CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	}
 
 	stuck1 := CheckStuckRuns(context.Background(), opts)
@@ -672,24 +556,26 @@ func TestStuckRun_Dedup(t *testing.T) {
 }
 
 func TestStuckRun_PendingStatus(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
+		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunPending,
 		RunID:     "run-1",
 		UpdatedAt: now.Add(-40 * time.Minute),
-	}
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 	stuck := CheckStuckRuns(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(stuck) != 1 {
@@ -708,24 +594,25 @@ func TestStuckRun_PendingStatus(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCheckCompletedMonitoring_Expired(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithMonitoring("20m")}
+	mp := &monitoringMock{MockProvider: testutil.NewMockProvider()}
+	pipelines := []types.PipelineConfig{pipelineWithMonitoring("20m")}
 
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T11:00:00Z")
 	// Run entered COMPLETED_MONITORING 25 minutes ago (past the 20m window).
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp.MockProvider, types.RunLogEntry{
 		PipelineID: "p1",
 		Date:       "2026-02-24",
 		ScheduleID: "daily",
 		Status:     types.RunCompletedMonitoring,
 		RunID:      "run-1",
 		UpdatedAt:  now.Add(-25 * time.Minute),
-	}
+	})
 
 	results := CheckCompletedMonitoring(context.Background(), CheckOptions{
-		Provider: mp,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(results) != 1 {
@@ -748,33 +635,35 @@ func TestCheckCompletedMonitoring_Expired(t *testing.T) {
 		t.Errorf("expected COMPLETED status in PutRunLog, got %s", mp.putRunLogCalls[0].Status)
 	}
 	// Verify audit event.
-	if len(mp.events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(mp.events))
+	events := mp.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if mp.events[0].Kind != types.EventMonitoringCompleted {
-		t.Errorf("expected MONITORING_COMPLETED event, got %s", mp.events[0].Kind)
+	if events[0].Kind != types.EventMonitoringCompleted {
+		t.Errorf("expected MONITORING_COMPLETED event, got %s", events[0].Kind)
 	}
 }
 
 func TestCheckCompletedMonitoring_StillInWindow(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithMonitoring("20m")}
+	mp := &monitoringMock{MockProvider: testutil.NewMockProvider()}
+	pipelines := []types.PipelineConfig{pipelineWithMonitoring("20m")}
 
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T11:00:00Z")
 	// Run entered COMPLETED_MONITORING only 10 minutes ago (within 20m window).
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp.MockProvider, types.RunLogEntry{
 		PipelineID: "p1",
 		Date:       "2026-02-24",
 		ScheduleID: "daily",
 		Status:     types.RunCompletedMonitoring,
 		RunID:      "run-1",
 		UpdatedAt:  now.Add(-10 * time.Minute),
-	}
+	})
 
 	results := CheckCompletedMonitoring(context.Background(), CheckOptions{
-		Provider: mp,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(results) != 0 {
@@ -789,24 +678,25 @@ func TestCheckCompletedMonitoring_StillInWindow(t *testing.T) {
 }
 
 func TestCheckCompletedMonitoring_IgnoresCompleted(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{pipelineWithMonitoring("20m")}
+	mp := &monitoringMock{MockProvider: testutil.NewMockProvider()}
+	pipelines := []types.PipelineConfig{pipelineWithMonitoring("20m")}
 
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T11:00:00Z")
 	// Run is already COMPLETED — should be ignored.
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp.MockProvider, types.RunLogEntry{
 		PipelineID: "p1",
 		Date:       "2026-02-24",
 		ScheduleID: "daily",
 		Status:     types.RunCompleted,
 		RunID:      "run-1",
 		UpdatedAt:  now.Add(-60 * time.Minute),
-	}
+	})
 
 	results := CheckCompletedMonitoring(context.Background(), CheckOptions{
-		Provider: mp,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(results) != 0 {
@@ -820,26 +710,28 @@ func TestCheckCompletedMonitoring_IgnoresCompleted(t *testing.T) {
 }
 
 func TestStuckRun_CustomThreshold(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
+		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunRunning,
 		RunID:     "run-1",
 		UpdatedAt: now.Add(-20 * time.Minute), // 20 min ago
-	}
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 
 	// Default 30m threshold: not stuck
 	stuck := CheckStuckRuns(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 	if len(stuck) != 0 {
 		t.Fatalf("expected 0 stuck with default threshold, got %d", len(stuck))
@@ -848,6 +740,7 @@ func TestStuckRun_CustomThreshold(t *testing.T) {
 	// Custom 15m threshold: stuck
 	stuck = CheckStuckRuns(context.Background(), CheckOptions{
 		Provider:          mp,
+		Pipelines:         pipelines,
 		AlertFn:           alertFn,
 		Logger:            slog.Default(),
 		Now:               now,
@@ -862,24 +755,26 @@ func TestStuckRun_CustomThreshold(t *testing.T) {
 }
 
 func TestStuckRun_WatchDisabled(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 		Watch:   &types.PipelineWatchConfig{Enabled: boolPtr(false)},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
+		PipelineID: "p1", Date: "2026-02-24", ScheduleID: "daily",
 		Status:    types.RunRunning,
 		UpdatedAt: now.Add(-60 * time.Minute),
-	}
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 	stuck := CheckStuckRuns(context.Background(), CheckOptions{
-		Provider: mp,
-		AlertFn:  alertFn,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		AlertFn:   alertFn,
+		Logger:    slog.Default(),
+		Now:       now,
 	})
 
 	if len(stuck) != 0 {
@@ -895,8 +790,8 @@ func TestStuckRun_WatchDisabled(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCheckFailedRuns_Retrigger(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 		Retry: &types.RetryPolicy{
@@ -905,7 +800,7 @@ func TestCheckFailedRuns_Retrigger(t *testing.T) {
 		},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID:      "p1",
 		Date:            "2026-02-24",
 		ScheduleID:      "daily",
@@ -913,7 +808,7 @@ func TestCheckFailedRuns_Retrigger(t *testing.T) {
 		AttemptNumber:   1,
 		FailureCategory: types.FailureTimeout,
 		RunID:           "run-1",
-	}
+	})
 
 	alertFn, getAlerts := collectAlerts(t)
 	var retriggerCalls []string
@@ -924,6 +819,7 @@ func TestCheckFailedRuns_Retrigger(t *testing.T) {
 
 	result := CheckFailedRuns(context.Background(), CheckOptions{
 		Provider:    mp,
+		Pipelines:   pipelines,
 		AlertFn:     alertFn,
 		Logger:      slog.Default(),
 		Now:         now,
@@ -952,22 +848,25 @@ func TestCheckFailedRuns_Retrigger(t *testing.T) {
 }
 
 func TestCheckFailedRuns_NilRetriggerFn(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 		Retry:   &types.RetryPolicy{MaxAttempts: 3},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID: "p1",
+		Date:       "2026-02-24",
+		ScheduleID: "daily",
 		Status:     types.RunFailed,
-	}
+	})
 
 	result := CheckFailedRuns(context.Background(), CheckOptions{
-		Provider: mp,
-		Logger:   slog.Default(),
-		Now:      now,
+		Provider:  mp,
+		Pipelines: pipelines,
+		Logger:    slog.Default(),
+		Now:       now,
 		// RetriggerFn is nil
 	})
 
@@ -977,8 +876,8 @@ func TestCheckFailedRuns_NilRetriggerFn(t *testing.T) {
 }
 
 func TestCheckFailedRuns_MaxAttempts(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 		Retry: &types.RetryPolicy{
@@ -987,18 +886,19 @@ func TestCheckFailedRuns_MaxAttempts(t *testing.T) {
 		},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID:      "p1",
 		Date:            "2026-02-24",
 		ScheduleID:      "daily",
 		Status:          types.RunFailed,
 		AttemptNumber:   2, // Already at max
 		FailureCategory: types.FailureTimeout,
-	}
+	})
 
 	retriggerFn := func(_ context.Context, _, _ string) error { return nil }
 	result := CheckFailedRuns(context.Background(), CheckOptions{
 		Provider:    mp,
+		Pipelines:   pipelines,
 		Logger:      slog.Default(),
 		Now:         now,
 		RetriggerFn: retriggerFn,
@@ -1010,8 +910,8 @@ func TestCheckFailedRuns_MaxAttempts(t *testing.T) {
 }
 
 func TestCheckFailedRuns_NonRetryableCategory(t *testing.T) {
-	mp := newMockProvider()
-	mp.pipelines = []types.PipelineConfig{{
+	mp := testutil.NewMockProvider()
+	pipelines := []types.PipelineConfig{{
 		Name:    "p1",
 		Trigger: &types.TriggerConfig{Type: types.TriggerHTTP},
 		Retry: &types.RetryPolicy{
@@ -1020,18 +920,19 @@ func TestCheckFailedRuns_NonRetryableCategory(t *testing.T) {
 		},
 	}}
 	now, _ := time.Parse(time.RFC3339, "2026-02-24T10:30:00Z")
-	mp.runLogs["p1:2026-02-24:daily"] = &types.RunLogEntry{
+	mustPutRunLog(t, mp, types.RunLogEntry{
 		PipelineID:      "p1",
 		Date:            "2026-02-24",
 		ScheduleID:      "daily",
 		Status:          types.RunFailed,
 		AttemptNumber:   1,
 		FailureCategory: types.FailurePermanent, // Not in retryable list
-	}
+	})
 
 	retriggerFn := func(_ context.Context, _, _ string) error { return nil }
 	result := CheckFailedRuns(context.Background(), CheckOptions{
 		Provider:    mp,
+		Pipelines:   pipelines,
 		Logger:      slog.Default(),
 		Now:         now,
 		RetriggerFn: retriggerFn,
@@ -1043,11 +944,13 @@ func TestCheckFailedRuns_NonRetryableCategory(t *testing.T) {
 }
 
 func TestStartStop(t *testing.T) {
-	mp := newMockProvider()
+	mp := testutil.NewMockProvider()
 	// Use a deadline 2 minutes in the past so it falls within the lookback window.
 	// Use local time (not UTC) since ParseSLADeadline uses now.Location().
 	recentDeadline := time.Now().Add(-2 * time.Minute).Format("15:04")
-	mp.pipelines = []types.PipelineConfig{pipelineWithDeadline(recentDeadline)}
+	if err := mp.RegisterPipeline(context.Background(), pipelineWithDeadline(recentDeadline)); err != nil {
+		t.Fatalf("RegisterPipeline: %v", err)
+	}
 
 	alertFn, _ := collectAlerts(t)
 	w := New(mp, nil, alertFn, slog.Default(), 50*time.Millisecond)
@@ -1055,18 +958,17 @@ func TestStartStop(t *testing.T) {
 	ctx := context.Background()
 	w.Start(ctx)
 
-	// Give it a couple ticks.
-	time.Sleep(150 * time.Millisecond)
+	// Poll until the watchdog has appended at least one event.
+	testutil.WaitFor(t, 2*time.Second, func() bool {
+		return len(mp.Events()) > 0
+	}, "watchdog should append at least one event")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	w.Stop(shutdownCtx)
 
 	// Verify events were appended (scan ran at least once).
-	mp.mu.Lock()
-	eventCount := len(mp.events)
-	mp.mu.Unlock()
-	if eventCount == 0 {
+	if len(mp.Events()) == 0 {
 		t.Error("expected at least one event from watchdog scan")
 	}
 }

@@ -69,7 +69,7 @@ func (p *DynamoDBProvider) GetReplay(ctx context.Context, pipelineID, date, sche
 		return nil, nil
 	}
 
-	ttlVal, _ := attributeInt(out.Items[0])
+	ttlVal, _ := extractTTL(out.Items[0])
 	if isExpired(ttlVal) {
 		return nil, nil
 	}
@@ -107,7 +107,7 @@ func (p *DynamoDBProvider) ListReplays(ctx context.Context, limit int) ([]types.
 
 	var replays []types.ReplayRequest
 	for _, item := range out.Items {
-		ttlVal, _ := attributeInt(item)
+		ttlVal, _ := extractTTL(item)
 		if isExpired(ttlVal) {
 			continue
 		}

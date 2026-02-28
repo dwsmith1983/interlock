@@ -16,7 +16,7 @@ type EMRServerlessAPI interface {
 }
 
 // ExecuteEMRServerless starts an EMR Serverless job run.
-func ExecuteEMRServerless(ctx context.Context, cfg *types.TriggerConfig, client EMRServerlessAPI) (map[string]interface{}, error) {
+func ExecuteEMRServerless(ctx context.Context, cfg *types.EMRServerlessTriggerConfig, client EMRServerlessAPI) (map[string]interface{}, error) {
 	if cfg.ApplicationID == "" {
 		return nil, fmt.Errorf("emr-serverless trigger: applicationId is required")
 	}

@@ -16,12 +16,12 @@ type EMRAPI interface {
 }
 
 // ExecuteEMR adds a step to an existing EMR cluster.
-func ExecuteEMR(ctx context.Context, cfg *types.TriggerConfig, client EMRAPI) (map[string]interface{}, error) {
+func ExecuteEMR(ctx context.Context, cfg *types.EMRTriggerConfig, client EMRAPI) (map[string]interface{}, error) {
 	if cfg.ClusterID == "" {
 		return nil, fmt.Errorf("emr trigger: clusterId is required")
 	}
-	if cfg.JobName == "" {
-		return nil, fmt.Errorf("emr trigger: jobName is required (step name)")
+	if cfg.StepName == "" {
+		return nil, fmt.Errorf("emr trigger: stepName is required")
 	}
 	if cfg.Command == "" {
 		return nil, fmt.Errorf("emr trigger: command is required (JAR path)")
@@ -36,7 +36,7 @@ func ExecuteEMR(ctx context.Context, cfg *types.TriggerConfig, client EMRAPI) (m
 		JobFlowId: &cfg.ClusterID,
 		Steps: []emrtypes.StepConfig{
 			{
-				Name: &cfg.JobName,
+				Name: &cfg.StepName,
 				HadoopJarStep: &emrtypes.HadoopJarStepConfig{
 					Jar:  &cfg.Command,
 					Args: args,

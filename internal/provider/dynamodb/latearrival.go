@@ -60,7 +60,7 @@ func (p *DynamoDBProvider) ListLateArrivals(ctx context.Context, pipelineID, dat
 
 	var arrivals []types.LateArrival
 	for _, item := range out.Items {
-		ttlVal, _ := attributeInt(item)
+		ttlVal, _ := extractTTL(item)
 		if isExpired(ttlVal) {
 			continue
 		}

@@ -19,7 +19,10 @@ func (p *RedisProvider) WriteCascadeMarker(ctx context.Context, pipelineID, sche
 		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("marshaling cascade marker for pipeline %q: %w", pipelineID, err)
 	}
-	return p.client.Set(ctx, key, data, p.retentionTTL).Err()
+	if err := p.client.Set(ctx, key, data, p.retentionTTL).Err(); err != nil {
+		return fmt.Errorf("writing cascade marker for pipeline %q: %w", pipelineID, err)
+	}
+	return nil
 }

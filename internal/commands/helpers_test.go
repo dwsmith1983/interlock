@@ -5,13 +5,14 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dwsmith1983/interlock/internal/provider/redis"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 func TestNewProvider_Redis(t *testing.T) {
 	cfg := &types.ProjectConfig{
 		Provider: "redis",
-		Redis:    &types.RedisConfig{Addr: "localhost:6379"},
+		Redis:    &redis.Config{Addr: "localhost:6379"},
 	}
 	p, err := newProvider(cfg)
 	if err != nil {

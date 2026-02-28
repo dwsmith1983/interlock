@@ -32,8 +32,7 @@ func TestExecuteSFN_Success(t *testing.T) {
 		startOut: &sfn.StartExecutionOutput{ExecutionArn: &arn},
 	}
 
-	cfg := &types.TriggerConfig{
-		Type:            types.TriggerStepFunction,
+	cfg := &types.StepFunctionTriggerConfig{
 		StateMachineARN: "arn:aws:states:us-east-1:123456789:stateMachine:my-sm",
 	}
 
@@ -48,8 +47,7 @@ func TestExecuteSFN_WithArguments(t *testing.T) {
 		startOut: &sfn.StartExecutionOutput{ExecutionArn: &arn},
 	}
 
-	cfg := &types.TriggerConfig{
-		Type:            types.TriggerStepFunction,
+	cfg := &types.StepFunctionTriggerConfig{
 		StateMachineARN: "arn:aws:states:us-east-1:123:stateMachine:sm",
 		Arguments:       map[string]string{"key": "value"},
 	}
@@ -61,7 +59,7 @@ func TestExecuteSFN_WithArguments(t *testing.T) {
 
 func TestExecuteSFN_MissingARN(t *testing.T) {
 	client := &mockSFNClient{}
-	cfg := &types.TriggerConfig{Type: types.TriggerStepFunction}
+	cfg := &types.StepFunctionTriggerConfig{}
 	_, err := ExecuteSFN(context.Background(), cfg, client)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "stateMachineArn is required")
@@ -69,8 +67,7 @@ func TestExecuteSFN_MissingARN(t *testing.T) {
 
 func TestExecuteSFN_APIError(t *testing.T) {
 	client := &mockSFNClient{startErr: assert.AnError}
-	cfg := &types.TriggerConfig{
-		Type:            types.TriggerStepFunction,
+	cfg := &types.StepFunctionTriggerConfig{
 		StateMachineARN: "arn:aws:states:us-east-1:123:stateMachine:sm",
 	}
 	_, err := ExecuteSFN(context.Background(), cfg, client)

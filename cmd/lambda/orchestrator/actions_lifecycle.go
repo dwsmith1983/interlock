@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/dwsmith1983/interlock/internal/cascade"
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -17,41 +18,9 @@ func notifyDownstream(ctx context.Context, d *intlambda.Deps, req intlambda.Orch
 		date = req.Date
 	}
 
-	// Use dependency index for O(1) downstream lookup.
-	dependents, err := d.Provider.ListDependents(ctx, req.PipelineID)
+	notified, err := cascade.NotifyDownstream(ctx, d.Provider, req.PipelineID, req.ScheduleID, date, d.Logger)
 	if err != nil {
-		d.Logger.Warn("ListDependents failed, falling back to scan", "pipeline", req.PipelineID, "error", err)
-	}
-
-	// Fallback to full scan if dependency index returns empty (bootstrap period).
-	if len(dependents) == 0 {
-		dependents, err = scanDependents(ctx, d, req.PipelineID)
-		if err != nil {
-			return errorResponse(req.Action, fmt.Sprintf("scanning dependents: %v", err)), nil
-		}
-	}
-
-	// Resolve cascade backpressure delay.
-	var cascadeDelay time.Duration
-	pipeline, err := d.Provider.GetPipeline(ctx, req.PipelineID)
-	if err == nil && pipeline != nil && pipeline.Cascade != nil && pipeline.Cascade.DelayBetween != "" {
-		if d, parseErr := time.ParseDuration(pipeline.Cascade.DelayBetween); parseErr == nil {
-			cascadeDelay = d
-		}
-	}
-
-	var notified []string
-	for i, downstream := range dependents {
-		// Apply backpressure delay between cascade writes.
-		if cascadeDelay > 0 && i > 0 {
-			time.Sleep(cascadeDelay)
-		}
-		if writeErr := d.Provider.WriteCascadeMarker(ctx, downstream, req.ScheduleID, date, req.PipelineID); writeErr != nil {
-			d.Logger.Error("failed to write cascade marker",
-				"downstream", downstream, "schedule", req.ScheduleID, "error", writeErr)
-		} else {
-			notified = append(notified, downstream+"/"+req.ScheduleID)
-		}
+		return errorResponse(req.Action, fmt.Sprintf("scanning dependents: %v", err)), nil
 	}
 
 	return intlambda.OrchestratorResponse{
@@ -61,28 +30,6 @@ func notifyDownstream(ctx context.Context, d *intlambda.Deps, req intlambda.Orch
 			"notified": notified,
 		},
 	}, nil
-}
-
-// scanDependents performs a full pipeline scan to find downstreams (fallback path).
-func scanDependents(ctx context.Context, d *intlambda.Deps, upstreamID string) ([]string, error) {
-	pipelines, err := d.Provider.ListPipelines(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var dependents []string
-	for _, p := range pipelines {
-		if p.Name == upstreamID {
-			continue
-		}
-		for _, tc := range p.Traits {
-			up, _ := tc.Config["upstreamPipeline"].(string)
-			if up == upstreamID {
-				dependents = append(dependents, p.Name)
-				break
-			}
-		}
-	}
-	return dependents, nil
 }
 
 func checkDrift(ctx context.Context, d *intlambda.Deps, req intlambda.OrchestratorRequest) (intlambda.OrchestratorResponse, error) {

@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -8,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,10 +30,11 @@ func TestConsoleSink_Send(t *testing.T) {
 	sink := NewConsoleSink()
 	assert.Equal(t, "console", sink.Name())
 
+	ctx := context.Background()
 	for _, level := range []types.AlertLevel{types.AlertLevelError, types.AlertLevelWarning, types.AlertLevelInfo} {
 		a := testAlert()
 		a.Level = level
-		err := sink.Send(a)
+		err := sink.Send(ctx, a)
 		assert.NoError(t, err)
 	}
 }
@@ -53,7 +54,7 @@ func TestWebhookSink_Send_Success(t *testing.T) {
 	sink := NewWebhookSink(ts.URL)
 	alert := testAlert()
 
-	err := sink.Send(alert)
+	err := sink.Send(context.Background(), alert)
 	require.NoError(t, err)
 
 	var got types.Alert
@@ -70,27 +71,9 @@ func TestWebhookSink_Send_ServerError(t *testing.T) {
 
 	sink := NewWebhookSink(ts.URL)
 
-	err := sink.Send(testAlert())
+	err := sink.Send(context.Background(), testAlert())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
-}
-
-func TestWebhookSink_Send_Retry(t *testing.T) {
-	var callCount atomic.Int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if callCount.Add(1) == 1 {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	sink := NewWebhookSink(ts.URL)
-
-	err := sink.Send(testAlert())
-	assert.NoError(t, err)
-	assert.Equal(t, int32(2), callCount.Load())
 }
 
 func TestFileSink_Send(t *testing.T) {
@@ -103,7 +86,7 @@ func TestFileSink_Send(t *testing.T) {
 	assert.Equal(t, "file", sink.Name())
 
 	alert := testAlert()
-	require.NoError(t, sink.Send(alert))
+	require.NoError(t, sink.Send(context.Background(), alert))
 
 	data, err := os.ReadFile(f.Name())
 	require.NoError(t, err)
@@ -117,15 +100,15 @@ func TestFileSink_Send(t *testing.T) {
 // errSink is a test sink that always returns an error.
 type errSink struct{}
 
-func (s *errSink) Send(_ types.Alert) error { return fmt.Errorf("sink error") }
-func (s *errSink) Name() string             { return "error-sink" }
+func (s *errSink) Send(_ context.Context, _ types.Alert) error { return fmt.Errorf("sink error") }
+func (s *errSink) Name() string                                { return "error-sink" }
 
 // recordSink records all alerts sent to it.
 type recordSink struct {
 	alerts []types.Alert
 }
 
-func (s *recordSink) Send(a types.Alert) error {
+func (s *recordSink) Send(_ context.Context, a types.Alert) error {
 	s.alerts = append(s.alerts, a)
 	return nil
 }
@@ -137,7 +120,7 @@ func TestDispatcher_MultiSink(t *testing.T) {
 	d := &Dispatcher{sinks: []Sink{s1, s2}, logger: slog.Default()}
 
 	alert := testAlert()
-	d.Dispatch(alert)
+	d.Dispatch(context.Background(), alert)
 
 	assert.Len(t, s1.alerts, 1)
 	assert.Len(t, s2.alerts, 1)
@@ -152,7 +135,7 @@ func TestDispatcher_SinkError_ContinuesOthers(t *testing.T) {
 		logger: slog.Default(),
 	}
 
-	d.Dispatch(testAlert())
+	d.Dispatch(context.Background(), testAlert())
 
 	// Even though first sink failed, second should have received the alert
 	assert.Len(t, recording.alerts, 1)

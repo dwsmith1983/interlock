@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dwsmith1983/interlock/internal/provider/redis"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,8 +33,10 @@ alerts:
 	cfg, err := Load(dir)
 	require.NoError(t, err)
 	assert.Equal(t, "redis", cfg.Provider)
-	assert.Equal(t, "localhost:6379", cfg.Redis.Addr)
-	assert.Equal(t, "interlock:", cfg.Redis.KeyPrefix)
+	rc, ok := cfg.Redis.(*redis.Config)
+	require.True(t, ok, "Redis config should be *redis.Config")
+	assert.Equal(t, "localhost:6379", rc.Addr)
+	assert.Equal(t, "interlock:", rc.KeyPrefix)
 	assert.Equal(t, ":3000", cfg.Server.Addr)
 	assert.Len(t, cfg.ArchetypeDirs, 1)
 	assert.Len(t, cfg.Alerts, 1)

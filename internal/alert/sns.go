@@ -54,7 +54,7 @@ func NewSNSSink(topicARN string, opts ...SNSSinkOption) (*SNSSink, error) {
 func (s *SNSSink) Name() string { return "sns" }
 
 // Send publishes the alert as JSON to the configured SNS topic.
-func (s *SNSSink) Send(alert types.Alert) error {
+func (s *SNSSink) Send(ctx context.Context, alert types.Alert) error {
 	data, err := json.Marshal(alert)
 	if err != nil {
 		return fmt.Errorf("marshaling alert: %w", err)
@@ -65,7 +65,7 @@ func (s *SNSSink) Send(alert types.Alert) error {
 		subject = subject[:100]
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	_, err = s.client.Publish(ctx, &sns.PublishInput{
 		TopicArn: aws.String(s.topicARN),

@@ -32,8 +32,7 @@ func TestExecuteEMRServerless_Success(t *testing.T) {
 		startOut: &emrserverless.StartJobRunOutput{JobRunId: &runID},
 	}
 
-	cfg := &types.TriggerConfig{
-		Type:          types.TriggerEMRServerless,
+	cfg := &types.EMRServerlessTriggerConfig{
 		ApplicationID: "app-123",
 		JobName:       "my-spark-job",
 	}
@@ -46,7 +45,7 @@ func TestExecuteEMRServerless_Success(t *testing.T) {
 
 func TestExecuteEMRServerless_MissingApplicationID(t *testing.T) {
 	client := &mockEMRServerlessClient{}
-	cfg := &types.TriggerConfig{Type: types.TriggerEMRServerless, JobName: "job"}
+	cfg := &types.EMRServerlessTriggerConfig{JobName: "job"}
 	_, err := ExecuteEMRServerless(context.Background(), cfg, client)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "applicationId is required")
@@ -54,7 +53,7 @@ func TestExecuteEMRServerless_MissingApplicationID(t *testing.T) {
 
 func TestExecuteEMRServerless_MissingJobName(t *testing.T) {
 	client := &mockEMRServerlessClient{}
-	cfg := &types.TriggerConfig{Type: types.TriggerEMRServerless, ApplicationID: "app-1"}
+	cfg := &types.EMRServerlessTriggerConfig{ApplicationID: "app-1"}
 	_, err := ExecuteEMRServerless(context.Background(), cfg, client)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "jobName is required")
@@ -62,8 +61,7 @@ func TestExecuteEMRServerless_MissingJobName(t *testing.T) {
 
 func TestExecuteEMRServerless_APIError(t *testing.T) {
 	client := &mockEMRServerlessClient{startErr: assert.AnError}
-	cfg := &types.TriggerConfig{
-		Type:          types.TriggerEMRServerless,
+	cfg := &types.EMRServerlessTriggerConfig{
 		ApplicationID: "app-1",
 		JobName:       "job",
 	}

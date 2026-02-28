@@ -24,7 +24,6 @@ import (
 	"github.com/dwsmith1983/interlock/internal/server"
 	"github.com/dwsmith1983/interlock/internal/watchdog"
 	"github.com/dwsmith1983/interlock/internal/watcher"
-	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -129,8 +128,7 @@ func runServe() error {
 				wdInterval = d
 			}
 		}
-		dispatchAlertFn := dispatcher.AlertFunc()
-		wd = watchdog.New(prov, calReg, func(_ context.Context, a types.Alert) { dispatchAlertFn(a) }, logger, wdInterval)
+		wd = watchdog.New(prov, calReg, dispatcher.AlertFunc(), logger, wdInterval)
 		wd.Start(ctx)
 	}
 

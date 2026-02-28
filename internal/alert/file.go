@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,7 +32,7 @@ func NewFileSink(path string) (*FileSink, error) {
 func (s *FileSink) Name() string { return "file" }
 
 // Send appends the alert as a JSON line to the configured file.
-func (s *FileSink) Send(alert types.Alert) error {
+func (s *FileSink) Send(_ context.Context, alert types.Alert) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

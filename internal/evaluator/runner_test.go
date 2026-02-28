@@ -97,6 +97,19 @@ func TestRunnerSignalKill_Crash(t *testing.T) {
 	assert.Equal(t, types.FailureEvaluatorCrash, output.FailureCategory)
 }
 
+func TestRunner_StdinReceivesFullInput(t *testing.T) {
+	r := NewRunner()
+	input := types.EvaluatorInput{
+		PipelineID: "my-pipeline",
+		TraitType:  "custom-check",
+		Config:     map[string]interface{}{"key": "value"},
+	}
+	out, err := r.Run(context.Background(), "../../testdata/evaluators/stdin-echo", input, 5*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, types.TraitPass, out.Status)
+	assert.Equal(t, "my-pipeline", out.Value["receivedPipelineID"])
+}
+
 func TestRunnerBadJSON(t *testing.T) {
 	runner := NewRunner()
 	input := types.EvaluatorInput{

@@ -2,6 +2,7 @@
 package alert
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 
@@ -11,7 +12,7 @@ import (
 
 // Sink is an alert destination.
 type Sink interface {
-	Send(alert types.Alert) error
+	Send(ctx context.Context, alert types.Alert) error
 	Name() string
 }
 
@@ -39,9 +40,9 @@ func NewDispatcher(configs []types.AlertConfig, logger *slog.Logger) (*Dispatche
 }
 
 // Dispatch sends an alert to all configured sinks.
-func (d *Dispatcher) Dispatch(alert types.Alert) {
+func (d *Dispatcher) Dispatch(ctx context.Context, alert types.Alert) {
 	for _, sink := range d.sinks {
-		if err := sink.Send(alert); err != nil {
+		if err := sink.Send(ctx, alert); err != nil {
 			metrics.AlertsFailed.Add(1)
 			d.logger.Error("alert dispatch failed", "sink", sink.Name(), "error", err)
 		} else {
@@ -55,8 +56,8 @@ func (d *Dispatcher) AddSink(s Sink) {
 	d.sinks = append(d.sinks, s)
 }
 
-// AlertFunc returns a function suitable for use as the engine's alert callback.
-func (d *Dispatcher) AlertFunc() func(types.Alert) {
+// AlertFunc returns a function suitable for use as an alert callback.
+func (d *Dispatcher) AlertFunc() func(context.Context, types.Alert) {
 	return d.Dispatch
 }
 

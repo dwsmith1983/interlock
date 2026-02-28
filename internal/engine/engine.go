@@ -32,13 +32,13 @@ type Engine struct {
 	provider       provider.EngineProvider
 	registry       ArchetypeResolver
 	runner         TraitRunner
-	alertFn        func(types.Alert)
+	alertFn        func(context.Context, types.Alert)
 	logger         *slog.Logger
 	defaultTimeout time.Duration
 }
 
 // New creates a new Engine.
-func New(p provider.EngineProvider, reg ArchetypeResolver, runner TraitRunner, alertFn func(types.Alert)) *Engine {
+func New(p provider.EngineProvider, reg ArchetypeResolver, runner TraitRunner, alertFn func(context.Context, types.Alert)) *Engine {
 	return &Engine{
 		provider:       p,
 		registry:       reg,
@@ -139,7 +139,7 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 				Required:  r.trait.Required,
 				Status:    types.TraitFail,
 			})
-			e.fireAlert(types.Alert{
+			e.fireAlert(ctx, types.Alert{
 				Level:      types.AlertLevelError,
 				PipelineID: pipelineID,
 				TraitType:  r.trait.Type,
@@ -157,7 +157,7 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 		})
 
 		if r.eval.Status != types.TraitPass && r.trait.Required {
-			e.fireAlert(types.Alert{
+			e.fireAlert(ctx, types.Alert{
 				Level:      types.AlertLevelWarning,
 				PipelineID: pipelineID,
 				TraitType:  r.trait.Type,
@@ -196,7 +196,7 @@ func (e *Engine) Evaluate(ctx context.Context, pipelineID string) (*types.Readin
 	e.completeSession(ctx, sessionID, pipelineID, sessionStart, traitEvals, status, types.SessionCompleted)
 
 	if status == types.NotReady {
-		e.fireAlert(types.Alert{
+		e.fireAlert(ctx, types.Alert{
 			Level:      types.AlertLevelWarning,
 			PipelineID: pipelineID,
 			Message:    fmt.Sprintf("Pipeline %s blocked by: %v", pipelineID, blocking),
@@ -357,9 +357,9 @@ func (e *Engine) EvaluateTrait(ctx context.Context, pipelineID string, trait arc
 	return te, nil
 }
 
-func (e *Engine) fireAlert(alert types.Alert) {
+func (e *Engine) fireAlert(ctx context.Context, alert types.Alert) {
 	if e.alertFn != nil {
-		e.alertFn(alert)
+		e.alertFn(ctx, alert)
 	}
 }
 

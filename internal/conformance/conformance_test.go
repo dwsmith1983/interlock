@@ -38,7 +38,7 @@ type alertCollector struct {
 	alerts []types.Alert
 }
 
-func (a *alertCollector) collect(alert types.Alert) {
+func (a *alertCollector) collect(_ context.Context, alert types.Alert) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.alerts = append(a.alerts, alert)
@@ -92,7 +92,7 @@ func readyPipeline(name string) types.PipelineConfig {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 	}
@@ -108,7 +108,7 @@ func notReadyPipeline(name string) types.PipelineConfig {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 	}

@@ -46,7 +46,7 @@ func (p *DynamoDBProvider) GetReadiness(ctx context.Context, pipelineID string) 
 		return nil, nil
 	}
 
-	ttlVal, _ := attributeInt(out.Item)
+	ttlVal, _ := extractTTL(out.Item)
 	if isExpired(ttlVal) {
 		return nil, nil
 	}
