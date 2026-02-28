@@ -264,17 +264,19 @@ func TestCheckEvaluationSLA_Breached(t *testing.T) {
 	var alerts []types.Alert
 	d.AlertFn = func(_ context.Context, a types.Alert) { alerts = append(alerts, a) }
 
-	// Set deadline to 1 hour ago
-	now := time.Now()
-	deadline := now.Add(-1 * time.Hour).Format("15:04")
+	// Use duration format with executionStartTime 2h ago and deadline "1h"
+	// so the resolved deadline is 1h ago — always breached regardless of wall-clock time.
 	seedPipeline(t, d, types.PipelineConfig{
 		Name: "pipe-a",
-		SLA:  &types.SLAConfig{EvaluationDeadline: deadline},
+		SLA:  &types.SLAConfig{EvaluationDeadline: "1h"},
 	})
 
 	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
 		Action:     "checkEvaluationSLA",
 		PipelineID: "pipe-a",
+		Payload: map[string]interface{}{
+			"executionStartTime": time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+		},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "proceed", resp.Result)
@@ -725,16 +727,19 @@ func TestCheckValidationTimeout_Breached(t *testing.T) {
 	var alerts []types.Alert
 	d.AlertFn = func(_ context.Context, a types.Alert) { alerts = append(alerts, a) }
 
-	// Set validation timeout to 1 hour ago
-	deadline := time.Now().Add(-1 * time.Hour).Format("15:04")
+	// Use duration format with executionStartTime 2h ago and timeout "1h"
+	// so the resolved deadline is 1h ago — always timed out regardless of wall-clock time.
 	seedPipeline(t, d, types.PipelineConfig{
 		Name: "pipe-a",
-		SLA:  &types.SLAConfig{ValidationTimeout: deadline},
+		SLA:  &types.SLAConfig{ValidationTimeout: "1h"},
 	})
 
 	resp, err := handleOrchestrator(context.Background(), d, intlambda.OrchestratorRequest{
 		Action:     "checkValidationTimeout",
 		PipelineID: "pipe-a",
+		Payload: map[string]interface{}{
+			"executionStartTime": time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+		},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "proceed", resp.Result)
