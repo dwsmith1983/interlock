@@ -343,11 +343,12 @@
         "payload": {
           "status": "FAILED",
           "runID.$": "$.resolvePipeline.payload.runID",
-          "message": "validation timed out"
+          "message": "validation timed out",
+          "failureCategory": "TIMEOUT"
         }
       },
-      "ResultPath": "$.logValidationTimeout",
-      "Next": "ReleaseLock",
+      "ResultPath": "$.logRunFailed",
+      "Next": "ShouldRetry",
       "Retry": [
         {
           "ErrorEquals": [
@@ -1076,6 +1077,13 @@
           "MaxAttempts": 3,
           "BackoffRate": 2
         }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.releaseLockRetryError",
+          "Next": "AcquireLock"
+        }
       ]
     },
     "LogTimeout": {
@@ -1166,6 +1174,44 @@
           "IntervalSeconds": 2,
           "MaxAttempts": 3,
           "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.releaseLockError",
+          "Next": "AlertReleaseLockFailed"
+        }
+      ]
+    },
+    "AlertReleaseLockFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertTopicArn}",
+        "Subject.$": "States.Format('[LOCK ERROR] {} / {}', $.pipelineID, $.scheduleID)",
+        "Message.$": "States.JsonToString($.releaseLockError)"
+      },
+      "ResultPath": "$.alertReleaseLockResult",
+      "End": true,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.alertReleaseLockFailed",
+          "Next": "End"
         }
       ]
     },

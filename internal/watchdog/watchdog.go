@@ -42,6 +42,7 @@ type CheckOptions struct {
 	Logger            *slog.Logger
 	Now               time.Time     // injectable for testing
 	StuckRunThreshold time.Duration // defaults to 30m if zero
+	RetriggerFn       func(ctx context.Context, pipelineID, scheduleID string) error // nil = alert-only
 }
 
 // CheckMissedSchedules scans all registered pipelines for schedules whose
@@ -466,6 +467,160 @@ func checkMonitoringExpiry(ctx context.Context, opts CheckOptions, pl types.Pipe
 		Date:       date,
 		Action:     "expired",
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Failed-run re-trigger
+// ---------------------------------------------------------------------------
+
+// RetriggeredRun records a single watchdog-initiated re-trigger.
+type RetriggeredRun struct {
+	PipelineID string
+	ScheduleID string
+	Date       string
+	Attempt    int
+}
+
+// CheckFailedRuns scans all registered pipelines for FAILED runs today and
+// re-triggers eligible ones via RetriggerFn. A run is eligible if the pipeline
+// has a retry policy with retryable failure categories that match the run's
+// failure category, and the attempt count is below MaxAttempts.
+// If RetriggerFn is nil, this function is a no-op.
+func CheckFailedRuns(ctx context.Context, opts CheckOptions) []RetriggeredRun {
+	if opts.RetriggerFn == nil {
+		return nil
+	}
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+
+	pipelines, err := opts.Provider.ListPipelines(ctx)
+	if err != nil {
+		opts.Logger.Error("watchdog: failed to list pipelines for failed-run check", "error", err)
+		return nil
+	}
+
+	var retriggered []RetriggeredRun
+	date := opts.Now.UTC().Format("2006-01-02")
+
+	for _, pl := range pipelines {
+		if ctx.Err() != nil {
+			return retriggered
+		}
+		if pl.Trigger == nil || pl.Retry == nil {
+			continue
+		}
+		if pl.Watch != nil && pl.Watch.Enabled != nil && !*pl.Watch.Enabled {
+			continue
+		}
+
+		for _, sched := range types.ResolveSchedules(pl) {
+			entry, err := opts.Provider.GetRunLog(ctx, pl.Name, date, sched.Name)
+			if err != nil {
+				opts.Logger.Error("watchdog: failed to get run log for failed-run check",
+					"pipeline", pl.Name, "schedule", sched.Name, "error", err)
+				continue
+			}
+			if entry == nil || entry.Status != types.RunFailed {
+				continue
+			}
+
+			// Check retry eligibility.
+			if entry.AttemptNumber >= pl.Retry.MaxAttempts {
+				continue
+			}
+			if !isRetryableCategory(entry.FailureCategory, pl.Retry.RetryableFailures) {
+				continue
+			}
+
+			// Dedup lock: one retrigger per pipeline/schedule/day/attempt.
+			nextAttempt := entry.AttemptNumber + 1
+			lockKey := fmt.Sprintf("watchdog:retrigger:%s:%s:%s:%d", pl.Name, sched.Name, date, nextAttempt)
+			acquired, err := opts.Provider.AcquireLock(ctx, lockKey, dedupLockTTL)
+			if err != nil {
+				opts.Logger.Error("watchdog: failed to acquire retrigger dedup lock",
+					"key", lockKey, "error", err)
+				continue
+			}
+			if !acquired {
+				continue
+			}
+
+			// Re-trigger execution.
+			if err := opts.RetriggerFn(ctx, pl.Name, sched.Name); err != nil {
+				opts.Logger.Error("watchdog: retrigger failed",
+					"pipeline", pl.Name, "schedule", sched.Name, "error", err)
+				continue
+			}
+
+			// Fire info alert.
+			if opts.AlertFn != nil {
+				opts.AlertFn(types.Alert{
+					Level:      types.AlertLevelInfo,
+					Category:   "watchdog_retrigger",
+					PipelineID: pl.Name,
+					Message: fmt.Sprintf("Watchdog re-triggered %s schedule %s (attempt %d)",
+						pl.Name, sched.Name, nextAttempt),
+					Details: map[string]interface{}{
+						"scheduleId":      sched.Name,
+						"date":            date,
+						"attempt":         nextAttempt,
+						"failureCategory": string(entry.FailureCategory),
+					},
+					Timestamp: opts.Now,
+				})
+			}
+
+			// Append audit event.
+			if err := opts.Provider.AppendEvent(ctx, types.Event{
+				Kind:       types.EventWatchdogRetrigger,
+				PipelineID: pl.Name,
+				RunID:      entry.RunID,
+				Status:     string(types.RunFailed),
+				Message: fmt.Sprintf("watchdog re-triggered schedule %s attempt %d",
+					sched.Name, nextAttempt),
+				Details: map[string]interface{}{
+					"scheduleId":      sched.Name,
+					"date":            date,
+					"attempt":         nextAttempt,
+					"failureCategory": string(entry.FailureCategory),
+				},
+				Timestamp: opts.Now,
+			}); err != nil {
+				opts.Logger.Error("watchdog: failed to append retrigger event",
+					"pipeline", pl.Name, "schedule", sched.Name, "error", err)
+			}
+
+			opts.Logger.Info("watchdog: re-triggered failed run",
+				"pipeline", pl.Name, "schedule", sched.Name,
+				"attempt", nextAttempt, "date", date)
+
+			retriggered = append(retriggered, RetriggeredRun{
+				PipelineID: pl.Name,
+				ScheduleID: sched.Name,
+				Date:       date,
+				Attempt:    nextAttempt,
+			})
+		}
+	}
+
+	return retriggered
+}
+
+func isRetryableCategory(category types.FailureCategory, retryable []types.FailureCategory) bool {
+	if len(retryable) == 0 {
+		// No retryable categories configured — retry all.
+		return true
+	}
+	for _, r := range retryable {
+		if r == category {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

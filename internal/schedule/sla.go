@@ -65,3 +65,12 @@ func ParseSLADeadline(deadline, timezone string, now time.Time, referenceTime ..
 func IsBreached(deadline, now time.Time) bool {
 	return now.After(deadline)
 }
+
+// IsAtRisk checks if the current time is within the lead-time window before the deadline.
+// Returns false if leadTime is zero or negative (feature disabled).
+func IsAtRisk(deadline, now time.Time, leadTime time.Duration) bool {
+	if leadTime <= 0 {
+		return false
+	}
+	return now.After(deadline.Add(-leadTime)) && !now.After(deadline)
+}
