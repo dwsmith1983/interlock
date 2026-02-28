@@ -96,7 +96,7 @@ The ASL template at `deploy/statemachine.asl.json` uses four substitution variab
 
 Processes DynamoDB Stream events and handles two record types:
 
-**MARKER# records** — Extracts `pipelineID`, `date`, and `scheduleID` from the record and starts a Step Function execution with a deterministic name for dedup.
+**MARKER# records** — Extracts `pipelineID`, `date`, and `scheduleID` from the record and starts a Step Function execution with a deterministic name for dedup. The `date` is read from the record's `date` attribute when present, falling back to `time.Now().UTC()` for backward compatibility. This ensures correct date resolution at midnight rollover (e.g., an h23 completion marker carries the previous day's date).
 
 **RUNLOG# records** — Publishes lifecycle events to an SNS topic when a run reaches a terminal status (COMPLETED or FAILED). This enables downstream consumers (monitoring dashboards, notification systems, active recovery) to react to pipeline completion without polling DynamoDB.
 
