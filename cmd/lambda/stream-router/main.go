@@ -94,6 +94,13 @@ func handleMarkerRecord(ctx context.Context, d *intlambda.Deps, logger *slog.Log
 	}
 
 	date := time.Now().UTC().Format("2006-01-02")
+	if record.Change.NewImage != nil {
+		if dateAttr, ok := record.Change.NewImage["date"]; ok {
+			if d := dateAttr.String(); d != "" {
+				date = d
+			}
+		}
+	}
 
 	// Dedup execution name: pipelineID:date:scheduleID (replace invalid chars)
 	execName := sanitizeExecName(fmt.Sprintf("%s:%s:%s", pipelineID, date, scheduleID))
