@@ -48,6 +48,10 @@ type LifecycleEvent struct {
 type StreamEvent = events.DynamoDBEvent
 
 // OrchestratorRequest is the input to the orchestrator Lambda.
+//
+// JSON tags use "pipelineID"/"scheduleID" (capital D) to match the Step
+// Functions ASL, which injects these fields. API/storage types in pkg/types
+// use standard camelCase "pipelineId"/"scheduleId".
 type OrchestratorRequest struct {
 	Action     string                 `json:"action"`
 	PipelineID string                 `json:"pipelineID"`

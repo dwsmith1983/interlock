@@ -24,6 +24,7 @@ const (
 	defaultInterval       = 5 * time.Minute
 	dedupLockTTL          = 24 * time.Hour
 	defaultStuckThreshold = 30 * time.Minute
+	defaultMissedLookback = 15 * time.Minute
 )
 
 // MissedSchedule records a single missed schedule detection.
@@ -36,12 +37,13 @@ type MissedSchedule struct {
 
 // CheckOptions configures a single watchdog scan pass.
 type CheckOptions struct {
-	Provider          provider.Provider
+	Provider          provider.WatchdogProvider
 	CalendarReg       *calendar.Registry
-	AlertFn           func(types.Alert)
+	AlertFn           func(context.Context, types.Alert)
 	Logger            *slog.Logger
 	Now               time.Time                                                      // injectable for testing
 	StuckRunThreshold time.Duration                                                  // defaults to 30m if zero
+	MissedLookback    time.Duration                                                  // max age of a missed deadline to alert on; defaults to 15m
 	RetriggerFn       func(ctx context.Context, pipelineID, scheduleID string) error // nil = alert-only
 }
 
@@ -105,6 +107,15 @@ func checkSchedule(ctx context.Context, opts CheckOptions, pl types.PipelineConf
 		return nil
 	}
 
+	// Skip historical deadlines — only alert on recent misses.
+	lookback := opts.MissedLookback
+	if lookback <= 0 {
+		lookback = defaultMissedLookback
+	}
+	if opts.Now.Sub(deadline) > lookback {
+		return nil
+	}
+
 	// Check RunLog — any entry (even FAILED) means the schedule was evaluated.
 	date := opts.Now.UTC().Format("2006-01-02")
 	entry, err := opts.Provider.GetRunLog(ctx, pl.Name, date, sched.Name)
@@ -133,7 +144,7 @@ func checkSchedule(ctx context.Context, opts CheckOptions, pl types.PipelineConf
 
 	// Fire alert.
 	if opts.AlertFn != nil {
-		opts.AlertFn(types.Alert{
+		opts.AlertFn(ctx, types.Alert{
 			Level:      types.AlertLevelError,
 			Category:   "schedule_missed",
 			PipelineID: pl.Name,
@@ -290,7 +301,7 @@ func CheckStuckRuns(ctx context.Context, opts CheckOptions) []StuckRun {
 
 			// Fire alert.
 			if opts.AlertFn != nil {
-				opts.AlertFn(types.Alert{
+				opts.AlertFn(ctx, types.Alert{
 					Level:      types.AlertLevelError,
 					Category:   "stuck_run",
 					PipelineID: pl.Name,
@@ -558,7 +569,7 @@ func CheckFailedRuns(ctx context.Context, opts CheckOptions) []RetriggeredRun {
 
 			// Fire info alert.
 			if opts.AlertFn != nil {
-				opts.AlertFn(types.Alert{
+				opts.AlertFn(ctx, types.Alert{
 					Level:      types.AlertLevelInfo,
 					Category:   "watchdog_retrigger",
 					PipelineID: pl.Name,
@@ -629,9 +640,9 @@ func isRetryableCategory(category types.FailureCategory, retryable []types.Failu
 
 // Watchdog runs CheckMissedSchedules on a regular interval.
 type Watchdog struct {
-	provider    provider.Provider
+	provider    provider.WatchdogProvider
 	calendarReg *calendar.Registry
-	alertFn     func(types.Alert)
+	alertFn     func(context.Context, types.Alert)
 	logger      *slog.Logger
 	interval    time.Duration
 	cancel      context.CancelFunc
@@ -639,7 +650,7 @@ type Watchdog struct {
 }
 
 // New creates a new Watchdog.
-func New(prov provider.Provider, calReg *calendar.Registry, alertFn func(types.Alert), logger *slog.Logger, interval time.Duration) *Watchdog {
+func New(prov provider.WatchdogProvider, calReg *calendar.Registry, alertFn func(context.Context, types.Alert), logger *slog.Logger, interval time.Duration) *Watchdog {
 	if interval <= 0 {
 		interval = defaultInterval
 	}

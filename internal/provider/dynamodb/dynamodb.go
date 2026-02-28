@@ -29,7 +29,7 @@ const (
 
 // DynamoDBProvider implements the Provider interface backed by DynamoDB.
 type DynamoDBProvider struct {
-	client       *dynamodb.Client
+	client       DDBAPI
 	tableName    string
 	logger       *slog.Logger
 	readinessTTL time.Duration

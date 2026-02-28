@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sync"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -18,23 +17,10 @@ import (
 	"github.com/dwsmith1983/interlock/internal/watchdog"
 )
 
-var (
-	deps     *intlambda.Deps
-	depsOnce sync.Once
-	depsErr  error
-)
-
-func getDeps() (*intlambda.Deps, error) {
-	depsOnce.Do(func() {
-		deps, depsErr = intlambda.Init(context.Background())
-	})
-	return deps, depsErr
-}
-
 func handler(ctx context.Context) error {
-	d, err := getDeps()
+	d, err := intlambda.GetDeps()
 	if err != nil {
-		return err
+		return fmt.Errorf("watchdog init: %w", err)
 	}
 
 	opts := watchdog.CheckOptions{
@@ -46,11 +32,14 @@ func handler(ctx context.Context) error {
 	// Wire SFN re-trigger if state machine ARN is configured.
 	if d.SFNClient != nil && d.StateMachineARN != "" {
 		opts.RetriggerFn = func(ctx context.Context, pipelineID, scheduleID string) error {
-			input, _ := json.Marshal(map[string]string{
+			input, err := json.Marshal(map[string]string{
 				"pipelineID": pipelineID,
 				"scheduleID": scheduleID,
 			})
-			_, err := d.SFNClient.StartExecution(ctx, &sfn.StartExecutionInput{
+			if err != nil {
+				return fmt.Errorf("marshaling retrigger input for %s/%s: %w", pipelineID, scheduleID, err)
+			}
+			_, err = d.SFNClient.StartExecution(ctx, &sfn.StartExecutionInput{
 				StateMachineArn: aws.String(d.StateMachineARN),
 				Input:           aws.String(string(input)),
 				Name:            aws.String(fmt.Sprintf("watchdog-%s-%s", pipelineID, scheduleID)),

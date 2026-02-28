@@ -5,25 +5,11 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"sync"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/trigger"
 )
-
-var (
-	deps     *intlambda.Deps
-	depsOnce sync.Once
-	depsErr  error
-)
-
-func getDeps() (*intlambda.Deps, error) {
-	depsOnce.Do(func() {
-		deps, depsErr = intlambda.Init(context.Background())
-	})
-	return deps, depsErr
-}
 
 // handleRunCheck implements the core run-checker logic.
 func handleRunCheck(ctx context.Context, d *intlambda.Deps, req intlambda.RunCheckRequest) (intlambda.RunCheckResponse, error) {
@@ -49,7 +35,7 @@ func handleRunCheck(ctx context.Context, d *intlambda.Deps, req intlambda.RunChe
 }
 
 func handler(ctx context.Context, req intlambda.RunCheckRequest) (intlambda.RunCheckResponse, error) {
-	d, err := getDeps()
+	d, err := intlambda.GetDeps()
 	if err != nil {
 		return intlambda.RunCheckResponse{}, err
 	}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sync"
 	"time"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
@@ -14,19 +13,6 @@ import (
 	trigpkg "github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
-
-var (
-	deps     *intlambda.Deps
-	depsOnce sync.Once
-	depsErr  error
-)
-
-func getDeps() (*intlambda.Deps, error) {
-	depsOnce.Do(func() {
-		deps, depsErr = intlambda.Init(context.Background())
-	})
-	return deps, depsErr
-}
 
 // handleTrigger executes a pipeline trigger and manages run state transitions.
 func handleTrigger(ctx context.Context, d *intlambda.Deps, req intlambda.TriggerRequest) (intlambda.TriggerResponse, error) {
@@ -121,7 +107,7 @@ func handleLambdaTriggerFailure(ctx context.Context, d *intlambda.Deps, req intl
 		d.Logger.Error("PutRunLog failed", "runID", req.RunID, "error", logErr)
 	}
 
-	d.AlertFn(types.Alert{
+	d.AlertFn(ctx, types.Alert{
 		Level:      types.AlertLevelError,
 		PipelineID: req.PipelineID,
 		Message:    fmt.Sprintf("Trigger failed for %s: %v", req.PipelineID, trigErr),
@@ -186,7 +172,7 @@ func handleLambdaTriggerSuccess(ctx context.Context, d *intlambda.Deps, req intl
 }
 
 func handler(ctx context.Context, req intlambda.TriggerRequest) (intlambda.TriggerResponse, error) {
-	d, err := getDeps()
+	d, err := intlambda.GetDeps()
 	if err != nil {
 		return intlambda.TriggerResponse{}, err
 	}

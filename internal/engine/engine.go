@@ -29,7 +29,7 @@ type TraitRunner interface {
 // Engine is the core readiness evaluation engine. It resolves archetypes,
 // runs evaluators, stores results, and determines pipeline readiness.
 type Engine struct {
-	provider       provider.Provider
+	provider       provider.EngineProvider
 	registry       ArchetypeResolver
 	runner         TraitRunner
 	alertFn        func(types.Alert)
@@ -38,7 +38,7 @@ type Engine struct {
 }
 
 // New creates a new Engine.
-func New(p provider.Provider, reg ArchetypeResolver, runner TraitRunner, alertFn func(types.Alert)) *Engine {
+func New(p provider.EngineProvider, reg ArchetypeResolver, runner TraitRunner, alertFn func(types.Alert)) *Engine {
 	return &Engine{
 		provider:       p,
 		registry:       reg,

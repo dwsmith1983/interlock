@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	intlambda "github.com/dwsmith1983/interlock/internal/lambda"
@@ -104,7 +106,7 @@ func checkDrift(ctx context.Context, d *intlambda.Deps, req intlambda.Orchestrat
 	}
 
 	if len(drifted) > 0 {
-		d.AlertFn(types.Alert{
+		d.AlertFn(ctx, types.Alert{
 			Level:      types.AlertLevelWarning,
 			Category:   "trait_drift",
 			PipelineID: req.PipelineID,
@@ -196,6 +198,57 @@ func handleLateArrival(ctx context.Context, d *intlambda.Deps, req intlambda.Orc
 			d.Logger.Error("failed to store late arrival",
 				"pipeline", req.PipelineID, "trait", traitType, "error", err)
 		}
+	}
+
+	// Check rerun cap before creating a new rerun.
+	maxReruns := 5
+	if v := os.Getenv("MAX_RERUNS_PER_DAY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxReruns = n
+		}
+	}
+
+	reruns, err := d.Provider.ListReruns(ctx, req.PipelineID, 50)
+	if err != nil {
+		d.Logger.Error("failed to list reruns for cap check",
+			"pipeline", req.PipelineID, "error", err)
+	}
+
+	todayRerunCount := 0
+	for _, r := range reruns {
+		if r.OriginalDate == date {
+			todayRerunCount++
+		}
+	}
+
+	if todayRerunCount >= maxReruns {
+		d.Logger.Warn("rerun cap reached, skipping rerun creation",
+			"pipeline", req.PipelineID, "date", date, "count", todayRerunCount, "max", maxReruns)
+
+		d.AlertFn(ctx, types.Alert{
+			Level:      types.AlertLevelWarning,
+			Category:   "rerun_cap_reached",
+			PipelineID: req.PipelineID,
+			Message:    fmt.Sprintf("Rerun cap reached: %d reruns today (max=%d)", todayRerunCount, maxReruns),
+			Details: map[string]interface{}{
+				"date":          date,
+				"rerunCount":    todayRerunCount,
+				"maxRerunsDay":  maxReruns,
+				"driftedTraits": drifted,
+			},
+			Timestamp: time.Now(),
+		})
+
+		return intlambda.OrchestratorResponse{
+			Action: req.Action,
+			Result: "proceed",
+			Payload: map[string]interface{}{
+				"lateArrivalHandled": false,
+				"reason":             "rerun cap reached",
+				"rerunCount":         todayRerunCount,
+				"maxRerunsPerDay":    maxReruns,
+			},
+		}, nil
 	}
 
 	// Create a rerun record for the pipeline

@@ -18,7 +18,7 @@ func testDeps() *intlambda.Deps {
 	return &intlambda.Deps{
 		Provider: prov,
 		Runner:   trigger.NewRunner(),
-		AlertFn:  func(a types.Alert) {},
+		AlertFn:  func(_ context.Context, a types.Alert) {},
 		Logger:   slog.Default(),
 	}
 }
