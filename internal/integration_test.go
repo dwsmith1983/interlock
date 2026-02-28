@@ -116,7 +116,7 @@ echo '{"status":"PASS","value":{"cpu_available":true}}'
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: fmt.Sprintf("echo triggered > %s/trigger-output.txt", tmpDir),
+			Command: &types.CommandTriggerConfig{Command: fmt.Sprintf("echo triggered > %s/trigger-output.txt", tmpDir)},
 		},
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
@@ -167,7 +167,7 @@ echo '{"status":"PASS","value":{"cpu_available":true}}'
 
 	// Step 3: Execute command trigger
 	triggerOutput := filepath.Join(tmpDir, "trigger-output.txt")
-	cmd := pipeline.Trigger.Command
+	cmd := pipeline.Trigger.Command.Command
 	require.NotEmpty(t, cmd)
 
 	err = execCommand(ctx, cmd)
@@ -371,13 +371,15 @@ echo '{"status":"PASS","value":{"ok":true}}'
 			"freshness": {Evaluator: freshEval, Timeout: 5},
 		},
 		Trigger: &types.TriggerConfig{
-			Type:   types.TriggerHTTP,
-			Method: "POST",
-			URL:    mockOrchestrator.URL,
-			Headers: map[string]string{
-				"Authorization": "Bearer test-token",
+			Type: types.TriggerHTTP,
+			HTTP: &types.HTTPTriggerConfig{
+				Method: "POST",
+				URL:    mockOrchestrator.URL,
+				Headers: map[string]string{
+					"Authorization": "Bearer test-token",
+				},
+				Body: `{"conf":{"triggered_by":"interlock"}}`,
 			},
-			Body: `{"conf":{"triggered_by":"interlock"}}`,
 		},
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
@@ -412,7 +414,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 	assert.True(t, ok)
 
 	// Step 3: Fire HTTP trigger
-	err = execHTTPTrigger(ctx, pipeline.Trigger)
+	err = execHTTPTrigger(ctx, pipeline.Trigger.HTTP)
 	require.NoError(t, err, "HTTP trigger should succeed")
 
 	// Wait for mock server to receive the request
@@ -879,7 +881,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "exit 1",
+			Command: &types.CommandTriggerConfig{Command: "exit 1"},
 		},
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
@@ -920,7 +922,7 @@ echo '{"status":"PASS","value":{"ok":true}}'
 	assert.True(t, ok)
 
 	// Execute trigger — this should FAIL (exit 1)
-	triggerErr := execCommand(ctx, pipeline.Trigger.Command)
+	triggerErr := execCommand(ctx, pipeline.Trigger.Command.Command)
 	assert.Error(t, triggerErr, "trigger command should fail with exit 1")
 
 	// Since trigger failed, transition to FAILED
@@ -1056,15 +1058,14 @@ func TestIntegration_RunFailure_HTTPTriggerError(t *testing.T) {
 	}))
 	defer failServer.Close()
 
-	trigger := &types.TriggerConfig{
-		Type:   types.TriggerHTTP,
+	triggerCfg := &types.HTTPTriggerConfig{
 		Method: "POST",
 		URL:    failServer.URL,
 		Body:   `{"conf":{}}`,
 	}
 
 	// HTTP trigger should return error for 500 response
-	err := execHTTPTrigger(context.Background(), trigger)
+	err := execHTTPTrigger(context.Background(), triggerCfg)
 	assert.Error(t, err, "HTTP trigger should fail on 500")
 	assert.Contains(t, err.Error(), "500")
 }
@@ -1240,7 +1241,7 @@ func execCommand(ctx context.Context, command string) error {
 	return cmd.Run()
 }
 
-func execHTTPTrigger(ctx context.Context, trigger *types.TriggerConfig) error {
+func execHTTPTrigger(ctx context.Context, trigger *types.HTTPTriggerConfig) error {
 	method := trigger.Method
 	if method == "" {
 		method = http.MethodPost

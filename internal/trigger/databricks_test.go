@@ -24,10 +24,9 @@ func TestExecuteDatabricks_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &types.TriggerConfig{
-		Type:         types.TriggerDatabricks,
+	cfg := &types.DatabricksTriggerConfig{
 		WorkspaceURL: srv.URL,
-		JobName:      "my-notebook",
+		JobID:        "my-notebook",
 	}
 
 	meta, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())
@@ -47,10 +46,9 @@ func TestExecuteDatabricks_WithAuth(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &types.TriggerConfig{
-		Type:         types.TriggerDatabricks,
+	cfg := &types.DatabricksTriggerConfig{
 		WorkspaceURL: srv.URL,
-		JobName:      "my-job",
+		JobID:        "my-job",
 		Headers:      map[string]string{"Authorization": "Bearer db-token"},
 	}
 
@@ -60,17 +58,17 @@ func TestExecuteDatabricks_WithAuth(t *testing.T) {
 }
 
 func TestExecuteDatabricks_MissingWorkspaceURL(t *testing.T) {
-	cfg := &types.TriggerConfig{Type: types.TriggerDatabricks, JobName: "job"}
+	cfg := &types.DatabricksTriggerConfig{JobID: "job"}
 	_, err := ExecuteDatabricks(context.Background(), cfg, http.DefaultClient)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "workspaceUrl is required")
 }
 
-func TestExecuteDatabricks_MissingJobName(t *testing.T) {
-	cfg := &types.TriggerConfig{Type: types.TriggerDatabricks, WorkspaceURL: "https://example.com"}
+func TestExecuteDatabricks_MissingJobID(t *testing.T) {
+	cfg := &types.DatabricksTriggerConfig{WorkspaceURL: "https://example.com"}
 	_, err := ExecuteDatabricks(context.Background(), cfg, http.DefaultClient)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "jobName is required")
+	assert.Contains(t, err.Error(), "jobId is required")
 }
 
 func TestExecuteDatabricks_ServerError(t *testing.T) {
@@ -80,10 +78,9 @@ func TestExecuteDatabricks_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &types.TriggerConfig{
-		Type:         types.TriggerDatabricks,
+	cfg := &types.DatabricksTriggerConfig{
 		WorkspaceURL: srv.URL,
-		JobName:      "job",
+		JobID:        "job",
 	}
 
 	_, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())

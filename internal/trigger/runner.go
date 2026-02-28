@@ -74,37 +74,61 @@ func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[str
 
 	switch cfg.Type {
 	case types.TriggerCommand:
-		return nil, ExecuteCommand(ctx, cfg.Command)
+		if cfg.Command == nil {
+			return nil, fmt.Errorf("command trigger config is nil")
+		}
+		return nil, ExecuteCommand(ctx, cfg.Command.Command)
 	case types.TriggerHTTP:
-		return nil, ExecuteHTTP(ctx, cfg)
+		if cfg.HTTP == nil {
+			return nil, fmt.Errorf("http trigger config is nil")
+		}
+		return nil, ExecuteHTTP(ctx, cfg.HTTP)
 	case types.TriggerAirflow:
-		return ExecuteAirflow(ctx, cfg)
+		if cfg.Airflow == nil {
+			return nil, fmt.Errorf("airflow trigger config is nil")
+		}
+		return ExecuteAirflow(ctx, cfg.Airflow)
 	case types.TriggerGlue:
+		if cfg.Glue == nil {
+			return nil, fmt.Errorf("glue trigger config is nil")
+		}
 		client, err := r.getGlueClient("")
 		if err != nil {
 			return nil, err
 		}
-		return ExecuteGlue(ctx, cfg, client)
+		return ExecuteGlue(ctx, cfg.Glue, client)
 	case types.TriggerEMR:
+		if cfg.EMR == nil {
+			return nil, fmt.Errorf("emr trigger config is nil")
+		}
 		client, err := r.getEMRClient("")
 		if err != nil {
 			return nil, err
 		}
-		return ExecuteEMR(ctx, cfg, client)
+		return ExecuteEMR(ctx, cfg.EMR, client)
 	case types.TriggerEMRServerless:
+		if cfg.EMRServerless == nil {
+			return nil, fmt.Errorf("emr-serverless trigger config is nil")
+		}
 		client, err := r.getEMRServerlessClient("")
 		if err != nil {
 			return nil, err
 		}
-		return ExecuteEMRServerless(ctx, cfg, client)
+		return ExecuteEMRServerless(ctx, cfg.EMRServerless, client)
 	case types.TriggerStepFunction:
+		if cfg.StepFunction == nil {
+			return nil, fmt.Errorf("step-function trigger config is nil")
+		}
 		client, err := r.getSFNClient("")
 		if err != nil {
 			return nil, err
 		}
-		return ExecuteSFN(ctx, cfg, client)
+		return ExecuteSFN(ctx, cfg.StepFunction, client)
 	case types.TriggerDatabricks:
-		return ExecuteDatabricks(ctx, cfg, r.httpClient)
+		if cfg.Databricks == nil {
+			return nil, fmt.Errorf("databricks trigger config is nil")
+		}
+		return ExecuteDatabricks(ctx, cfg.Databricks, r.httpClient)
 	default:
 		return nil, fmt.Errorf("unknown trigger type: %s", cfg.Type)
 	}

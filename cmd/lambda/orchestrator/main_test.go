@@ -444,7 +444,7 @@ func TestResolvePipeline_Success(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type: types.TriggerHTTP,
-			URL:  "https://example.com/trigger",
+			HTTP: &types.HTTPTriggerConfig{URL: "https://example.com/trigger"},
 		},
 	})
 

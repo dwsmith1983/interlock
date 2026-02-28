@@ -16,7 +16,7 @@ type GlueAPI interface {
 }
 
 // ExecuteGlue starts an AWS Glue job run.
-func ExecuteGlue(ctx context.Context, cfg *types.TriggerConfig, client GlueAPI) (map[string]interface{}, error) {
+func ExecuteGlue(ctx context.Context, cfg *types.GlueTriggerConfig, client GlueAPI) (map[string]interface{}, error) {
 	if cfg.JobName == "" {
 		return nil, fmt.Errorf("glue trigger: jobName is required")
 	}

@@ -511,7 +511,7 @@ func (w *Watcher) checkRunStatus(ctx context.Context, pipeline types.PipelineCon
 
 	var headers map[string]string
 	if pipeline.Trigger != nil {
-		headers = pipeline.Trigger.Headers
+		headers = pipeline.Trigger.TriggerHeaders()
 	}
 
 	result, err := w.runner.CheckStatus(ctx, pipeline.Trigger.Type, run.Metadata, headers)

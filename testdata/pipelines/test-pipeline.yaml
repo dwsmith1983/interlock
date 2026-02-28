@@ -12,4 +12,5 @@ traits:
 
 trigger:
   type: command
-  command: "echo test-complete"
+  command:
+    command: "echo test-complete"

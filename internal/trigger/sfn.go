@@ -18,7 +18,7 @@ type SFNAPI interface {
 }
 
 // ExecuteSFN starts an AWS Step Functions execution.
-func ExecuteSFN(ctx context.Context, cfg *types.TriggerConfig, client SFNAPI) (map[string]interface{}, error) {
+func ExecuteSFN(ctx context.Context, cfg *types.StepFunctionTriggerConfig, client SFNAPI) (map[string]interface{}, error) {
 	if cfg.StateMachineARN == "" {
 		return nil, fmt.Errorf("step-function trigger: stateMachineArn is required")
 	}

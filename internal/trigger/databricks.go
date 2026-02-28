@@ -14,18 +14,18 @@ import (
 )
 
 // ExecuteDatabricks submits a Databricks job run via the REST API.
-func ExecuteDatabricks(ctx context.Context, cfg *types.TriggerConfig, httpClient *http.Client) (map[string]interface{}, error) {
+func ExecuteDatabricks(ctx context.Context, cfg *types.DatabricksTriggerConfig, httpClient *http.Client) (map[string]interface{}, error) {
 	if cfg.WorkspaceURL == "" {
 		return nil, fmt.Errorf("databricks trigger: workspaceUrl is required")
 	}
-	if cfg.JobName == "" {
-		return nil, fmt.Errorf("databricks trigger: jobName is required")
+	if cfg.JobID == "" {
+		return nil, fmt.Errorf("databricks trigger: jobId is required")
 	}
 
 	url := strings.TrimRight(cfg.WorkspaceURL, "/") + "/api/2.1/jobs/runs/submit"
 
 	payload := map[string]interface{}{
-		"run_name": cfg.JobName,
+		"run_name": cfg.JobID,
 	}
 	if len(cfg.Arguments) > 0 {
 		payload["notebook_params"] = cfg.Arguments

@@ -33,8 +33,7 @@ func TestExecuteGlue_Success(t *testing.T) {
 		startOut: &glue.StartJobRunOutput{JobRunId: &runID},
 	}
 
-	cfg := &types.TriggerConfig{
-		Type:    types.TriggerGlue,
+	cfg := &types.GlueTriggerConfig{
 		JobName: "my-etl-job",
 	}
 
@@ -46,7 +45,7 @@ func TestExecuteGlue_Success(t *testing.T) {
 
 func TestExecuteGlue_MissingJobName(t *testing.T) {
 	client := &mockGlueClient{}
-	cfg := &types.TriggerConfig{Type: types.TriggerGlue}
+	cfg := &types.GlueTriggerConfig{}
 
 	_, err := ExecuteGlue(context.Background(), cfg, client)
 	assert.Error(t, err)
@@ -58,8 +57,7 @@ func TestExecuteGlue_APIError(t *testing.T) {
 		startErr: assert.AnError,
 	}
 
-	cfg := &types.TriggerConfig{
-		Type:    types.TriggerGlue,
+	cfg := &types.GlueTriggerConfig{
 		JobName: "my-job",
 	}
 

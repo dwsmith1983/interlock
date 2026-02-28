@@ -31,10 +31,9 @@ func TestExecuteEMR_Success(t *testing.T) {
 		addOut: &emr.AddJobFlowStepsOutput{StepIds: []string{"s-ABC123"}},
 	}
 
-	cfg := &types.TriggerConfig{
-		Type:      types.TriggerEMR,
+	cfg := &types.EMRTriggerConfig{
 		ClusterID: "j-CLUSTER1",
-		JobName:   "my-step",
+		StepName:  "my-step",
 		Command:   "s3://bucket/my-jar.jar",
 	}
 
@@ -46,23 +45,23 @@ func TestExecuteEMR_Success(t *testing.T) {
 
 func TestExecuteEMR_MissingClusterID(t *testing.T) {
 	client := &mockEMRClient{}
-	cfg := &types.TriggerConfig{Type: types.TriggerEMR, JobName: "step", Command: "jar"}
+	cfg := &types.EMRTriggerConfig{StepName: "step", Command: "jar"}
 	_, err := ExecuteEMR(context.Background(), cfg, client)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "clusterId is required")
 }
 
-func TestExecuteEMR_MissingJobName(t *testing.T) {
+func TestExecuteEMR_MissingStepName(t *testing.T) {
 	client := &mockEMRClient{}
-	cfg := &types.TriggerConfig{Type: types.TriggerEMR, ClusterID: "j-1", Command: "jar"}
+	cfg := &types.EMRTriggerConfig{ClusterID: "j-1", Command: "jar"}
 	_, err := ExecuteEMR(context.Background(), cfg, client)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "jobName is required")
+	assert.Contains(t, err.Error(), "stepName is required")
 }
 
 func TestExecuteEMR_MissingCommand(t *testing.T) {
 	client := &mockEMRClient{}
-	cfg := &types.TriggerConfig{Type: types.TriggerEMR, ClusterID: "j-1", JobName: "step"}
+	cfg := &types.EMRTriggerConfig{ClusterID: "j-1", StepName: "step"}
 	_, err := ExecuteEMR(context.Background(), cfg, client)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "command is required")
@@ -70,10 +69,9 @@ func TestExecuteEMR_MissingCommand(t *testing.T) {
 
 func TestExecuteEMR_APIError(t *testing.T) {
 	client := &mockEMRClient{addErr: assert.AnError}
-	cfg := &types.TriggerConfig{
-		Type:      types.TriggerEMR,
+	cfg := &types.EMRTriggerConfig{
 		ClusterID: "j-1",
-		JobName:   "step",
+		StepName:  "step",
 		Command:   "jar",
 	}
 	_, err := ExecuteEMR(context.Background(), cfg, client)

@@ -15,7 +15,7 @@ import (
 )
 
 // ExecuteAirflow triggers an Airflow DAG run and returns metadata with the dag_run_id.
-func ExecuteAirflow(ctx context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error) {
+func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[string]interface{}, error) {
 	if cfg.URL == "" {
 		return nil, fmt.Errorf("airflow trigger: url is required")
 	}

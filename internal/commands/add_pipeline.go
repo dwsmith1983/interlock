@@ -64,10 +64,14 @@ func runAddPipeline(name, archetypeName string, tier int, triggerType, triggerCo
 
 	switch triggerType {
 	case "command":
-		pipeline.Trigger.Command = triggerCommand
+		pipeline.Trigger.Command = &types.CommandTriggerConfig{
+			Command: triggerCommand,
+		}
 	case "http":
-		pipeline.Trigger.URL = triggerURL
-		pipeline.Trigger.Method = "POST"
+		pipeline.Trigger.HTTP = &types.HTTPTriggerConfig{
+			URL:    triggerURL,
+			Method: "POST",
+		}
 	}
 
 	// Write pipeline YAML to pipelines dir

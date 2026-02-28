@@ -139,7 +139,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	resp, err := http.Post(
 		ts.URL+"/api/pipelines",
 		"application/json",
-		strings.NewReader(`{"name":"e2e-pipeline","archetype":"batch-ingestion","traits":{"freshness":{"evaluator":"../../testdata/evaluators/pass","timeout":5}},"trigger":{"type":"http","url":"`+mockOrchestrator.URL+`"}}`),
+		strings.NewReader(`{"name":"e2e-pipeline","archetype":"batch-ingestion","traits":{"freshness":{"evaluator":"../../testdata/evaluators/pass","timeout":5}},"trigger":{"type":"http","http":{"url":"`+mockOrchestrator.URL+`"}}}`),
 	)
 	require.NoError(t, err)
 	_ = resp.Body.Close()
@@ -269,7 +269,7 @@ func TestE2E_NotReady_BlocksRun(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type: types.TriggerHTTP,
-			URL:  "http://localhost:9999",
+			HTTP: &types.HTTPTriggerConfig{URL: "http://localhost:9999"},
 		},
 	}
 	require.NoError(t, prov.RegisterPipeline(context.Background(), pipeline))
@@ -293,7 +293,7 @@ func TestE2E_CommandTrigger_BlockedViaAPI(t *testing.T) {
 	resp, err := http.Post(
 		ts.URL+"/api/pipelines",
 		"application/json",
-		strings.NewReader(`{"name":"cmd-pipeline","archetype":"batch-ingestion","trigger":{"type":"command","command":"echo hello"}}`),
+		strings.NewReader(`{"name":"cmd-pipeline","archetype":"batch-ingestion","trigger":{"type":"command","command":{"command":"echo hello"}}}`),
 	)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()

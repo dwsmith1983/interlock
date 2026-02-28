@@ -92,7 +92,7 @@ func readyPipeline(name string) types.PipelineConfig {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 	}
@@ -108,7 +108,7 @@ func notReadyPipeline(name string) types.PipelineConfig {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 	}

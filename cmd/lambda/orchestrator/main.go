@@ -330,7 +330,7 @@ func resolvePipeline(ctx context.Context, d *intlambda.Deps, req intlambda.Orche
 	// Resolve template variables in trigger arguments. Pipeline configs can
 	// reference execution context via ${var} placeholders (e.g. "--date": "${date}",
 	// "--hour": "${hour}") so they declare exactly what their triggers need.
-	if pipeline.Trigger != nil && len(pipeline.Trigger.Arguments) > 0 {
+	if args := pipeline.Trigger.TriggerArguments(); len(args) > 0 {
 		// Derive hour from scheduleID (e.g. "h15" → "15").
 		hour := ""
 		if strings.HasPrefix(req.ScheduleID, "h") {
@@ -343,8 +343,8 @@ func resolvePipeline(ctx context.Context, d *intlambda.Deps, req intlambda.Orche
 			"${scheduleID}", req.ScheduleID,
 			"${pipelineID}", req.PipelineID,
 		)
-		for k, v := range pipeline.Trigger.Arguments {
-			pipeline.Trigger.Arguments[k] = replacer.Replace(v)
+		for k, v := range args {
+			args[k] = replacer.Replace(v)
 		}
 	}
 

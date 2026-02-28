@@ -76,7 +76,7 @@ func readyPipeline(name string) types.PipelineConfig {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -114,7 +114,7 @@ func TestWatcher_NotReady_NoTrigger(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -315,7 +315,7 @@ func TestWatcher_EvaluationSLABreach(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 		SLA: &types.SLAConfig{
@@ -404,7 +404,7 @@ func monitoringPipeline(name string) types.PipelineConfig {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -518,7 +518,7 @@ func TestWatcher_MonitoringDrift_CreatesRerun(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -613,7 +613,7 @@ func TestWatcher_MultiSchedule_IndependentTriggers(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -687,7 +687,7 @@ func TestWatcher_MultiSchedule_InactiveSkipped(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -794,7 +794,7 @@ func TestWatcher_ExcludedDay_NothingFires(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{
 			Enabled: &enabled,
@@ -838,7 +838,7 @@ func TestWatcher_PerScheduleSLA_UsesScheduleDeadline(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 		Schedules: []types.ScheduleConfig{
@@ -885,7 +885,7 @@ func TestWatcher_ExcludedDay_SLANotChecked(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 		SLA: &types.SLAConfig{
@@ -933,7 +933,7 @@ func TestWatcher_ExcludedDay_ActiveRunIgnored(t *testing.T) {
 		},
 		Trigger: &types.TriggerConfig{
 			Type:    types.TriggerCommand,
-			Command: "true",
+			Command: &types.CommandTriggerConfig{Command: "true"},
 		},
 		Watch: &types.PipelineWatchConfig{Enabled: &enabled},
 		SLA: &types.SLAConfig{
