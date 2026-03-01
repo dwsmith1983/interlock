@@ -220,10 +220,58 @@ func (m *mockDDB) Scan(_ context.Context, input *dynamodb.ScanInput, _ ...func(*
 		if !strings.HasPrefix(k, prefix) {
 			continue
 		}
+		if !m.matchesFilter(input, item) {
+			continue
+		}
 		items = append(items, copyItem(item))
 	}
 
 	return &dynamodb.ScanOutput{Items: items, Count: int32(len(items))}, nil
+}
+
+// matchesFilter applies basic FilterExpression support for "attrName = :val" equality checks.
+func (m *mockDDB) matchesFilter(input *dynamodb.ScanInput, item map[string]ddbtypes.AttributeValue) bool {
+	if input.FilterExpression == nil {
+		return true
+	}
+
+	expr := *input.FilterExpression
+
+	// Support simple "attr = :val" equality expressions.
+	parts := strings.SplitN(expr, " = ", 2)
+	if len(parts) != 2 {
+		return true // unsupported expression, pass through
+	}
+
+	attrName := strings.TrimSpace(parts[0])
+	valRef := strings.TrimSpace(parts[1])
+
+	// Resolve expression attribute names if present.
+	if input.ExpressionAttributeNames != nil {
+		if resolved, ok := input.ExpressionAttributeNames[attrName]; ok {
+			attrName = resolved
+		}
+	}
+
+	// Get expected value from expression attribute values.
+	expected, ok := input.ExpressionAttributeValues[valRef]
+	if !ok {
+		return true // can't resolve, pass through
+	}
+
+	actual, ok := item[attrName]
+	if !ok {
+		return false
+	}
+
+	// Compare string values.
+	expectedStr, ok1 := expected.(*ddbtypes.AttributeValueMemberS)
+	actualStr, ok2 := actual.(*ddbtypes.AttributeValueMemberS)
+	if ok1 && ok2 {
+		return expectedStr.Value == actualStr.Value
+	}
+
+	return true // non-string comparison not supported, pass through
 }
 
 // putRaw inserts an item directly into the mock store (test helper).

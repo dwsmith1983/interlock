@@ -15,6 +15,68 @@ import (
 	v2 "github.com/dwsmith1983/interlock/pkg/types/v2"
 )
 
+// ScanConfigs reads all CONFIG rows from the control table.
+// Returns a map of pipeline ID to PipelineConfig.
+func (s *Store) ScanConfigs(ctx context.Context) (map[string]*v2.PipelineConfig, error) {
+	configs := make(map[string]*v2.PipelineConfig)
+
+	var startKey map[string]ddbtypes.AttributeValue
+	for {
+		input := &dynamodb.ScanInput{
+			TableName:        &s.ControlTable,
+			FilterExpression: aws.String("SK = :sk"),
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":sk": &ddbtypes.AttributeValueMemberS{Value: v2.ConfigSK},
+			},
+			ExclusiveStartKey: startKey,
+		}
+
+		out, err := s.Client.Scan(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("scan configs: %w", err)
+		}
+
+		for _, item := range out.Items {
+			pkAttr, ok := item["PK"]
+			if !ok {
+				return nil, fmt.Errorf("scan configs: row missing PK attribute")
+			}
+			pkStr, ok := pkAttr.(*ddbtypes.AttributeValueMemberS)
+			if !ok {
+				return nil, fmt.Errorf("scan configs: PK is not a string")
+			}
+
+			const prefix = "PIPELINE#"
+			if len(pkStr.Value) <= len(prefix) {
+				return nil, fmt.Errorf("scan configs: invalid PK %q", pkStr.Value)
+			}
+			pipelineID := pkStr.Value[len(prefix):]
+
+			configAttr, ok := item["config"]
+			if !ok {
+				return nil, fmt.Errorf("scan configs: config attribute missing for %q", pipelineID)
+			}
+			configStr, ok := configAttr.(*ddbtypes.AttributeValueMemberS)
+			if !ok {
+				return nil, fmt.Errorf("scan configs: config is not a string for %q", pipelineID)
+			}
+
+			var cfg v2.PipelineConfig
+			if err := json.Unmarshal([]byte(configStr.Value), &cfg); err != nil {
+				return nil, fmt.Errorf("scan configs: unmarshal config for %q: %w", pipelineID, err)
+			}
+			configs[pipelineID] = &cfg
+		}
+
+		if out.LastEvaluatedKey == nil {
+			break
+		}
+		startKey = out.LastEvaluatedKey
+	}
+
+	return configs, nil
+}
+
 // GetConfig retrieves the pipeline configuration from the control table.
 // Returns nil, nil if the item does not exist.
 func (s *Store) GetConfig(ctx context.Context, pipelineID string) (*v2.PipelineConfig, error) {
