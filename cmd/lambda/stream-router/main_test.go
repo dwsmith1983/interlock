@@ -658,6 +658,8 @@ func TestPublishObservabilityEvent_EventRecord(t *testing.T) {
 	snsMock := &mockSNS{}
 	d := testDepsWithObservability(sfnMock, snsMock)
 
+	dataJSON := `{"kind":"TRAIT_EVALUATED","pipelineId":"pipe-a","scheduleId":"daily","runId":"run-1","status":"PASS","timestamp":"2026-02-28T12:00:00Z"}`
+
 	event := intlambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{
 			makeRecordWithNewImage(
@@ -665,10 +667,7 @@ func TestPublishObservabilityEvent_EventRecord(t *testing.T) {
 				"EVENT#1234567890123#abcd",
 				"INSERT",
 				map[string]events.DynamoDBAttributeValue{
-					"kind":       events.NewStringAttribute("TRAIT_EVALUATED"),
-					"scheduleID": events.NewStringAttribute("daily"),
-					"runId":      events.NewStringAttribute("run-1"),
-					"status":     events.NewStringAttribute("PASS"),
+					"data": events.NewStringAttribute(dataJSON),
 				},
 			),
 		},
@@ -677,8 +676,6 @@ func TestPublishObservabilityEvent_EventRecord(t *testing.T) {
 	err := handleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
-	// Should have published to observability topic (EVENT# records are eligible)
-	// Filter for observability messages (topic ARN contains "observability")
 	var obsMessages []*awssns.PublishInput
 	for _, msg := range snsMock.messages {
 		if msg.TopicArn != nil && *msg.TopicArn == "arn:aws:sns:us-east-1:123:observability" {
@@ -701,15 +698,16 @@ func TestPublishObservabilityEvent_RunlogRecord(t *testing.T) {
 	snsMock := &mockSNS{}
 	d := testDepsWithObservability(sfnMock, snsMock)
 
+	dataJSON := `{"pipelineId":"pipe-b","date":"2026-02-28","scheduleId":"h22","status":"COMPLETED","runId":"run-42","startedAt":"2026-02-28T13:02:19Z","completedAt":"2026-02-28T13:02:19Z"}`
+
 	event := intlambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{
 			makeRecordWithNewImage(
 				"PIPELINE#pipe-b",
-				"RUNLOG#daily#2026-02-25",
+				"RUNLOG#2026-02-28#h22",
 				"MODIFY",
 				map[string]events.DynamoDBAttributeValue{
-					"status": events.NewStringAttribute("COMPLETED"),
-					"runId":  events.NewStringAttribute("run-42"),
+					"data": events.NewStringAttribute(dataJSON),
 				},
 			),
 		},
@@ -718,7 +716,6 @@ func TestPublishObservabilityEvent_RunlogRecord(t *testing.T) {
 	err := handleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
-	// Should have published to both lifecycle AND observability topics
 	var obsMessages []*awssns.PublishInput
 	for _, msg := range snsMock.messages {
 		if msg.TopicArn != nil && *msg.TopicArn == "arn:aws:sns:us-east-1:123:observability" {
@@ -732,6 +729,10 @@ func TestPublishObservabilityEvent_RunlogRecord(t *testing.T) {
 	assert.Equal(t, "RUNLOG", evt.RecordType)
 	assert.Equal(t, "RUNLOG_UPDATED", evt.EventType)
 	assert.Equal(t, "pipe-b", evt.PipelineID)
+	assert.Equal(t, "h22", evt.ScheduleID)
+	assert.Equal(t, "run-42", evt.RunID)
+	assert.Equal(t, "COMPLETED", evt.Status)
+	assert.Equal(t, "2026-02-28", evt.Date)
 }
 
 func TestPublishObservabilityEvent_SkipsLockRecords(t *testing.T) {
@@ -756,6 +757,43 @@ func TestPublishObservabilityEvent_SkipsLockRecords(t *testing.T) {
 		}
 	}
 	assert.Empty(t, obsMessages, "LOCK# records should be skipped")
+}
+
+func TestPublishObservabilityEvent_RunlogFailureMessage(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{}
+	d := testDepsWithObservability(sfnMock, snsMock)
+
+	dataJSON := `{"pipelineId":"pipe-c","date":"2026-02-28","scheduleId":"h05","status":"FAILED","runId":"run-99","failureMessage":"evaluator timeout"}`
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-c",
+				"RUNLOG#2026-02-28#h05",
+				"INSERT",
+				map[string]events.DynamoDBAttributeValue{
+					"data": events.NewStringAttribute(dataJSON),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	var obsMessages []*awssns.PublishInput
+	for _, msg := range snsMock.messages {
+		if msg.TopicArn != nil && *msg.TopicArn == "arn:aws:sns:us-east-1:123:observability" {
+			obsMessages = append(obsMessages, msg)
+		}
+	}
+	require.Len(t, obsMessages, 1)
+
+	var evt intlambda.ObservabilityEvent
+	require.NoError(t, json.Unmarshal([]byte(*obsMessages[0].Message), &evt))
+	assert.Equal(t, "FAILED", evt.Status)
+	assert.Equal(t, "evaluator timeout", evt.Message)
 }
 
 func TestPublishObservabilityEvent_NoOpWhenNotConfigured(t *testing.T) {
