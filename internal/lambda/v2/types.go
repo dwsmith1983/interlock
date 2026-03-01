@@ -6,6 +6,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // StreamEvent is the DynamoDB stream event input.
@@ -19,6 +20,11 @@ type SFNAPI interface {
 // EventBridgeAPI is the subset of the EventBridge client used for publishing events.
 type EventBridgeAPI interface {
 	PutEvents(ctx context.Context, input *eventbridge.PutEventsInput, opts ...func(*eventbridge.Options)) (*eventbridge.PutEventsOutput, error)
+}
+
+// TriggerExecutor abstracts trigger execution for testing.
+type TriggerExecutor interface {
+	Execute(ctx context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error)
 }
 
 // OrchestratorInput is the input to the orchestrator Lambda from Step Functions.
