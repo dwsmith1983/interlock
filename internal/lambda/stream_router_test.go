@@ -302,7 +302,9 @@ func TestStreamRouter_ConfigChange_InvalidatesCache(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // makeJobRecord builds a DynamoDB stream event record for a JOB# write.
-func makeJobRecord(pipelineID, date, timestamp, jobEvent string) events.DynamoDBEventRecord {
+func makeJobRecord(pipelineID, jobEvent string) events.DynamoDBEventRecord {
+	const date = "2026-03-01"
+	const timestamp = "1709312400"
 	pk := types.PipelinePK(pipelineID)
 	sk := types.JobSK("stream", date, timestamp)
 
@@ -358,7 +360,7 @@ func TestStreamRouter_JobFail_UnderRetryLimit_Reruns(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// No existing reruns — first failure should trigger a rerun.
-	record := makeJobRecord("gold-revenue", "2026-03-01", "1709312400", types.JobEventFail)
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -389,7 +391,7 @@ func TestStreamRouter_JobFail_OverRetryLimit_Alerts(t *testing.T) {
 	seedRerun(mock, "gold-revenue", "stream", "2026-03-01", 0)
 	seedRerun(mock, "gold-revenue", "stream", "2026-03-01", 1)
 
-	record := makeJobRecord("gold-revenue", "2026-03-01", "1709312400", types.JobEventFail)
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -414,7 +416,7 @@ func TestStreamRouter_JobSuccess_PublishesEvent(t *testing.T) {
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
 
-	record := makeJobRecord("gold-revenue", "2026-03-01", "1709312400", types.JobEventSuccess)
+	record := makeJobRecord("gold-revenue", types.JobEventSuccess)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -440,7 +442,7 @@ func TestStreamRouter_JobTimeout_TreatedAsFailure(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Timeout event should be treated like a failure — triggers rerun.
-	record := makeJobRecord("gold-revenue", "2026-03-01", "1709312400", types.JobEventTimeout)
+	record := makeJobRecord("gold-revenue", types.JobEventTimeout)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -457,7 +459,7 @@ func TestStreamRouter_JobFail_NoConfig_Skips(t *testing.T) {
 	d, sfnMock, ebMock := testDeps(mock)
 
 	// No config seeded — should not crash, return nil.
-	record := makeJobRecord("unknown-pipeline", "2026-03-01", "1709312400", types.JobEventFail)
+	record := makeJobRecord("unknown-pipeline", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
