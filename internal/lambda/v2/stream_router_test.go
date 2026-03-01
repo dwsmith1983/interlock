@@ -297,6 +297,181 @@ func TestStreamRouter_ConfigChange_InvalidatesCache(t *testing.T) {
 	require.Len(t, sfnMock.executions, 1, "SFN should have been triggered after cache invalidation")
 }
 
+// ---------------------------------------------------------------------------
+// Job log event helpers and tests
+// ---------------------------------------------------------------------------
+
+// makeJobRecord builds a DynamoDB stream event record for a JOB# write.
+func makeJobRecord(pipelineID, schedule, date, timestamp, jobEvent string) events.DynamoDBEventRecord {
+	pk := v2.PipelinePK(pipelineID)
+	sk := v2.JobSK(schedule, date, timestamp)
+
+	return events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK":    events.NewStringAttribute(pk),
+				"SK":    events.NewStringAttribute(sk),
+				"event": events.NewStringAttribute(jobEvent),
+			},
+		},
+	}
+}
+
+// seedRerun inserts an existing RERUN# row into the mock rerun table.
+func seedRerun(mock *mockDDB, pipelineID, schedule, date string, attempt int) {
+	mock.putRaw("rerun", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: v2.PipelinePK(pipelineID)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: v2.RerunSK(schedule, date, attempt)},
+		"reason": &ddbtypes.AttributeValueMemberS{Value: "fail"},
+	})
+}
+
+// testJobConfig returns a PipelineConfig with maxRetries set.
+func testJobConfig(maxRetries int) v2.PipelineConfig {
+	return v2.PipelineConfig{
+		Pipeline: v2.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: v2.ScheduleConfig{
+			Evaluation: v2.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: v2.ValidationConfig{
+			Trigger: "ALL",
+			Rules:   []v2.ValidationRule{{Key: "upstream-complete", Check: v2.CheckExists}},
+		},
+		Job: v2.JobConfig{
+			Type:       "command",
+			Config:     map[string]interface{}{"command": "echo hello"},
+			MaxRetries: maxRetries,
+		},
+	}
+}
+
+func TestStreamRouter_JobFail_UnderRetryLimit_Reruns(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig(2)
+	seedConfig(mock, cfg)
+
+	// No existing reruns — first failure should trigger a rerun.
+	record := makeJobRecord("gold-revenue", "stream", "2026-03-01", "1709312400", v2.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should have started a new SFN execution for the rerun.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for rerun")
+
+	// Verify the execution name includes the rerun attempt.
+	assert.Contains(t, *sfnMock.executions[0].Name, "rerun-0")
+
+	// Verify no EventBridge events for retry exhaustion.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "expected no EventBridge events on successful rerun")
+}
+
+func TestStreamRouter_JobFail_OverRetryLimit_Alerts(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig(2)
+	seedConfig(mock, cfg)
+
+	// Seed 2 existing reruns — at limit, so next failure should be final.
+	seedRerun(mock, "gold-revenue", "stream", "2026-03-01", 0)
+	seedRerun(mock, "gold-revenue", "stream", "2026-03-01", 1)
+
+	record := makeJobRecord("gold-revenue", "stream", "2026-03-01", "1709312400", v2.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No SFN execution should be started.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN execution when retries exhausted")
+
+	// Should have published a RETRY_EXHAUSTED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "expected one EventBridge event")
+	assert.Equal(t, string(v2.EventRetryExhausted), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestStreamRouter_JobSuccess_PublishesEvent(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig(2)
+	seedConfig(mock, cfg)
+
+	record := makeJobRecord("gold-revenue", "stream", "2026-03-01", "1709312400", v2.JobEventSuccess)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No SFN execution for success.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN execution on success")
+
+	// Should have published a JOB_COMPLETED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "expected one EventBridge event")
+	assert.Equal(t, string(v2.EventJobCompleted), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestStreamRouter_JobTimeout_TreatedAsFailure(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig(2)
+	seedConfig(mock, cfg)
+
+	// Timeout event should be treated like a failure — triggers rerun.
+	record := makeJobRecord("gold-revenue", "stream", "2026-03-01", "1709312400", v2.JobEventTimeout)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for timeout rerun")
+	assert.Contains(t, *sfnMock.executions[0].Name, "rerun-0")
+}
+
+func TestStreamRouter_JobFail_NoConfig_Skips(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	// No config seeded — should not crash, return nil.
+	record := makeJobRecord("unknown-pipeline", "stream", "2026-03-01", "1709312400", v2.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN for missing config")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "expected no EventBridge events for missing config")
+}
+
 func TestStreamRouter_TriggerValueMismatch_NoSFN(t *testing.T) {
 	mock := newMockDDB()
 	d, sfnMock, _ := testDeps(mock)

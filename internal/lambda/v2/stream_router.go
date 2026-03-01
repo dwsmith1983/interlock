@@ -56,9 +56,121 @@ func handleRecord(ctx context.Context, d *Deps, record events.DynamoDBEventRecor
 	}
 }
 
-// handleJobLogEvent is a stub for job failure re-run logic. Task 13 will implement it.
-func handleJobLogEvent(_ context.Context, _ *Deps, _, _ string, _ events.DynamoDBEventRecord) error {
+// handleJobLogEvent processes a JOB# stream record, routing to failure
+// re-run logic or success notification based on the job event outcome.
+func handleJobLogEvent(ctx context.Context, d *Deps, pk, sk string, record events.DynamoDBEventRecord) error {
+	pipelineID := strings.TrimPrefix(pk, "PIPELINE#")
+	if pipelineID == pk {
+		return fmt.Errorf("unexpected PK format: %q", pk)
+	}
+
+	// Extract the "event" attribute from NewImage (success/fail/timeout).
+	eventAttr, ok := record.Change.NewImage["event"]
+	if !ok || eventAttr.DataType() != events.DataTypeString {
+		d.Logger.Warn("JOB record missing event attribute", "pk", pk, "sk", sk)
+		return nil
+	}
+	jobEvent := eventAttr.String()
+
+	// Parse schedule and date from SK: JOB#<schedule>#<date>#<timestamp>
+	schedule, date, err := parseJobSK(sk)
+	if err != nil {
+		return err
+	}
+
+	switch jobEvent {
+	case v2.JobEventFail, v2.JobEventTimeout:
+		return handleJobFailure(ctx, d, pipelineID, schedule, date, jobEvent)
+	case v2.JobEventSuccess:
+		return handleJobSuccess(ctx, d, pipelineID, schedule, date)
+	default:
+		d.Logger.Warn("unknown job event", "event", jobEvent, "pipelineId", pipelineID)
+		return nil
+	}
+}
+
+// parseJobSK extracts schedule and date from a JOB# sort key.
+// Expected format: JOB#<schedule>#<date>#<timestamp>
+func parseJobSK(sk string) (schedule, date string, err error) {
+	trimmed := strings.TrimPrefix(sk, "JOB#")
+	parts := strings.SplitN(trimmed, "#", 3)
+	if len(parts) < 3 {
+		return "", "", fmt.Errorf("invalid JOB SK format: %q", sk)
+	}
+	return parts[0], parts[1], nil
+}
+
+// handleJobFailure processes a job failure or timeout by either re-running
+// the pipeline (if under the retry limit) or marking it as permanently failed.
+func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, jobEvent string) error {
+	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
+	if err != nil {
+		return fmt.Errorf("load config for %q: %w", pipelineID, err)
+	}
+	if cfg == nil {
+		d.Logger.Warn("no config found for pipeline, skipping rerun", "pipelineId", pipelineID)
+		return nil
+	}
+
+	maxRetries := cfg.Job.MaxRetries
+
+	rerunCount, err := d.Store.CountReruns(ctx, pipelineID, schedule, date)
+	if err != nil {
+		return fmt.Errorf("count reruns for %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+
+	if rerunCount >= maxRetries {
+		// Retry limit reached — publish exhaustion event and mark as final failure.
+		_ = publishEvent(ctx, d, string(v2.EventRetryExhausted), pipelineID, schedule, date,
+			fmt.Sprintf("retry limit reached (%d/%d) for %s", rerunCount, maxRetries, pipelineID))
+
+		if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, v2.TriggerStatusFailedFinal); err != nil {
+			return fmt.Errorf("set trigger status FAILED_FINAL for %q: %w", pipelineID, err)
+		}
+
+		d.Logger.Info("retry limit reached",
+			"pipelineId", pipelineID,
+			"schedule", schedule,
+			"date", date,
+			"reruns", rerunCount,
+			"maxRetries", maxRetries,
+		)
+		return nil
+	}
+
+	// Under retry limit — write rerun record and restart the pipeline.
+	attempt, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, jobEvent, jobEvent)
+	if err != nil {
+		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
+	}
+
+	if err := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); err != nil {
+		return fmt.Errorf("release trigger lock for %q: %w", pipelineID, err)
+	}
+
+	if _, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, triggerLockTTL); err != nil {
+		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
+	}
+
+	// Use a unique execution name that includes the rerun attempt number.
+	execName := fmt.Sprintf("%s-%s-%s-rerun-%d", pipelineID, schedule, date, attempt)
+	if err := startSFNWithName(ctx, d, pipelineID, schedule, date, execName); err != nil {
+		return fmt.Errorf("start SFN rerun for %q: %w", pipelineID, err)
+	}
+
+	d.Logger.Info("started rerun",
+		"pipelineId", pipelineID,
+		"schedule", schedule,
+		"date", date,
+		"attempt", attempt,
+	)
 	return nil
+}
+
+// handleJobSuccess publishes a job-completed event to EventBridge.
+func handleJobSuccess(ctx context.Context, d *Deps, pipelineID, schedule, date string) error {
+	return publishEvent(ctx, d, string(v2.EventJobCompleted), pipelineID, schedule, date,
+		fmt.Sprintf("job completed for %s", pipelineID))
 }
 
 // handleSensorEvent evaluates the trigger condition for a sensor write
@@ -154,8 +266,14 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	return nil
 }
 
-// startSFN starts a Step Function execution with the orchestrator input payload.
+// startSFN starts a Step Function execution with the default execution name.
 func startSFN(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) error {
+	name := fmt.Sprintf("%s-%s-%s", pipelineID, scheduleID, date)
+	return startSFNWithName(ctx, d, pipelineID, scheduleID, date, name)
+}
+
+// startSFNWithName starts a Step Function execution with a custom execution name.
+func startSFNWithName(ctx context.Context, d *Deps, pipelineID, scheduleID, date, name string) error {
 	input := OrchestratorInput{
 		Mode:       "evaluate",
 		PipelineID: pipelineID,
@@ -167,7 +285,6 @@ func startSFN(ctx context.Context, d *Deps, pipelineID, scheduleID, date string)
 		return fmt.Errorf("marshal SFN input: %w", err)
 	}
 
-	name := fmt.Sprintf("%s-%s-%s", pipelineID, scheduleID, date)
 	inputStr := string(payload)
 
 	_, err = d.SFNClient.StartExecution(ctx, &sfn.StartExecutionInput{
