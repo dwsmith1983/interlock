@@ -1,9 +1,4 @@
 # Binaries
-/interlock
-/orchestrator
-/stream-router
-/watchdog
-/dist/
 *.exe
 *.exe~
 *.dll
@@ -41,9 +36,3 @@ Thumbs.db
 /build/
 /bin/
 deploy/dist/
-deploy/v2/dist/
-deploy/cdk/cdk
-deploy/cdk/cdk.out/
-demo/local/airflow/dags/__pycache__/
-demo/aws/e2e-results/
-demo/local/e2e-results/
