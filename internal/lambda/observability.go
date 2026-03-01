@@ -46,6 +46,33 @@ var RecordTypeToEventType = map[string]string{
 	"QUARANTINE": "DATA_QUARANTINED",
 }
 
+// extractDataJSON parses the "data" JSON blob from a DynamoDB stream record
+// and returns the parsed map. Returns nil if the attribute is missing or invalid.
+func extractDataJSON(newImage map[string]events.DynamoDBAttributeValue) map[string]interface{} {
+	dataAttr, ok := newImage["data"]
+	if !ok {
+		return nil
+	}
+	raw := dataAttr.String()
+	if raw == "" {
+		return nil
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil
+	}
+	return parsed
+}
+
+// dataStr returns the string value for a key in a parsed JSON map, or "".
+func dataStr(m map[string]interface{}, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, _ := m[key].(string)
+	return v
+}
+
 // PublishObservabilityEvent publishes a normalized event to the observability
 // SNS topic for all eligible DynamoDB stream records. Best-effort: errors are
 // logged, not returned. No-op when OBSERVABILITY_TOPIC_ARN is not configured.
@@ -100,32 +127,68 @@ func PublishObservabilityEvent(ctx context.Context, d *Deps, logger *slog.Logger
 		}
 	}
 
+	// Extract standard fields from top-level NewImage attributes.
+	var scheduleID, date, runID, status, message string
+	if newImage != nil {
+		if attr, ok := newImage["scheduleID"]; ok {
+			scheduleID = attr.String()
+		}
+		if attr, ok := newImage["date"]; ok {
+			date = attr.String()
+		}
+		if attr, ok := newImage["runId"]; ok {
+			runID = attr.String()
+		}
+		if attr, ok := newImage["status"]; ok {
+			status = attr.String()
+		}
+		if attr, ok := newImage["message"]; ok {
+			message = attr.String()
+		}
+
+		// Fallback: parse "data" JSON blob for fields not found at top level.
+		// RUNLOG and EVENT records store all rich fields inside "data".
+		parsed := extractDataJSON(newImage)
+		if parsed != nil {
+			if scheduleID == "" {
+				scheduleID = dataStr(parsed, "scheduleId")
+			}
+			if date == "" {
+				date = dataStr(parsed, "date")
+			}
+			if runID == "" {
+				runID = dataStr(parsed, "runId")
+			}
+			if status == "" {
+				status = dataStr(parsed, "status")
+			}
+			if message == "" {
+				message = dataStr(parsed, "message")
+				if message == "" {
+					message = dataStr(parsed, "failureMessage")
+				}
+			}
+			// EVENT records: extract "kind" for eventType from data JSON
+			if recordType == "EVENT" && eventType == RecordTypeToEventType["EVENT"] {
+				if kind := dataStr(parsed, "kind"); kind != "" {
+					eventType = kind
+				}
+			}
+		}
+	}
+
 	// Build observability event
 	evt := ObservabilityEvent{
 		EventID:    fmt.Sprintf("%s:%s", record.EventName, record.EventID),
 		RecordType: recordType,
 		EventType:  eventType,
 		PipelineID: pipelineID,
+		ScheduleID: scheduleID,
+		RunID:      runID,
+		Date:       date,
+		Status:     status,
+		Message:    message,
 		Timestamp:  time.Now(),
-	}
-
-	// Extract standard fields from NewImage
-	if newImage != nil {
-		if attr, ok := newImage["scheduleID"]; ok {
-			evt.ScheduleID = attr.String()
-		}
-		if attr, ok := newImage["date"]; ok {
-			evt.Date = attr.String()
-		}
-		if attr, ok := newImage["runId"]; ok {
-			evt.RunID = attr.String()
-		}
-		if attr, ok := newImage["status"]; ok {
-			evt.Status = attr.String()
-		}
-		if attr, ok := newImage["message"]; ok {
-			evt.Message = attr.String()
-		}
 	}
 
 	payload, err := json.Marshal(evt)
