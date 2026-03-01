@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 
@@ -183,6 +184,21 @@ func (m *mockDDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func
 			continue
 		}
 		items = append(items, copyItem(item))
+	}
+
+	// Sort by SK ascending (default) or descending when ScanIndexForward is false.
+	sort.Slice(items, func(i, j int) bool {
+		skI := items[i]["SK"].(*ddbtypes.AttributeValueMemberS).Value
+		skJ := items[j]["SK"].(*ddbtypes.AttributeValueMemberS).Value
+		if input.ScanIndexForward != nil && !*input.ScanIndexForward {
+			return skI > skJ
+		}
+		return skI < skJ
+	})
+
+	// Apply Limit.
+	if input.Limit != nil && int(*input.Limit) < len(items) {
+		items = items[:*input.Limit]
 	}
 
 	return &dynamodb.QueryOutput{Items: items, Count: int32(len(items))}, nil
