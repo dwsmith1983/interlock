@@ -98,31 +98,43 @@ func (s *Store) GetSensorData(ctx context.Context, pipelineID, sensorKey string)
 // Returns a map of sensor key to data. The sensor key is the raw SK suffix
 // (e.g. "SENSOR#upstream-complete" -> key "upstream-complete").
 func (s *Store) GetAllSensors(ctx context.Context, pipelineID string) (map[string]map[string]interface{}, error) {
-	out, err := s.Client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              &s.ControlTable,
-		ConsistentRead:         aws.Bool(true),
-		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
-		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-			":pk":     &ddbtypes.AttributeValueMemberS{Value: v2.PipelinePK(pipelineID)},
-			":prefix": &ddbtypes.AttributeValueMemberS{Value: "SENSOR#"},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("query sensors for %q: %w", pipelineID, err)
-	}
+	result := make(map[string]map[string]interface{})
 
-	result := make(map[string]map[string]interface{}, len(out.Items))
-	for _, item := range out.Items {
-		var rec v2.ControlRecord
-		if err := attributevalue.UnmarshalMap(item, &rec); err != nil {
-			continue // skip corrupt rows
+	var startKey map[string]ddbtypes.AttributeValue
+	for {
+		input := &dynamodb.QueryInput{
+			TableName:              &s.ControlTable,
+			ConsistentRead:         aws.Bool(true),
+			KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":pk":     &ddbtypes.AttributeValueMemberS{Value: v2.PipelinePK(pipelineID)},
+				":prefix": &ddbtypes.AttributeValueMemberS{Value: "SENSOR#"},
+			},
+			ExclusiveStartKey: startKey,
 		}
-		// Extract the sensor key from the SK: "SENSOR#<key>"
-		const prefix = "SENSOR#"
-		if len(rec.SK) > len(prefix) {
-			key := rec.SK[len(prefix):]
-			result[key] = rec.Data
+
+		out, err := s.Client.Query(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("query sensors for %q: %w", pipelineID, err)
 		}
+
+		for _, item := range out.Items {
+			var rec v2.ControlRecord
+			if err := attributevalue.UnmarshalMap(item, &rec); err != nil {
+				return nil, fmt.Errorf("unmarshal sensor row: %w", err)
+			}
+			// Extract the sensor key from the SK: "SENSOR#<key>"
+			const prefix = "SENSOR#"
+			if len(rec.SK) > len(prefix) {
+				key := rec.SK[len(prefix):]
+				result[key] = rec.Data
+			}
+		}
+
+		if out.LastEvaluatedKey == nil {
+			break
+		}
+		startKey = out.LastEvaluatedKey
 	}
 	return result, nil
 }
@@ -168,14 +180,21 @@ func (s *Store) ReleaseTriggerLock(ctx context.Context, pipelineID, schedule, da
 	return nil
 }
 
-// SetTriggerStatus writes or overwrites the trigger row with the given status.
+// SetTriggerStatus updates only the status attribute of an existing trigger row,
+// preserving TTL and other attributes.
 func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date, status string) error {
-	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.ControlTable,
-		Item: map[string]ddbtypes.AttributeValue{
-			"PK":     &ddbtypes.AttributeValueMemberS{Value: v2.PipelinePK(pipelineID)},
-			"SK":     &ddbtypes.AttributeValueMemberS{Value: v2.TriggerSK(schedule, date)},
-			"status": &ddbtypes.AttributeValueMemberS{Value: status},
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: v2.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: v2.TriggerSK(schedule, date)},
+		},
+		UpdateExpression: aws.String("SET #status = :s"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":s": &ddbtypes.AttributeValueMemberS{Value: status},
 		},
 	})
 	if err != nil {

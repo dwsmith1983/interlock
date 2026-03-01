@@ -94,6 +94,51 @@ func (m *mockDDB) PutItem(_ context.Context, input *dynamodb.PutItemInput, _ ...
 	return &dynamodb.PutItemOutput{}, nil
 }
 
+func (m *mockDDB) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := m.checkErr("UpdateItem"); err != nil {
+		return nil, err
+	}
+
+	pk := input.Key["PK"].(*ddbtypes.AttributeValueMemberS).Value
+	sk := input.Key["SK"].(*ddbtypes.AttributeValueMemberS).Value
+	key := itemKey(*input.TableName, pk, sk)
+
+	item, ok := m.items[key]
+	if !ok {
+		item = map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: pk},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: sk},
+		}
+	}
+
+	// Parse "SET #name = :val" assignments from UpdateExpression and apply them.
+	if input.UpdateExpression != nil {
+		expr := strings.TrimPrefix(*input.UpdateExpression, "SET ")
+		for _, assignment := range strings.Split(expr, ",") {
+			parts := strings.SplitN(strings.TrimSpace(assignment), "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			nameRef := strings.TrimSpace(parts[0])
+			valRef := strings.TrimSpace(parts[1])
+
+			attrName := nameRef
+			if resolved, ok := input.ExpressionAttributeNames[nameRef]; ok {
+				attrName = resolved
+			}
+			if val, ok := input.ExpressionAttributeValues[valRef]; ok {
+				item[attrName] = val
+			}
+		}
+	}
+
+	m.items[key] = item
+	return &dynamodb.UpdateItemOutput{}, nil
+}
+
 func (m *mockDDB) DeleteItem(_ context.Context, input *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

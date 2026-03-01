@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,7 +268,15 @@ func TestSetTriggerStatus(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	// Set status.
+	// Seed a trigger row with TTL to verify UpdateItem preserves it.
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: v2.PipelinePK("pipe-1")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: v2.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: v2.TriggerStatusRunning},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+	})
+
+	// Update status.
 	err := s.SetTriggerStatus(context.Background(), "pipe-1", "daily", "2026-03-01", v2.TriggerStatusCompleted)
 	if err != nil {
 		t.Fatalf("SetTriggerStatus: %v", err)
@@ -284,5 +294,73 @@ func TestSetTriggerStatus(t *testing.T) {
 	status := item["status"].(*ddbtypes.AttributeValueMemberS).Value
 	if status != v2.TriggerStatusCompleted {
 		t.Errorf("status = %q, want %q", status, v2.TriggerStatusCompleted)
+	}
+
+	// Verify TTL was preserved (not stripped by UpdateItem).
+	ttlAttr, ok := item["ttl"]
+	if !ok {
+		t.Fatal("expected ttl attribute to be preserved")
+	}
+	ttlVal := ttlAttr.(*ddbtypes.AttributeValueMemberN).Value
+	if ttlVal != "1740000000" {
+		t.Errorf("ttl = %q, want %q", ttlVal, "1740000000")
+	}
+}
+
+func TestGetConfig_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("throttled")
+	mock.errFn = errOnOp("GetItem", injected)
+
+	_, err := s.GetConfig(context.Background(), "pipe-1")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "get config") {
+		t.Errorf("expected context in error message, got: %v", err)
+	}
+}
+
+func TestAcquireTriggerLock_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("service unavailable")
+	mock.errFn = errOnOp("PutItem", injected)
+
+	acquired, err := s.AcquireTriggerLock(context.Background(), "pipe-1", "daily", "2026-03-01", 24*time.Hour)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if acquired {
+		t.Error("expected acquired=false on DynamoDB error")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+}
+
+func TestGetConfig_InvalidJSON(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	// Seed a row with invalid JSON in the config attribute.
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: v2.PipelinePK("bad-pipe")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: v2.ConfigSK},
+		"config": &ddbtypes.AttributeValueMemberS{Value: `{not valid json`},
+	})
+
+	_, err := s.GetConfig(context.Background(), "bad-pipe")
+	if err == nil {
+		t.Fatal("expected unmarshal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unmarshal config") {
+		t.Errorf("expected 'unmarshal config' in error, got: %v", err)
 	}
 }
