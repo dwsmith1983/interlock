@@ -48,3 +48,27 @@ variable "sfn_timeout_seconds" {
   type        = number
   default     = 43200
 }
+
+variable "enable_glue_trigger" {
+  description = "Enable IAM permissions for Glue job triggering"
+  type        = bool
+  default     = false
+}
+
+variable "enable_emr_trigger" {
+  description = "Enable IAM permissions for EMR job triggering"
+  type        = bool
+  default     = false
+}
+
+variable "enable_emr_serverless_trigger" {
+  description = "Enable IAM permissions for EMR Serverless job triggering"
+  type        = bool
+  default     = false
+}
+
+variable "enable_sfn_trigger" {
+  description = "Enable IAM permissions for nested Step Functions execution"
+  type        = bool
+  default     = false
+}
