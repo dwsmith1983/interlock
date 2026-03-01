@@ -25,12 +25,17 @@ func PublishLifecycleEvent(ctx context.Context, d *Deps, logger *slog.Logger, pk
 		return
 	}
 
-	// Extract status from NewImage
-	statusAttr, ok := newImage["status"]
-	if !ok {
-		return
+	// Extract status — check top-level attribute first, then data JSON fallback.
+	var status string
+	if statusAttr, ok := newImage["status"]; ok {
+		status = statusAttr.String()
 	}
-	status := statusAttr.String()
+	if status == "" {
+		parsed := extractDataJSON(newImage)
+		if parsed != nil {
+			status = dataStr(parsed, "status")
+		}
+	}
 
 	// Only publish for terminal statuses
 	if status != string(types.RunCompleted) && status != string(types.RunFailed) {
@@ -47,18 +52,29 @@ func PublishLifecycleEvent(ctx context.Context, d *Deps, logger *slog.Logger, pk
 		eventType = types.EventPipelineFailed
 	}
 
-	// Extract optional fields from NewImage
-	scheduleID := ""
+	// Extract optional fields — top-level first, then data JSON fallback.
+	var scheduleID, date, runID string
 	if attr, ok := newImage["scheduleID"]; ok {
 		scheduleID = attr.String()
 	}
-	date := ""
 	if attr, ok := newImage["date"]; ok {
 		date = attr.String()
 	}
-	runID := ""
 	if attr, ok := newImage["runId"]; ok {
 		runID = attr.String()
+	}
+
+	parsed := extractDataJSON(newImage)
+	if parsed != nil {
+		if scheduleID == "" {
+			scheduleID = dataStr(parsed, "scheduleId")
+		}
+		if date == "" {
+			date = dataStr(parsed, "date")
+		}
+		if runID == "" {
+			runID = dataStr(parsed, "runId")
+		}
 	}
 
 	evt := LifecycleEvent{

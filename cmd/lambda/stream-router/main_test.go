@@ -521,6 +521,46 @@ func TestLifecycleEvent_MixedBatch(t *testing.T) {
 	assert.Len(t, snsMock.messages, 1, "RUNLOG COMPLETED should publish lifecycle event")
 }
 
+func TestPublishLifecycleEvent_RunlogDataJSON(t *testing.T) {
+	sfnMock := &mockSFN{}
+	snsMock := &mockSNS{}
+	d := testDepsWithObservability(sfnMock, snsMock)
+
+	dataJSON := `{"pipelineId":"pipe-b","date":"2026-02-28","scheduleId":"h22","status":"COMPLETED","runId":"run-42"}`
+
+	event := intlambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{
+			makeRecordWithNewImage(
+				"PIPELINE#pipe-b",
+				"RUNLOG#2026-02-28#h22",
+				"MODIFY",
+				map[string]events.DynamoDBAttributeValue{
+					"data": events.NewStringAttribute(dataJSON),
+				},
+			),
+		},
+	}
+
+	err := handleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should have published to lifecycle topic
+	var lifecycleMessages []*awssns.PublishInput
+	for _, msg := range snsMock.messages {
+		if msg.TopicArn != nil && *msg.TopicArn == "arn:aws:sns:us-east-1:123:lifecycle" {
+			lifecycleMessages = append(lifecycleMessages, msg)
+		}
+	}
+	require.Len(t, lifecycleMessages, 1)
+
+	var evt intlambda.LifecycleEvent
+	require.NoError(t, json.Unmarshal([]byte(*lifecycleMessages[0].Message), &evt))
+	assert.Equal(t, "pipe-b", evt.PipelineID)
+	assert.Equal(t, "COMPLETED", evt.Status)
+	assert.Equal(t, "h22", evt.ScheduleID)
+	assert.Equal(t, "run-42", evt.RunID)
+}
+
 // ---------------------------------------------------------------------------
 // Retry on ExecutionAlreadyExists tests
 // ---------------------------------------------------------------------------
