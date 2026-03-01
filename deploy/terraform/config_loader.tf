@@ -17,6 +17,6 @@ resource "aws_dynamodb_table_item" "pipeline_config" {
   item = jsonencode({
     PK     = { S = "PIPELINE#${each.key}" }
     SK     = { S = "CONFIG" }
-    config = { S = each.value }
+    config = { S = jsonencode(yamldecode(each.value)) }
   })
 }
