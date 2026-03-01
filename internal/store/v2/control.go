@@ -242,6 +242,70 @@ func (s *Store) ReleaseTriggerLock(ctx context.Context, pipelineID, schedule, da
 	return nil
 }
 
+// ScanRunningTriggers returns all TRIGGER# rows with status=RUNNING.
+func (s *Store) ScanRunningTriggers(ctx context.Context) ([]v2.ControlRecord, error) {
+	var records []v2.ControlRecord
+
+	var startKey map[string]ddbtypes.AttributeValue
+	for {
+		input := &dynamodb.ScanInput{
+			TableName:        &s.ControlTable,
+			FilterExpression: aws.String("begins_with(SK, :prefix) AND #status = :running"),
+			ExpressionAttributeNames: map[string]string{
+				"#status": "status",
+			},
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":prefix":  &ddbtypes.AttributeValueMemberS{Value: "TRIGGER#"},
+				":running": &ddbtypes.AttributeValueMemberS{Value: v2.TriggerStatusRunning},
+			},
+			ExclusiveStartKey: startKey,
+		}
+
+		out, err := s.Client.Scan(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("scan running triggers: %w", err)
+		}
+
+		for _, item := range out.Items {
+			var rec v2.ControlRecord
+			if err := attributevalue.UnmarshalMap(item, &rec); err != nil {
+				return nil, fmt.Errorf("unmarshal trigger row: %w", err)
+			}
+			records = append(records, rec)
+		}
+
+		if out.LastEvaluatedKey == nil {
+			break
+		}
+		startKey = out.LastEvaluatedKey
+	}
+	return records, nil
+}
+
+// GetTrigger reads a TRIGGER# row for a specific pipeline/schedule/date.
+// Returns nil, nil if the item does not exist.
+func (s *Store) GetTrigger(ctx context.Context, pipelineID, schedule, date string) (*v2.ControlRecord, error) {
+	out, err := s.Client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &s.ControlTable,
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: v2.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: v2.TriggerSK(schedule, date)},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get trigger %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	if out.Item == nil {
+		return nil, nil
+	}
+
+	var rec v2.ControlRecord
+	if err := attributevalue.UnmarshalMap(out.Item, &rec); err != nil {
+		return nil, fmt.Errorf("unmarshal trigger %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return &rec, nil
+}
+
 // SetTriggerStatus updates only the status attribute of an existing trigger row,
 // preserving TTL and other attributes.
 func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date, status string) error {

@@ -125,7 +125,46 @@ func (m *mockDDB) PutItem(_ context.Context, input *dynamodb.PutItemInput, _ ...
 	return &dynamodb.PutItemOutput{}, nil
 }
 
-func (m *mockDDB) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+func (m *mockDDB) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	pk := input.Key["PK"].(*ddbtypes.AttributeValueMemberS).Value
+	sk := input.Key["SK"].(*ddbtypes.AttributeValueMemberS).Value
+	key := ddbItemKey(*input.TableName, pk, sk)
+
+	item, ok := m.items[key]
+	if !ok {
+		item = map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: pk},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: sk},
+		}
+	}
+
+	// Parse "SET #name = :val" assignments from UpdateExpression and apply them.
+	if input.UpdateExpression != nil {
+		expr := strings.TrimPrefix(*input.UpdateExpression, "SET ")
+		for _, assignment := range strings.Split(expr, ",") {
+			parts := strings.SplitN(strings.TrimSpace(assignment), "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			nameRef := strings.TrimSpace(parts[0])
+			valRef := strings.TrimSpace(parts[1])
+
+			attrName := nameRef
+			if input.ExpressionAttributeNames != nil {
+				if resolved, ok := input.ExpressionAttributeNames[nameRef]; ok {
+					attrName = resolved
+				}
+			}
+			if val, ok := input.ExpressionAttributeValues[valRef]; ok {
+				item[attrName] = val
+			}
+		}
+	}
+
+	m.items[key] = item
 	return &dynamodb.UpdateItemOutput{}, nil
 }
 
@@ -185,20 +224,87 @@ func (m *mockDDB) Scan(_ context.Context, input *dynamodb.ScanInput, _ ...func(*
 		if !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		// Basic filter for "SK = :sk"
-		if input.FilterExpression != nil {
-			if val, ok := input.ExpressionAttributeValues[":sk"]; ok {
-				expected := val.(*ddbtypes.AttributeValueMemberS).Value
-				actual := item["SK"].(*ddbtypes.AttributeValueMemberS).Value
-				if actual != expected {
-					continue
-				}
-			}
+		if input.FilterExpression != nil && !matchesScanFilter(*input.FilterExpression, input.ExpressionAttributeNames, input.ExpressionAttributeValues, item) {
+			continue
 		}
 		items = append(items, ddbCopyItem(item))
 	}
 
 	return &dynamodb.ScanOutput{Items: items, Count: int32(len(items))}, nil
+}
+
+// matchesScanFilter evaluates a FilterExpression against an item.
+// Supports simple "attr = :val", "begins_with(attr, :val)", and compound "... AND ..." clauses.
+func matchesScanFilter(expr string, names map[string]string, values map[string]ddbtypes.AttributeValue, item map[string]ddbtypes.AttributeValue) bool {
+	clauses := strings.Split(expr, " AND ")
+	for _, clause := range clauses {
+		clause = strings.TrimSpace(clause)
+		if !matchesScanClause(clause, names, values, item) {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesScanClause(clause string, names map[string]string, values map[string]ddbtypes.AttributeValue, item map[string]ddbtypes.AttributeValue) bool {
+	// begins_with(attr, :val)
+	if strings.HasPrefix(clause, "begins_with(") {
+		inner := strings.TrimPrefix(clause, "begins_with(")
+		inner = strings.TrimSuffix(inner, ")")
+		parts := strings.SplitN(inner, ",", 2)
+		if len(parts) != 2 {
+			return true
+		}
+		attrName := strings.TrimSpace(parts[0])
+		valRef := strings.TrimSpace(parts[1])
+
+		expected, ok := values[valRef]
+		if !ok {
+			return true
+		}
+		actual, ok := item[attrName]
+		if !ok {
+			return false
+		}
+		expectedStr, ok1 := expected.(*ddbtypes.AttributeValueMemberS)
+		actualStr, ok2 := actual.(*ddbtypes.AttributeValueMemberS)
+		if ok1 && ok2 {
+			return strings.HasPrefix(actualStr.Value, expectedStr.Value)
+		}
+		return true
+	}
+
+	// Simple "attr = :val" equality.
+	parts := strings.SplitN(clause, " = ", 2)
+	if len(parts) != 2 {
+		return true
+	}
+
+	attrName := strings.TrimSpace(parts[0])
+	valRef := strings.TrimSpace(parts[1])
+
+	if names != nil {
+		if resolved, ok := names[attrName]; ok {
+			attrName = resolved
+		}
+	}
+
+	expected, ok := values[valRef]
+	if !ok {
+		return true
+	}
+
+	actual, ok := item[attrName]
+	if !ok {
+		return false
+	}
+
+	expectedStr, ok1 := expected.(*ddbtypes.AttributeValueMemberS)
+	actualStr, ok2 := actual.(*ddbtypes.AttributeValueMemberS)
+	if ok1 && ok2 {
+		return expectedStr.Value == actualStr.Value
+	}
+	return true
 }
 
 // putRaw inserts an item directly into the mock store.

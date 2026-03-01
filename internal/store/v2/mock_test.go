@@ -229,7 +229,8 @@ func (m *mockDDB) Scan(_ context.Context, input *dynamodb.ScanInput, _ ...func(*
 	return &dynamodb.ScanOutput{Items: items, Count: int32(len(items))}, nil
 }
 
-// matchesFilter applies basic FilterExpression support for "attrName = :val" equality checks.
+// matchesFilter applies basic FilterExpression support for equality and
+// compound "begins_with(attr, :val) AND attr = :val" expressions.
 func (m *mockDDB) matchesFilter(input *dynamodb.ScanInput, item map[string]ddbtypes.AttributeValue) bool {
 	if input.FilterExpression == nil {
 		return true
@@ -237,8 +238,48 @@ func (m *mockDDB) matchesFilter(input *dynamodb.ScanInput, item map[string]ddbty
 
 	expr := *input.FilterExpression
 
-	// Support simple "attr = :val" equality expressions.
-	parts := strings.SplitN(expr, " = ", 2)
+	// Support compound AND expressions by splitting on " AND ".
+	clauses := strings.Split(expr, " AND ")
+	for _, clause := range clauses {
+		clause = strings.TrimSpace(clause)
+		if !m.matchesClause(clause, input, item) {
+			return false
+		}
+	}
+	return true
+}
+
+// matchesClause evaluates a single filter clause against an item.
+func (m *mockDDB) matchesClause(clause string, input *dynamodb.ScanInput, item map[string]ddbtypes.AttributeValue) bool {
+	// Support begins_with(attr, :val).
+	if strings.HasPrefix(clause, "begins_with(") {
+		inner := strings.TrimPrefix(clause, "begins_with(")
+		inner = strings.TrimSuffix(inner, ")")
+		parts := strings.SplitN(inner, ",", 2)
+		if len(parts) != 2 {
+			return true
+		}
+		attrName := strings.TrimSpace(parts[0])
+		valRef := strings.TrimSpace(parts[1])
+
+		expected, ok := input.ExpressionAttributeValues[valRef]
+		if !ok {
+			return true
+		}
+		actual, ok := item[attrName]
+		if !ok {
+			return false
+		}
+		expectedStr, ok1 := expected.(*ddbtypes.AttributeValueMemberS)
+		actualStr, ok2 := actual.(*ddbtypes.AttributeValueMemberS)
+		if ok1 && ok2 {
+			return strings.HasPrefix(actualStr.Value, expectedStr.Value)
+		}
+		return true
+	}
+
+	// Support simple "attr = :val" equality.
+	parts := strings.SplitN(clause, " = ", 2)
 	if len(parts) != 2 {
 		return true // unsupported expression, pass through
 	}
