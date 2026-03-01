@@ -32,8 +32,8 @@ func TestIntegration_LoadAndEvaluate(t *testing.T) {
 	t.Run("gold-revenue_all_pass", func(t *testing.T) {
 		sensors := map[string]map[string]interface{}{
 			"upstream-complete": {"status": "ready"},
-			"row-count":        {"count": 5000},
-			"freshness":        {"updatedAt": now.Add(-30 * time.Minute).Format(time.RFC3339)},
+			"row-count":         {"count": 5000},
+			"freshness":         {"updatedAt": now.Add(-30 * time.Minute).Format(time.RFC3339)},
 		}
 
 		result := validation.EvaluateRules(
@@ -53,8 +53,8 @@ func TestIntegration_LoadAndEvaluate(t *testing.T) {
 	t.Run("gold-revenue_row_count_too_low", func(t *testing.T) {
 		sensors := map[string]map[string]interface{}{
 			"upstream-complete": {"status": "ready"},
-			"row-count":        {"count": 500}, // below 1000 threshold
-			"freshness":        {"updatedAt": now.Add(-30 * time.Minute).Format(time.RFC3339)},
+			"row-count":         {"count": 500}, // below 1000 threshold
+			"freshness":         {"updatedAt": now.Add(-30 * time.Minute).Format(time.RFC3339)},
 		}
 
 		result := validation.EvaluateRules(

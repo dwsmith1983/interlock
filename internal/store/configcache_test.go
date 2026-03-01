@@ -16,9 +16,9 @@ import (
 )
 
 // seedConfig inserts a CONFIG row into the mock for the given pipeline.
-func seedConfig(mock *mockDDB, table string, cfg types.PipelineConfig) {
+func seedConfig(mock *mockDDB, cfg types.PipelineConfig) {
 	data, _ := json.Marshal(cfg)
-	mock.putRaw(table, map[string]ddbtypes.AttributeValue{
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
 		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(cfg.Pipeline.ID)},
 		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
 		"config": &ddbtypes.AttributeValueMemberS{Value: string(data)},
@@ -29,10 +29,10 @@ func TestScanConfigs_MultipleConfigs(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "pipeline-a", Owner: "team-a"},
 	})
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "pipeline-b", Owner: "team-b"},
 	})
 
@@ -136,10 +136,10 @@ func TestConfigCache_GetAll_Fresh(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "pipe-1", Owner: "team-1"},
 	})
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "pipe-2", Owner: "team-2"},
 	})
 
@@ -164,7 +164,7 @@ func TestConfigCache_GetAll_Cached(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "pipe-1"},
 	})
 
@@ -210,7 +210,7 @@ func TestConfigCache_GetAll_Stale(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "pipe-1"},
 	})
 
@@ -229,7 +229,7 @@ func TestConfigCache_GetAll_Stale(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 
 	// Add another pipeline while cache is stale.
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "pipe-2"},
 	})
 
@@ -247,10 +247,10 @@ func TestConfigCache_Get_SinglePipeline(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "target", Owner: "found-it"},
 	})
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "other", Owner: "not-this"},
 	})
 
@@ -272,7 +272,7 @@ func TestConfigCache_Get_NotFound(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "exists"},
 	})
 
@@ -291,7 +291,7 @@ func TestConfigCache_Invalidate(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "pipe-1"},
 	})
 
@@ -307,7 +307,7 @@ func TestConfigCache_Invalidate(t *testing.T) {
 	}
 
 	// Add another pipeline.
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "pipe-2"},
 	})
 
@@ -336,7 +336,7 @@ func TestConfigCache_ConcurrentAccess(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	seedConfig(mock, "control", types.PipelineConfig{
+	seedConfig(mock, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "concurrent-pipe"},
 	})
 

@@ -31,9 +31,9 @@ func itemKey(table, pk, sk string) string {
 	return table + "#" + pk + "#" + sk
 }
 
-func extractPKSK(item map[string]ddbtypes.AttributeValue) (string, string) {
-	pk := item["PK"].(*ddbtypes.AttributeValueMemberS).Value
-	sk := item["SK"].(*ddbtypes.AttributeValueMemberS).Value
+func extractPKSK(item map[string]ddbtypes.AttributeValue) (pk, sk string) {
+	pk = item["PK"].(*ddbtypes.AttributeValueMemberS).Value
+	sk = item["SK"].(*ddbtypes.AttributeValueMemberS).Value
 	return pk, sk
 }
 

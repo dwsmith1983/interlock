@@ -66,8 +66,8 @@ type ValidationConfig struct {
 
 // ValidationRule is a single declarative check against a sensor key.
 type ValidationRule struct {
-	Key   string      `yaml:"key" json:"key"`                           // e.g. "SENSOR#silver-orders-complete"
-	Check CheckOp     `yaml:"check" json:"check"`                       // equals, gte, lte, gt, lt, exists, age_lt
+	Key   string      `yaml:"key" json:"key"`     // e.g. "SENSOR#silver-orders-complete"
+	Check CheckOp     `yaml:"check" json:"check"` // equals, gte, lte, gt, lt, exists, age_lt
 	Field string      `yaml:"field,omitempty" json:"field,omitempty"`
 	Value interface{} `yaml:"value,omitempty" json:"value,omitempty"`
 }
@@ -87,7 +87,7 @@ const (
 
 // JobConfig defines what to trigger and how many retries.
 type JobConfig struct {
-	Type       TriggerType      `yaml:"type" json:"type"`
+	Type       TriggerType            `yaml:"type" json:"type"`
 	Config     map[string]interface{} `yaml:"config" json:"config"`
 	MaxRetries int                    `yaml:"maxRetries,omitempty" json:"maxRetries,omitempty"`
 }

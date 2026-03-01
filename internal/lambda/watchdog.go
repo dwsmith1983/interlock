@@ -9,11 +9,6 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// staleTriggerThreshold is the maximum age for a running trigger before it is
-// considered stale. If a trigger's TTL is in the past or it has been running
-// longer than this threshold, the watchdog treats it as a Step Function timeout.
-const staleTriggerThreshold = 24 * time.Hour
-
 // HandleWatchdog runs periodic health checks. It detects stale trigger
 // executions (Step Function timeouts) and missed cron schedules. Errors from
 // each check are logged but do not prevent the other check from running.

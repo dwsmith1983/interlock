@@ -76,9 +76,9 @@ func ddbItemKey(table, pk, sk string) string {
 	return table + "#" + pk + "#" + sk
 }
 
-func ddbExtractPKSK(item map[string]ddbtypes.AttributeValue) (string, string) {
-	pk := item["PK"].(*ddbtypes.AttributeValueMemberS).Value
-	sk := item["SK"].(*ddbtypes.AttributeValueMemberS).Value
+func ddbExtractPKSK(item map[string]ddbtypes.AttributeValue) (pk, sk string) {
+	pk = item["PK"].(*ddbtypes.AttributeValueMemberS).Value
+	sk = item["SK"].(*ddbtypes.AttributeValueMemberS).Value
 	return pk, sk
 }
 
@@ -235,7 +235,7 @@ func (m *mockDDB) Scan(_ context.Context, input *dynamodb.ScanInput, _ ...func(*
 
 // matchesScanFilter evaluates a FilterExpression against an item.
 // Supports simple "attr = :val", "begins_with(attr, :val)", and compound "... AND ..." clauses.
-func matchesScanFilter(expr string, names map[string]string, values map[string]ddbtypes.AttributeValue, item map[string]ddbtypes.AttributeValue) bool {
+func matchesScanFilter(expr string, names map[string]string, values, item map[string]ddbtypes.AttributeValue) bool {
 	clauses := strings.Split(expr, " AND ")
 	for _, clause := range clauses {
 		clause = strings.TrimSpace(clause)
@@ -246,7 +246,7 @@ func matchesScanFilter(expr string, names map[string]string, values map[string]d
 	return true
 }
 
-func matchesScanClause(clause string, names map[string]string, values map[string]ddbtypes.AttributeValue, item map[string]ddbtypes.AttributeValue) bool {
+func matchesScanClause(clause string, names map[string]string, values, item map[string]ddbtypes.AttributeValue) bool {
 	// begins_with(attr, :val)
 	if strings.HasPrefix(clause, "begins_with(") {
 		inner := strings.TrimPrefix(clause, "begins_with(")
