@@ -215,3 +215,77 @@ func TestEvaluateRule_UnknownOp(t *testing.T) {
 	assert.False(t, result.Passed)
 	assert.Contains(t, result.Reason, "unknown operator")
 }
+
+func TestEvaluateRules_ALL_Pass(t *testing.T) {
+	rules := []v2.ValidationRule{
+		{Key: "SENSOR#a", Check: v2.CheckEquals, Field: "status", Value: "OK"},
+		{Key: "SENSOR#b", Check: v2.CheckGTE, Field: "count", Value: float64(10)},
+	}
+	sensors := map[string]map[string]interface{}{
+		"SENSOR#a": {"status": "OK"},
+		"SENSOR#b": {"count": float64(20)},
+	}
+	result := EvaluateRules("ALL", rules, sensors, time.Now())
+	assert.True(t, result.Passed)
+	assert.Len(t, result.Results, 2)
+	assert.True(t, result.Results[0].Passed)
+	assert.True(t, result.Results[1].Passed)
+}
+
+func TestEvaluateRules_ALL_OneFails(t *testing.T) {
+	rules := []v2.ValidationRule{
+		{Key: "SENSOR#a", Check: v2.CheckEquals, Field: "status", Value: "OK"},
+		{Key: "SENSOR#b", Check: v2.CheckGTE, Field: "count", Value: float64(100)},
+	}
+	sensors := map[string]map[string]interface{}{
+		"SENSOR#a": {"status": "OK"},
+		"SENSOR#b": {"count": float64(20)},
+	}
+	result := EvaluateRules("ALL", rules, sensors, time.Now())
+	assert.False(t, result.Passed)
+	assert.True(t, result.Results[0].Passed)
+	assert.False(t, result.Results[1].Passed)
+}
+
+func TestEvaluateRules_ANY_OnePasses(t *testing.T) {
+	rules := []v2.ValidationRule{
+		{Key: "SENSOR#a", Check: v2.CheckEquals, Field: "status", Value: "OK"},
+		{Key: "SENSOR#b", Check: v2.CheckGTE, Field: "count", Value: float64(100)},
+	}
+	sensors := map[string]map[string]interface{}{
+		"SENSOR#a": {"status": "OK"},
+		"SENSOR#b": {"count": float64(20)},
+	}
+	result := EvaluateRules("ANY", rules, sensors, time.Now())
+	assert.True(t, result.Passed)
+}
+
+func TestEvaluateRules_ANY_AllFail(t *testing.T) {
+	rules := []v2.ValidationRule{
+		{Key: "SENSOR#a", Check: v2.CheckEquals, Field: "status", Value: "OK"},
+		{Key: "SENSOR#b", Check: v2.CheckGTE, Field: "count", Value: float64(100)},
+	}
+	sensors := map[string]map[string]interface{}{
+		"SENSOR#a": {"status": "BAD"},
+		"SENSOR#b": {"count": float64(20)},
+	}
+	result := EvaluateRules("ANY", rules, sensors, time.Now())
+	assert.False(t, result.Passed)
+}
+
+func TestEvaluateRules_MissingSensor(t *testing.T) {
+	rules := []v2.ValidationRule{
+		{Key: "SENSOR#missing", Check: v2.CheckEquals, Field: "status", Value: "OK"},
+	}
+	sensors := map[string]map[string]interface{}{}
+	result := EvaluateRules("ALL", rules, sensors, time.Now())
+	assert.False(t, result.Passed)
+	assert.Contains(t, result.Results[0].Reason, "sensor key")
+}
+
+func TestEvaluateRules_EmptyRules(t *testing.T) {
+	sensors := map[string]map[string]interface{}{}
+	result := EvaluateRules("ALL", nil, sensors, time.Now())
+	assert.True(t, result.Passed) // no rules = vacuously true
+	assert.Empty(t, result.Results)
+}

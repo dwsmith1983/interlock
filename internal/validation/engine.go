@@ -15,6 +15,38 @@ type RuleResult struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// RuleSetResult is the outcome of evaluating all validation rules.
+type RuleSetResult struct {
+	Passed  bool         `json:"passed"`
+	Results []RuleResult `json:"results"`
+}
+
+// EvaluateRules evaluates all rules against the sensor data map.
+// mode is "ALL" (every rule must pass) or "ANY" (at least one must pass).
+// sensors maps SENSOR# SK to the sensor data for that key.
+func EvaluateRules(mode string, rules []v2.ValidationRule, sensors map[string]map[string]interface{}, now time.Time) RuleSetResult {
+	results := make([]RuleResult, len(rules))
+	passCount := 0
+
+	for i, rule := range rules {
+		sensorData := sensors[rule.Key] // nil if missing
+		results[i] = EvaluateRule(rule, sensorData, now)
+		if results[i].Passed {
+			passCount++
+		}
+	}
+
+	var passed bool
+	switch mode {
+	case "ANY":
+		passed = passCount > 0
+	default: // "ALL"
+		passed = passCount == len(rules)
+	}
+
+	return RuleSetResult{Passed: passed, Results: results}
+}
+
 // EvaluateRule checks a single validation rule against sensor data.
 // sensorData is nil if the sensor key doesn't exist in the control table.
 func EvaluateRule(rule v2.ValidationRule, sensorData map[string]interface{}, now time.Time) RuleResult {
