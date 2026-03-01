@@ -310,8 +310,10 @@ func extractKeys(record events.DynamoDBEventRecord) (pk, sk string) {
 	return pk, sk
 }
 
-// extractSensorData converts a DynamoDB stream NewImage to a plain map,
-// skipping PK, SK, and ttl keys.
+// extractSensorData converts a DynamoDB stream NewImage to a plain map
+// suitable for validation rule evaluation. If the item uses the canonical
+// ControlRecord format (sensor fields nested inside a "data" map attribute),
+// the "data" map is unwrapped so fields are accessible at the top level.
 func extractSensorData(newImage map[string]events.DynamoDBAttributeValue) map[string]interface{} {
 	if newImage == nil {
 		return nil
@@ -325,6 +327,11 @@ func extractSensorData(newImage map[string]events.DynamoDBAttributeValue) map[st
 			continue
 		}
 		result[k] = convertAttributeValue(av)
+	}
+
+	// Unwrap the "data" map if present (canonical ControlRecord sensor format).
+	if dataMap, ok := result["data"].(map[string]interface{}); ok {
+		return dataMap
 	}
 	return result
 }

@@ -131,7 +131,9 @@ func TestWatchdog_CalendarExcluded_NoAlert(t *testing.T) {
 	mock := newMockDDB()
 	d, _, ebMock := testDeps(mock)
 
-	today := time.Now().Format("2006-01-02")
+	// Use UTC date since the pipeline's timezone is UTC and isExcluded
+	// resolves the date in the pipeline's configured timezone.
+	today := time.Now().UTC().Format("2006-01-02")
 
 	// Seed a cron-scheduled pipeline with today excluded.
 	cfg := types.PipelineConfig{
