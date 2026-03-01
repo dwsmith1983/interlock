@@ -48,20 +48,20 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
 ## Architecture
 
 ```
-┌───────────────────┐     DynamoDB Stream     ┌──────────────────────────┐
-│    DynamoDB        │ ────────────────────►   │     stream-router        │
-│  3 tables:         │                         │  sensor → evaluate       │
-│  - control         │                         │  config → cache invalidate│
-│  - joblog          │                         │  job-log → rerun/success │
-│  - rerun           │                         └──────┬─────────────────  ┘
-└────────────────────┘                                │
+┌───────────────────┐     DynamoDB Stream     ┌───────────────────────────┐
+│    DynamoDB       │ ────────────────────►   │     stream-router         │
+│  3 tables:        │                         │  sensor → evaluate        │
+│  - control        │                         │  config → cache invalidate│
+│  - joblog         │                         │  job-log → rerun/success  │
+│  - rerun          │                         └───────┬───────────────────┘
+└───────────────────┘                                 │
                                           ┌───────────▼──────────────┐
                                           │     Step Functions       │
                                           │  ~12 states, 2 branches: │
-                                          │  ┌─────────┐ ┌────────┐ │
-                                          │  │ Eval +   │ │  SLA   │ │
-                                          │  │ Trigger  │ │Monitor │ │
-                                          │  └─────────┘ └────────┘ │
+                                          │  ┌─────────┐ ┌────────┐  │
+                                          │  │ Eval +  │ │  SLA   │  │
+                                          │  │ Trigger │ │Monitor │  │
+                                          │  └─────────┘ └────────┘  │
                                           └──────────┬───────────────┘
                                                      │
                                     ┌────────────────┼────────────────┐
