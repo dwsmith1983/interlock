@@ -1,0 +1,42 @@
+pipeline:
+  id: gold-revenue
+  owner: analytics-team
+  description: Gold-tier revenue aggregation pipeline
+
+schedule:
+  cron: "0 8 * * *"
+  timezone: UTC
+  trigger:
+    key: upstream-complete
+    check: equals
+    field: status
+    value: ready
+  evaluation:
+    window: 1h
+    interval: 5m
+
+sla:
+  deadline: "10:00"
+  expectedDuration: 30m
+
+validation:
+  trigger: "ALL"
+  rules:
+    - key: upstream-complete
+      check: equals
+      field: status
+      value: ready
+    - key: row-count
+      check: gte
+      field: count
+      value: 1000
+    - key: freshness
+      check: age_lt
+      field: updatedAt
+      value: 2h
+
+job:
+  type: glue
+  config:
+    jobName: gold-revenue-etl
+  maxRetries: 2
