@@ -1,11 +1,11 @@
-// Package validation implements the declarative validation rule engine for Interlock v2.
+// Package validation implements the declarative validation rule engine for Interlock types.
 package validation
 
 import (
 	"fmt"
 	"time"
 
-	v2 "github.com/dwsmith1983/interlock/pkg/types/v2"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // RuleResult is the outcome of evaluating a single validation rule.
@@ -24,7 +24,7 @@ type RuleSetResult struct {
 // EvaluateRules evaluates all rules against the sensor data map.
 // mode is "ALL" (every rule must pass) or "ANY" (at least one must pass).
 // sensors maps SENSOR# SK to the sensor data for that key.
-func EvaluateRules(mode string, rules []v2.ValidationRule, sensors map[string]map[string]interface{}, now time.Time) RuleSetResult {
+func EvaluateRules(mode string, rules []types.ValidationRule, sensors map[string]map[string]interface{}, now time.Time) RuleSetResult {
 	results := make([]RuleResult, len(rules))
 	passCount := 0
 
@@ -49,9 +49,9 @@ func EvaluateRules(mode string, rules []v2.ValidationRule, sensors map[string]ma
 
 // EvaluateRule checks a single validation rule against sensor data.
 // sensorData is nil if the sensor key doesn't exist in the control table.
-func EvaluateRule(rule v2.ValidationRule, sensorData map[string]interface{}, now time.Time) RuleResult {
+func EvaluateRule(rule types.ValidationRule, sensorData map[string]interface{}, now time.Time) RuleResult {
 	// exists: pass if sensorData != nil.
-	if rule.Check == v2.CheckExists {
+	if rule.Check == types.CheckExists {
 		if sensorData != nil {
 			return RuleResult{Key: rule.Key, Passed: true}
 		}
@@ -69,7 +69,7 @@ func EvaluateRule(rule v2.ValidationRule, sensorData map[string]interface{}, now
 	}
 
 	switch rule.Check {
-	case v2.CheckEquals:
+	case types.CheckEquals:
 		actual := fmt.Sprintf("%v", fieldVal)
 		expected := fmt.Sprintf("%v", rule.Value)
 		if actual == expected {
@@ -77,10 +77,10 @@ func EvaluateRule(rule v2.ValidationRule, sensorData map[string]interface{}, now
 		}
 		return RuleResult{Key: rule.Key, Passed: false, Reason: fmt.Sprintf("expected %v, got %v", expected, actual)}
 
-	case v2.CheckGTE, v2.CheckLTE, v2.CheckGT, v2.CheckLT:
+	case types.CheckGTE, types.CheckLTE, types.CheckGT, types.CheckLT:
 		return evaluateNumeric(rule, fieldVal)
 
-	case v2.CheckAgeLT:
+	case types.CheckAgeLT:
 		return evaluateAgeLT(rule, fieldVal, now)
 
 	default:
@@ -89,7 +89,7 @@ func EvaluateRule(rule v2.ValidationRule, sensorData map[string]interface{}, now
 }
 
 // evaluateNumeric handles gte, lte, gt, lt operators.
-func evaluateNumeric(rule v2.ValidationRule, fieldVal interface{}) RuleResult {
+func evaluateNumeric(rule types.ValidationRule, fieldVal interface{}) RuleResult {
 	actual, ok := toFloat64(fieldVal)
 	if !ok {
 		return RuleResult{Key: rule.Key, Passed: false, Reason: fmt.Sprintf("field %q value %v is not numeric", rule.Field, fieldVal)}
@@ -102,13 +102,13 @@ func evaluateNumeric(rule v2.ValidationRule, fieldVal interface{}) RuleResult {
 
 	var passed bool
 	switch rule.Check {
-	case v2.CheckGTE:
+	case types.CheckGTE:
 		passed = actual >= threshold
-	case v2.CheckLTE:
+	case types.CheckLTE:
 		passed = actual <= threshold
-	case v2.CheckGT:
+	case types.CheckGT:
 		passed = actual > threshold
-	case v2.CheckLT:
+	case types.CheckLT:
 		passed = actual < threshold
 	}
 
@@ -119,7 +119,7 @@ func evaluateNumeric(rule v2.ValidationRule, fieldVal interface{}) RuleResult {
 }
 
 // evaluateAgeLT checks that now - timestamp < duration.
-func evaluateAgeLT(rule v2.ValidationRule, fieldVal interface{}, now time.Time) RuleResult {
+func evaluateAgeLT(rule types.ValidationRule, fieldVal interface{}, now time.Time) RuleResult {
 	tsStr, ok := fieldVal.(string)
 	if !ok {
 		return RuleResult{Key: rule.Key, Passed: false, Reason: fmt.Sprintf("field %q value is not a string timestamp", rule.Field)}

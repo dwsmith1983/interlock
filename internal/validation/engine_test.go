@@ -6,13 +6,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	v2 "github.com/dwsmith1983/interlock/pkg/types/v2"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 func TestEvaluateRule_Equals(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#orders-complete",
-		Check: v2.CheckEquals,
+		Check: types.CheckEquals,
 		Field: "status",
 		Value: "COMPLETE",
 	}
@@ -25,9 +25,9 @@ func TestEvaluateRule_Equals(t *testing.T) {
 }
 
 func TestEvaluateRule_Equals_Fail(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#orders-complete",
-		Check: v2.CheckEquals,
+		Check: types.CheckEquals,
 		Field: "status",
 		Value: "COMPLETE",
 	}
@@ -39,9 +39,9 @@ func TestEvaluateRule_Equals_Fail(t *testing.T) {
 }
 
 func TestEvaluateRule_GTE(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#row-count",
-		Check: v2.CheckGTE,
+		Check: types.CheckGTE,
 		Field: "count",
 		Value: float64(100),
 	}
@@ -52,9 +52,9 @@ func TestEvaluateRule_GTE(t *testing.T) {
 }
 
 func TestEvaluateRule_GTE_Fail(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#row-count",
-		Check: v2.CheckGTE,
+		Check: types.CheckGTE,
 		Field: "count",
 		Value: float64(100),
 	}
@@ -66,9 +66,9 @@ func TestEvaluateRule_GTE_Fail(t *testing.T) {
 }
 
 func TestEvaluateRule_LTE(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#error-rate",
-		Check: v2.CheckLTE,
+		Check: types.CheckLTE,
 		Field: "rate",
 		Value: float64(0.05),
 	}
@@ -79,9 +79,9 @@ func TestEvaluateRule_LTE(t *testing.T) {
 }
 
 func TestEvaluateRule_GT(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#row-count",
-		Check: v2.CheckGT,
+		Check: types.CheckGT,
 		Field: "count",
 		Value: float64(100),
 	}
@@ -100,9 +100,9 @@ func TestEvaluateRule_GT(t *testing.T) {
 }
 
 func TestEvaluateRule_LT(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#latency",
-		Check: v2.CheckLT,
+		Check: types.CheckLT,
 		Field: "ms",
 		Value: float64(500),
 	}
@@ -121,9 +121,9 @@ func TestEvaluateRule_LT(t *testing.T) {
 }
 
 func TestEvaluateRule_Exists(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#upstream-done",
-		Check: v2.CheckExists,
+		Check: types.CheckExists,
 	}
 	sensor := map[string]interface{}{"ts": "2026-03-01T00:00:00Z"}
 	result := EvaluateRule(rule, sensor, time.Now())
@@ -132,9 +132,9 @@ func TestEvaluateRule_Exists(t *testing.T) {
 }
 
 func TestEvaluateRule_Exists_Nil(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#upstream-done",
-		Check: v2.CheckExists,
+		Check: types.CheckExists,
 	}
 	result := EvaluateRule(rule, nil, time.Now())
 
@@ -144,9 +144,9 @@ func TestEvaluateRule_Exists_Nil(t *testing.T) {
 
 func TestEvaluateRule_AgeLT(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#freshness",
-		Check: v2.CheckAgeLT,
+		Check: types.CheckAgeLT,
 		Field: "updatedAt",
 		Value: "1h",
 	}
@@ -160,9 +160,9 @@ func TestEvaluateRule_AgeLT(t *testing.T) {
 
 func TestEvaluateRule_AgeLT_Stale(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#freshness",
-		Check: v2.CheckAgeLT,
+		Check: types.CheckAgeLT,
 		Field: "updatedAt",
 		Value: "1h",
 	}
@@ -176,9 +176,9 @@ func TestEvaluateRule_AgeLT_Stale(t *testing.T) {
 }
 
 func TestEvaluateRule_MissingField(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#data",
-		Check: v2.CheckEquals,
+		Check: types.CheckEquals,
 		Field: "status",
 		Value: "DONE",
 	}
@@ -190,9 +190,9 @@ func TestEvaluateRule_MissingField(t *testing.T) {
 }
 
 func TestEvaluateRule_MissingSensor(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#data",
-		Check: v2.CheckEquals,
+		Check: types.CheckEquals,
 		Field: "status",
 		Value: "DONE",
 	}
@@ -203,9 +203,9 @@ func TestEvaluateRule_MissingSensor(t *testing.T) {
 }
 
 func TestEvaluateRule_UnknownOp(t *testing.T) {
-	rule := v2.ValidationRule{
+	rule := types.ValidationRule{
 		Key:   "SENSOR#data",
-		Check: v2.CheckOp("regex"),
+		Check: types.CheckOp("regex"),
 		Field: "status",
 		Value: ".*",
 	}
@@ -217,9 +217,9 @@ func TestEvaluateRule_UnknownOp(t *testing.T) {
 }
 
 func TestEvaluateRules_ALL_Pass(t *testing.T) {
-	rules := []v2.ValidationRule{
-		{Key: "SENSOR#a", Check: v2.CheckEquals, Field: "status", Value: "OK"},
-		{Key: "SENSOR#b", Check: v2.CheckGTE, Field: "count", Value: float64(10)},
+	rules := []types.ValidationRule{
+		{Key: "SENSOR#a", Check: types.CheckEquals, Field: "status", Value: "OK"},
+		{Key: "SENSOR#b", Check: types.CheckGTE, Field: "count", Value: float64(10)},
 	}
 	sensors := map[string]map[string]interface{}{
 		"SENSOR#a": {"status": "OK"},
@@ -233,9 +233,9 @@ func TestEvaluateRules_ALL_Pass(t *testing.T) {
 }
 
 func TestEvaluateRules_ALL_OneFails(t *testing.T) {
-	rules := []v2.ValidationRule{
-		{Key: "SENSOR#a", Check: v2.CheckEquals, Field: "status", Value: "OK"},
-		{Key: "SENSOR#b", Check: v2.CheckGTE, Field: "count", Value: float64(100)},
+	rules := []types.ValidationRule{
+		{Key: "SENSOR#a", Check: types.CheckEquals, Field: "status", Value: "OK"},
+		{Key: "SENSOR#b", Check: types.CheckGTE, Field: "count", Value: float64(100)},
 	}
 	sensors := map[string]map[string]interface{}{
 		"SENSOR#a": {"status": "OK"},
@@ -248,9 +248,9 @@ func TestEvaluateRules_ALL_OneFails(t *testing.T) {
 }
 
 func TestEvaluateRules_ANY_OnePasses(t *testing.T) {
-	rules := []v2.ValidationRule{
-		{Key: "SENSOR#a", Check: v2.CheckEquals, Field: "status", Value: "OK"},
-		{Key: "SENSOR#b", Check: v2.CheckGTE, Field: "count", Value: float64(100)},
+	rules := []types.ValidationRule{
+		{Key: "SENSOR#a", Check: types.CheckEquals, Field: "status", Value: "OK"},
+		{Key: "SENSOR#b", Check: types.CheckGTE, Field: "count", Value: float64(100)},
 	}
 	sensors := map[string]map[string]interface{}{
 		"SENSOR#a": {"status": "OK"},
@@ -261,9 +261,9 @@ func TestEvaluateRules_ANY_OnePasses(t *testing.T) {
 }
 
 func TestEvaluateRules_ANY_AllFail(t *testing.T) {
-	rules := []v2.ValidationRule{
-		{Key: "SENSOR#a", Check: v2.CheckEquals, Field: "status", Value: "OK"},
-		{Key: "SENSOR#b", Check: v2.CheckGTE, Field: "count", Value: float64(100)},
+	rules := []types.ValidationRule{
+		{Key: "SENSOR#a", Check: types.CheckEquals, Field: "status", Value: "OK"},
+		{Key: "SENSOR#b", Check: types.CheckGTE, Field: "count", Value: float64(100)},
 	}
 	sensors := map[string]map[string]interface{}{
 		"SENSOR#a": {"status": "BAD"},
@@ -274,8 +274,8 @@ func TestEvaluateRules_ANY_AllFail(t *testing.T) {
 }
 
 func TestEvaluateRules_MissingSensor(t *testing.T) {
-	rules := []v2.ValidationRule{
-		{Key: "SENSOR#missing", Check: v2.CheckEquals, Field: "status", Value: "OK"},
+	rules := []types.ValidationRule{
+		{Key: "SENSOR#missing", Check: types.CheckEquals, Field: "status", Value: "OK"},
 	}
 	sensors := map[string]map[string]interface{}{}
 	result := EvaluateRules("ALL", rules, sensors, time.Now())
