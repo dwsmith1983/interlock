@@ -1,224 +1,189 @@
 ---
 title: Pipelines
 weight: 1
-description: PipelineConfig schema, archetype resolution, trait definitions, and readiness rules.
+description: Pipeline YAML schema, validation rules DSL, and readiness evaluation.
 ---
 
-## PipelineConfig
+## Pipeline Configuration
 
-A pipeline is the central unit of configuration. Each pipeline references an archetype, overrides trait settings, and defines its trigger and SLA.
+A pipeline is defined by a single YAML file that declares identity, schedule, SLA, validation rules, and job execution. Pipeline YAML files are loaded by the Terraform module from the `pipelines_path` directory and stored as CONFIG rows in the control DynamoDB table.
 
 ```yaml
-name: my-pipeline
-archetype: batch-ingestion
-tier: 1
-traits:
-  check-freshness:
-    evaluator: ./evaluators/check-freshness
-    config:
-      thresholdMinutes: 30
-    ttl: 3600
-    timeout: 30
-  check-record-count:
-    evaluator: builtin:record-count
-    config:
-      minRecords: 500
-    ttl: 3600
-    timeout: 30
-trigger:
-  type: http
-  method: POST
-  url: http://localhost:8080/trigger
-retry:
-  maxAttempts: 3
-  backoffSeconds: 30
-  backoffMultiplier: 2.0
-  retryableFailures: [TRANSIENT, TIMEOUT]
+pipeline:
+  id: gold-revenue
+  owner: analytics-team
+  description: Gold-tier revenue aggregation pipeline
+
+schedule:
+  cron: "0 8 * * *"
+  timezone: UTC
+  trigger:
+    key: upstream-complete
+    check: equals
+    field: status
+    value: ready
+  evaluation:
+    window: 1h
+    interval: 5m
+
 sla:
-  evaluationDeadline: "10:00"
-  completionDeadline: "12:00"
-  timezone: America/New_York
-watch:
-  enabled: true
-  interval: 5m
-  monitoring:
-    enabled: true
-    duration: 2h
+  deadline: "10:00"
+  expectedDuration: 30m
+
+validation:
+  trigger: "ALL"
+  rules:
+    - key: upstream-complete
+      check: equals
+      field: status
+      value: ready
+    - key: row-count
+      check: gte
+      field: count
+      value: 1000
+    - key: freshness
+      check: age_lt
+      field: updatedAt
+      value: 2h
+
+job:
+  type: glue
+  config:
+    jobName: gold-revenue-etl
+  maxRetries: 2
 ```
 
-### Field Reference
+## Top-Level Sections
+
+### `pipeline`
+
+Identity and ownership metadata.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `name` | string | yes | Unique pipeline identifier |
-| `archetype` | string | yes | Name of the archetype to apply |
-| `tier` | int | no | Priority tier (lower = higher priority) |
-| `traits` | map | no | Per-trait configuration overrides |
-| `trigger` | TriggerConfig | no | How to start the pipeline job |
-| `retry` | RetryPolicy | no | Automatic retry configuration |
-| `sla` | SLAConfig | no | Evaluation and completion deadlines |
-| `schedules` | []ScheduleConfig | no | Multi-schedule windows (defaults to daily) |
-| `exclusions` | ExclusionConfig | no | Calendar/day/date exclusions |
-| `watch` | PipelineWatchConfig | no | Per-pipeline watcher overrides |
+| `id` | string | yes | Unique pipeline identifier (used as DynamoDB partition key) |
+| `owner` | string | yes | Team or individual responsible for the pipeline |
+| `description` | string | no | Human-readable description |
 
-## Archetypes
+### `schedule`
 
-An archetype is a STAMP safety template. It declares the required and optional traits that a pipeline must satisfy, plus the rule for combining trait results.
+Controls when and how often the pipeline is evaluated. See [Schedules](../schedules/) for full details.
 
-```yaml
-name: batch-ingestion
-requiredTraits:
-  - type: check-freshness
-    description: Validates data freshness
-    defaultConfig:
-      thresholdMinutes: 60
-    defaultTtl: 3600
-    defaultTimeout: 30
-  - type: check-record-count
-    description: Validates minimum record count
-    defaultConfig:
-      minRecords: 1000
-    defaultTtl: 3600
-    defaultTimeout: 30
-optionalTraits:
-  - type: check-schema
-    description: Validates schema compatibility
-    defaultConfig: {}
-    defaultTtl: 7200
-    defaultTimeout: 60
-readinessRule:
-  type: all-required-pass
-```
+### `sla`
 
-### Trait Definition Fields
+Time-based constraints for pipeline completion. See [Schedules](../schedules/) for full details.
 
-| Field | Type | Description |
+### `validation`
+
+Declarative rules that determine pipeline readiness. See [Validation Rules](#validation-rules) below.
+
+### `job`
+
+Defines how to start the downstream job when validation passes. See [Triggers](../triggers/) for all 8 supported job types.
+
+## Validation Rules
+
+The `validation` block replaces the old archetype/trait system with a declarative DSL. External processes push sensor data into DynamoDB, and validation rules evaluate that data to determine readiness.
+
+### How It Works
+
+1. External systems write sensor data to the control table (e.g., `PK=PIPELINE#gold-revenue`, `SK=SENSOR#upstream-complete`)
+2. The orchestrator Lambda reads sensor values and evaluates each rule against the current data
+3. Rules are combined using the `trigger` mode to produce a readiness decision
+
+### Trigger Modes
+
+| Mode | Description |
+|---|---|
+| `ALL` | All rules must pass (logical AND) |
+| `ANY` | At least one rule must pass (logical OR) |
+
+### Rule Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `key` | string | yes | Sensor key to evaluate (matches the sensor record's SK suffix) |
+| `check` | string | yes | Comparison operator (see [Supported Checks](#supported-checks)) |
+| `field` | string | conditional | Field within the sensor data to compare (required for all checks except `exists`) |
+| `value` | any | conditional | Expected value to compare against (required for all checks except `exists`) |
+
+### Supported Checks
+
+| Check | Description | Example |
 |---|---|---|
-| `type` | string | Trait type name (matches evaluator path or builtin name) |
-| `description` | string | Human-readable description |
-| `defaultConfig` | map | Default configuration passed to the evaluator |
-| `defaultTtl` | int | Default result TTL in seconds |
-| `defaultTimeout` | int | Default evaluation timeout in seconds |
+| `exists` | Sensor key exists (any value) | `check: exists` |
+| `equals` | Field equals the expected value | `check: equals`, `field: status`, `value: ready` |
+| `gt` | Field is greater than the value (numeric) | `check: gt`, `field: count`, `value: 0` |
+| `gte` | Field is greater than or equal to the value (numeric) | `check: gte`, `field: count`, `value: 1000` |
+| `lt` | Field is less than the value (numeric) | `check: lt`, `field: errorRate`, `value: 5` |
+| `lte` | Field is less than or equal to the value (numeric) | `check: lte`, `field: latency`, `value: 100` |
+| `age_lt` | Field timestamp is newer than the duration | `check: age_lt`, `field: updatedAt`, `value: 2h` |
+| `age_gt` | Field timestamp is older than the duration | `check: age_gt`, `field: createdAt`, `value: 24h` |
 
-### Archetype Resolution
+### Example: Event-Driven Pipeline
 
-When a pipeline is evaluated, the engine:
-
-1. Loads the archetype by name from the registry
-2. Merges the archetype's trait definitions with pipeline-level overrides
-3. Pipeline `traits` override `defaultConfig`, `defaultTtl`, and `defaultTimeout`
-4. Pipeline `traits` can specify an `evaluator` path (the archetype does not set evaluator paths)
-
-Archetype YAML files are loaded from directories listed in `archetypeDirs` (local) or from `ARCHETYPE_DIR` (Lambda, defaults to `/var/task/archetypes`).
-
-## Trait Configuration
-
-Each trait in the pipeline's `traits` map overrides the archetype defaults:
+This pipeline triggers when an `orders-landed` sensor appears, regardless of value:
 
 ```yaml
-traits:
-  check-freshness:
-    evaluator: ./evaluators/check-freshness   # subprocess path
-    config:
-      thresholdMinutes: 30                     # overrides defaultConfig
-    ttl: 1800                                  # overrides defaultTtl
-    timeout: 15                                # overrides defaultTimeout
+validation:
+  trigger: "ANY"
+  rules:
+    - key: orders-landed
+      check: exists
+    - key: orders-count
+      check: gt
+      field: count
+      value: 0
 ```
 
-### Evaluator Path Formats
+### Example: Multi-Condition Pipeline
 
-| Format | Resolution |
-|---|---|
-| `./path/to/script` | Subprocess evaluator (local mode) |
-| `check-freshness` | HTTP evaluator (`{baseURL}/check-freshness`) in Lambda mode |
-| `builtin:name` | Builtin handler registered in CompositeRunner |
-
-## Readiness Rules
-
-The readiness rule determines how individual trait results combine into a pipeline-level readiness decision.
-
-### `all-required-pass`
-
-The only rule type currently supported. A pipeline is `READY` when every required trait has status `PASS`. Optional traits are evaluated but do not block readiness.
+This pipeline requires all upstream checks to pass before triggering:
 
 ```yaml
-readinessRule:
-  type: all-required-pass
+validation:
+  trigger: "ALL"
+  rules:
+    - key: upstream-complete
+      check: equals
+      field: status
+      value: ready
+    - key: row-count
+      check: gte
+      field: count
+      value: 1000
+    - key: freshness
+      check: age_lt
+      field: updatedAt
+      value: 2h
 ```
-
-| Trait Statuses | Pipeline Readiness |
-|---|---|
-| All required = PASS | `READY` |
-| Any required = FAIL | `NOT_READY` |
-| Any required = STALE | `NOT_READY` (re-evaluation needed) |
 
 ## Retry Policy
 
-Automatic retries on failure with exponential backoff:
+Automatic retries on job failure are configured in the `job` block:
 
 ```yaml
-retry:
-  maxAttempts: 3
-  backoffSeconds: 30
-  backoffMultiplier: 2.0
-  retryableFailures:
-    - TRANSIENT
-    - TIMEOUT
+job:
+  type: glue
+  config:
+    jobName: gold-revenue-etl
+  maxRetries: 2
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `maxAttempts` | int | 3 | Maximum retry attempts |
-| `backoffSeconds` | int | 30 | Initial backoff duration |
-| `backoffMultiplier` | float | 2.0 | Exponential multiplier |
-| `retryableFailures` | []string | [TRANSIENT, TIMEOUT] | Failure categories to retry |
+| `maxRetries` | int | 0 | Maximum retry attempts after job failure |
 
-### Failure Categories
+Retries are managed by the Step Functions state machine, which re-invokes the orchestrator Lambda on failure up to `maxRetries` times.
 
-| Category | Description | Retryable by Default |
-|---|---|---|
-| `TRANSIENT` | Temporary infrastructure error | Yes |
-| `TIMEOUT` | Operation timed out | Yes |
-| `PERMANENT` | Non-recoverable error | No |
-| `EVALUATOR_CRASH` | Evaluator process crashed | No |
+## Pushing Sensor Data
 
-Backoff formula: `backoffSeconds × backoffMultiplier^(attempt - 1)`
+The framework reads sensor data from DynamoDB but does not write it. External processes are responsible for pushing sensor values. Write a sensor record to the control table:
 
-## Project Configuration
+| Attribute | Value |
+|---|---|
+| `PK` | `PIPELINE#{pipeline-id}` |
+| `SK` | `SENSOR#{key}` |
+| Sensor fields | Any fields referenced by validation rules (e.g., `status`, `count`, `updatedAt`) |
 
-The top-level `interlock.yaml` ties everything together:
-
-```yaml
-provider: redis          # or "dynamodb"
-redis:
-  addr: localhost:6379
-  keyPrefix: interlock
-  readinessTTL: 1h
-  retentionTTL: 168h
-
-archetypeDirs: [./archetypes]
-pipelineDirs: [./pipelines]
-evaluatorDirs: [./evaluators]
-calendarDirs: [./calendars]
-
-engine:
-  defaultTimeout: 30s
-
-watcher:
-  enabled: true
-  defaultInterval: 5m
-
-alerts:
-  - type: console
-  - type: webhook
-    url: https://hooks.slack.com/...
-
-watchdog:
-  enabled: true
-  interval: 5m
-
-archiver:
-  enabled: true
-  interval: 5m
-  dsn: postgres://user:pass@localhost:5432/interlock?sslmode=disable
-```
+When a sensor record is written, the DynamoDB stream triggers the stream-router Lambda, which starts the Step Functions execution for that pipeline.

@@ -1,12 +1,12 @@
 ---
 title: Getting Started
 weight: 1
-description: Install Interlock and run your first pipeline readiness check.
+description: Deploy Interlock to AWS and configure your first pipeline.
 ---
 
-Get up and running with Interlock in minutes. This section covers prerequisites, installation, and a quickstart walkthrough.
+Get up and running with Interlock. This section covers prerequisites, deploying the Terraform module, writing pipeline configs, and pushing sensor data.
 
 {{< cards >}}
-  {{< card link="installation" title="Installation" subtitle="Build from source, prerequisites, and binary overview." >}}
-  {{< card link="quickstart" title="Quickstart" subtitle="Configure a pipeline and run a readiness check." >}}
+  {{< card link="installation" title="Installation" subtitle="Prerequisites and deploying the Terraform module." >}}
+  {{< card link="quickstart" title="Quickstart" subtitle="Define pipelines, deploy, and push sensor data." >}}
 {{< /cards >}}

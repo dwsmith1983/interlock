@@ -1,151 +1,208 @@
 ---
 title: Quickstart
 weight: 2
-description: Configure your first pipeline and run a readiness check.
+description: Define pipelines, deploy to AWS, and push sensor data.
 ---
 
-This guide walks through a minimal local setup using Redis.
+This guide walks through the end-to-end workflow: define pipeline YAML configs, deploy the Terraform module, push sensor data to DynamoDB, and watch your pipeline trigger automatically when all validation rules pass.
 
-## 1. Start Redis
+## 1. Write Pipeline YAML Configs
 
-```bash
-docker run -d --name redis -p 6379:6379 redis:7-alpine
-```
-
-## 2. Create Configuration
-
-Create `interlock.yaml` in your project directory:
+Create a `pipelines/` directory and add a YAML file for each pipeline. Here is a minimal example:
 
 ```yaml
-provider: redis
-redis:
-  addr: localhost:6379
-  keyPrefix: interlock
-  readinessTTL: 1h
-  retentionTTL: 168h
+pipeline:
+  id: silver-orders
+  owner: data-platform
+  description: Silver-tier orders ingestion pipeline
 
-archetypeDirs:
-  - ./archetypes
-pipelineDirs:
-  - ./pipelines
-evaluatorDirs:
-  - ./evaluators
+schedule:
+  trigger:
+    key: orders-landed
+    check: exists
 
-watcher:
-  enabled: true
-  defaultInterval: 5m
+validation:
+  trigger: "ANY"
+  rules:
+    - key: orders-landed
+      check: exists
+    - key: orders-count
+      check: gt
+      field: count
+      value: 0
 
-alerts:
-  - type: console
-```
-
-## 3. Define an Archetype
-
-Create `archetypes/batch-ingestion.yaml`:
-
-```yaml
-name: batch-ingestion
-requiredTraits:
-  - type: check-freshness
-    description: Validates data freshness
-    defaultConfig:
-      thresholdMinutes: 60
-    defaultTtl: 3600
-    defaultTimeout: 30
-  - type: check-record-count
-    description: Validates minimum record count
-    defaultConfig:
-      minRecords: 1000
-    defaultTtl: 3600
-    defaultTimeout: 30
-readinessRule:
-  type: all-required-pass
-```
-
-An archetype is a STAMP safety template — it declares what traits (safety checks) must pass before a pipeline is considered ready.
-
-## 4. Define a Pipeline
-
-Create `pipelines/my-pipeline.yaml`:
-
-```yaml
-name: my-pipeline
-archetype: batch-ingestion
-tier: 1
-traits:
-  check-freshness:
-    evaluator: ./evaluators/check-freshness
-    config:
-      thresholdMinutes: 30
-  check-record-count:
-    evaluator: ./evaluators/check-record-count
-    config:
-      minRecords: 500
-trigger:
+job:
   type: http
-  method: POST
-  url: http://localhost:8080/trigger
+  config:
+    url: https://example.com/trigger
+    method: POST
+  maxRetries: 1
+```
+
+A more complete example with SLA deadlines and a cron schedule:
+
+```yaml
+pipeline:
+  id: gold-revenue
+  owner: analytics-team
+  description: Gold-tier revenue aggregation pipeline
+
+schedule:
+  cron: "0 8 * * *"
+  timezone: UTC
+  trigger:
+    key: upstream-complete
+    check: equals
+    field: status
+    value: ready
+  evaluation:
+    window: 1h
+    interval: 5m
+
 sla:
-  evaluationDeadline: "10:00"
-  completionDeadline: "12:00"
-  timezone: America/New_York
+  deadline: "10:00"
+  expectedDuration: 30m
+
+validation:
+  trigger: "ALL"
+  rules:
+    - key: upstream-complete
+      check: equals
+      field: status
+      value: ready
+    - key: row-count
+      check: gte
+      field: count
+      value: 1000
+    - key: freshness
+      check: age_lt
+      field: updatedAt
+      value: 2h
+
+job:
+  type: glue
+  config:
+    jobName: gold-revenue-etl
+  maxRetries: 2
 ```
 
-The pipeline references the `batch-ingestion` archetype and overrides trait configurations. The trigger fires an HTTP POST when all required traits pass.
+### Pipeline Config Reference
 
-## 5. Write an Evaluator
+| Section | Purpose |
+|---|---|
+| `pipeline` | Identity: `id`, `owner`, `description` |
+| `schedule` | When to evaluate: `cron`, `timezone`, trigger condition, evaluation window/interval |
+| `sla` | SLA deadlines: `deadline`, `expectedDuration` |
+| `validation` | Readiness rules: `trigger` mode (`ALL` or `ANY`), list of `rules` |
+| `job` | What to trigger: `type` (http, glue, emr, emr-serverless, step-function), `config`, `maxRetries` |
 
-Evaluators are executables that read JSON from stdin and write JSON to stdout.
+### Validation Rule Checks
 
-Create `evaluators/check-freshness`:
+| Check | Description |
+|---|---|
+| `exists` | Key exists in sensor data |
+| `equals` | Field equals expected value |
+| `gt` / `gte` | Field is greater than (or equal to) value |
+| `lt` / `lte` | Field is less than (or equal to) value |
+| `age_lt` | Field timestamp is within the given duration |
 
-```bash
-#!/bin/bash
-# Read input: {"pipelineID":"my-pipeline","traitType":"check-freshness","config":{"thresholdMinutes":30}}
-INPUT=$(cat)
-echo '{"status":"PASS","value":{"minutesSinceUpdate":12},"reason":"data is fresh"}'
-```
+## 2. Deploy the Terraform Module
 
-```bash
-chmod +x evaluators/check-freshness
-```
+Reference the Interlock module in your Terraform configuration:
 
-The JSON protocol:
+```hcl
+module "interlock" {
+  source = "github.com/dwsmith1983/interlock//deploy/terraform"
 
-**Input** (stdin):
-```json
-{
-  "pipelineID": "my-pipeline",
-  "traitType": "check-freshness",
-  "config": { "thresholdMinutes": 30 }
+  environment    = "production"
+  dist_path      = "./dist"
+  pipelines_path = "./pipelines"
+
+  tags = {
+    Project = "my-data-platform"
+  }
 }
 ```
 
-**Output** (stdout):
-```json
-{
-  "status": "PASS",
-  "value": { "minutesSinceUpdate": 12 },
-  "reason": "data is fresh"
-}
-```
-
-Valid status values: `PASS`, `FAIL`, `STALE`.
-
-## 6. Register and Evaluate
+Build and deploy:
 
 ```bash
-# Register the pipeline
-interlock pipeline register -f pipelines/my-pipeline.yaml
+# Build Lambda binaries
+cd interlock && ./deploy/build.sh
 
-# Run a readiness check
-interlock pipeline check my-pipeline
+# Deploy infrastructure
+cd your-project
+terraform init
+terraform apply
 ```
 
-The readiness check evaluates all required traits and returns a `READY` or `NOT_READY` result. When ready, the configured trigger fires automatically (in watcher mode) or can be triggered manually.
+The Terraform module reads your pipeline YAML files and writes them as `CONFIG` rows in the control DynamoDB table. The module provisions all Lambda functions, the Step Functions state machine, DynamoDB tables, EventBridge bus, and IAM roles.
+
+## 3. Push Sensor Data to DynamoDB
+
+External processes (your ETL jobs, monitoring scripts, data producers) push sensor data to the control table. Each sensor write is a DynamoDB `PutItem`:
+
+```python
+import boto3
+
+dynamodb = boto3.resource("dynamodb")
+table = dynamodb.Table("production-interlock-control")
+
+# Signal that upstream data has landed
+table.put_item(Item={
+    "PK": "PIPELINE#gold-revenue",
+    "SK": "SENSOR#upstream-complete",
+    "status": "ready",
+    "updatedAt": "2026-03-01T08:05:00Z",
+})
+
+# Push a row count metric
+table.put_item(Item={
+    "PK": "PIPELINE#gold-revenue",
+    "SK": "SENSOR#row-count",
+    "count": 15432,
+})
+```
+
+The framework reads DynamoDB only. Your external processes are responsible for pushing sensor data. This decouples data quality checks from the safety framework.
+
+## 4. Pipeline Triggers Automatically
+
+When sensor data is written to DynamoDB, the following happens automatically:
+
+1. **DynamoDB Stream** fires, invoking the **stream-router** Lambda
+2. Stream-router starts a **Step Functions execution** for the pipeline
+3. The state machine calls the **orchestrator** Lambda to evaluate validation rules against sensor data
+4. If rules pass (all or any, depending on `validation.trigger`), the orchestrator triggers the job
+5. The state machine polls job status until completion
+6. In parallel, the **sla-monitor** branch tracks SLA deadlines and fires `SLA_WARNING` / `SLA_BREACH` events to EventBridge if needed
+
+No manual intervention required. The entire lifecycle is automated.
+
+## 5. Subscribe to Events
+
+All lifecycle events are published to the custom EventBridge bus. Create EventBridge rules to route events to your preferred targets (SNS, SQS, Lambda, CloudWatch Logs, etc.):
+
+```hcl
+resource "aws_cloudwatch_event_rule" "sla_alerts" {
+  name           = "interlock-sla-alerts"
+  event_bus_name = module.interlock.event_bus_name
+
+  event_pattern = jsonencode({
+    "detail-type" = ["SLA_WARNING", "SLA_BREACH"]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "sla_to_sns" {
+  rule           = aws_cloudwatch_event_rule.sla_alerts.name
+  event_bus_name = module.interlock.event_bus_name
+  target_id      = "sla-to-sns"
+  arn            = aws_sns_topic.alerts.arn
+}
+```
 
 ## Next Steps
 
-- [Architecture Overview](../architecture/overview) — understand the STAMP model and run state machine
-- [Configuration](../configuration/pipelines) — full pipeline configuration reference
-- [Local Deployment](../deployment/local) — run the complete stack with Docker Compose
+- [Architecture Overview](../architecture/overview) -- understand the STAMP model and state machine design
+- [Configuration](../configuration/pipelines) -- full pipeline configuration reference
+- [Alerting](../reference/alerting) -- EventBridge event types and consumer patterns

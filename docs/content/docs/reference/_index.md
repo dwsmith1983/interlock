@@ -1,13 +1,11 @@
 ---
 title: Reference
 weight: 5
-description: Complete API surface — Provider interface, evaluator protocol, and alert sinks.
+description: EventBridge event types and alerting patterns.
 ---
 
-Detailed reference documentation for Interlock's internal interfaces and protocols.
+Detailed reference documentation for Interlock's event system and observability integration.
 
 {{< cards >}}
-  {{< card link="provider" title="Provider Interface" subtitle="10 sub-interfaces covering storage, locking, and lifecycle." >}}
-  {{< card link="evaluators" title="Evaluators" subtitle="JSON protocol, subprocess, HTTP, and composite runners." >}}
-  {{< card link="alerting" title="Alerting" subtitle="Sink interface, 5 implementations, and Dispatcher." >}}
+  {{< card link="alerting" title="Alerting" subtitle="EventBridge event types, detail types, and consumer patterns." >}}
 {{< /cards >}}

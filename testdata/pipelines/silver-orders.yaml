@@ -1,0 +1,31 @@
+pipeline:
+  id: silver-orders
+  owner: data-platform
+  description: Silver-tier orders ingestion pipeline
+
+schedule:
+  trigger:
+    key: orders-landed
+    check: exists
+    field: ""
+    value: null
+  evaluation:
+    window: 30m
+    interval: 2m
+
+validation:
+  trigger: "ANY"
+  rules:
+    - key: orders-landed
+      check: exists
+    - key: orders-count
+      check: gt
+      field: count
+      value: 0
+
+job:
+  type: http
+  config:
+    url: https://example.com/trigger
+    method: POST
+  maxRetries: 1

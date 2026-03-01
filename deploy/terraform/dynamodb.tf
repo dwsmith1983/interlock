@@ -1,11 +1,8 @@
-resource "aws_dynamodb_table" "main" {
-  name         = var.table_name
+resource "aws_dynamodb_table" "control" {
+  name         = "${var.environment}-interlock-control"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "PK"
   range_key    = "SK"
-
-  stream_enabled   = true
-  stream_view_type = "NEW_IMAGE"
 
   attribute {
     name = "PK"
@@ -17,21 +14,31 @@ resource "aws_dynamodb_table" "main" {
     type = "S"
   }
 
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  stream_enabled   = true
+  stream_view_type = "NEW_IMAGE"
+
+  tags = var.tags
+}
+
+resource "aws_dynamodb_table" "joblog" {
+  name         = "${var.environment}-interlock-joblog"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "PK"
+  range_key    = "SK"
+
   attribute {
-    name = "GSI1PK"
+    name = "PK"
     type = "S"
   }
 
   attribute {
-    name = "GSI1SK"
+    name = "SK"
     type = "S"
-  }
-
-  global_secondary_index {
-    name            = "GSI1"
-    hash_key        = "GSI1PK"
-    range_key       = "GSI1SK"
-    projection_type = "ALL"
   }
 
   ttl {
@@ -39,4 +46,32 @@ resource "aws_dynamodb_table" "main" {
     enabled        = true
   }
 
+  stream_enabled   = true
+  stream_view_type = "NEW_IMAGE"
+
+  tags = var.tags
+}
+
+resource "aws_dynamodb_table" "rerun" {
+  name         = "${var.environment}-interlock-rerun"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "PK"
+  range_key    = "SK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+
+  attribute {
+    name = "SK"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = var.tags
 }

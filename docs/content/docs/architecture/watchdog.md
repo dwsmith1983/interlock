@@ -1,203 +1,148 @@
 ---
 title: Watchdog
-weight: 4
-description: Absence detection for missed schedules and stuck pipeline runs.
+weight: 3
+description: Detects stale trigger executions and missed cron schedules.
 ---
 
-The watchdog detects two classes of silent failures:
+The watchdog is one of four Lambda functions in the Interlock framework. It runs independently on an EventBridge schedule (default: every 5 minutes) and detects two classes of silent failures:
 
-1. **Missed schedules** — upstream ingestion failed silently, no MARKER arrived, no evaluation started by the deadline
-2. **Stuck runs** — a run started but has been in PENDING/TRIGGERING/RUNNING longer than the threshold
+1. **Stale triggers** -- a Step Function execution started but never completed (timeout, infrastructure failure)
+2. **Missed schedules** -- a cron-scheduled pipeline's expected start time passed with no trigger record
 
 In STAMP terms, these are safety constraint violations caused by _what didn't happen_ rather than what went wrong.
 
 ## Problem
 
-Interlock's event-driven architecture (MARKER → Step Function / watcher loop) only acts when data arrives. If upstream ingestion fails silently:
+Interlock's event-driven architecture (sensor write -> DynamoDB Stream -> Step Function) only acts when data arrives. Two failure modes escape this detection:
 
-1. No MARKER is written
-2. No execution starts
-3. No SLA check ever runs
-4. The pipeline is silently skipped — zero alerts
+**Stale triggers**: A Step Function execution starts but gets stuck or times out silently. The trigger lock remains in `RUNNING` status indefinitely.
+
+**Missed schedules**: Upstream ingestion fails silently for a cron-scheduled pipeline. No sensor data arrives, no trigger fires, no SLA check ever runs. The pipeline is silently skipped with zero alerts.
 
 This is a classic STAMP gap: the control structure assumes the controlled process always produces feedback. When it doesn't, the controller never acts.
 
-## Algorithm
+## Stale Trigger Detection
 
-The watchdog runs `CheckMissedSchedules` on a regular interval:
-
-```
-For each registered pipeline:
-  Skip if Watch.Enabled == false
-  Skip if Trigger == nil
-  Skip if excluded today (calendar/inline)
-
-  For each schedule:
-    Resolve deadline: schedule Deadline > SLA.EvaluationDeadline > skip
-    If deadline hasn't passed → skip
-    If RunLog entry exists (any status) → skip
-    Acquire dedup lock → if already held → skip
-    Fire SCHEDULE_MISSED alert
-    Append SCHEDULE_MISSED event
-```
-
-### Deadline Resolution
-
-The watchdog checks two deadline sources in priority order:
-
-| Priority | Source | Field | Meaning |
-|---|---|---|---|
-| 1 | Schedule | `deadline` | Per-schedule evaluation deadline |
-| 2 | Pipeline SLA | `evaluationDeadline` | Pipeline-wide evaluation deadline |
-
-`evaluationDeadline` is the correct fallback because it marks when evaluation should have _started_. `completionDeadline` implies a run already exists, which is the opposite of the watchdog's concern.
-
-If neither deadline is configured, the watchdog skips that schedule — there's no expected time to compare against.
-
-### Dedup
-
-One alert per pipeline per schedule per day, enforced via distributed lock:
-
-- **Key**: `watchdog:{pipelineID}:{scheduleID}:{YYYY-MM-DD}`
-- **TTL**: 24 hours
-- **Mechanism**: `Provider.AcquireLock()` — the same lock interface used by evaluation locks
-
-Daily key rotation means locks self-clean via TTL. No new provider methods were needed.
-
-### Alert Format
-
-```json
-{
-  "level": "error",
-  "alertType": "schedule_missed",
-  "pipelineId": "earthquake-silver",
-  "message": "Pipeline earthquake-silver schedule daily missed: no evaluation started by deadline 09:20 on 2026-02-25",
-  "details": {
-    "scheduleId": "daily",
-    "date": "2026-02-25",
-    "deadline": "09:20",
-    "type": "schedule_missed"
-  },
-  "timestamp": "2026-02-25T09:25:00Z"
-}
-```
-
-Alert level is `error` — a missed schedule means the upstream data flow is silently broken, not just late.
-
-## Stuck-Run Detection
-
-The watchdog also runs `CheckStuckRuns` to detect runs that have been in a non-terminal state too long.
+The watchdog scans the control table for `TRIGGER#` records with `RUNNING` status and checks whether their TTL has expired.
 
 ### Algorithm
 
 ```
-For each registered pipeline:
-  Skip if Watch.Enabled == false
-  Skip if Trigger == nil
+Scan all TRIGGER# records with status=RUNNING
 
-  For each schedule:
-    Get RunLog entry for today
-    If no entry → skip (no run started)
-    If terminal status (COMPLETED/FAILED/CANCELLED) → skip
-    If age < StuckRunThreshold → skip
-    Acquire dedup lock → if already held → skip
-    Fire RUN_STUCK alert
-    Append RUN_STUCK event
+For each trigger:
+  If TTL > 0 and now > TTL → stale
+  Otherwise → not stale (skip)
+
+  Parse pipeline ID, schedule, date from PK/SK
+  Publish SFN_TIMEOUT event to EventBridge
+  Set trigger status to FAILED_FINAL
 ```
 
-### Configuration
+### Stale Threshold
 
-```yaml
-watchdog:
-  enabled: true
-  interval: 5m
-  stuckRunThreshold: 30m    # default: 30 minutes
-```
+The default stale trigger threshold is 24 hours. Triggers whose TTL has expired are considered timed-out Step Function executions. The watchdog transitions them to `FAILED_FINAL` status, which prevents the stream-router from attempting further retries.
 
-The threshold is configurable via `WatchdogConfig.StuckRunThreshold`. Runs in PENDING, TRIGGERING, or RUNNING state for longer than this threshold are flagged.
-
-### Dedup
-
-One stuck-run alert per pipeline per schedule per day, using a separate lock namespace:
-
-- **Key**: `watchdog:stuck:{pipelineID}:{scheduleID}:{YYYY-MM-DD}`
-- **TTL**: 24 hours
-
-### Alert Format
+### Event Format
 
 ```json
 {
-  "level": "error",
-  "alertType": "stuck_run",
-  "pipelineId": "earthquake-silver",
-  "message": "Pipeline earthquake-silver schedule daily run stuck in RUNNING for 45m0s on 2026-02-25",
-  "details": {
-    "scheduleId": "daily",
-    "date": "2026-02-25",
-    "status": "RUNNING",
-    "duration": "45m0s",
-    "runId": "abc-123"
-  },
-  "timestamp": "2026-02-25T12:45:00Z"
+  "source": "interlock",
+  "detail-type": "SFN_TIMEOUT",
+  "detail": {
+    "pipelineId": "silver-orders",
+    "scheduleId": "stream",
+    "date": "2026-03-01",
+    "message": "step function timed out for silver-orders/stream/2026-03-01",
+    "timestamp": "2026-03-01T12:30:00Z"
+  }
 }
 ```
 
-## Deployment Modes
+## Missed Schedule Detection
 
-### Local (polling)
+The watchdog loads all pipeline configs and checks cron-scheduled pipelines for missing trigger records.
 
-The `Watchdog` struct wraps `CheckMissedSchedules` in a polling loop:
-
-```go
-wd := watchdog.New(provider, calendarReg, alertFn, logger, 5*time.Minute)
-wd.Start(ctx)
-defer wd.Stop(ctx)
-```
-
-Follows the archiver pattern: goroutine with ticker, `sync.WaitGroup` for clean shutdown, runs a scan immediately on start then on each interval.
-
-Enable in `interlock.yaml`:
-
-```yaml
-watchdog:
-  enabled: true
-  interval: 5m
-```
-
-### AWS Lambda
-
-A dedicated Lambda function invoked by an EventBridge scheduled rule (default: every 5 minutes). The handler calls `CheckMissedSchedules` once per invocation — no polling loop needed.
+### Algorithm
 
 ```
-EventBridge rule (rate) → watchdog Lambda → DynamoDB (read pipelines, run logs, locks)
-                                          → SNS (alerts)
+Load all pipeline configs (via config cache)
+
+For each pipeline with a cron schedule:
+  Skip if excluded by calendar (weekends, specific dates)
+
+  Resolve schedule ID ("cron" for cron-scheduled pipelines)
+  Check if a TRIGGER# record exists for today's date
+
+  If trigger exists → not missed (skip)
+
+  If schedule.time is configured:
+    Resolve timezone (UTC if not specified)
+    If current time < expected start time → skip (not yet due)
+
+  Publish SCHEDULE_MISSED event to EventBridge
 ```
 
-The watchdog Lambda is **not** part of the Step Function state machine. It runs independently on its own schedule, which is exactly the point — it detects when the Step Function _didn't_ start.
+### Deadline Resolution
 
-### GCP Cloud Function
+The watchdog determines whether a schedule is missed by checking:
 
-An HTTP Cloud Function triggered by Cloud Scheduler on a cron schedule (`*/5 * * * *`). Same pattern as the Lambda handler: calls `CheckMissedSchedules` once per invocation.
+1. **Trigger record existence** -- if a `TRIGGER#{schedule}#{date}` record exists in the control table, the pipeline has already been triggered today
+2. **Expected start time** -- if the pipeline config includes a `schedule.time`, the watchdog only alerts after that time has passed in the configured timezone
 
-## Package Structure
+If no `schedule.time` is configured, the watchdog alerts as soon as it detects a missing trigger record for today's date.
+
+### Event Format
+
+```json
+{
+  "source": "interlock",
+  "detail-type": "SCHEDULE_MISSED",
+  "detail": {
+    "pipelineId": "gold-revenue",
+    "scheduleId": "cron",
+    "date": "2026-03-01",
+    "message": "missed schedule for gold-revenue on 2026-03-01",
+    "timestamp": "2026-03-01T09:10:00Z"
+  }
+}
+```
+
+## Deployment
+
+The watchdog Lambda is invoked by an EventBridge scheduled rule on the default event bus:
 
 ```
-internal/watchdog/
-├── watchdog.go       # CheckMissedSchedules + CheckStuckRuns + Watchdog polling wrapper
-└── watchdog_test.go  # Unit tests covering both detection modes
+EventBridge rule (rate) → watchdog Lambda → DynamoDB (read configs, triggers)
+                                          → EventBridge custom bus (publish events)
 ```
 
-### Exports
+The watchdog reads from all three DynamoDB tables (configs from control, job events from joblog, reruns from rerun) but only writes to the control table (to update stale trigger status).
 
-| Export | Description |
+### IAM Permissions
+
+| Action | Scope |
 |---|---|
-| `CheckMissedSchedules(ctx, opts)` | Pure function, scans for missed schedule deadlines |
-| `CheckStuckRuns(ctx, opts)` | Pure function, scans for runs stuck in non-terminal states |
-| `CheckOptions` | Provider, CalendarReg, AlertFn, Logger, Now, StuckRunThreshold |
-| `MissedSchedule` | Result struct: PipelineID, ScheduleID, Date, Deadline |
-| `StuckRun` | Result struct: PipelineID, ScheduleID, Date, Status, Duration |
-| `Watchdog` | Polling wrapper for local mode (runs both checks) |
-| `New(provider, calReg, alertFn, logger, interval)` | Constructor |
-| `Start(ctx)` / `Stop(ctx)` | Lifecycle methods |
+| DynamoDB read (GetItem, Query, Scan, etc.) | All 3 tables + indexes |
+| DynamoDB write (PutItem, UpdateItem) | Control table only |
+| EventBridge PutEvents | Custom event bus |
 
-Both core functions are pure functions with injectable dependencies (`CheckOptions.Now` for time, `CheckOptions.Provider` for storage). This makes them testable and reusable across all deployment modes. The `Watchdog` polling wrapper calls both `CheckMissedSchedules` and `CheckStuckRuns` on each scan.
+### Terraform Configuration
+
+The watchdog schedule is configurable via the `watchdog_schedule` Terraform variable:
+
+```hcl
+variable "watchdog_schedule" {
+  description = "EventBridge schedule expression for watchdog invocations"
+  type        = string
+  default     = "rate(5 minutes)"
+}
+```
+
+## Error Handling
+
+Both detection scans run independently. An error in stale trigger detection does not prevent missed schedule detection from running. Errors are logged but do not cause the Lambda invocation to fail, which prevents EventBridge from retrying with potentially stale state.
+
+## Relationship to Step Functions
+
+The watchdog is **not** part of the Step Functions state machine. It runs on its own schedule precisely to detect cases where the Step Function _didn't_ start (missed schedules) or where it started but got stuck (stale triggers). This independence is fundamental to its role as a safety net.

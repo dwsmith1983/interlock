@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Architecture Rewrite
+
+### Changed
+
+- **Declarative validation rules** replace the archetype/trait/evaluator system. Pipeline configs define validation as YAML rules (`exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_gt`) — no custom evaluator code needed.
+- **3 DynamoDB tables** (control, joblog, rerun) replace the single-table design for clearer access patterns and independent scaling.
+- **4 Lambda functions** (stream-router, orchestrator, sla-monitor, watchdog) replace the previous 7+ handlers. The orchestrator is a multi-mode handler covering evaluate, trigger, check-job, and post-run.
+- **~12-state Step Functions workflow** with parallel SLA monitoring branch replaces the 47-state machine.
+- **EventBridge events** replace SNS for all alerting and lifecycle notifications.
+- **Reusable Terraform module** — consumers deploy infrastructure without framework code in their repo.
+- **Framework reads DynamoDB only** — external processes push sensor data into the control table.
+
+### Removed
+
+- Redis and Postgres storage providers (AWS-only going forward)
+- CLI binary (`cmd/interlock`) and HTTP server
+- Archetype, trait, and evaluator subprocess system
+- Local mode (Docker Compose + Redis)
+- Cascade notifications, post-completion drift monitoring, replay support
+- SNS alert sinks, S3 alert sinks
+- cobra, chi, pgx, go-redis, color dependencies
+
 ## [0.3.1] - 2026-02-28
 
 ### Fixed

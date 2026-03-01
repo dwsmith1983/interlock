@@ -1,13 +1,40 @@
 resource "aws_sfn_state_machine" "pipeline" {
-  name     = "${var.table_name}-pipeline"
-  type     = "STANDARD"
+  name     = "${var.environment}-interlock-pipeline"
   role_arn = aws_iam_role.sfn.arn
 
-  definition = templatefile(var.asl_path, {
-    OrchestratorFunctionArn = aws_lambda_function.core["orchestrator"].arn
-    EvaluatorFunctionArn    = aws_lambda_function.core["evaluator"].arn
-    TriggerFunctionArn      = aws_lambda_function.core["trigger"].arn
-    RunCheckerFunctionArn   = aws_lambda_function.core["run-checker"].arn
-    AlertTopicArn           = aws_sns_topic.alerts.arn
+  definition = templatefile("${path.module}/../statemachine.asl.json", {
+    orchestrator_arn = aws_lambda_function.orchestrator.arn
+    sla_monitor_arn  = aws_lambda_function.sla_monitor.arn
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role" "sfn" {
+  name = "${var.environment}-interlock-sfn"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "states.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "sfn" {
+  name = "invoke-lambdas"
+  role = aws_iam_role.sfn.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = "lambda:InvokeFunction"
+      Resource = [
+        aws_lambda_function.orchestrator.arn,
+        aws_lambda_function.sla_monitor.arn,
+      ]
+    }]
   })
 }

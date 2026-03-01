@@ -1,12 +1,11 @@
 ---
 title: Deployment
 weight: 4
-description: Deploy Interlock to AWS with Terraform or run locally with Docker Compose.
+description: Deploy Interlock to AWS using the reusable Terraform module.
 ---
 
-Interlock supports two deployment models — a fully serverless AWS stack and a local Docker Compose environment for development and testing.
+Interlock deploys as a fully serverless AWS stack using a reusable Terraform module. The module creates all required infrastructure -- DynamoDB tables, Lambda functions, Step Functions, EventBridge, and IAM roles. Your project provides pipeline YAML configuration files; no framework code runs in your repository.
 
 {{< cards >}}
-  {{< card link="terraform" title="Terraform (AWS)" subtitle="Bootstrap, variables, deploy steps, and conditional flags." >}}
-  {{< card link="local" title="Local (Docker)" subtitle="Docker Compose services, E2E tests, and sensor evaluators." >}}
+  {{< card link="terraform" title="Terraform" subtitle="Module variables, what gets created, and deployment steps." >}}
 {{< /cards >}}
