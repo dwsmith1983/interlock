@@ -1,92 +1,52 @@
 ---
-title: "Retry Loop ASL Pattern"
+title: "Step Functions ASL Pattern"
 weight: 10
 ---
 
-# Step Function Retry & Readiness Polling Pattern
+# Step Functions Evaluation and SLA Monitoring Pattern
 
-This guide shows the recommended ASL patterns for implementing retry loops and readiness polling in your Step Function state machine.
+This guide explains the ASL patterns used in Interlock's Step Functions state machine. The state machine uses a Parallel state with two concurrent branches: an evaluation loop and an SLA monitoring branch.
 
-## Prerequisites
+## Architecture Overview
 
-These patterns require interlock v0.2.2+ which adds:
+The state machine is defined in `deploy/statemachine.asl.json` and contains approximately 26 states across two parallel branches. The Terraform module provisions it automatically with Lambda ARN substitution.
 
-- `failureCategory` in run-checker responses (classifies failures as `TRANSIENT`, `TIMEOUT`, or `PERMANENT`)
-- `retryable` and `retryBackoffSeconds` in orchestrator `logResult` responses
-- `not_ready` result with `pollAdvised` from orchestrator `checkReadiness`
+```
+Parallel
+  Branch 1: Evaluation Loop
+    InitEvalLoop -> Evaluate -> IsReady
+      -> (passed) Trigger -> WaitForJob -> CheckJob -> IsJobDone
+      -> (not ready) WaitInterval -> IncrementElapsed -> CheckWindowExhausted
+          -> (window remaining) Evaluate (loop)
+          -> (window exhausted) ValidationExhausted -> EvalDone
 
-## Failure Retry Loop
-
-When a job fails, the orchestrator's `logResult` action returns retry metadata. The ASL can use this to loop back and retry.
-
-```json
-{
-  "LogRunFailed": {
-    "Type": "Task",
-    "Resource": "${OrchestratorArn}",
-    "Parameters": {
-      "action": "logResult",
-      "pipelineID.$": "$.pipelineID",
-      "scheduleID.$": "$.scheduleID",
-      "payload": {
-        "status": "FAILED",
-        "runID.$": "$.runID",
-        "message.$": "$.failureMessage",
-        "failureCategory.$": "$.failureCategory"
-      }
-    },
-    "ResultPath": "$.logResult",
-    "Next": "IsRetryable"
-  },
-
-  "IsRetryable": {
-    "Type": "Choice",
-    "Choices": [
-      {
-        "Variable": "$.logResult.payload.retryable",
-        "BooleanEquals": true,
-        "Next": "WaitRetryBackoff"
-      }
-    ],
-    "Default": "ReleaseLockFailed"
-  },
-
-  "WaitRetryBackoff": {
-    "Type": "Wait",
-    "SecondsPath": "$.logResult.payload.retryBackoffSeconds",
-    "Next": "AcquireLock"
-  }
-}
+  Branch 2: SLA Monitoring
+    CheckSLAConfig
+      -> (no SLA) SLASkipped
+      -> (has SLA) CalcDeadlines -> WaitForWarning -> FireSLAWarning
+                                 -> WaitForBreach -> FireSLABreach -> SLADone
 ```
 
-### How it works
+Both branches run concurrently. The evaluation branch may complete before the SLA branch fires, or the SLA branch may fire warnings while the evaluation loop is still polling.
 
-1. `LogRunFailed` calls the orchestrator with `failureCategory` from the run-checker
-2. The orchestrator computes `retryable` (based on category + attempt count + max attempts) and `retryBackoffSeconds`
-3. `IsRetryable` branches: if retryable, wait and loop back to `AcquireLock`; otherwise, proceed to final cleanup
-4. `WaitRetryBackoff` uses `SecondsPath` for dynamic exponential backoff
+## Evaluation Loop
 
-### Backward compatibility
+The evaluation branch is the core pipeline lifecycle. It calls the **orchestrator** Lambda in different modes to evaluate validation rules, trigger jobs, and poll job status.
 
-If the ASL does not pass `failureCategory`, the orchestrator defaults it to `TRANSIENT`, making the failure retryable. This ensures existing deployments get retry behavior without ASL changes.
-
-## Readiness Polling
-
-When traits fail (data not ready), the orchestrator returns `not_ready` with poll metadata. The ASL can use this to wait and re-evaluate.
+### Evaluate and Poll
 
 ```json
 {
-  "CheckReadiness": {
+  "Evaluate": {
     "Type": "Task",
-    "Resource": "${OrchestratorArn}",
+    "Resource": "${orchestrator_arn}",
     "Parameters": {
-      "action": "checkReadiness",
-      "pipelineID.$": "$.pipelineID",
-      "payload": {
-        "traitResults.$": "$.traitResults"
-      }
+      "mode": "evaluate",
+      "pipelineId.$": "$.pipelineId",
+      "scheduleId.$": "$.scheduleId",
+      "date.$": "$.date"
     },
-    "ResultPath": "$.readiness",
+    "ResultPath": "$.evaluateResult",
     "Next": "IsReady"
   },
 
@@ -94,66 +54,189 @@ When traits fail (data not ready), the orchestrator returns `not_ready` with pol
     "Type": "Choice",
     "Choices": [
       {
-        "Variable": "$.readiness.result",
-        "StringEquals": "proceed",
-        "Next": "TriggerJob"
-      },
-      {
-        "Variable": "$.readiness.result",
-        "StringEquals": "not_ready",
-        "Next": "WaitReadiness"
+        "Variable": "$.evaluateResult.status",
+        "StringEquals": "passed",
+        "Next": "Trigger"
       }
     ],
-    "Default": "HandleEvaluatorError"
+    "Default": "WaitInterval"
   },
 
-  "WaitReadiness": {
+  "WaitInterval": {
     "Type": "Wait",
-    "Seconds": 60,
-    "Next": "AcquireLock"
+    "SecondsPath": "$.config.evaluationIntervalSeconds",
+    "Next": "IncrementElapsed"
   }
 }
 ```
 
 ### How it works
 
-1. `CheckReadiness` evaluates trait results and returns `proceed`, `not_ready`, or `error`
-2. `IsReady` branches on the result:
-   - `proceed`: all required traits pass, trigger the job
-   - `not_ready`: data not ready yet, wait and re-evaluate (loops back to `AcquireLock`)
-   - `error`: evaluator infrastructure failure, handle separately
-3. `WaitReadiness` pauses before re-evaluation (use a fixed interval or compute dynamically)
+1. **Evaluate** calls the orchestrator with `mode: evaluate`. The orchestrator reads sensor data from DynamoDB and evaluates all validation rules defined in the pipeline YAML config.
+2. **IsReady** branches on the result: if `passed`, proceed to trigger; otherwise, wait and re-evaluate.
+3. **WaitInterval** uses `SecondsPath` for configurable poll intervals (set via `evaluation.interval` in the pipeline YAML).
+4. **IncrementElapsed** tracks total elapsed time using `States.MathAdd`.
+5. **CheckWindowExhausted** compares elapsed time against `evaluationWindowSeconds`. If the window is exhausted, the orchestrator fires a `VALIDATION_EXHAUSTED` event.
 
-### Backward compatibility
+### Trigger and Job Polling
 
-The previous `skip` result is replaced by `not_ready`. Existing ASL templates that check `result == "proceed"` with a default fallback will treat `not_ready` the same as `skip` — both hit the default path. No ASL changes are required for existing deployments to continue working.
+```json
+{
+  "Trigger": {
+    "Type": "Task",
+    "Resource": "${orchestrator_arn}",
+    "Parameters": {
+      "mode": "trigger",
+      "pipelineId.$": "$.pipelineId",
+      "scheduleId.$": "$.scheduleId",
+      "date.$": "$.date"
+    },
+    "ResultPath": "$.triggerResult",
+    "Next": "WaitForJob"
+  },
 
-## Complete Flow
+  "CheckJob": {
+    "Type": "Task",
+    "Resource": "${orchestrator_arn}",
+    "Parameters": {
+      "mode": "check-job",
+      "pipelineId.$": "$.pipelineId",
+      "scheduleId.$": "$.scheduleId",
+      "runId.$": "$.triggerResult.runId"
+    },
+    "ResultPath": "$.checkJobResult",
+    "Next": "IsJobDone"
+  },
 
-The recommended state machine flow combining both patterns:
-
+  "IsJobDone": {
+    "Type": "Choice",
+    "Choices": [
+      {
+        "Variable": "$.checkJobResult.event",
+        "StringEquals": "success",
+        "Next": "EvalDone"
+      },
+      {
+        "Variable": "$.checkJobResult.event",
+        "StringEquals": "fail",
+        "Next": "EvalDone"
+      },
+      {
+        "Variable": "$.checkJobResult.event",
+        "StringEquals": "timeout",
+        "Next": "EvalDone"
+      }
+    ],
+    "Default": "WaitForJob"
+  }
+}
 ```
-AcquireLock → CheckRunLog → ResolvePipeline → EvaluateTraits → CheckReadiness
-                                                                    │
-                                                         ┌──────────┼──────────┐
-                                                         │          │          │
-                                                     proceed    not_ready    error
-                                                         │          │          │
-                                                    TriggerJob  Wait(60s)  Alert+Skip
-                                                         │          │
-                                                    PollStatus  → AcquireLock
-                                                         │
-                                                   ┌─────┼─────┐
-                                                   │           │
-                                               succeeded    failed
-                                                   │           │
-                                              LogCompleted  LogFailed
-                                                               │
-                                                         ┌─────┼─────┐
-                                                         │           │
-                                                     retryable  non-retryable
-                                                         │           │
-                                                    Wait(backoff)  Cleanup
-                                                         │
-                                                    AcquireLock
+
+Once all validation rules pass, the orchestrator triggers the configured job (Glue, HTTP, EMR, Step Functions, etc.). The state machine then polls job status via `check-job` mode until it receives a terminal event (`success`, `fail`, or `timeout`).
+
+## SLA Monitoring Branch
+
+The SLA branch runs in parallel with the evaluation loop. It uses the **sla-monitor** Lambda to calculate deadlines and fire alerts.
+
+```json
+{
+  "CheckSLAConfig": {
+    "Type": "Choice",
+    "Choices": [
+      {
+        "Variable": "$.config.sla",
+        "IsPresent": true,
+        "Next": "CalcDeadlines"
+      }
+    ],
+    "Default": "SLASkipped"
+  },
+
+  "CalcDeadlines": {
+    "Type": "Task",
+    "Resource": "${sla_monitor_arn}",
+    "Parameters": {
+      "mode": "calculate",
+      "pipelineId.$": "$.pipelineId",
+      "scheduleId.$": "$.scheduleId",
+      "date.$": "$.date",
+      "sla.$": "$.config.sla"
+    },
+    "ResultPath": "$.slaDeadlines",
+    "Next": "WaitForWarning"
+  },
+
+  "WaitForWarning": {
+    "Type": "Wait",
+    "TimestampPath": "$.slaDeadlines.warningAt",
+    "Next": "FireSLAWarning"
+  },
+
+  "FireSLAWarning": {
+    "Type": "Task",
+    "Resource": "${sla_monitor_arn}",
+    "Parameters": {
+      "mode": "fire-alert",
+      "pipelineId.$": "$.pipelineId",
+      "scheduleId.$": "$.scheduleId",
+      "date.$": "$.date",
+      "alertType": "SLA_WARNING"
+    },
+    "ResultPath": "$.slaWarningResult",
+    "Next": "WaitForBreach"
+  }
+}
 ```
+
+### How it works
+
+1. **CheckSLAConfig** skips the branch if no `sla` config is present in the pipeline YAML.
+2. **CalcDeadlines** computes `warningAt` and `breachAt` timestamps from the SLA config.
+3. **WaitForWarning** uses `TimestampPath` to sleep until the warning time.
+4. **FireSLAWarning** publishes an `SLA_WARNING` event to EventBridge.
+5. **WaitForBreach** then sleeps until the breach time.
+6. **FireSLABreach** publishes an `SLA_BREACH` event to EventBridge.
+
+If the evaluation branch completes before either deadline, the Parallel state completes and the SLA waits are cancelled.
+
+## Error Handling
+
+All Task states include Retry and Catch blocks:
+
+```json
+{
+  "Retry": [
+    {
+      "ErrorEquals": [
+        "Lambda.ServiceException",
+        "Lambda.AWSLambdaException",
+        "Lambda.TooManyRequestsException",
+        "States.TaskFailed"
+      ],
+      "IntervalSeconds": 2,
+      "MaxAttempts": 3,
+      "BackoffRate": 2
+    }
+  ],
+  "Catch": [
+    {
+      "ErrorEquals": ["States.ALL"],
+      "ResultPath": "$.errorInfo",
+      "Next": "EvalBranchFailed"
+    }
+  ]
+}
+```
+
+Transient Lambda errors are retried with exponential backoff (2s, 4s, 8s). Unrecoverable errors route to a Fail state that terminates the branch and propagates up through the Parallel state's top-level Catch.
+
+## Customization
+
+The ASL is a template file (`deploy/statemachine.asl.json`) processed by Terraform's `templatefile` function. The two substitution variables are:
+
+| Variable | Terraform Resource |
+|---|---|
+| `${orchestrator_arn}` | `aws_lambda_function.orchestrator.arn` |
+| `${sla_monitor_arn}` | `aws_lambda_function.sla_monitor.arn` |
+
+The evaluation interval, window duration, and job check interval are driven by pipeline config values passed in the Step Functions input (`$.config`), not hardcoded in the ASL.

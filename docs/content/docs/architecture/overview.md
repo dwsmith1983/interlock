@@ -1,109 +1,221 @@
 ---
 title: Overview
 weight: 1
-description: STAMP safety model, three-level checks, and the run state machine.
+description: STAMP safety model, declarative validation rules, sensor-driven evaluation, and the pipeline lifecycle.
 ---
 
 ## STAMP Model
 
-Interlock applies [STAMP](https://psas.scripts.mit.edu/home/stamp/) (Systems-Theoretic Accident Model and Processes) to data pipeline operations. In STAMP, accidents result from inadequate enforcement of safety constraints — not just component failures. Interlock maps this to data pipelines:
+Interlock applies [STAMP](https://psas.scripts.mit.edu/home/stamp/) (Systems-Theoretic Accident Model and Processes) to data pipeline operations. In STAMP, accidents result from inadequate enforcement of safety constraints -- not just component failures. Interlock maps this to data pipelines:
 
 | STAMP Concept | Interlock Mapping |
 |---|---|
-| Safety constraint | Trait (readiness check) |
-| Control structure | Archetype (template of required checks) |
-| Controller | Engine (evaluates traits, enforces rules) |
+| Safety constraint | Validation rule (declarative check against sensor data) |
+| Control structure | Pipeline config (YAML defining schedule, rules, job, SLA) |
+| Controller | Orchestrator Lambda + Step Functions (evaluates rules, triggers jobs) |
 | Controlled process | Pipeline (data transformation job) |
-| Feedback | Events, run state, SLA monitoring |
-| Absence of control action | Watchdog (missed schedule detection) |
+| Feedback | Sensor data written to DynamoDB by external processes |
+| Absence of control action | Watchdog Lambda (missed schedule and stale trigger detection) |
 
-## Three-Level Check System
+## Sensor-Driven Model
 
-Interlock evaluates pipelines through three levels of safety checks:
-
-### Level 1 — Trait Evaluation
-
-Individual traits are evaluated by external programs (subprocess, HTTP, or builtin handlers). Each trait returns one of:
-
-| Status | Meaning |
-|---|---|
-| `PASS` | Safety check satisfied |
-| `FAIL` | Safety check not satisfied |
-| `STALE` | Previous result expired (TTL exceeded) |
-
-Traits have configurable TTL (time-to-live) so results are cached and re-evaluated only when stale.
-
-### Level 2 — Readiness Rule
-
-An archetype's `readinessRule` combines individual trait results into a pipeline-level decision. The default rule `all-required-pass` requires every required trait to have `PASS` status:
-
-- **READY** — all required traits pass → trigger the pipeline
-- **NOT_READY** — one or more required traits fail or are stale → wait and re-evaluate
-
-### Level 3 — SLA Enforcement
-
-Time-based constraints ensure pipelines complete within acceptable windows:
-
-- **Evaluation SLA** — deadline by which all traits must reach READY
-- **Completion SLA** — deadline by which the triggered job must finish
-- **Validation timeout** — hard stop that prevents indefinite polling
-
-Breaching an SLA fires an alert but does not cancel the pipeline.
-
-## Run State Machine
-
-Every pipeline run follows a deterministic state machine:
+Interlock does not run evaluator subprocesses or make HTTP calls to check readiness. Instead, external processes push sensor data into the DynamoDB control table. The framework reads this data and evaluates it against declarative validation rules.
 
 ```
-PENDING ──→ TRIGGERING ──→ RUNNING ──→ COMPLETED
-                │              │            │
-                │              │            ↓
-                │              │    COMPLETED_MONITORING ──→ COMPLETED
-                │              │
-                ↓              ↓
-             FAILED         FAILED / CANCELLED
+External process ──→ DynamoDB control table (SENSOR# records)
+                              │
+                     DynamoDB Stream
+                              │
+                              ↓
+                     stream-router Lambda
+                              │
+                    ┌─────────┴──────────┐
+                    ↓                    ↓
+          Sensor matches            Config change
+          trigger condition         → invalidate cache
+                    │
+                    ↓
+          Start Step Function execution
 ```
 
-| State | Description |
+Sensor records use a composite key structure:
+
+- **PK**: `PIPELINE#{pipelineId}`
+- **SK**: `SENSOR#{sensorKey}`
+
+Any system that can write to DynamoDB can serve as a sensor source: Lambda functions, Glue jobs, Airflow tasks, Step Function states, or external APIs via the AWS SDK.
+
+## Declarative Validation Rules
+
+Pipeline readiness is determined by validation rules defined in YAML. Each rule checks a sensor key's data against a condition. No external evaluator programs are needed.
+
+### Rule Structure
+
+```yaml
+validation:
+  trigger: "ALL"    # ALL = every rule must pass, ANY = at least one
+  rules:
+    - key: orders-landed
+      check: exists
+    - key: orders-count
+      check: gt
+      field: count
+      value: 0
+    - key: source-freshness
+      check: age_lt
+      field: updatedAt
+      value: "2h"
+```
+
+### Supported Operators
+
+| Operator | Description | Field Required | Value |
+|---|---|---|---|
+| `exists` | Sensor key is present in the control table | No | -- |
+| `equals` | Field value equals expected value | Yes | Any |
+| `gt` | Field value greater than threshold | Yes | Numeric |
+| `gte` | Field value greater than or equal to threshold | Yes | Numeric |
+| `lt` | Field value less than threshold | Yes | Numeric |
+| `lte` | Field value less than or equal to threshold | Yes | Numeric |
+| `age_lt` | Time since RFC3339 timestamp is less than duration | Yes | Duration string (e.g. `"2h"`) |
+
+### Trigger Modes
+
+The `trigger` field controls how individual rule results combine:
+
+- **ALL** -- every rule must pass before the pipeline triggers (logical AND)
+- **ANY** -- at least one rule must pass (logical OR)
+
+### Stream Trigger Condition
+
+A pipeline can also define a `schedule.trigger` that fires when a specific sensor write arrives, without waiting for the evaluation loop:
+
+```yaml
+schedule:
+  trigger:
+    key: orders-landed
+    check: exists
+```
+
+When the stream-router Lambda sees a `SENSOR#` record matching this key, it evaluates the trigger condition immediately. If the condition passes, it starts a Step Function execution.
+
+## Pipeline Lifecycle
+
+Each pipeline execution follows this lifecycle, orchestrated by Step Functions:
+
+```
+Sensor data arrives
+        │
+        ↓
+stream-router starts SFN
+        │
+   ┌────┴────┐
+   ↓         ↓
+Evaluation  SLA Monitor
+   Loop     (parallel)
+   │             │
+   │      CalcDeadlines
+   │             │
+   │      WaitForWarning
+   │             │
+   │      FireSLAWarning
+   │             │
+   │      WaitForBreach
+   │             │
+   │      FireSLABreach
+   │
+   ├─→ Evaluate (validation rules)
+   │       │
+   │   ┌───┴───┐
+   │   ↓       ↓
+   │  Ready  Not Ready
+   │   │       │
+   │   │    Wait → re-evaluate
+   │   │       │
+   │   │    Window exhausted?
+   │   │       │
+   │   │    VALIDATION_EXHAUSTED
+   │   │
+   │   ↓
+   │  Trigger job
+   │   │
+   │  Wait → CheckJob
+   │   │
+   │  success / fail / timeout
+   │
+   ↓
+Reconcile (merge branch results)
+```
+
+### State Summary
+
+The Step Functions state machine uses two parallel branches:
+
+1. **Evaluation branch** -- loops on Evaluate, checking validation rules at a configurable interval. When all rules pass, triggers the job and polls for completion. Exits on success, failure, timeout, or window exhaustion.
+
+2. **SLA monitoring branch** -- calculates warning and breach timestamps from the SLA config, waits until each deadline, and publishes alerts to EventBridge. Skipped entirely if no SLA is configured.
+
+Both branches run concurrently. The evaluation branch handles the actual pipeline lifecycle; the SLA branch is purely observational and never stops execution.
+
+## Event System
+
+All lifecycle events are published to a custom EventBridge event bus. This replaces the previous SNS-based alert system with a unified event stream.
+
+| Event Type | When Published |
 |---|---|
-| `PENDING` | Run created, traits being evaluated |
-| `TRIGGERING` | All traits passed, trigger executing |
-| `RUNNING` | Trigger succeeded, job in progress |
-| `COMPLETED` | Job finished successfully |
-| `COMPLETED_MONITORING` | Job finished, post-completion drift monitoring active |
-| `FAILED` | Job or trigger failed |
-| `CANCELLED` | Run manually cancelled |
-
-State transitions use **compare-and-swap** (CAS) with a version counter to prevent race conditions. Every transition increments the version; a concurrent update with a stale version fails cleanly.
-
-## Concurrency Model
-
-Interlock uses distributed locking to ensure exactly one evaluation loop runs per pipeline per schedule window:
-
-- **Lock key format**: `eval:{pipelineID}:{scheduleID}`
-- **Lock TTL**: computed from trait count and maximum evaluation timeout, plus a buffer
-- **Mechanism**: `AcquireLock` (atomic set-if-not-exists) + `ReleaseLock`
-
-On AWS, DynamoDB conditional writes provide the same semantics. Locally, Redis `SETNX` with TTL handles lock acquisition.
-
-## Event Sourcing
-
-All state changes emit immutable events to an append-only stream:
-
-| Event Kind | Trigger |
-|---|---|
-| `TRAIT_EVALUATED` | Trait evaluation completes |
-| `READINESS_CHECKED` | Readiness rule evaluated |
-| `RUN_STATE_CHANGED` | State machine transition |
-| `TRIGGER_FIRED` | Trigger execution starts |
-| `TRIGGER_FAILED` | Trigger execution fails |
-| `SLA_BREACHED` | SLA deadline exceeded |
-| `RETRY_SCHEDULED` | Automatic retry queued |
+| `VALIDATION_PASSED` | All validation rules pass |
+| `VALIDATION_EXHAUSTED` | Evaluation window closed without passing |
+| `JOB_TRIGGERED` | Pipeline trigger executed |
+| `JOB_COMPLETED` | Triggered job finished successfully |
+| `JOB_FAILED` | Triggered job failed |
+| `SLA_WARNING` | SLA warning deadline reached |
+| `SLA_BREACH` | SLA breach deadline reached |
 | `RETRY_EXHAUSTED` | All retry attempts consumed |
-| `MONITORING_DRIFT_DETECTED` | Post-completion trait regression |
-| `SCHEDULE_MISSED` | Pipeline schedule passed without evaluation |
-| `RUN_STUCK` | Run in non-terminal state beyond threshold |
-| `PIPELINE_COMPLETED` | Pipeline run finished successfully (lifecycle) |
-| `PIPELINE_FAILED` | Pipeline run finished with failure (lifecycle) |
+| `SFN_TIMEOUT` | Step Function execution timed out (watchdog) |
+| `SCHEDULE_MISSED` | Cron schedule passed without a trigger (watchdog) |
+| `INFRA_FAILURE` | Unrecoverable infrastructure error |
 
-Events support the archiver (Redis → Postgres) and external observability integrations.
+### Event Payload
+
+All events share a common payload structure:
+
+```json
+{
+  "source": "interlock",
+  "detail-type": "JOB_TRIGGERED",
+  "detail": {
+    "pipelineId": "silver-orders",
+    "scheduleId": "stream",
+    "date": "2026-03-01",
+    "message": "triggered http job",
+    "timestamp": "2026-03-01T09:15:00Z"
+  }
+}
+```
+
+Consumers subscribe to events by creating EventBridge rules that match on `source` and `detail-type`. This enables routing to SNS topics, SQS queues, Lambda functions, or any other EventBridge target without modifying the framework.
+
+## Automatic Retries
+
+When a triggered job fails or times out, the stream-router processes the `JOB#` record from the joblog table stream and decides whether to retry:
+
+1. Count existing re-run records for this pipeline/schedule/date
+2. If under `job.maxRetries`, write a re-run record, release and re-acquire the trigger lock, and start a new Step Function execution
+3. If at the retry limit, publish a `RETRY_EXHAUSTED` event and mark the trigger as `FAILED_FINAL`
+
+Re-run executions use a unique name (`{pipeline}-{schedule}-{date}-rerun-{attempt}`) to avoid Step Function dedup collisions.
+
+## Post-Run Validation
+
+Pipelines can define optional post-run validation rules that are evaluated after the triggered job completes. These use the same declarative rule syntax as pre-trigger validation:
+
+```yaml
+postRun:
+  rules:
+    - key: output-row-count
+      check: gte
+      field: count
+      value: 1000
+```
+
+Post-run rules always use `ALL` mode (every rule must pass).

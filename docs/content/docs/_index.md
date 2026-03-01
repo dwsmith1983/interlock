@@ -1,17 +1,17 @@
 ---
 title: Documentation
-description: Interlock documentation — architecture, configuration, deployment, and API reference.
+description: Interlock documentation -- architecture, configuration, deployment, and reference.
 toc: false
 ---
 
-Interlock is a STAMP-based safety framework for data pipeline reliability. It evaluates readiness traits before triggering pipelines, enforces SLA deadlines, and provides full lifecycle management with automatic retries and post-completion drift detection.
+Interlock is a STAMP-based safety framework for data pipeline reliability. It validates readiness using declarative rules against sensor data in DynamoDB, enforces SLA deadlines, and triggers pipelines automatically when all conditions pass. Deployed as a reusable Terraform module on AWS with Step Functions, Lambda, and EventBridge.
 
 ## Sections
 
 {{< cards >}}
-  {{< card link="getting-started" title="Getting Started" subtitle="Install, configure, and run your first readiness check." >}}
-  {{< card link="architecture" title="Architecture" subtitle="STAMP model, run state machine, AWS and local backends." >}}
-  {{< card link="configuration" title="Configuration" subtitle="Pipelines, schedules, triggers, and calendar exclusions." >}}
-  {{< card link="deployment" title="Deployment" subtitle="Terraform for AWS, Docker Compose for local." >}}
-  {{< card link="reference" title="Reference" subtitle="Provider interface, evaluator protocol, alert sinks." >}}
+  {{< card link="getting-started" title="Getting Started" subtitle="Deploy the Terraform module and configure your first pipeline." >}}
+  {{< card link="architecture" title="Architecture" subtitle="STAMP model, Step Functions state machine, DynamoDB tables." >}}
+  {{< card link="configuration" title="Configuration" subtitle="Pipeline YAML configs, validation rules, and job triggers." >}}
+  {{< card link="deployment" title="Deployment" subtitle="Deploy to AWS with the reusable Terraform module." >}}
+  {{< card link="reference" title="Reference" subtitle="EventBridge event types and alerting patterns." >}}
 {{< /cards >}}

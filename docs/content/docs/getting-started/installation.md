@@ -1,76 +1,112 @@
 ---
 title: Installation
 weight: 1
-description: Prerequisites, building from source, and binary overview.
+description: Prerequisites and deploying the Interlock Terraform module.
 ---
+
+Interlock is deployed as infrastructure, not installed as a binary. You deploy the reusable Terraform module into your AWS account, and it provisions all the resources needed to run pipeline safety checks.
 
 ## Prerequisites
 
 | Dependency | Version | Purpose |
 |---|---|---|
-| Go | 1.24+ | Build the CLI and Lambda handlers |
-| Docker & Docker Compose | Latest | Local development (Redis + Postgres) |
-| Redis | 7+ | Local provider backend |
-| Terraform | 1.5+ | AWS deployment (optional) |
-| AWS CLI v2 | Latest | AWS deployment (optional) |
+| Terraform | 1.5+ | Deploy the Interlock module |
+| AWS CLI v2 | Latest | AWS credential configuration |
+| Go | 1.24+ | Build Lambda handler binaries |
+| AWS Account | N/A | DynamoDB, Lambda, Step Functions, EventBridge |
 
-## Build from Source
+## Deploy the Terraform Module
 
-Clone the repository and build the CLI binary:
+### 1. Build Lambda Binaries
+
+Clone the repository and build the Lambda handler zip files:
 
 ```bash
 git clone https://github.com/dwsmith1983/interlock.git
 cd interlock
-make build
+./deploy/build.sh
 ```
 
-This produces the `interlock` binary in the project root.
+This produces zip files in the `dist/` directory for all four Lambda functions.
 
-### Build Targets
+### 2. Reference the Module
 
-| Target | Description |
-|---|---|
-| `make build` | Build the `interlock` CLI |
-| `make test` | Run all tests |
-| `make test-unit` | Unit tests only |
-| `make test-integration` | Integration tests (requires DynamoDB Local) |
-| `make lint` | Run golangci-lint |
-| `make fmt` | Format source code |
-| `make dist` | Cross-compile for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64 |
-| `make build-lambda` | Build all 5 Lambda handler binaries |
+In your Terraform configuration, reference the Interlock module:
 
-### Lambda Binaries
+```hcl
+module "interlock" {
+  source = "github.com/dwsmith1983/interlock//deploy/terraform"
 
-The AWS deployment uses 5 Lambda handlers, each built as a separate binary:
+  environment    = "production"
+  dist_path      = "${path.module}/dist"
+  pipelines_path = "${path.module}/pipelines"
+  calendars_path = "${path.module}/calendars"  # optional
+
+  tags = {
+    Project = "interlock"
+  }
+}
+```
+
+### 3. Apply
 
 ```bash
-make build-lambda
+terraform init
+terraform plan
+terraform apply
 ```
 
-This runs `deploy/build.sh` and produces bootstrap binaries for:
+This provisions:
+- 3 DynamoDB tables (control, joblog, rerun)
+- 4 Lambda functions (stream-router, orchestrator, sla-monitor, watchdog)
+- 1 Step Functions state machine
+- 1 EventBridge custom event bus
+- EventBridge schedule for the watchdog
+- IAM roles with least-privilege policies
+- SQS dead-letter queues for stream processing
+- CloudWatch log groups
 
-| Handler | Path | Purpose |
-|---|---|---|
-| stream-router | `cmd/lambda/stream-router/` | DynamoDB Stream event routing |
-| evaluator | `cmd/lambda/evaluator/` | Single trait evaluation |
-| orchestrator | `cmd/lambda/orchestrator/` | Multi-action state machine dispatch |
-| trigger | `cmd/lambda/trigger/` | Pipeline trigger execution |
-| run-checker | `cmd/lambda/run-checker/` | Poll running job status |
+## What Gets Deployed
 
-## Project Layout
+### Lambda Functions
 
-```
-pkg/types/           Public domain types
-internal/provider/   Storage interface + Redis/DynamoDB implementations
-internal/engine/     Readiness evaluation engine
-internal/evaluator/  Trait evaluator runners
-internal/trigger/    Pipeline trigger execution
-internal/alert/      Alert dispatching
-internal/schedule/   Schedule, SLA, and retry utilities
-internal/watcher/    Reactive evaluation loop (local mode)
-internal/archiver/   Background Redis → Postgres archival
-internal/lambda/     Shared Lambda initialization
-cmd/lambda/          5 Lambda handler entry points
-deploy/terraform/    AWS infrastructure as code
-deploy/statemachine.asl.json  Step Function ASL definition
-```
+| Function | Purpose |
+|---|---|
+| stream-router | Processes DynamoDB Stream events, starts Step Function executions |
+| orchestrator | Evaluates validation rules, triggers jobs, checks job status |
+| sla-monitor | Calculates SLA deadlines, fires SLA_WARNING and SLA_BREACH alerts |
+| watchdog | Scans for missed schedules on an EventBridge timer |
+
+### DynamoDB Tables
+
+| Table | Purpose |
+|---|---|
+| control | Pipeline configs, sensor data, evaluation state |
+| joblog | Run history and job tracking |
+| rerun | Rerun request tracking |
+
+### Module Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `environment` | yes | -- | Environment name (e.g., staging, production) |
+| `dist_path` | yes | -- | Path to Lambda zip files |
+| `pipelines_path` | yes | -- | Path to pipeline YAML configs |
+| `calendars_path` | no | `""` | Path to calendar YAML files |
+| `lambda_memory_size` | no | `128` | Lambda memory in MB |
+| `log_retention_days` | no | `30` | CloudWatch log retention |
+| `watchdog_schedule` | no | `rate(5 minutes)` | EventBridge watchdog schedule |
+| `sfn_timeout_seconds` | no | `43200` | Step Functions execution timeout (12h default) |
+
+### Module Outputs
+
+| Output | Description |
+|---|---|
+| `control_table_name` | Name of the control DynamoDB table |
+| `control_table_arn` | ARN of the control DynamoDB table |
+| `joblog_table_name` | Name of the job log DynamoDB table |
+| `rerun_table_name` | Name of the rerun DynamoDB table |
+| `event_bus_name` | Name of the EventBridge event bus |
+| `event_bus_arn` | ARN of the EventBridge event bus |
+| `sfn_arn` | ARN of the pipeline state machine |
+| `sfn_name` | Name of the pipeline state machine |

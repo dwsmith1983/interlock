@@ -1,227 +1,173 @@
 ---
 title: Alerting
-weight: 3
-description: Sink interface, 5 implementations, Dispatcher, and AlertConfig schema.
+weight: 1
+description: EventBridge-based event publishing, detail types, and consumer patterns.
 ---
 
-Interlock dispatches alerts when SLA deadlines are breached, triggers fail, retries exhaust, post-completion drift is detected, or pipeline schedules are silently missed. The alert system uses a pluggable sink architecture.
+Interlock publishes all lifecycle and alert events to a custom EventBridge event bus. Consumers subscribe to events by creating EventBridge rules that match on detail types. There are no built-in alert sinks -- you route events to whatever targets your organization uses (SNS, SQS, Lambda, CloudWatch Logs, etc.).
 
-## Alert Type
+## EventBridge Event Bus
 
-```go
-type Alert struct {
-    Level      AlertLevel             // "error", "warning", "info"
-    Category   string                 // machine-readable alert type (JSON: "alertType")
-    PipelineID string
-    TraitType  string                 // empty for pipeline-level alerts
-    Message    string
-    Details    map[string]interface{}
-    Timestamp  time.Time
+The Terraform module creates a custom event bus named `{environment}-interlock-events`. All four Lambda functions publish events to this bus using `events:PutEvents`.
+
+The bus name is available as a Terraform output:
+
+```hcl
+output "event_bus_name" {
+  value = module.interlock.event_bus_name
+}
+
+output "event_bus_arn" {
+  value = module.interlock.event_bus_arn
 }
 ```
 
-### Alert Categories
+## Detail Types
 
-The `Category` field (serialized as `alertType` in JSON) provides a machine-readable classification for filtering and routing:
+Each event is published with a `detail-type` field that classifies the event. Use these values in EventBridge rule patterns for filtering and routing.
 
-| Category | Source | Meaning |
+### SLA Events
+
+Published by the **sla-monitor** Lambda from the SLA monitoring branch of the Step Functions state machine.
+
+| Detail Type | Meaning | When |
 |---|---|---|
-| `schedule_missed` | Watchdog | No evaluation started by deadline |
-| `stuck_run` | Watchdog | Run in non-terminal state beyond threshold |
-| `evaluation_sla_breach` | Orchestrator | Evaluation deadline exceeded |
-| `completion_sla_breach` | Orchestrator | Completion deadline exceeded |
-| `validation_timeout` | Orchestrator | Hard validation timeout hit |
-| `trait_drift` | Orchestrator | Post-completion trait regression |
+| `SLA_WARNING` | SLA warning threshold reached | Pipeline has not completed by the warning timestamp |
+| `SLA_BREACH` | SLA deadline exceeded | Pipeline has not completed by the breach timestamp |
 
-Downstream consumers (alert-logger, dashboards) can filter by `alertType` without parsing message strings.
+### Lifecycle Events
 
-### Alert Levels
+Published by the **orchestrator** Lambda during the evaluation and execution branches.
 
-| Level | Usage |
-|---|---|
-| `error` | SLA breach, trigger failure, retry exhaustion |
-| `warning` | Approaching deadline, drift detected |
-| `info` | Run completed, monitoring started |
-
-## Sink Interface
-
-Every alert destination implements the `Sink` interface:
-
-```go
-type Sink interface {
-    Send(alert types.Alert) error
-    Name() string
-}
-```
-
-## Dispatcher
-
-The `Dispatcher` routes alerts to all configured sinks:
-
-```go
-type Dispatcher struct {
-    sinks  []Sink
-    logger *slog.Logger
-}
-
-func NewDispatcher(configs []types.AlertConfig, logger *slog.Logger) (*Dispatcher, error)
-func (d *Dispatcher) Dispatch(alert types.Alert)
-func (d *Dispatcher) AddSink(s Sink)
-func (d *Dispatcher) AlertFunc() func(types.Alert)
-```
-
-- `NewDispatcher` creates sinks from `[]AlertConfig` entries
-- `Dispatch` sends to all sinks; errors are logged, not propagated
-- `AddSink` adds a sink programmatically (used by Lambda init to add SNS)
-- `AlertFunc` returns a `func(types.Alert)` suitable for passing to Engine and Watcher
-
-## Sink Implementations
-
-### Console
-
-Prints alerts to stdout. Useful for development and debugging.
-
-```yaml
-alerts:
-  - type: console
-```
-
-```go
-func NewConsoleSink() *ConsoleSink
-```
-
-### Webhook
-
-Sends alerts as JSON via HTTP POST to a configured URL.
-
-```yaml
-alerts:
-  - type: webhook
-    url: https://hooks.slack.com/services/T00/B00/xxx
-```
-
-```go
-func NewWebhookSink(url string) *WebhookSink
-```
-
-**Payload**: The full `Alert` struct serialized as JSON.
-
-### File
-
-Appends alerts as JSON lines to a local file.
-
-```yaml
-alerts:
-  - type: file
-    path: /var/log/interlock/alerts.jsonl
-```
-
-```go
-func NewFileSink(path string) *FileSink
-```
-
-### SNS
-
-Publishes alerts to an AWS SNS topic. Used in the AWS Lambda deployment.
-
-```yaml
-alerts:
-  - type: sns
-    topicARN: arn:aws:sns:us-east-1:123456789:my-alerts
-```
-
-```go
-func NewSNSSink(topicARN string) *SNSSink
-```
-
-**Message**: JSON-serialized `Alert`. The subject line includes the pipeline ID and alert level.
-
-The SNS sink uses the `SNSAPI` interface for testability:
-
-```go
-type SNSAPI interface {
-    Publish(ctx context.Context, params *sns.PublishInput, optFns ...func(*sns.Options)) (*sns.PublishOutput, error)
-}
-```
-
-### S3
-
-Writes alert records to S3 as JSON objects. Useful for long-term alert archival.
-
-```yaml
-alerts:
-  - type: s3
-    bucketName: my-alerts-bucket
-    prefix: alerts/
-```
-
-```go
-func NewS3Sink(bucketName, prefix string) *S3Sink
-```
-
-**Object key**: `{prefix}{pipelineID}/{timestamp}.json`
-
-## AlertConfig
-
-```go
-type AlertConfig struct {
-    Type       AlertType // "console", "webhook", "file", "sns", "s3"
-    URL        string    // Webhook URL
-    Path       string    // File path
-    TopicARN   string    // SNS topic ARN
-    BucketName string    // S3 bucket name
-    Prefix     string    // S3 key prefix
-}
-```
-
-### Configuration
-
-Multiple sinks can be active simultaneously:
-
-```yaml
-alerts:
-  - type: console
-  - type: webhook
-    url: https://hooks.slack.com/services/T00/B00/xxx
-  - type: sns
-    topicARN: arn:aws:sns:us-east-1:123456789:my-alerts
-  - type: file
-    path: /var/log/interlock/alerts.jsonl
-  - type: s3
-    bucketName: my-alerts-bucket
-    prefix: alerts/
-```
-
-## Alert Events
-
-Alerts are emitted at these points in the lifecycle:
-
-| Event | Level | When |
+| Detail Type | Meaning | When |
 |---|---|---|
-| `SLA_BREACHED` | error | Evaluation or completion deadline exceeded |
-| `TRIGGER_FAILED` | error | Trigger execution failed |
-| `RETRY_EXHAUSTED` | error | All retry attempts consumed |
-| `SCHEDULE_MISSED` | error | Pipeline schedule passed without evaluation (watchdog) |
-| `RUN_STUCK` | error | Run in non-terminal state beyond threshold (watchdog) |
-| `PIPELINE_COMPLETED` | info | Pipeline run finished successfully (lifecycle) |
-| `PIPELINE_FAILED` | error | Pipeline run finished with failure (lifecycle) |
-| `MONITORING_DRIFT_DETECTED` | warning | Post-completion trait regression |
-| `RETRY_SCHEDULED` | info | Automatic retry queued |
-| `MONITORING_STARTED` | info | Post-completion monitoring begins |
+| `VALIDATION_PASSED` | All validation rules passed | Readiness evaluation succeeds, before trigger |
+| `VALIDATION_EXHAUSTED` | Evaluation window closed without passing | Max evaluation time exceeded |
+| `JOB_TRIGGERED` | Pipeline job was triggered | Trigger fired successfully |
+| `JOB_SUCCEEDED` | Triggered job completed successfully | Job polling detects success |
+| `JOB_FAILED` | Triggered job failed | Job polling detects failure |
+| `JOB_TIMEOUT` | Triggered job timed out | Job polling detects timeout |
 
-## Lambda Integration
+### Watchdog Events
 
-In the AWS deployment, the Lambda `Init()` function configures alerting from environment variables:
+Published by the **watchdog** Lambda, invoked on an EventBridge schedule (default: every 5 minutes).
 
-```go
-// internal/lambda/init.go
-if topicARN := os.Getenv("SNS_TOPIC_ARN"); topicARN != "" {
-    dispatcher.AddSink(alert.NewSNSSink(topicARN))
-}
-if bucket := os.Getenv("S3_ALERT_BUCKET"); bucket != "" {
-    prefix := os.Getenv("S3_ALERT_PREFIX")
-    dispatcher.AddSink(alert.NewS3Sink(bucket, prefix))
+| Detail Type | Meaning | When |
+|---|---|---|
+| `SCHEDULE_MISSED` | No evaluation started by the schedule deadline | Watchdog detects absence of expected pipeline activity |
+
+## Event Payload Structure
+
+Events follow the standard EventBridge envelope format:
+
+```json
+{
+  "version": "0",
+  "id": "abc123",
+  "source": "interlock",
+  "detail-type": "SLA_WARNING",
+  "time": "2026-03-01T10:00:00Z",
+  "region": "us-east-1",
+  "resources": [],
+  "detail": {
+    "pipelineId": "gold-revenue",
+    "scheduleId": "daily",
+    "date": "2026-03-01",
+    "message": "Pipeline gold-revenue has not completed by warning deadline 10:00 UTC"
+  }
 }
 ```
 
-The alert-logger Lambda (in the medallion-pipeline project) subscribes to the SNS topic and writes structured JSON to CloudWatch Logs + persists `ALERT#` records in DynamoDB for queryability.
+The `detail` object contains pipeline-specific context. The exact fields vary by detail type but always include `pipelineId`.
+
+## Creating EventBridge Rules
+
+Subscribe to events by creating EventBridge rules that match on `detail-type`. Route matched events to any supported EventBridge target.
+
+### Route SLA Alerts to SNS
+
+```hcl
+resource "aws_cloudwatch_event_rule" "sla_alerts" {
+  name           = "interlock-sla-alerts"
+  event_bus_name = module.interlock.event_bus_name
+
+  event_pattern = jsonencode({
+    "detail-type" = ["SLA_WARNING", "SLA_BREACH"]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "sla_to_sns" {
+  rule           = aws_cloudwatch_event_rule.sla_alerts.name
+  event_bus_name = module.interlock.event_bus_name
+  target_id      = "sla-to-sns"
+  arn            = aws_sns_topic.alerts.arn
+}
+```
+
+### Route All Events to CloudWatch Logs
+
+```hcl
+resource "aws_cloudwatch_event_rule" "all_events" {
+  name           = "interlock-all-events"
+  event_bus_name = module.interlock.event_bus_name
+
+  event_pattern = jsonencode({
+    source = ["interlock"]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "to_cloudwatch" {
+  rule           = aws_cloudwatch_event_rule.all_events.name
+  event_bus_name = module.interlock.event_bus_name
+  target_id      = "to-cloudwatch"
+  arn            = aws_cloudwatch_log_group.interlock_events.arn
+}
+```
+
+### Route Job Failures to a Lambda for Custom Handling
+
+```hcl
+resource "aws_cloudwatch_event_rule" "job_failures" {
+  name           = "interlock-job-failures"
+  event_bus_name = module.interlock.event_bus_name
+
+  event_pattern = jsonencode({
+    "detail-type" = ["JOB_FAILED", "JOB_TIMEOUT"]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "failure_handler" {
+  rule           = aws_cloudwatch_event_rule.job_failures.name
+  event_bus_name = module.interlock.event_bus_name
+  target_id      = "failure-handler"
+  arn            = aws_lambda_function.failure_handler.arn
+}
+```
+
+### Filter by Pipeline ID
+
+```hcl
+resource "aws_cloudwatch_event_rule" "gold_pipeline_events" {
+  name           = "interlock-gold-pipeline"
+  event_bus_name = module.interlock.event_bus_name
+
+  event_pattern = jsonencode({
+    source      = ["interlock"]
+    detail = {
+      pipelineId = ["gold-revenue"]
+    }
+  })
+}
+```
+
+## Consumer Patterns
+
+Since EventBridge supports many target types, you can build any alert delivery pattern:
+
+| Pattern | EventBridge Target | Use Case |
+|---|---|---|
+| PagerDuty / Slack | SNS topic with subscription | On-call alerting for SLA breaches |
+| Audit log | CloudWatch Logs log group | Compliance and debugging |
+| Custom processing | Lambda function | Enrich, deduplicate, or aggregate events |
+| Queue for batch processing | SQS queue | Downstream systems that process events in batches |
+| Cross-account delivery | EventBridge in another account | Centralized observability |
