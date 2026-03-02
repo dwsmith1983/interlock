@@ -266,9 +266,11 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	return nil
 }
 
-// startSFN starts a Step Function execution with the default execution name.
+// startSFN starts a Step Function execution with a unique execution name.
+// The name includes a Unix timestamp suffix to avoid ExecutionAlreadyExists
+// errors when a previous execution for the same pipeline/schedule/date failed.
 func startSFN(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) error {
-	name := fmt.Sprintf("%s-%s-%s", pipelineID, scheduleID, date)
+	name := fmt.Sprintf("%s-%s-%s-%d", pipelineID, scheduleID, date, time.Now().Unix())
 	return startSFNWithName(ctx, d, pipelineID, scheduleID, date, name)
 }
 
