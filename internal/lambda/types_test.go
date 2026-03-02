@@ -27,7 +27,7 @@ func TestOrchestratorInput_JSON(t *testing.T) {
 func TestOrchestratorOutput_JSON(t *testing.T) {
 	output := lambda.OrchestratorOutput{
 		Mode:   "evaluate",
-		Passed: true,
+		Status: "passed",
 		RunID:  "run-123",
 	}
 	data, err := json.Marshal(output)
@@ -36,7 +36,7 @@ func TestOrchestratorOutput_JSON(t *testing.T) {
 	var decoded lambda.OrchestratorOutput
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	assert.Equal(t, output.Mode, decoded.Mode)
-	assert.Equal(t, output.Passed, decoded.Passed)
+	assert.Equal(t, output.Status, decoded.Status)
 	assert.Equal(t, output.RunID, decoded.RunID)
 }
 

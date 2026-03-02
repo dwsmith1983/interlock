@@ -162,8 +162,8 @@ func TestOrchestrator_Evaluate_AllPass(t *testing.T) {
 	if out.Mode != "evaluate" {
 		t.Errorf("mode = %q, want %q", out.Mode, "evaluate")
 	}
-	if !out.Passed {
-		t.Errorf("passed = false, want true; results = %v", out.Results)
+	if out.Status != "passed" {
+		t.Errorf("status = %q, want %q; results = %v", out.Status, "passed", out.Results)
 	}
 
 	eb := d.EventBridge.(*mockEventBridge)
@@ -210,8 +210,8 @@ func TestOrchestrator_Evaluate_OneFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Passed {
-		t.Error("passed = true, want false (one sensor missing)")
+	if out.Status == "passed" {
+		t.Error("status = passed, want not_ready (one sensor missing)")
 	}
 
 	eb := d.EventBridge.(*mockEventBridge)
@@ -420,8 +420,8 @@ func TestOrchestrator_PostRun_NoConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !out.Passed {
-		t.Error("passed = false, want true when no PostRun config")
+	if out.Status != "passed" {
+		t.Errorf("status = %q, want %q when no PostRun config", out.Status, "passed")
 	}
 }
 
@@ -461,8 +461,8 @@ func TestOrchestrator_PostRun_RulesPass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !out.Passed {
-		t.Errorf("passed = false, want true; results = %v", out.Results)
+	if out.Status != "passed" {
+		t.Errorf("status = %q, want %q; results = %v", out.Status, "passed", out.Results)
 	}
 }
 

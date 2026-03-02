@@ -39,7 +39,7 @@ type OrchestratorInput struct {
 // OrchestratorOutput is the output of the orchestrator Lambda.
 type OrchestratorOutput struct {
 	Mode    string      `json:"mode"`
-	Passed  bool        `json:"passed,omitempty"`
+	Status  string      `json:"status,omitempty"` // "passed" or "not_ready"
 	Results interface{} `json:"results,omitempty"`
 	RunID   string      `json:"runId,omitempty"`
 	JobType string      `json:"jobType,omitempty"`
