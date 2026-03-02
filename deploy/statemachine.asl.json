@@ -169,7 +169,7 @@
                 "mode": "check-job",
                 "pipelineId.$": "$.pipelineId",
                 "scheduleId.$": "$.scheduleId",
-                "runId.$": "$.triggerResult.runId"
+                "date.$": "$.date"
               },
               "ResultPath": "$.checkJobResult",
               "Next": "IsJobDone",
@@ -257,7 +257,9 @@
                 "pipelineId.$": "$.pipelineId",
                 "scheduleId.$": "$.scheduleId",
                 "date.$": "$.date",
-                "sla.$": "$.config.sla"
+                "deadline.$": "$.config.sla.deadline",
+                "expectedDuration.$": "$.config.sla.expectedDuration",
+                "timezone.$": "$.config.sla.timezone"
               },
               "ResultPath": "$.slaDeadlines",
               "Next": "WaitForWarning",

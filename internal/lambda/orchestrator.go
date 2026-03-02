@@ -11,7 +11,7 @@ import (
 )
 
 // HandleOrchestrator is the entry point for the orchestrator Lambda.
-// It dispatches to one of four modes: evaluate, trigger, check-job, post-run.
+// It dispatches to one of five modes: evaluate, trigger, check-job, post-run, validation-exhausted.
 func HandleOrchestrator(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
 	switch input.Mode {
 	case "evaluate":
@@ -22,6 +22,8 @@ func HandleOrchestrator(ctx context.Context, d *Deps, input OrchestratorInput) (
 		return handleCheckJob(ctx, d, input)
 	case "post-run":
 		return handlePostRun(ctx, d, input)
+	case "validation-exhausted":
+		return handleValidationExhausted(ctx, d, input)
 	default:
 		return OrchestratorOutput{}, fmt.Errorf("unknown orchestrator mode: %q", input.Mode)
 	}
@@ -140,6 +142,17 @@ func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 		Mode:    "post-run",
 		Status:  status,
 		Results: result.Results,
+	}, nil
+}
+
+// handleValidationExhausted publishes a VALIDATION_EXHAUSTED event when
+// the evaluation window closes without all rules passing.
+func handleValidationExhausted(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
+	_ = publishEvent(ctx, d, string(types.EventValidationExhausted), input.PipelineID, input.ScheduleID, input.Date, "evaluation window exhausted without passing")
+
+	return OrchestratorOutput{
+		Mode:   "validation-exhausted",
+		Status: "exhausted",
 	}, nil
 }
 
