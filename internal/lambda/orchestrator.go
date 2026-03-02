@@ -49,9 +49,14 @@ func handleEvaluate(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		_ = publishEvent(ctx, d, string(types.EventValidationPassed), input.PipelineID, input.ScheduleID, input.Date, "all validation rules passed")
 	}
 
+	status := "not_ready"
+	if result.Passed {
+		status = "passed"
+	}
+
 	return OrchestratorOutput{
 		Mode:    "evaluate",
-		Passed:  result.Passed,
+		Status:  status,
 		Results: result.Results,
 	}, nil
 }
@@ -116,7 +121,7 @@ func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 	}
 
 	if cfg.PostRun == nil || len(cfg.PostRun.Rules) == 0 {
-		return OrchestratorOutput{Mode: "post-run", Passed: true}, nil
+		return OrchestratorOutput{Mode: "post-run", Status: "passed"}, nil
 	}
 
 	sensors, err := d.Store.GetAllSensors(ctx, input.PipelineID)
@@ -126,9 +131,14 @@ func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 
 	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, time.Now())
 
+	status := "not_ready"
+	if result.Passed {
+		status = "passed"
+	}
+
 	return OrchestratorOutput{
 		Mode:    "post-run",
-		Passed:  result.Passed,
+		Status:  status,
 		Results: result.Results,
 	}, nil
 }
