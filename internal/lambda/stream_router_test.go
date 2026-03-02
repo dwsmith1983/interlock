@@ -146,12 +146,16 @@ func TestStreamRouter_SensorMatch_StartsSFN(t *testing.T) {
 	require.Len(t, sfnMock.executions, 1, "expected exactly one SFN execution")
 
 	// Verify the SFN input payload.
-	var input lambda.OrchestratorInput
+	var input map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
-	assert.Equal(t, "evaluate", input.Mode)
-	assert.Equal(t, "gold-revenue", input.PipelineID)
-	assert.Equal(t, "stream", input.ScheduleID)
-	assert.Equal(t, time.Now().Format("2006-01-02"), input.Date)
+	assert.Equal(t, "gold-revenue", input["pipelineId"])
+	assert.Equal(t, "stream", input["scheduleId"])
+	assert.Equal(t, time.Now().Format("2006-01-02"), input["date"])
+	// Config block must be present for SFN Wait states.
+	cfgMap, ok := input["config"].(map[string]interface{})
+	require.True(t, ok, "expected config object in SFN input")
+	assert.Greater(t, cfgMap["evaluationIntervalSeconds"], float64(0))
+	assert.Greater(t, cfgMap["evaluationWindowSeconds"], float64(0))
 
 	// Verify EventBridge event was published.
 	ebMock.mu.Lock()
