@@ -70,6 +70,21 @@ func (m *mockTriggerExecutor) Execute(_ context.Context, cfg *types.TriggerConfi
 }
 
 // ---------------------------------------------------------------------------
+// Mock status checker
+// ---------------------------------------------------------------------------
+
+type mockStatusChecker struct {
+	result lambda.StatusResult
+	err    error
+	called bool
+}
+
+func (m *mockStatusChecker) CheckStatus(_ context.Context, _ types.TriggerType, _ map[string]interface{}, _ map[string]string) (lambda.StatusResult, error) {
+	m.called = true
+	return m.result, m.err
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
@@ -265,7 +280,7 @@ func TestOrchestrator_Trigger(t *testing.T) {
 	}
 
 	executor := &mockTriggerExecutor{
-		result: map[string]interface{}{"jobRunId": "jr-12345"},
+		result: map[string]interface{}{"glue_job_name": "gold-etl", "glue_job_run_id": "jr-12345"},
 	}
 
 	d := newTestDeps(ddb)
@@ -288,6 +303,12 @@ func TestOrchestrator_Trigger(t *testing.T) {
 	}
 	if out.JobType != "glue" {
 		t.Errorf("jobType = %q, want %q", out.JobType, "glue")
+	}
+	if out.Metadata == nil {
+		t.Error("metadata should not be nil")
+	}
+	if out.Metadata["glue_job_run_id"] != "jr-12345" {
+		t.Errorf("metadata[glue_job_run_id] = %v, want %q", out.Metadata["glue_job_run_id"], "jr-12345")
 	}
 	if !executor.called {
 		t.Error("trigger executor was not called")
@@ -391,6 +412,124 @@ func TestOrchestrator_CheckJob_NotFound(t *testing.T) {
 	}
 	if out.Event != "" {
 		t.Errorf("event = %q, want empty", out.Event)
+	}
+}
+
+func TestOrchestrator_CheckJob_PollsGlueSucceeded(t *testing.T) {
+	pipelineID := "silver-cdr-hour"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Job:      types.JobConfig{Type: types.TriggerGlue},
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, input *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{Items: nil}, nil
+		},
+	}
+
+	checker := &mockStatusChecker{
+		result: lambda.StatusResult{State: "succeeded", Message: "SUCCEEDED"},
+	}
+
+	d := newTestDeps(ddb)
+	d.StatusChecker = checker
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "check-job",
+		PipelineID: pipelineID,
+		ScheduleID: "hourly",
+		Date:       "2026-03-02",
+		RunID:      "jr-999",
+		Metadata:   map[string]interface{}{"glue_job_name": "cdr-agg-hour", "glue_job_run_id": "jr-999"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Event != "success" {
+		t.Errorf("event = %q, want %q", out.Event, "success")
+	}
+	if !checker.called {
+		t.Error("status checker was not called")
+	}
+}
+
+func TestOrchestrator_CheckJob_PollsGlueFailed(t *testing.T) {
+	pipelineID := "silver-cdr-hour"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Job:      types.JobConfig{Type: types.TriggerGlue},
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{Items: nil}, nil
+		},
+	}
+
+	checker := &mockStatusChecker{
+		result: lambda.StatusResult{State: "failed", Message: "OOM killed"},
+	}
+
+	d := newTestDeps(ddb)
+	d.StatusChecker = checker
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "check-job",
+		PipelineID: pipelineID,
+		ScheduleID: "hourly",
+		Date:       "2026-03-02",
+		Metadata:   map[string]interface{}{"glue_job_name": "cdr-agg-hour", "glue_job_run_id": "jr-999"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Event != "fail" {
+		t.Errorf("event = %q, want %q", out.Event, "fail")
+	}
+}
+
+func TestOrchestrator_CheckJob_PollsRunning(t *testing.T) {
+	pipelineID := "silver-cdr-hour"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Job:      types.JobConfig{Type: types.TriggerGlue},
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{Items: nil}, nil
+		},
+	}
+
+	checker := &mockStatusChecker{
+		result: lambda.StatusResult{State: "running", Message: "RUNNING"},
+	}
+
+	d := newTestDeps(ddb)
+	d.StatusChecker = checker
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "check-job",
+		PipelineID: pipelineID,
+		ScheduleID: "hourly",
+		Date:       "2026-03-02",
+		Metadata:   map[string]interface{}{"glue_job_name": "cdr-agg-hour", "glue_job_run_id": "jr-999"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Event != "" {
+		t.Errorf("event = %q, want empty (still running)", out.Event)
 	}
 }
 

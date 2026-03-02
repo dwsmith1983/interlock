@@ -13,6 +13,7 @@ type Deps struct {
 	SFNClient       SFNAPI
 	EventBridge     EventBridgeAPI
 	TriggerRunner   TriggerExecutor
+	StatusChecker   StatusChecker
 	StateMachineARN string
 	EventBusName    string
 	Logger          *slog.Logger

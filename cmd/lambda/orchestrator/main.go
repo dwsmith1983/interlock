@@ -18,7 +18,24 @@ import (
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/internal/trigger"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
+
+// statusCheckerAdapter wraps trigger.Runner to satisfy ilambda.StatusChecker.
+type statusCheckerAdapter struct {
+	runner *trigger.Runner
+}
+
+func (a *statusCheckerAdapter) CheckStatus(ctx context.Context, triggerType types.TriggerType, metadata map[string]interface{}, headers map[string]string) (ilambda.StatusResult, error) {
+	result, err := a.runner.CheckStatus(ctx, triggerType, metadata, headers)
+	if err != nil {
+		return ilambda.StatusResult{}, err
+	}
+	return ilambda.StatusResult{
+		State:   string(result.State),
+		Message: result.Message,
+	}, nil
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -38,12 +55,14 @@ func main() {
 	}
 	cache := store.NewConfigCache(s, 5*time.Minute)
 
+	runner := trigger.NewRunner()
 	deps := &ilambda.Deps{
 		Store:           s,
 		ConfigCache:     cache,
 		SFNClient:       sfn.NewFromConfig(cfg),
 		EventBridge:     eventbridge.NewFromConfig(cfg),
-		TriggerRunner:   trigger.NewRunner(),
+		TriggerRunner:   runner,
+		StatusChecker:   &statusCheckerAdapter{runner: runner},
 		StateMachineARN: os.Getenv("STATE_MACHINE_ARN"),
 		EventBusName:    os.Getenv("EVENT_BUS_NAME"),
 		Logger:          logger,

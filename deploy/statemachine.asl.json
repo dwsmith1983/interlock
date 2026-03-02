@@ -169,7 +169,9 @@
                 "mode": "check-job",
                 "pipelineId.$": "$.pipelineId",
                 "scheduleId.$": "$.scheduleId",
-                "date.$": "$.date"
+                "date.$": "$.date",
+                "runId.$": "$.triggerResult.runId",
+                "metadata.$": "$.triggerResult.metadata"
               },
               "ResultPath": "$.checkJobResult",
               "Next": "IsJobDone",
