@@ -5,6 +5,7 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -30,6 +31,12 @@ type TriggerExecutor interface {
 // StatusChecker abstracts job status polling for testing.
 type StatusChecker interface {
 	CheckStatus(ctx context.Context, triggerType types.TriggerType, metadata map[string]interface{}, headers map[string]string) (StatusResult, error)
+}
+
+// SchedulerAPI is the subset of the EventBridge Scheduler client used for SLA timers.
+type SchedulerAPI interface {
+	CreateSchedule(ctx context.Context, input *scheduler.CreateScheduleInput, opts ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error)
+	DeleteSchedule(ctx context.Context, input *scheduler.DeleteScheduleInput, opts ...func(*scheduler.Options)) (*scheduler.DeleteScheduleOutput, error)
 }
 
 // StatusResult is a normalized job status from the trigger runner.
@@ -62,15 +69,17 @@ type OrchestratorOutput struct {
 
 // SLAMonitorInput is the input to the SLA monitor Lambda.
 type SLAMonitorInput struct {
-	Mode             string `json:"mode"` // calculate, fire-alert
+	Mode             string `json:"mode"` // calculate, fire-alert, schedule, cancel, reconcile
 	PipelineID       string `json:"pipelineId"`
 	ScheduleID       string `json:"scheduleId"`
 	Date             string `json:"date"`
-	AlertType        string `json:"alertType,omitempty"` // SLA_WARNING, SLA_BREACH
-	Deadline         string `json:"deadline,omitempty"`
-	ExpectedDuration string `json:"expectedDuration,omitempty"`
+	AlertType        string `json:"alertType,omitempty"`        // SLA_WARNING, SLA_BREACH (fire-alert)
+	Deadline         string `json:"deadline,omitempty"`         // "HH:MM" or ":MM"
+	ExpectedDuration string `json:"expectedDuration,omitempty"` // e.g. "30m"
 	Timezone         string `json:"timezone,omitempty"`
 	Critical         bool   `json:"critical,omitempty"`
+	WarningAt        string `json:"warningAt,omitempty"` // RFC3339, passed to cancel mode
+	BreachAt         string `json:"breachAt,omitempty"`  // RFC3339, passed to cancel mode
 }
 
 // SLAMonitorOutput is the output of the SLA monitor Lambda.

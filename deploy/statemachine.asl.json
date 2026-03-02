@@ -1,393 +1,40 @@
 {
-  "Comment": "Interlock v2 pipeline lifecycle: parallel evaluation loop + SLA monitoring",
-  "StartAt": "Parallel",
+  "Comment": "Interlock v2 pipeline lifecycle: evaluation, trigger, job polling, SLA monitoring via EventBridge Scheduler",
+  "StartAt": "InitEvalLoop",
   "States": {
-    "Parallel": {
-      "Type": "Parallel",
-      "Comment": "Run evaluation loop and SLA monitoring concurrently",
-      "Branches": [
+    "InitEvalLoop": {
+      "Type": "Pass",
+      "Comment": "Initialize elapsed-seconds counter for the evaluation window",
+      "Result": {
+        "elapsedSeconds": 0
+      },
+      "ResultPath": "$.evalLoop",
+      "Next": "Evaluate"
+    },
+    "Evaluate": {
+      "Type": "Task",
+      "Resource": "${orchestrator_arn}",
+      "Parameters": {
+        "mode": "evaluate",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date"
+      },
+      "ResultPath": "$.evaluateResult",
+      "Next": "IsReady",
+      "Retry": [
         {
-          "StartAt": "InitEvalLoop",
-          "States": {
-            "InitEvalLoop": {
-              "Type": "Pass",
-              "Comment": "Initialize elapsed-seconds counter for the evaluation window",
-              "Result": {
-                "elapsedSeconds": 0
-              },
-              "ResultPath": "$.evalLoop",
-              "Next": "Evaluate"
-            },
-            "Evaluate": {
-              "Type": "Task",
-              "Resource": "${orchestrator_arn}",
-              "Parameters": {
-                "mode": "evaluate",
-                "pipelineId.$": "$.pipelineId",
-                "scheduleId.$": "$.scheduleId",
-                "date.$": "$.date"
-              },
-              "ResultPath": "$.evaluateResult",
-              "Next": "IsReady",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.TooManyRequestsException",
-                    "States.TaskFailed"
-                  ],
-                  "IntervalSeconds": 2,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2
-                }
-              ],
-              "Catch": [
-                {
-                  "ErrorEquals": ["States.ALL"],
-                  "ResultPath": "$.errorInfo",
-                  "Next": "EvalBranchFailed"
-                }
-              ]
-            },
-            "IsReady": {
-              "Type": "Choice",
-              "Comment": "Check if all traits passed evaluation",
-              "Choices": [
-                {
-                  "Variable": "$.evaluateResult.status",
-                  "StringEquals": "passed",
-                  "Next": "Trigger"
-                }
-              ],
-              "Default": "WaitInterval"
-            },
-            "WaitInterval": {
-              "Type": "Wait",
-              "Comment": "Wait before the next evaluation attempt",
-              "SecondsPath": "$.config.evaluationIntervalSeconds",
-              "Next": "IncrementElapsed"
-            },
-            "IncrementElapsed": {
-              "Type": "Pass",
-              "Comment": "Track total elapsed seconds in the evaluation window",
-              "Parameters": {
-                "elapsedSeconds.$": "States.MathAdd($.evalLoop.elapsedSeconds, $.config.evaluationIntervalSeconds)"
-              },
-              "ResultPath": "$.evalLoop",
-              "Next": "CheckWindowExhausted"
-            },
-            "CheckWindowExhausted": {
-              "Type": "Choice",
-              "Comment": "Has the evaluation window been exceeded?",
-              "Choices": [
-                {
-                  "Variable": "$.evalLoop.elapsedSeconds",
-                  "NumericGreaterThanEqualsPath": "$.config.evaluationWindowSeconds",
-                  "Next": "ValidationExhausted"
-                }
-              ],
-              "Default": "Evaluate"
-            },
-            "ValidationExhausted": {
-              "Type": "Task",
-              "Comment": "Publish VALIDATION_EXHAUSTED event; window closed without passing",
-              "Resource": "${orchestrator_arn}",
-              "Parameters": {
-                "mode": "validation-exhausted",
-                "pipelineId.$": "$.pipelineId",
-                "scheduleId.$": "$.scheduleId",
-                "date.$": "$.date"
-              },
-              "ResultPath": "$.validationExhaustedResult",
-              "Next": "EvalDone",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.TooManyRequestsException",
-                    "States.TaskFailed"
-                  ],
-                  "IntervalSeconds": 2,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2
-                }
-              ],
-              "Catch": [
-                {
-                  "ErrorEquals": ["States.ALL"],
-                  "ResultPath": "$.errorInfo",
-                  "Next": "EvalBranchFailed"
-                }
-              ]
-            },
-            "Trigger": {
-              "Type": "Task",
-              "Comment": "Invoke the pipeline trigger; returns a runId",
-              "Resource": "${orchestrator_arn}",
-              "Parameters": {
-                "mode": "trigger",
-                "pipelineId.$": "$.pipelineId",
-                "scheduleId.$": "$.scheduleId",
-                "date.$": "$.date"
-              },
-              "ResultPath": "$.triggerResult",
-              "Next": "WaitForJob",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.TooManyRequestsException",
-                    "States.TaskFailed"
-                  ],
-                  "IntervalSeconds": 2,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2
-                }
-              ],
-              "Catch": [
-                {
-                  "ErrorEquals": ["States.ALL"],
-                  "ResultPath": "$.errorInfo",
-                  "Next": "EvalBranchFailed"
-                }
-              ]
-            },
-            "WaitForJob": {
-              "Type": "Wait",
-              "Comment": "Wait before polling the triggered job",
-              "SecondsPath": "$.config.jobCheckIntervalSeconds",
-              "Next": "CheckJob"
-            },
-            "CheckJob": {
-              "Type": "Task",
-              "Comment": "Poll triggered job status",
-              "Resource": "${orchestrator_arn}",
-              "Parameters": {
-                "mode": "check-job",
-                "pipelineId.$": "$.pipelineId",
-                "scheduleId.$": "$.scheduleId",
-                "date.$": "$.date",
-                "runId.$": "$.triggerResult.runId",
-                "metadata.$": "$.triggerResult.metadata"
-              },
-              "ResultPath": "$.checkJobResult",
-              "Next": "IsJobDone",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.TooManyRequestsException",
-                    "States.TaskFailed"
-                  ],
-                  "IntervalSeconds": 2,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2
-                }
-              ],
-              "Catch": [
-                {
-                  "ErrorEquals": ["States.ALL"],
-                  "ResultPath": "$.errorInfo",
-                  "Next": "EvalBranchFailed"
-                }
-              ]
-            },
-            "IsJobDone": {
-              "Type": "Choice",
-              "Comment": "Route on job-check outcome: success/fail/timeout terminate, running keeps polling, missing event means still running",
-              "Choices": [
-                {
-                  "Not": {
-                    "Variable": "$.checkJobResult.event",
-                    "IsPresent": true
-                  },
-                  "Next": "WaitForJob"
-                },
-                {
-                  "Variable": "$.checkJobResult.event",
-                  "StringEquals": "success",
-                  "Next": "EvalDone"
-                },
-                {
-                  "Variable": "$.checkJobResult.event",
-                  "StringEquals": "fail",
-                  "Next": "EvalDone"
-                },
-                {
-                  "Variable": "$.checkJobResult.event",
-                  "StringEquals": "timeout",
-                  "Next": "EvalDone"
-                }
-              ],
-              "Default": "WaitForJob"
-            },
-            "EvalDone": {
-              "Type": "Pass",
-              "Comment": "Evaluation branch complete",
-              "End": true
-            },
-            "EvalBranchFailed": {
-              "Type": "Fail",
-              "Error": "EvalBranchInfraFailure",
-              "Cause": "Unrecoverable error in the evaluation branch"
-            }
-          }
-        },
-        {
-          "StartAt": "CheckSLAConfig",
-          "States": {
-            "CheckSLAConfig": {
-              "Type": "Choice",
-              "Comment": "Skip SLA monitoring if no SLA config is provided",
-              "Choices": [
-                {
-                  "Variable": "$.config.sla",
-                  "IsPresent": true,
-                  "Next": "CalcDeadlines"
-                }
-              ],
-              "Default": "SLASkipped"
-            },
-            "SLASkipped": {
-              "Type": "Pass",
-              "Comment": "No SLA configured; branch completes immediately",
-              "End": true
-            },
-            "CalcDeadlines": {
-              "Type": "Task",
-              "Comment": "Calculate SLA warning and breach timestamps",
-              "Resource": "${sla_monitor_arn}",
-              "Parameters": {
-                "mode": "calculate",
-                "pipelineId.$": "$.pipelineId",
-                "scheduleId.$": "$.scheduleId",
-                "date.$": "$.date",
-                "deadline.$": "$.config.sla.deadline",
-                "expectedDuration.$": "$.config.sla.expectedDuration",
-                "timezone.$": "$.config.sla.timezone"
-              },
-              "ResultPath": "$.slaDeadlines",
-              "Next": "WaitForWarning",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.TooManyRequestsException",
-                    "States.TaskFailed"
-                  ],
-                  "IntervalSeconds": 2,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2
-                }
-              ],
-              "Catch": [
-                {
-                  "ErrorEquals": ["States.ALL"],
-                  "ResultPath": "$.errorInfo",
-                  "Next": "SLABranchFailed"
-                }
-              ]
-            },
-            "WaitForWarning": {
-              "Type": "Wait",
-              "Comment": "Wait until the SLA warning timestamp",
-              "TimestampPath": "$.slaDeadlines.warningAt",
-              "Next": "FireSLAWarning"
-            },
-            "FireSLAWarning": {
-              "Type": "Task",
-              "Comment": "Publish SLA_WARNING alert",
-              "Resource": "${sla_monitor_arn}",
-              "Parameters": {
-                "mode": "fire-alert",
-                "pipelineId.$": "$.pipelineId",
-                "scheduleId.$": "$.scheduleId",
-                "date.$": "$.date",
-                "alertType": "SLA_WARNING"
-              },
-              "ResultPath": "$.slaWarningResult",
-              "Next": "WaitForBreach",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.TooManyRequestsException",
-                    "States.TaskFailed"
-                  ],
-                  "IntervalSeconds": 2,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2
-                }
-              ],
-              "Catch": [
-                {
-                  "ErrorEquals": ["States.ALL"],
-                  "ResultPath": "$.errorInfo",
-                  "Next": "SLABranchFailed"
-                }
-              ]
-            },
-            "WaitForBreach": {
-              "Type": "Wait",
-              "Comment": "Wait until the SLA breach timestamp",
-              "TimestampPath": "$.slaDeadlines.breachAt",
-              "Next": "FireSLABreach"
-            },
-            "FireSLABreach": {
-              "Type": "Task",
-              "Comment": "Publish SLA_BREACH alert",
-              "Resource": "${sla_monitor_arn}",
-              "Parameters": {
-                "mode": "fire-alert",
-                "pipelineId.$": "$.pipelineId",
-                "scheduleId.$": "$.scheduleId",
-                "date.$": "$.date",
-                "alertType": "SLA_BREACH"
-              },
-              "ResultPath": "$.slaBreachResult",
-              "Next": "SLADone",
-              "Retry": [
-                {
-                  "ErrorEquals": [
-                    "Lambda.ServiceException",
-                    "Lambda.AWSLambdaException",
-                    "Lambda.TooManyRequestsException",
-                    "States.TaskFailed"
-                  ],
-                  "IntervalSeconds": 2,
-                  "MaxAttempts": 3,
-                  "BackoffRate": 2
-                }
-              ],
-              "Catch": [
-                {
-                  "ErrorEquals": ["States.ALL"],
-                  "ResultPath": "$.errorInfo",
-                  "Next": "SLABranchFailed"
-                }
-              ]
-            },
-            "SLADone": {
-              "Type": "Pass",
-              "Comment": "SLA monitoring branch complete",
-              "End": true
-            },
-            "SLABranchFailed": {
-              "Type": "Fail",
-              "Error": "SLABranchInfraFailure",
-              "Cause": "Unrecoverable error in the SLA monitoring branch"
-            }
-          }
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
         }
       ],
-      "ResultPath": "$.branchResults",
-      "Next": "Reconcile",
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
@@ -396,17 +43,294 @@
         }
       ]
     },
-    "Reconcile": {
+    "IsReady": {
+      "Type": "Choice",
+      "Comment": "Check if all traits passed evaluation",
+      "Choices": [
+        {
+          "Variable": "$.evaluateResult.status",
+          "StringEquals": "passed",
+          "Next": "Trigger"
+        }
+      ],
+      "Default": "WaitInterval"
+    },
+    "WaitInterval": {
+      "Type": "Wait",
+      "Comment": "Wait before the next evaluation attempt",
+      "SecondsPath": "$.config.evaluationIntervalSeconds",
+      "Next": "IncrementElapsed"
+    },
+    "IncrementElapsed": {
       "Type": "Pass",
-      "Comment": "Extract and merge results from both parallel branches",
-      "Next": "End"
+      "Comment": "Track total elapsed seconds in the evaluation window",
+      "Parameters": {
+        "elapsedSeconds.$": "States.MathAdd($.evalLoop.elapsedSeconds, $.config.evaluationIntervalSeconds)"
+      },
+      "ResultPath": "$.evalLoop",
+      "Next": "CheckWindowExhausted"
+    },
+    "CheckWindowExhausted": {
+      "Type": "Choice",
+      "Comment": "Has the evaluation window been exceeded?",
+      "Choices": [
+        {
+          "Variable": "$.evalLoop.elapsedSeconds",
+          "NumericGreaterThanEqualsPath": "$.config.evaluationWindowSeconds",
+          "Next": "ValidationExhausted"
+        }
+      ],
+      "Default": "Evaluate"
+    },
+    "ValidationExhausted": {
+      "Type": "Task",
+      "Comment": "Publish VALIDATION_EXHAUSTED event; window closed without passing",
+      "Resource": "${orchestrator_arn}",
+      "Parameters": {
+        "mode": "validation-exhausted",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date"
+      },
+      "ResultPath": "$.validationExhaustedResult",
+      "Next": "CheckSLAConfig",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "InfraFailure"
+        }
+      ]
+    },
+    "Trigger": {
+      "Type": "Task",
+      "Comment": "Invoke the pipeline trigger; returns a runId and metadata",
+      "Resource": "${orchestrator_arn}",
+      "Parameters": {
+        "mode": "trigger",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date"
+      },
+      "ResultPath": "$.triggerResult",
+      "Next": "CheckSLAConfig",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "InfraFailure"
+        }
+      ]
+    },
+    "CheckSLAConfig": {
+      "Type": "Choice",
+      "Comment": "Schedule SLA alerts if SLA config is provided, otherwise skip",
+      "Choices": [
+        {
+          "Variable": "$.config.sla",
+          "IsPresent": true,
+          "Next": "ScheduleSLAAlerts"
+        }
+      ],
+      "Default": "HasTriggerResult"
+    },
+    "ScheduleSLAAlerts": {
+      "Type": "Task",
+      "Comment": "Create one-time EventBridge Scheduler entries for SLA warning and breach",
+      "Resource": "${sla_monitor_arn}",
+      "Parameters": {
+        "mode": "schedule",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date",
+        "deadline.$": "$.config.sla.deadline",
+        "expectedDuration.$": "$.config.sla.expectedDuration",
+        "timezone.$": "$.config.sla.timezone"
+      },
+      "ResultPath": "$.slaSchedule",
+      "Next": "HasTriggerResult",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "HasTriggerResult"
+        }
+      ]
+    },
+    "HasTriggerResult": {
+      "Type": "Choice",
+      "Comment": "If a job was triggered, poll for completion; otherwise finish (validation exhausted)",
+      "Choices": [
+        {
+          "Variable": "$.triggerResult",
+          "IsPresent": true,
+          "Next": "WaitForJob"
+        }
+      ],
+      "Default": "Done"
+    },
+    "WaitForJob": {
+      "Type": "Wait",
+      "Comment": "Wait before polling the triggered job",
+      "SecondsPath": "$.config.jobCheckIntervalSeconds",
+      "Next": "CheckJob"
+    },
+    "CheckJob": {
+      "Type": "Task",
+      "Comment": "Poll triggered job status via trigger API",
+      "Resource": "${orchestrator_arn}",
+      "Parameters": {
+        "mode": "check-job",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date",
+        "runId.$": "$.triggerResult.runId",
+        "metadata.$": "$.triggerResult.metadata"
+      },
+      "ResultPath": "$.checkJobResult",
+      "Next": "IsJobDone",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "InfraFailure"
+        }
+      ]
+    },
+    "IsJobDone": {
+      "Type": "Choice",
+      "Comment": "Route on job-check outcome: terminal events proceed to SLA cancel, otherwise keep polling",
+      "Choices": [
+        {
+          "Not": {
+            "Variable": "$.checkJobResult.event",
+            "IsPresent": true
+          },
+          "Next": "WaitForJob"
+        },
+        {
+          "Variable": "$.checkJobResult.event",
+          "StringEquals": "success",
+          "Next": "CheckCancelSLA"
+        },
+        {
+          "Variable": "$.checkJobResult.event",
+          "StringEquals": "fail",
+          "Next": "CheckCancelSLA"
+        },
+        {
+          "Variable": "$.checkJobResult.event",
+          "StringEquals": "timeout",
+          "Next": "CheckCancelSLA"
+        }
+      ],
+      "Default": "WaitForJob"
+    },
+    "CheckCancelSLA": {
+      "Type": "Choice",
+      "Comment": "Cancel SLA schedules if SLA was configured, otherwise finish",
+      "Choices": [
+        {
+          "Variable": "$.slaSchedule",
+          "IsPresent": true,
+          "Next": "CancelSLASchedules"
+        }
+      ],
+      "Default": "Done"
+    },
+    "CancelSLASchedules": {
+      "Type": "Task",
+      "Comment": "Delete unfired SLA schedules and record final SLA outcome",
+      "Resource": "${sla_monitor_arn}",
+      "Parameters": {
+        "mode": "cancel",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date",
+        "warningAt.$": "$.slaSchedule.warningAt",
+        "breachAt.$": "$.slaSchedule.breachAt"
+      },
+      "ResultPath": "$.slaResult",
+      "Next": "Done",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "Done"
+        }
+      ]
     },
     "InfraFailure": {
       "Type": "Fail",
       "Error": "InfraFailure",
-      "Cause": "Unrecoverable infrastructure error in one or more branches"
+      "Cause": "Unrecoverable infrastructure error"
     },
-    "End": {
+    "Done": {
       "Type": "Succeed"
     }
   }

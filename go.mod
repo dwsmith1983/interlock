@@ -12,6 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/emrserverless v1.39.2
 	github.com/aws/aws-sdk-go-v2/service/eventbridge v1.45.19
 	github.com/aws/aws-sdk-go-v2/service/glue v1.137.0
+	github.com/aws/aws-sdk-go-v2/service/scheduler v1.17.19
 	github.com/aws/aws-sdk-go-v2/service/sfn v1.40.6
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v3 v3.0.1
