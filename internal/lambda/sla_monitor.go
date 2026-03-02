@@ -3,6 +3,7 @@ package lambda
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -26,11 +27,6 @@ func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAM
 // Breach time = deadline. Returns full ISO 8601 timestamps required by
 // Step Functions TimestampPath.
 func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
-	deadline, err := time.Parse("15:04", input.Deadline)
-	if err != nil {
-		return SLAMonitorOutput{}, fmt.Errorf("parse deadline %q: %w", input.Deadline, err)
-	}
-
 	dur, err := time.ParseDuration(input.ExpectedDuration)
 	if err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("parse expectedDuration %q: %w", input.ExpectedDuration, err)
@@ -44,17 +40,43 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 		}
 	}
 
+	now := time.Now().In(loc)
+
 	// Parse the execution date to build a full timestamp.
-	baseDate := time.Now().In(loc)
+	baseDate := now
 	if input.Date != "" {
 		parsed, err := time.Parse("2006-01-02", input.Date)
 		if err == nil {
-			baseDate = parsed
+			baseDate = time.Date(parsed.Year(), parsed.Month(), parsed.Day(),
+				now.Hour(), now.Minute(), 0, 0, loc)
 		}
 	}
 
-	breachAt := time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
-		deadline.Hour(), deadline.Minute(), 0, 0, loc)
+	// Parse deadline. Supports two formats:
+	//   "HH:MM" — absolute time of day (e.g., "02:00" for daily pipelines)
+	//   ":MM"   — minutes past current hour (e.g., ":30" for hourly pipelines)
+	var breachAt time.Time
+	dl := input.Deadline
+	if strings.HasPrefix(dl, ":") {
+		// Relative to current hour: ":30" means current_hour:30
+		deadline, err := time.Parse("04", strings.TrimPrefix(dl, ":"))
+		if err != nil {
+			return SLAMonitorOutput{}, fmt.Errorf("parse deadline %q: %w", dl, err)
+		}
+		breachAt = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
+			baseDate.Hour(), deadline.Minute(), 0, 0, loc)
+		// If breach is already past, push to next hour
+		if breachAt.Before(now) {
+			breachAt = breachAt.Add(time.Hour)
+		}
+	} else {
+		deadline, err := time.Parse("15:04", dl)
+		if err != nil {
+			return SLAMonitorOutput{}, fmt.Errorf("parse deadline %q: %w", dl, err)
+		}
+		breachAt = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
+			deadline.Hour(), deadline.Minute(), 0, 0, loc)
+	}
 	warningAt := breachAt.Add(-dur)
 
 	return SLAMonitorOutput{

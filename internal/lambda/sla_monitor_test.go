@@ -76,6 +76,31 @@ func TestSLAMonitor_Calculate_ReturnsRFC3339(t *testing.T) {
 	}
 }
 
+func TestSLAMonitor_Calculate_RelativeDeadline(t *testing.T) {
+	d := &lambda.Deps{Logger: slog.Default()}
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:             "calculate",
+		PipelineID:       "silver-cdr-hour",
+		Date:             "2026-03-02",
+		Deadline:         ":30",
+		ExpectedDuration: "10m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Relative deadline ":30" should produce valid RFC3339 timestamps
+	if !strings.Contains(out.BreachAt, "T") || !strings.HasSuffix(out.BreachAt, "Z") {
+		t.Errorf("breachAt %q not valid RFC3339", out.BreachAt)
+	}
+	if !strings.Contains(out.WarningAt, "T") || !strings.HasSuffix(out.WarningAt, "Z") {
+		t.Errorf("warningAt %q not valid RFC3339", out.WarningAt)
+	}
+	// Breach minute should be :30
+	if !strings.Contains(out.BreachAt, ":30:00Z") {
+		t.Errorf("breachAt %q should have minute 30", out.BreachAt)
+	}
+}
+
 func TestSLAMonitor_Calculate_InvalidDeadline(t *testing.T) {
 	d := &lambda.Deps{Logger: slog.Default()}
 	_, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
