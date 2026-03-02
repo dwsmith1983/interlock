@@ -299,7 +299,11 @@ func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
 	}
 
 	if cfg.SLA != nil {
-		sc.SLA = cfg.SLA
+		sla := *cfg.SLA
+		if sla.Timezone == "" {
+			sla.Timezone = "UTC"
+		}
+		sc.SLA = &sla
 	}
 
 	return sc

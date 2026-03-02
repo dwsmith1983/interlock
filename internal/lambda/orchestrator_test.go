@@ -467,6 +467,34 @@ func TestOrchestrator_PostRun_RulesPass(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Validation-exhausted tests
+// ---------------------------------------------------------------------------
+
+func TestOrchestrator_ValidationExhausted(t *testing.T) {
+	d := newTestDeps(&mockDynamo{})
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "validation-exhausted",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Mode != "validation-exhausted" {
+		t.Errorf("mode = %q, want %q", out.Mode, "validation-exhausted")
+	}
+	if out.Status != "exhausted" {
+		t.Errorf("status = %q, want %q", out.Status, "exhausted")
+	}
+
+	eb := d.EventBridge.(*mockEventBridge)
+	if len(eb.events) != 1 {
+		t.Fatalf("expected 1 EventBridge call, got %d", len(eb.events))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Unknown mode test
 // ---------------------------------------------------------------------------
 

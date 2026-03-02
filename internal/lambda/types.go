@@ -29,7 +29,7 @@ type TriggerExecutor interface {
 
 // OrchestratorInput is the input to the orchestrator Lambda from Step Functions.
 type OrchestratorInput struct {
-	Mode       string `json:"mode"` // evaluate, trigger, check-job, post-run
+	Mode       string `json:"mode"` // evaluate, trigger, check-job, post-run, validation-exhausted
 	PipelineID string `json:"pipelineId"`
 	ScheduleID string `json:"scheduleId"`
 	Date       string `json:"date"`
