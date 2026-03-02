@@ -89,27 +89,61 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 	_ = publishEvent(ctx, d, string(types.EventJobTriggered), input.PipelineID, input.ScheduleID, input.Date, fmt.Sprintf("triggered %s job", cfg.Job.Type))
 
 	return OrchestratorOutput{
-		Mode:    "trigger",
-		RunID:   runID,
-		JobType: string(cfg.Job.Type),
+		Mode:     "trigger",
+		RunID:    runID,
+		JobType:  string(cfg.Job.Type),
+		Metadata: metadata,
 	}, nil
 }
 
-// handleCheckJob queries the job log for the latest event.
+// handleCheckJob queries the job log for the latest event. If no event exists
+// and a StatusChecker is configured, it polls the trigger API directly and
+// writes terminal results (succeeded/failed) to the job log.
 func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
 	record, err := d.Store.GetLatestJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date)
 	if err != nil {
 		return OrchestratorOutput{Mode: "check-job", Error: err.Error()}, nil
 	}
 
-	if record == nil {
+	if record != nil {
+		return OrchestratorOutput{
+			Mode:  "check-job",
+			Event: record.Event,
+		}, nil
+	}
+
+	// No joblog entry — try polling the trigger API directly.
+	if d.StatusChecker == nil || len(input.Metadata) == 0 {
 		return OrchestratorOutput{Mode: "check-job"}, nil
 	}
 
-	return OrchestratorOutput{
-		Mode:  "check-job",
-		Event: record.Event,
-	}, nil
+	cfg, err := d.Store.GetConfig(ctx, input.PipelineID)
+	if err != nil {
+		return OrchestratorOutput{Mode: "check-job", Error: err.Error()}, nil
+	}
+	if cfg == nil {
+		return OrchestratorOutput{Mode: "check-job"}, nil
+	}
+
+	result, err := d.StatusChecker.CheckStatus(ctx, cfg.Job.Type, input.Metadata, nil)
+	if err != nil {
+		d.Logger.WarnContext(ctx, "status check failed", "error", err, "pipeline", input.PipelineID)
+		return OrchestratorOutput{Mode: "check-job"}, nil
+	}
+
+	switch result.State {
+	case "succeeded":
+		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventSuccess, input.RunID, 0, "")
+		_ = publishEvent(ctx, d, string(types.EventJobCompleted), input.PipelineID, input.ScheduleID, input.Date, "job succeeded")
+		return OrchestratorOutput{Mode: "check-job", Event: "success"}, nil
+	case "failed":
+		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventFail, input.RunID, 0, result.Message)
+		_ = publishEvent(ctx, d, string(types.EventJobFailed), input.PipelineID, input.ScheduleID, input.Date, "job failed: "+result.Message)
+		return OrchestratorOutput{Mode: "check-job", Event: "fail"}, nil
+	default:
+		// Still running — return no event so SFN loops back to WaitForJob.
+		return OrchestratorOutput{Mode: "check-job"}, nil
+	}
 }
 
 // handlePostRun evaluates post-run validation rules if configured.
@@ -232,7 +266,7 @@ func extractRunID(metadata map[string]interface{}) string {
 		return ""
 	}
 	// Priority order of common identifier keys across trigger types.
-	for _, key := range []string{"runId", "jobRunId", "executionArn", "stepId", "dagRunId"} {
+	for _, key := range []string{"runId", "jobRunId", "glue_job_run_id", "executionArn", "stepId", "dagRunId"} {
 		if v, ok := metadata[key]; ok {
 			if s, ok := v.(string); ok && s != "" {
 				return s

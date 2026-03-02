@@ -27,24 +27,37 @@ type TriggerExecutor interface {
 	Execute(ctx context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error)
 }
 
+// StatusChecker abstracts job status polling for testing.
+type StatusChecker interface {
+	CheckStatus(ctx context.Context, triggerType types.TriggerType, metadata map[string]interface{}, headers map[string]string) (StatusResult, error)
+}
+
+// StatusResult is a normalized job status from the trigger runner.
+type StatusResult struct {
+	State   string // "succeeded", "failed", "running"
+	Message string
+}
+
 // OrchestratorInput is the input to the orchestrator Lambda from Step Functions.
 type OrchestratorInput struct {
-	Mode       string `json:"mode"` // evaluate, trigger, check-job, post-run, validation-exhausted
-	PipelineID string `json:"pipelineId"`
-	ScheduleID string `json:"scheduleId"`
-	Date       string `json:"date"`
-	RunID      string `json:"runId,omitempty"`
+	Mode       string                 `json:"mode"` // evaluate, trigger, check-job, post-run, validation-exhausted
+	PipelineID string                 `json:"pipelineId"`
+	ScheduleID string                 `json:"scheduleId"`
+	Date       string                 `json:"date"`
+	RunID      string                 `json:"runId,omitempty"`
+	Metadata   map[string]interface{} `json:"metadata,omitempty"` // trigger metadata for status polling
 }
 
 // OrchestratorOutput is the output of the orchestrator Lambda.
 type OrchestratorOutput struct {
-	Mode    string      `json:"mode"`
-	Status  string      `json:"status,omitempty"` // "passed" or "not_ready"
-	Results interface{} `json:"results,omitempty"`
-	RunID   string      `json:"runId,omitempty"`
-	JobType string      `json:"jobType,omitempty"`
-	Event   string      `json:"event,omitempty"` // success, fail, timeout
-	Error   string      `json:"error,omitempty"`
+	Mode     string                 `json:"mode"`
+	Status   string                 `json:"status,omitempty"` // "passed" or "not_ready"
+	Results  interface{}            `json:"results,omitempty"`
+	RunID    string                 `json:"runId,omitempty"`
+	JobType  string                 `json:"jobType,omitempty"`
+	Event    string                 `json:"event,omitempty"` // success, fail, timeout
+	Error    string                 `json:"error,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"` // trigger metadata passed through for status polling
 }
 
 // SLAMonitorInput is the input to the SLA monitor Lambda.
