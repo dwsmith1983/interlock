@@ -196,8 +196,15 @@
             },
             "IsJobDone": {
               "Type": "Choice",
-              "Comment": "Route on job-check outcome: success/fail/timeout terminate, running keeps polling",
+              "Comment": "Route on job-check outcome: success/fail/timeout terminate, running keeps polling, missing event means still running",
               "Choices": [
+                {
+                  "Not": {
+                    "Variable": "$.checkJobResult.event",
+                    "IsPresent": true
+                  },
+                  "Next": "WaitForJob"
+                },
                 {
                   "Variable": "$.checkJobResult.event",
                   "StringEquals": "success",
