@@ -154,7 +154,7 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 
 	// Use a unique execution name that includes the rerun attempt number.
 	execName := fmt.Sprintf("%s-%s-%s-rerun-%d", pipelineID, schedule, date, attempt)
-	if err := startSFNWithName(ctx, d, pipelineID, schedule, date, execName); err != nil {
+	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
 		return fmt.Errorf("start SFN rerun for %q: %w", pipelineID, err)
 	}
 
@@ -251,7 +251,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	}
 
 	// Start Step Function execution.
-	if err := startSFN(ctx, d, pipelineID, scheduleID, date); err != nil {
+	if err := startSFN(ctx, d, cfg, pipelineID, scheduleID, date); err != nil {
 		return fmt.Errorf("start SFN for %q: %w", pipelineID, err)
 	}
 
@@ -266,21 +266,60 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	return nil
 }
 
+// sfnInput is the top-level input for the Step Function state machine.
+// It includes pipeline identity fields and a config block used by Wait states.
+type sfnInput struct {
+	PipelineID string    `json:"pipelineId"`
+	ScheduleID string    `json:"scheduleId"`
+	Date       string    `json:"date"`
+	Config     sfnConfig `json:"config"`
+}
+
+// sfnConfig holds timing parameters for the SFN evaluation loop and SLA branch.
+type sfnConfig struct {
+	EvaluationIntervalSeconds int              `json:"evaluationIntervalSeconds"`
+	EvaluationWindowSeconds   int              `json:"evaluationWindowSeconds"`
+	JobCheckIntervalSeconds   int              `json:"jobCheckIntervalSeconds"`
+	SLA                       *types.SLAConfig `json:"sla,omitempty"`
+}
+
+// buildSFNConfig converts a PipelineConfig into the config block for the SFN input.
+func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
+	sc := sfnConfig{
+		EvaluationIntervalSeconds: 300,  // 5m default
+		EvaluationWindowSeconds:   3600, // 1h default
+		JobCheckIntervalSeconds:   60,   // 1m default
+	}
+
+	if d, err := time.ParseDuration(cfg.Schedule.Evaluation.Interval); err == nil && d > 0 {
+		sc.EvaluationIntervalSeconds = int(d.Seconds())
+	}
+	if d, err := time.ParseDuration(cfg.Schedule.Evaluation.Window); err == nil && d > 0 {
+		sc.EvaluationWindowSeconds = int(d.Seconds())
+	}
+
+	if cfg.SLA != nil {
+		sc.SLA = cfg.SLA
+	}
+
+	return sc
+}
+
 // startSFN starts a Step Function execution with a unique execution name.
 // The name includes a Unix timestamp suffix to avoid ExecutionAlreadyExists
 // errors when a previous execution for the same pipeline/schedule/date failed.
-func startSFN(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) error {
+func startSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string) error {
 	name := fmt.Sprintf("%s-%s-%s-%d", pipelineID, scheduleID, date, time.Now().Unix())
-	return startSFNWithName(ctx, d, pipelineID, scheduleID, date, name)
+	return startSFNWithName(ctx, d, cfg, pipelineID, scheduleID, date, name)
 }
 
 // startSFNWithName starts a Step Function execution with a custom execution name.
-func startSFNWithName(ctx context.Context, d *Deps, pipelineID, scheduleID, date, name string) error {
-	input := OrchestratorInput{
-		Mode:       "evaluate",
+func startSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, name string) error {
+	input := sfnInput{
 		PipelineID: pipelineID,
 		ScheduleID: scheduleID,
 		Date:       date,
+		Config:     buildSFNConfig(cfg),
 	}
 	payload, err := json.Marshal(input)
 	if err != nil {
