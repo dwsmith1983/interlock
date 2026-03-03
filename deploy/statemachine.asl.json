@@ -170,8 +170,7 @@
         "scheduleId.$": "$.scheduleId",
         "date.$": "$.date",
         "deadline.$": "$.config.sla.deadline",
-        "expectedDuration.$": "$.config.sla.expectedDuration",
-        "timezone.$": "$.config.sla.timezone"
+        "expectedDuration.$": "$.config.sla.expectedDuration"
       },
       "ResultPath": "$.slaSchedule",
       "Next": "HasTriggerResult",
