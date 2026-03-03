@@ -262,19 +262,20 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 	breachAt, _ := time.Parse(time.RFC3339, calc.BreachAt)
 
 	var alertType string
-	if now.After(breachAt) || now.Equal(breachAt) {
+	switch {
+	case now.After(breachAt) || now.Equal(breachAt):
 		// Past breach — fire both warning and breach
 		_ = publishEvent(ctx, d, "SLA_WARNING", input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: SLA_WARNING (retroactive)", input.PipelineID))
 		_ = publishEvent(ctx, d, "SLA_BREACH", input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: SLA_BREACH", input.PipelineID))
 		alertType = "SLA_BREACH"
-	} else if now.After(warningAt) || now.Equal(warningAt) {
+	case now.After(warningAt) || now.Equal(warningAt):
 		// Past warning but before breach — fire warning only
 		_ = publishEvent(ctx, d, "SLA_WARNING", input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: SLA_WARNING", input.PipelineID))
 		alertType = "SLA_WARNING"
-	} else {
+	default:
 		alertType = "SLA_MET"
 	}
 
