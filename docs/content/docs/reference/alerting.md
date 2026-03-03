@@ -34,6 +34,7 @@ Published by the **sla-monitor** Lambda from the SLA monitoring branch of the St
 |---|---|---|
 | `SLA_WARNING` | SLA warning threshold reached | Pipeline has not completed by the warning timestamp |
 | `SLA_BREACH` | SLA deadline exceeded | Pipeline has not completed by the breach timestamp |
+| `SLA_MET` | Job completed before SLA warning deadline | Pipeline completed before any SLA alert fired |
 
 ### Lifecycle Events
 
@@ -44,9 +45,10 @@ Published by the **orchestrator** Lambda during the evaluation and execution bra
 | `VALIDATION_PASSED` | All validation rules passed | Readiness evaluation succeeds, before trigger |
 | `VALIDATION_EXHAUSTED` | Evaluation window closed without passing | Max evaluation time exceeded |
 | `JOB_TRIGGERED` | Pipeline job was triggered | Trigger fired successfully |
-| `JOB_SUCCEEDED` | Triggered job completed successfully | Job polling detects success |
+| `JOB_COMPLETED` | Triggered job completed successfully | Job polling detects success |
 | `JOB_FAILED` | Triggered job failed | Job polling detects failure |
 | `JOB_TIMEOUT` | Triggered job timed out | Job polling detects timeout |
+| `RETRY_EXHAUSTED` | All retry attempts consumed | Job failed `maxRetries` times without success |
 
 ### Watchdog Events
 
