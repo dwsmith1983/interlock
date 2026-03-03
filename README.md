@@ -57,19 +57,17 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
 └───────────────────┘                                 │
                                           ┌───────────▼──────────────┐
                                           │     Step Functions       │
-                                          │  ~12 states, 2 branches: │
-                                          │  ┌─────────┐ ┌────────┐  │
-                                          │  │ Eval +  │ │  SLA   │  │
-                                          │  │ Trigger │ │Monitor │  │
-                                          │  └─────────┘ └────────┘  │
+                                          │  18 sequential states:   │
+                                          │  Evaluate → Trigger →    │
+                                          │  Poll → SLA → Done       │
                                           └──────────┬───────────────┘
                                                      │
                                     ┌────────────────┼────────────────┐
                                     ▼                ▼                ▼
                               orchestrator     sla-monitor       watchdog
-                              (evaluate,       (calculate,       (stale runs,
-                               trigger,         fire-alert)       missed cron)
-                               check-job,
+                              (evaluate,       (schedule SLA     (stale runs,
+                               trigger,         via EventBridge   missed cron)
+                               check-job,       Scheduler)
                                post-run)
 ```
 
@@ -79,7 +77,7 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
 |----------|---------|
 | `stream-router` | Routes DynamoDB Stream events, starts Step Function executions |
 | `orchestrator` | Multi-mode handler: evaluate rules, trigger jobs, check status, post-run validation |
-| `sla-monitor` | Calculates warning/breach times, fires SLA events to EventBridge |
+| `sla-monitor` | Schedules SLA alerts via EventBridge Scheduler; cancels on job completion |
 | `watchdog` | Detects stale trigger executions and missed cron schedules |
 
 ### DynamoDB Tables
