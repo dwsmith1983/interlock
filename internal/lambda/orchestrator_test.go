@@ -386,6 +386,46 @@ func TestOrchestrator_Trigger_InfraFailure(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_Trigger_InfraFailure_JoblogWriteFails(t *testing.T) {
+	pipelineID := "gold-orders"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Job: types.JobConfig{
+			Type:   types.TriggerGlue,
+			Config: map[string]interface{}{"jobName": "gold-etl"},
+		},
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		putItemFn: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			return nil, fmt.Errorf("dynamodb: provisioned throughput exceeded")
+		},
+	}
+
+	executor := &mockTriggerExecutor{
+		err: fmt.Errorf("glue trigger: ConcurrentRunsExceededException"),
+	}
+
+	d := newTestDeps(ddb)
+	d.TriggerRunner = executor
+
+	_, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "trigger",
+		PipelineID: pipelineID,
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+	})
+	if err == nil {
+		t.Fatal("expected Lambda error even when joblog write fails")
+	}
+	if !strings.Contains(err.Error(), "trigger execute") {
+		t.Errorf("error = %q, want it to contain 'trigger execute'", err.Error())
+	}
+}
+
 func TestOrchestrator_Trigger_ConfigError(t *testing.T) {
 	ddb := &mockDynamo{
 		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {

@@ -125,7 +125,7 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		}
 	}
 
-	// No joblog entry — try polling the trigger API directly.
+	// No terminal joblog entry — try polling the trigger API directly.
 	if d.StatusChecker == nil || len(input.Metadata) == 0 {
 		return OrchestratorOutput{Mode: "check-job"}, nil
 	}
