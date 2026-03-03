@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -23,6 +24,7 @@ type mockDynamo struct {
 	store.DynamoAPI
 	getItemFn func(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	queryFn   func(ctx context.Context, input *dynamodb.QueryInput, opts ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
+	putItemFn func(ctx context.Context, input *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 }
 
 func (m *mockDynamo) GetItem(ctx context.Context, input *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
@@ -39,7 +41,10 @@ func (m *mockDynamo) Query(ctx context.Context, input *dynamodb.QueryInput, opts
 	return &dynamodb.QueryOutput{}, nil
 }
 
-func (m *mockDynamo) PutItem(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+func (m *mockDynamo) PutItem(ctx context.Context, input *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	if m.putItemFn != nil {
+		return m.putItemFn(ctx, input, opts...)
+	}
 	return &dynamodb.PutItemOutput{}, nil
 }
 func (m *mockDynamo) UpdateItem(_ context.Context, _ *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
@@ -321,7 +326,7 @@ func TestOrchestrator_Trigger(t *testing.T) {
 	}
 }
 
-func TestOrchestrator_Trigger_Error(t *testing.T) {
+func TestOrchestrator_Trigger_InfraFailure(t *testing.T) {
 	pipelineID := "gold-orders"
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: pipelineID},
@@ -331,30 +336,53 @@ func TestOrchestrator_Trigger_Error(t *testing.T) {
 		},
 	}
 
+	var putItemCalled bool
+	var capturedEvent string
+	var capturedError string
+
 	ddb := &mockDynamo{
 		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
 			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
 		},
+		putItemFn: func(_ context.Context, input *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			putItemCalled = true
+			if ev, ok := input.Item["event"].(*ddbtypes.AttributeValueMemberS); ok {
+				capturedEvent = ev.Value
+			}
+			if em, ok := input.Item["error"].(*ddbtypes.AttributeValueMemberS); ok {
+				capturedError = em.Value
+			}
+			return &dynamodb.PutItemOutput{}, nil
+		},
 	}
 
 	executor := &mockTriggerExecutor{
-		err: fmt.Errorf("glue: throttling"),
+		err: fmt.Errorf("glue trigger: StartJobRun failed: ConcurrentRunsExceededException"),
 	}
 
 	d := newTestDeps(ddb)
 	d.TriggerRunner = executor
 
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+	_, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
 		Mode:       "trigger",
 		PipelineID: pipelineID,
 		ScheduleID: "daily",
 		Date:       "2026-03-01",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected Lambda error for infra trigger failure")
 	}
-	if out.Error == "" {
-		t.Error("expected error in output for failed trigger")
+	if !strings.Contains(err.Error(), "trigger execute") {
+		t.Errorf("error = %q, want it to contain 'trigger execute'", err.Error())
+	}
+	if !putItemCalled {
+		t.Error("expected joblog PutItem to be called")
+	}
+	if capturedEvent != types.JobEventInfraTriggerFailure {
+		t.Errorf("joblog event = %q, want %q", capturedEvent, types.JobEventInfraTriggerFailure)
+	}
+	if capturedError == "" {
+		t.Error("expected joblog error message to be non-empty")
 	}
 }
 

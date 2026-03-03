@@ -83,7 +83,11 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 
 	metadata, err := d.TriggerRunner.Execute(ctx, &triggerCfg)
 	if err != nil {
-		return OrchestratorOutput{Mode: "trigger", Error: fmt.Sprintf("trigger execute: %v", err)}, nil
+		errMsg := fmt.Sprintf("trigger execute: %v", err)
+		// Log infra failure to joblog for audit trail, then return Lambda error
+		// so Step Functions Retry handles exponential backoff.
+		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventInfraTriggerFailure, "", 0, errMsg)
+		return OrchestratorOutput{}, fmt.Errorf("%s", errMsg)
 	}
 
 	runID := extractRunID(metadata)
