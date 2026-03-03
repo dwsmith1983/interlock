@@ -1,37 +1,32 @@
 ---
-title: "Step Functions ASL Pattern"
+title: "Step Functions State Machine"
 weight: 10
 ---
 
-# Step Functions Evaluation and SLA Monitoring Pattern
+# Step Functions State Machine
 
-This guide explains the ASL patterns used in Interlock's Step Functions state machine. The state machine uses a Parallel state with two concurrent branches: an evaluation loop and an SLA monitoring branch.
+This guide explains the ASL patterns used in Interlock's Step Functions state machine. The state machine uses 18 sequential states to orchestrate pipeline evaluation, job triggering, and SLA monitoring via EventBridge Scheduler.
 
 ## Architecture Overview
 
-The state machine is defined in `deploy/statemachine.asl.json` and contains approximately 26 states across two parallel branches. The Terraform module provisions it automatically with Lambda ARN substitution.
+The state machine is defined in `deploy/statemachine.asl.json`. The Terraform module provisions it automatically with Lambda ARN substitution.
 
 ```
-Parallel
-  Branch 1: Evaluation Loop
-    InitEvalLoop -> Evaluate -> IsReady
-      -> (passed) Trigger -> WaitForJob -> CheckJob -> IsJobDone
-      -> (not ready) WaitInterval -> IncrementElapsed -> CheckWindowExhausted
-          -> (window remaining) Evaluate (loop)
-          -> (window exhausted) ValidationExhausted -> EvalDone
-
-  Branch 2: SLA Monitoring
-    CheckSLAConfig
-      -> (no SLA) SLASkipped
-      -> (has SLA) CalcDeadlines -> WaitForWarning -> FireSLAWarning
-                                 -> WaitForBreach -> FireSLABreach -> SLADone
+InitEvalLoop → Evaluate → IsReady
+  → (passed) Trigger → CheckSLAConfig → ScheduleSLAAlerts → HasTriggerResult
+      → WaitForJob → CheckJob → IsJobDone
+          → (terminal) CheckCancelSLA → CancelSLASchedules → Done
+          → (running) WaitForJob (loop)
+  → (not ready) WaitInterval → IncrementElapsed → CheckWindowExhausted
+      → (window remaining) Evaluate (loop)
+      → (window exhausted) ValidationExhausted → CheckSLAConfig → ... → Done
 ```
 
-Both branches run concurrently. The evaluation branch may complete before the SLA branch fires, or the SLA branch may fire warnings while the evaluation loop is still polling.
+SLA monitoring uses EventBridge Scheduler instead of a parallel branch. The sla-monitor Lambda creates one-time Scheduler entries that fire alerts at exact timestamps. When the job completes, unfired entries are cancelled.
 
 ## Evaluation Loop
 
-The evaluation branch is the core pipeline lifecycle. It calls the **orchestrator** Lambda in different modes to evaluate validation rules, trigger jobs, and poll job status.
+The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to check validation rules against sensor data.
 
 ### Evaluate and Poll
 
@@ -49,7 +44,6 @@ The evaluation branch is the core pipeline lifecycle. It calls the **orchestrato
     "ResultPath": "$.evaluateResult",
     "Next": "IsReady"
   },
-
   "IsReady": {
     "Type": "Choice",
     "Choices": [
@@ -61,7 +55,6 @@ The evaluation branch is the core pipeline lifecycle. It calls the **orchestrato
     ],
     "Default": "WaitInterval"
   },
-
   "WaitInterval": {
     "Type": "Wait",
     "SecondsPath": "$.config.evaluationIntervalSeconds",
@@ -72,13 +65,13 @@ The evaluation branch is the core pipeline lifecycle. It calls the **orchestrato
 
 ### How it works
 
-1. **Evaluate** calls the orchestrator with `mode: evaluate`. The orchestrator reads sensor data from DynamoDB and evaluates all validation rules defined in the pipeline YAML config.
+1. **Evaluate** calls the orchestrator with `mode: evaluate`. The orchestrator reads sensor data from DynamoDB and evaluates all validation rules defined in the pipeline config.
 2. **IsReady** branches on the result: if `passed`, proceed to trigger; otherwise, wait and re-evaluate.
-3. **WaitInterval** uses `SecondsPath` for configurable poll intervals (set via `evaluation.interval` in the pipeline YAML).
+3. **WaitInterval** uses `SecondsPath` for configurable poll intervals (set via `evaluation.interval` in the pipeline config).
 4. **IncrementElapsed** tracks total elapsed time using `States.MathAdd`.
-5. **CheckWindowExhausted** compares elapsed time against `evaluationWindowSeconds`. If the window is exhausted, the orchestrator fires a `VALIDATION_EXHAUSTED` event.
+5. **CheckWindowExhausted** compares elapsed time against `evaluationWindowSeconds`. If the window is exhausted, the orchestrator publishes a `VALIDATION_EXHAUSTED` event.
 
-### Trigger and Job Polling
+## Trigger and Job Polling
 
 ```json
 {
@@ -92,9 +85,28 @@ The evaluation branch is the core pipeline lifecycle. It calls the **orchestrato
       "date.$": "$.date"
     },
     "ResultPath": "$.triggerResult",
-    "Next": "WaitForJob"
+    "Next": "CheckSLAConfig",
+    "Retry": [
+      {
+        "ErrorEquals": [
+          "Lambda.ServiceException",
+          "Lambda.AWSLambdaException",
+          "Lambda.TooManyRequestsException",
+          "States.TaskFailed"
+        ],
+        "IntervalSeconds": 30,
+        "MaxAttempts": 4,
+        "BackoffRate": 2
+      }
+    ],
+    "Catch": [
+      {
+        "ErrorEquals": ["States.ALL"],
+        "ResultPath": "$.errorInfo",
+        "Next": "CheckCancelSLA"
+      }
+    ]
   },
-
   "CheckJob": {
     "Type": "Task",
     "Resource": "${orchestrator_arn}",
@@ -102,29 +114,37 @@ The evaluation branch is the core pipeline lifecycle. It calls the **orchestrato
       "mode": "check-job",
       "pipelineId.$": "$.pipelineId",
       "scheduleId.$": "$.scheduleId",
-      "runId.$": "$.triggerResult.runId"
+      "date.$": "$.date",
+      "runId.$": "$.triggerResult.runId",
+      "metadata.$": "$.triggerResult.metadata"
     },
     "ResultPath": "$.checkJobResult",
     "Next": "IsJobDone"
   },
-
   "IsJobDone": {
     "Type": "Choice",
     "Choices": [
       {
+        "Not": {
+          "Variable": "$.checkJobResult.event",
+          "IsPresent": true
+        },
+        "Next": "WaitForJob"
+      },
+      {
         "Variable": "$.checkJobResult.event",
         "StringEquals": "success",
-        "Next": "EvalDone"
+        "Next": "CheckCancelSLA"
       },
       {
         "Variable": "$.checkJobResult.event",
         "StringEquals": "fail",
-        "Next": "EvalDone"
+        "Next": "CheckCancelSLA"
       },
       {
         "Variable": "$.checkJobResult.event",
         "StringEquals": "timeout",
-        "Next": "EvalDone"
+        "Next": "CheckCancelSLA"
       }
     ],
     "Default": "WaitForJob"
@@ -132,11 +152,11 @@ The evaluation branch is the core pipeline lifecycle. It calls the **orchestrato
 }
 ```
 
-Once all validation rules pass, the orchestrator triggers the configured job (Glue, HTTP, EMR, Step Functions, etc.). The state machine then polls job status via `check-job` mode until it receives a terminal event (`success`, `fail`, or `timeout`).
+The Trigger state has a dedicated retry policy for infrastructure failures. When the orchestrator's trigger execution fails (e.g., Glue `ConcurrentRunsExceededException`), it returns a Lambda error. Step Functions retries 4 times with exponential backoff (30s, 60s, 120s, 240s). If all retries exhaust, the Catch routes to `CheckCancelSLA` for graceful SLA cleanup instead of crashing.
 
-## SLA Monitoring Branch
+Once triggered, the state machine polls job status via `check-job` mode. The `IsJobDone` Choice state first checks whether the `event` field is present (missing means still running), then routes terminal events (`success`, `fail`, `timeout`) to SLA cleanup.
 
-The SLA branch runs in parallel with the evaluation loop. It uses the **sla-monitor** Lambda to calculate deadlines and fire alerts.
+## SLA Scheduling
 
 ```json
 {
@@ -146,58 +166,48 @@ The SLA branch runs in parallel with the evaluation loop. It uses the **sla-moni
       {
         "Variable": "$.config.sla",
         "IsPresent": true,
-        "Next": "CalcDeadlines"
+        "Next": "ScheduleSLAAlerts"
       }
     ],
-    "Default": "SLASkipped"
+    "Default": "HasTriggerResult"
   },
-
-  "CalcDeadlines": {
+  "ScheduleSLAAlerts": {
     "Type": "Task",
     "Resource": "${sla_monitor_arn}",
     "Parameters": {
-      "mode": "calculate",
+      "mode": "schedule",
       "pipelineId.$": "$.pipelineId",
       "scheduleId.$": "$.scheduleId",
       "date.$": "$.date",
-      "sla.$": "$.config.sla"
+      "deadline.$": "$.config.sla.deadline",
+      "expectedDuration.$": "$.config.sla.expectedDuration"
     },
-    "ResultPath": "$.slaDeadlines",
-    "Next": "WaitForWarning"
+    "ResultPath": "$.slaSchedule",
+    "Next": "HasTriggerResult"
   },
-
-  "WaitForWarning": {
-    "Type": "Wait",
-    "TimestampPath": "$.slaDeadlines.warningAt",
-    "Next": "FireSLAWarning"
-  },
-
-  "FireSLAWarning": {
+  "CancelSLASchedules": {
     "Type": "Task",
     "Resource": "${sla_monitor_arn}",
     "Parameters": {
-      "mode": "fire-alert",
+      "mode": "cancel",
       "pipelineId.$": "$.pipelineId",
       "scheduleId.$": "$.scheduleId",
       "date.$": "$.date",
-      "alertType": "SLA_WARNING"
+      "warningAt.$": "$.slaSchedule.warningAt",
+      "breachAt.$": "$.slaSchedule.breachAt"
     },
-    "ResultPath": "$.slaWarningResult",
-    "Next": "WaitForBreach"
+    "ResultPath": "$.slaResult",
+    "Next": "Done"
   }
 }
 ```
 
 ### How it works
 
-1. **CheckSLAConfig** skips the branch if no `sla` config is present in the pipeline YAML.
-2. **CalcDeadlines** computes `warningAt` and `breachAt` timestamps from the SLA config.
-3. **WaitForWarning** uses `TimestampPath` to sleep until the warning time.
-4. **FireSLAWarning** publishes an `SLA_WARNING` event to EventBridge.
-5. **WaitForBreach** then sleeps until the breach time.
-6. **FireSLABreach** publishes an `SLA_BREACH` event to EventBridge.
-
-If the evaluation branch completes before either deadline, the Parallel state completes and the SLA waits are cancelled.
+1. **CheckSLAConfig** skips SLA scheduling if no `sla` config is present in the pipeline config.
+2. **ScheduleSLAAlerts** creates two one-time EventBridge Scheduler entries — one for the warning timestamp and one for the breach timestamp. Each entry invokes the sla-monitor Lambda with `mode=fire-alert` at the exact time. Entries auto-delete after execution.
+3. After the job reaches a terminal state, **CheckCancelSLA** checks if SLA was configured (by checking for `$.slaSchedule`).
+4. **CancelSLASchedules** deletes any unfired Scheduler entries and publishes `SLA_MET` if the job completed before the warning deadline.
 
 ## Error Handling
 
@@ -222,13 +232,19 @@ All Task states include Retry and Catch blocks:
     {
       "ErrorEquals": ["States.ALL"],
       "ResultPath": "$.errorInfo",
-      "Next": "EvalBranchFailed"
+      "Next": "InfraFailure"
     }
   ]
 }
 ```
 
-Transient Lambda errors are retried with exponential backoff (2s, 4s, 8s). Unrecoverable errors route to a Fail state that terminates the branch and propagates up through the Parallel state's top-level Catch.
+The default retry policy handles transient Lambda errors with exponential backoff (2s, 4s, 8s). The **Trigger** state overrides this with a longer retry (30s, 60s, 120s, 240s) because infrastructure failures like Glue concurrency limits benefit from more time between attempts.
+
+Catch routing varies by state:
+- **Most states**: Catch routes to `InfraFailure` (Fail state — terminates execution)
+- **Trigger**: Catch routes to `CheckCancelSLA` (graceful termination with SLA cleanup)
+- **ScheduleSLAAlerts**: Catch routes to `HasTriggerResult` (SLA failure is non-fatal)
+- **CancelSLASchedules**: Catch routes to `Done` (cleanup failure is non-fatal)
 
 ## Customization
 
