@@ -386,6 +386,29 @@ func TestOrchestrator_Trigger_InfraFailure(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_Trigger_ConfigError(t *testing.T) {
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{}, nil // no config found
+		},
+	}
+
+	d := newTestDeps(ddb)
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "trigger",
+		PipelineID: "nonexistent",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("config errors should be payload errors, not Lambda errors: %v", err)
+	}
+	if out.Error == "" {
+		t.Error("expected payload error for missing config")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Check-job tests
 // ---------------------------------------------------------------------------
