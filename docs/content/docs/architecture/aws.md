@@ -16,18 +16,15 @@ External processes ──→ DynamoDB control table (SENSOR# writes)
                               ↓
                     stream-router Lambda ──→ Step Functions execution
                                                      │
-                                          ┌──────────┴──────────┐
-                                          ↓                     ↓
-                                    Evaluation            SLA Monitoring
-                                      Branch                 Branch
-                                          │                     │
-                                    orchestrator          sla-monitor
-                                     (Lambda)              (Lambda)
-                                          │
-                              ┌───────────┼──────────┐
-                              ↓           ↓          ↓
-                          Evaluate     Trigger    CheckJob
-                          (rules)      (job)     (poll status)
+                                               Sequential flow:
+                                               Evaluate → Trigger
+                                                     │
+                                               SLA Scheduling
+                                            (EventBridge Scheduler)
+                                                     │
+                                               Poll job status
+                                                     │
+                                               SLA Cleanup → Done
 
 EventBridge schedule ──→ watchdog Lambda ──→ DynamoDB (scan for stale/missed)
                                            ──→ EventBridge (publish alerts)
@@ -101,14 +98,14 @@ Supported trigger types: `http`, `command`, `airflow`, `glue`, `emr`, `emr-serve
 
 ### sla-monitor
 
-Lightweight SLA deadline calculator and alert publisher, invoked by the SLA monitoring branch of the Step Functions state machine. Two modes:
+Manages SLA deadlines using EventBridge Scheduler. Creates one-time schedule entries that fire alerts at exact warning and breach timestamps. Invoked by the Step Functions state machine at two points:
 
-| Mode | Purpose |
+| When | Action |
 |---|---|
-| `calculate` | Compute warning and breach timestamps from deadline, expected duration, and timezone |
-| `fire-alert` | Publish `SLA_WARNING` or `SLA_BREACH` event to EventBridge |
+| After trigger (or validation exhaustion) | Creates two one-time EventBridge Scheduler entries — one for warning, one for breach. Entries auto-delete after firing. |
+| On job completion (or all retries exhausted) | Cancels unfired Scheduler entries. Publishes `SLA_MET` if the job completed before the warning deadline. |
 
-The SLA monitor does not read from DynamoDB -- it receives all necessary data as input from the Step Function.
+When a Scheduler entry fires, it invokes this Lambda to publish the corresponding `SLA_WARNING` or `SLA_BREACH` event to EventBridge.
 
 ### watchdog
 
@@ -121,34 +118,58 @@ See [Watchdog](../watchdog) for the full algorithm.
 
 ## Step Functions State Machine
 
-The state machine orchestrates the pipeline lifecycle using two parallel branches:
+The state machine orchestrates the pipeline lifecycle as a sequential flow of 18 states. SLA monitoring is handled by EventBridge Scheduler rather than a parallel branch.
 
-### Evaluation Branch (7 states)
+### State Flow
 
-1. **InitEvalLoop** -- initialize elapsed-seconds counter
-2. **Evaluate** -- invoke orchestrator with `mode=evaluate`, returns `passed` or `not_ready`
-3. **IsReady** -- route on evaluation result: passed goes to Trigger, otherwise WaitInterval
-4. **WaitInterval** -- wait `evaluationIntervalSeconds` before retrying
-5. **IncrementElapsed** -- track total elapsed time using `States.MathAdd`
-6. **CheckWindowExhausted** -- if elapsed >= window, go to ValidationExhausted
-7. **Trigger** -- invoke orchestrator with `mode=trigger`, then poll via WaitForJob/CheckJob/IsJobDone loop
+```
+InitEvalLoop → Evaluate → IsReady
+  → (passed) Trigger → CheckSLAConfig → ScheduleSLAAlerts → HasTriggerResult
+      → WaitForJob → CheckJob → IsJobDone
+          → (terminal) CheckCancelSLA → CancelSLASchedules → Done
+          → (running) WaitForJob (loop)
+  → (not ready) WaitInterval → IncrementElapsed → CheckWindowExhausted
+      → (window remaining) Evaluate (loop)
+      → (window exhausted) ValidationExhausted → CheckSLAConfig → ... → Done
+```
 
-### SLA Monitoring Branch (5 states)
+### Evaluation Loop (7 states)
 
-1. **CheckSLAConfig** -- skip branch if no SLA configured
-2. **CalcDeadlines** -- invoke sla-monitor with `mode=calculate`
-3. **WaitForWarning** -- wait until warning timestamp
-4. **FireSLAWarning** -- invoke sla-monitor with `mode=fire-alert, alertType=SLA_WARNING`
-5. **WaitForBreach/FireSLABreach** -- same pattern for breach deadline
+1. **InitEvalLoop** — initialize elapsed-seconds counter
+2. **Evaluate** — invoke orchestrator with `mode=evaluate`
+3. **IsReady** — if `passed`, go to Trigger; otherwise WaitInterval
+4. **WaitInterval** — configurable delay between evaluation attempts
+5. **IncrementElapsed** — track total elapsed time via `States.MathAdd`
+6. **CheckWindowExhausted** — if elapsed >= window, go to ValidationExhausted
+7. **ValidationExhausted** — publish `VALIDATION_EXHAUSTED` event
+
+### Trigger and Job Polling (7 states)
+
+1. **Trigger** — invoke orchestrator with `mode=trigger`. Infrastructure failures retry 4 times with exponential backoff (30s, 60s, 120s, 240s)
+2. **CheckSLAConfig** — if SLA configured, schedule alerts; otherwise skip
+3. **ScheduleSLAAlerts** — invoke sla-monitor to create one-time EventBridge Scheduler entries
+4. **HasTriggerResult** — if a job was triggered, poll for completion; otherwise finish
+5. **WaitForJob** — configurable delay between job status checks
+6. **CheckJob** — invoke orchestrator with `mode=check-job`
+7. **IsJobDone** — route on terminal events (success/fail/timeout) or keep polling
+
+### SLA Cleanup (2 states)
+
+1. **CheckCancelSLA** — if SLA was scheduled, cancel unfired entries
+2. **CancelSLASchedules** — invoke sla-monitor to delete Scheduler entries and record final SLA outcome
+
+### Terminal States (2 states)
+
+1. **InfraFailure** — Fail state for unrecoverable infrastructure errors
+2. **Done** — Succeed state
 
 ### Error Handling
 
 Every Task state includes Retry and Catch blocks:
 
-- **Retry**: `IntervalSeconds: 2`, `MaxAttempts: 3`, `BackoffRate: 2` for Lambda service errors
-- **Catch**: `States.ALL` routes to a branch-level Fail state (`EvalBranchFailed` or `SLABranchFailed`)
-
-The top-level Parallel state catches any branch failure and routes to `InfraFailure`.
+- **Default Retry**: `IntervalSeconds: 2`, `MaxAttempts: 3`, `BackoffRate: 2` for Lambda service errors
+- **Trigger Retry**: `IntervalSeconds: 30`, `MaxAttempts: 4`, `BackoffRate: 2` — infrastructure failures (e.g., Glue concurrency limits) get a longer retry budget
+- **Catch**: unrecoverable errors route to `InfraFailure` (Fail state). Trigger exhaustion routes to `CheckCancelSLA` for graceful SLA cleanup before termination.
 
 ### ARN Substitution
 

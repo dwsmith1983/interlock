@@ -106,56 +106,45 @@ Each pipeline execution follows this lifecycle, orchestrated by Step Functions:
 ```
 Sensor data arrives
         │
-        ↓
+        ▼
 stream-router starts SFN
         │
+        ▼
+   Evaluation Loop
+   (Evaluate → Wait → Re-evaluate)
+        │
    ┌────┴────┐
-   ↓         ↓
-Evaluation  SLA Monitor
-   Loop     (parallel)
-   │             │
-   │      CalcDeadlines
-   │             │
-   │      WaitForWarning
-   │             │
-   │      FireSLAWarning
-   │             │
-   │      WaitForBreach
-   │             │
-   │      FireSLABreach
+   ▼         ▼
+ Passed    Window Exhausted
+   │         │
+   ▼         ▼
+ Trigger   VALIDATION_EXHAUSTED
+   │         │
+   ├─────────┘
+   ▼
+CheckSLA → ScheduleSLAAlerts (EventBridge Scheduler)
    │
-   ├─→ Evaluate (validation rules)
-   │       │
-   │   ┌───┴───┐
-   │   ↓       ↓
-   │  Ready  Not Ready
-   │   │       │
-   │   │    Wait → re-evaluate
-   │   │       │
-   │   │    Window exhausted?
-   │   │       │
-   │   │    VALIDATION_EXHAUSTED
-   │   │
-   │   ↓
-   │  Trigger job
-   │   │
-   │  Wait → CheckJob
-   │   │
-   │  success / fail / timeout
+   ▼
+ WaitForJob → CheckJob → IsJobDone
    │
-   ↓
-Reconcile (merge branch results)
+   ▼
+CheckCancelSLA → CancelSLASchedules
+   │
+   ▼
+ Done
 ```
 
 ### State Summary
 
-The Step Functions state machine uses two parallel branches:
+The Step Functions state machine uses 18 sequential states:
 
-1. **Evaluation branch** -- loops on Evaluate, checking validation rules at a configurable interval. When all rules pass, triggers the job and polls for completion. Exits on success, failure, timeout, or window exhaustion.
+1. **Evaluation loop** — evaluates validation rules at a configurable interval. When all rules pass, triggers the job. If the evaluation window expires, publishes `VALIDATION_EXHAUSTED`.
 
-2. **SLA monitoring branch** -- calculates warning and breach timestamps from the SLA config, waits until each deadline, and publishes alerts to EventBridge. Skipped entirely if no SLA is configured.
+2. **SLA scheduling** — after trigger (or validation exhaustion), creates one-time EventBridge Scheduler entries for SLA warning and breach deadlines. The Scheduler fires alerts independently at exact timestamps.
 
-Both branches run concurrently. The evaluation branch handles the actual pipeline lifecycle; the SLA branch is purely observational and never stops execution.
+3. **Job polling** — polls the triggered job for completion via `check-job` mode. Terminal events (success, fail, timeout) proceed to SLA cleanup.
+
+4. **SLA cleanup** — cancels unfired SLA Scheduler entries and publishes `SLA_MET` if the job completed before the warning deadline.
 
 ## Event System
 
@@ -170,6 +159,7 @@ All lifecycle events are published to a custom EventBridge event bus. This repla
 | `JOB_FAILED` | Triggered job failed |
 | `SLA_WARNING` | SLA warning deadline reached |
 | `SLA_BREACH` | SLA breach deadline reached |
+| `SLA_MET` | Job completed before SLA warning deadline |
 | `RETRY_EXHAUSTED` | All retry attempts consumed |
 | `SFN_TIMEOUT` | Step Function execution timed out (watchdog) |
 | `SCHEDULE_MISSED` | Cron schedule passed without a trigger (watchdog) |
@@ -204,6 +194,10 @@ When a triggered job fails or times out, the stream-router processes the `JOB#` 
 3. If at the retry limit, publish a `RETRY_EXHAUSTED` event and mark the trigger as `FAILED_FINAL`
 
 Re-run executions use a unique name (`{pipeline}-{schedule}-{date}-rerun-{attempt}`) to avoid Step Function dedup collisions.
+
+### Infrastructure Trigger Retry
+
+When the trigger execution itself fails (e.g., Glue `ConcurrentRunsExceededException`), the orchestrator logs the failure to the joblog table and returns a Lambda error. Step Functions retries the trigger 4 times with exponential backoff (30s, 60s, 120s, 240s). This retry budget is separate from `maxRetries`. If all attempts fail, the execution routes to SLA cleanup and terminates gracefully.
 
 ## Post-Run Validation
 

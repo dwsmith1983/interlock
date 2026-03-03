@@ -82,6 +82,14 @@ schedule:
 
 This pattern is useful for event-driven pipelines that should evaluate immediately when upstream data arrives.
 
+### Execution Granularity
+
+Pipelines run at daily granularity by default. For sub-daily (hourly) execution, sensor data must include both `date` and `hour` fields. The framework builds a composite execution date (e.g., `2026-03-03T10`) that scopes the entire execution — trigger lock, joblog entries, SLA, and retries — to that specific hour.
+
+Glue triggers automatically receive `--par_day` (YYYYMMDD) and `--par_hour` (HH) arguments derived from the composite date.
+
+The granularity is determined by the sensor data, not the pipeline config. A single pipeline can process both daily and hourly executions depending on what its sensors provide.
+
 ### Cron-Based Schedules
 
 For time-based schedules, specify a cron expression. The pipeline activates at the cron time, then evaluates until the window expires or validation passes.
@@ -123,24 +131,38 @@ sla:
 
 ### Deadline Evaluation
 
-The SLA monitor Lambda runs as a parallel branch in the Step Functions state machine. It checks the current time against the configured deadline at regular intervals. If the deadline passes without the pipeline reaching a terminal state, the monitor emits an `sla.breached` event to EventBridge.
+When the Step Functions execution reaches the SLA checkpoint, the sla-monitor Lambda creates two one-time EventBridge Scheduler entries:
+
+- **Warning**: fires at `deadline - expectedDuration`
+- **Breach**: fires at `deadline`
+
+Each Scheduler entry invokes the sla-monitor Lambda at the exact timestamp to publish the corresponding event. Entries auto-delete after firing.
+
+When the pipeline job completes (or all retries are exhausted), the state machine cancels any unfired Scheduler entries. If the job completed before the warning time, a `SLA_MET` event is published.
 
 The deadline is interpreted in the schedule's configured `timezone` (or UTC if not set).
 
 ### EventBridge SLA Events
 
-SLA breaches are published to the custom EventBridge bus. You can create rules to route these events to SNS, Lambda, or any other EventBridge target.
+SLA events are published to the custom EventBridge bus. You can create rules to route these events to SNS, Lambda, or any other EventBridge target.
+
+| Event | When |
+|---|---|
+| `SLA_WARNING` | Warning deadline reached (job still running) |
+| `SLA_BREACH` | Final deadline reached (job still running) |
+| `SLA_MET` | Job completed before the warning deadline |
 
 Example event:
 
 ```json
 {
   "source": "interlock",
-  "detail-type": "sla.breached",
+  "detail-type": "SLA_BREACH",
   "detail": {
     "pipelineId": "gold-revenue",
-    "deadline": "10:00",
-    "timezone": "UTC"
+    "scheduleId": "daily",
+    "date": "2026-03-01",
+    "message": "Pipeline gold-revenue: SLA_BREACH"
   }
 }
 ```

@@ -8,7 +8,7 @@ type EventDetailType string
 const (
 	EventSLAWarning          EventDetailType = "SLA_WARNING"
 	EventSLABreach           EventDetailType = "SLA_BREACH"
-	EventSLAResolved         EventDetailType = "SLA_RESOLVED"
+	EventSLAMet              EventDetailType = "SLA_MET"
 	EventValidationExhausted EventDetailType = "VALIDATION_EXHAUSTED"
 	EventRetryExhausted      EventDetailType = "RETRY_EXHAUSTED"
 	EventSFNTimeout          EventDetailType = "SFN_TIMEOUT"

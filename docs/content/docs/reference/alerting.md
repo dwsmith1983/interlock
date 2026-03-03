@@ -28,25 +28,28 @@ Each event is published with a `detail-type` field that classifies the event. Us
 
 ### SLA Events
 
-Published by the **sla-monitor** Lambda from the SLA monitoring branch of the Step Functions state machine.
+Published by the **sla-monitor** Lambda via EventBridge Scheduler callbacks and during SLA cleanup in the Step Functions state machine.
 
 | Detail Type | Meaning | When |
 |---|---|---|
 | `SLA_WARNING` | SLA warning threshold reached | Pipeline has not completed by the warning timestamp |
 | `SLA_BREACH` | SLA deadline exceeded | Pipeline has not completed by the breach timestamp |
+| `SLA_MET` | Job completed before SLA warning deadline | Pipeline completed before any SLA alert fired |
 
 ### Lifecycle Events
 
-Published by the **orchestrator** Lambda during the evaluation and execution branches.
+Published by the **orchestrator** and **stream-router** Lambdas during the pipeline lifecycle.
 
 | Detail Type | Meaning | When |
 |---|---|---|
 | `VALIDATION_PASSED` | All validation rules passed | Readiness evaluation succeeds, before trigger |
 | `VALIDATION_EXHAUSTED` | Evaluation window closed without passing | Max evaluation time exceeded |
 | `JOB_TRIGGERED` | Pipeline job was triggered | Trigger fired successfully |
-| `JOB_SUCCEEDED` | Triggered job completed successfully | Job polling detects success |
+| `JOB_COMPLETED` | Triggered job completed successfully | Job polling detects success |
 | `JOB_FAILED` | Triggered job failed | Job polling detects failure |
 | `JOB_TIMEOUT` | Triggered job timed out | Job polling detects timeout |
+| `RETRY_EXHAUSTED` | All retry attempts consumed | Job failed `maxRetries` times without success |
+| `INFRA_FAILURE` | Unrecoverable infrastructure error | Step Functions execution reaches Fail state |
 
 ### Watchdog Events
 
