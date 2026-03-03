@@ -31,6 +31,11 @@ func RerunSK(schedule, date string, attempt int) string {
 	return fmt.Sprintf("RERUN#%s#%s#%d", schedule, date, attempt)
 }
 
+// RerunRequestSK returns the sort key for a manual re-run request.
+func RerunRequestSK(schedule, date string) string {
+	return "RERUN_REQUEST#" + schedule + "#" + date
+}
+
 // ---------------------------------------------------------------------------
 // Status / event constants
 // ---------------------------------------------------------------------------

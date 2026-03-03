@@ -54,6 +54,24 @@ func TestRerunSK(t *testing.T) {
 	}
 }
 
+func TestRerunRequestSK(t *testing.T) {
+	tests := []struct {
+		schedule string
+		date     string
+		want     string
+	}{
+		{"daily", "2026-03-01", "RERUN_REQUEST#daily#2026-03-01"},
+		{"hourly", "2026-03-03T10", "RERUN_REQUEST#hourly#2026-03-03T10"},
+		{"stream", "2026-06-15", "RERUN_REQUEST#stream#2026-06-15"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			assert.Equal(t, tt.want, types.RerunRequestSK(tt.schedule, tt.date))
+		})
+	}
+}
+
 func TestTriggerStatusConstants(t *testing.T) {
 	assert.Equal(t, "RUNNING", types.TriggerStatusRunning)
 	assert.Equal(t, "COMPLETED", types.TriggerStatusCompleted)
@@ -65,4 +83,8 @@ func TestJobEventConstants(t *testing.T) {
 	assert.Equal(t, "fail", types.JobEventFail)
 	assert.Equal(t, "timeout", types.JobEventTimeout)
 	assert.Equal(t, "infra-trigger-failure", types.JobEventInfraTriggerFailure)
+	assert.Equal(t, "infra-trigger-exhausted", types.JobEventInfraTriggerExhausted)
+	assert.Equal(t, "late-data-arrival", types.JobEventLateDataArrival)
+	assert.Equal(t, "rerun-accepted", types.JobEventRerunAccepted)
+	assert.Equal(t, "rerun-rejected", types.JobEventRerunRejected)
 }
