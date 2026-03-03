@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — Architecture Rewrite
+## [0.4.0] - 2026-03-03
+
+### Added
+
+- **SLA monitoring via EventBridge Scheduler**: one-time Scheduler entries fire `SLA_WARNING` and `SLA_BREACH` events at exact timestamps, replacing the previous parallel-branch polling approach. Schedules auto-delete after firing. On job completion, unfired schedules are cancelled and `SLA_MET` is published.
+- **Sub-daily execution granularity**: pipelines can run at hourly or daily cadence depending on sensor data. When sensors include both `date` and `hour` fields, the framework uses a composite execution date (`2026-03-03T10`). Glue triggers receive `--par_day` and `--par_hour` arguments automatically.
+- **Infrastructure trigger retry**: trigger execution failures (e.g., Glue `ConcurrentRunsExceededException`) retry 4 times with exponential backoff (30s, 60s, 120s, 240s) via Step Functions native Retry. Each failure is logged to the joblog table for audit. This retry budget is separate from `maxRetries` for job failures.
+- **StatusChecker fallback in check-job**: when no terminal joblog entry exists, the orchestrator polls the trigger API directly to determine job status.
 
 ### Changed
 
@@ -16,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **EventBridge events** replace SNS for all alerting and lifecycle notifications.
 - **Reusable Terraform module** — consumers deploy infrastructure without framework code in their repo.
 - **Framework reads DynamoDB only** — external processes push sensor data into the control table.
+- **Sequential Step Functions workflow** (18 states) replaces the previous parallel-branch design. SLA monitoring uses EventBridge Scheduler instead of a parallel Wait/Fire branch within the state machine.
+- **sla-monitor Lambda** supports 5 modes: `schedule`, `cancel`, `fire-alert`, `calculate`, `reconcile`.
+- **Trigger state** retries infrastructure failures independently of job failure retries (`maxRetries`). Exhausted trigger retries route to SLA cleanup and graceful termination instead of crashing.
 
 ### Removed
 
@@ -26,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cascade notifications, post-completion drift monitoring, replay support
 - SNS alert sinks, S3 alert sinks
 - cobra, chi, pgx, go-redis, color dependencies
+
+### Fixed
+
+- Pipeline config included in Step Functions execution input, eliminating redundant DynamoDB reads during orchestrator modes (#30)
+- YAML configs converted to JSON before DynamoDB storage (#27)
+- Missing trigger enable variables added to Terraform module (`enable_emr_serverless_trigger`, `enable_sfn_trigger`) (#26)
+- Sensor data `data` map unwrapped in stream-router before trigger condition evaluation (#28)
+- Orchestrator output uses `status` string instead of `passed` boolean (#29)
+- SLA monitor handles relative `:MM` deadline format for hourly pipelines (#35)
+- `check-job` skips non-terminal joblog events (e.g., `infra-trigger-failure`) to prevent infinite polling loops (#36)
 
 ## [0.3.1] - 2026-02-28
 
@@ -169,6 +189,7 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.4.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.4.0
 [0.3.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.3.1
 [0.3.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.3.0
 [0.2.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.2.1
