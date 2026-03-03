@@ -37,3 +37,13 @@ output "sfn_name" {
   description = "Name of the pipeline state machine"
   value       = aws_sfn_state_machine.pipeline.name
 }
+
+output "scheduler_group_name" {
+  description = "Name of the EventBridge Scheduler group for SLA alerts"
+  value       = aws_scheduler_schedule_group.sla.name
+}
+
+output "sla_monitor_arn" {
+  description = "ARN of the SLA monitor Lambda function"
+  value       = aws_lambda_function.sla_monitor.arn
+}

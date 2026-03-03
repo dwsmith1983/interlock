@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
 	"github.com/dwsmith1983/interlock/internal/store"
@@ -52,6 +53,38 @@ func (m *mockEventBridge) PutEvents(_ context.Context, input *eventbridge.PutEve
 	}
 	m.events = append(m.events, input)
 	return &eventbridge.PutEventsOutput{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Mock Scheduler client
+// ---------------------------------------------------------------------------
+
+type mockScheduler struct {
+	mu        sync.Mutex
+	created   []*scheduler.CreateScheduleInput
+	deleted   []*scheduler.DeleteScheduleInput
+	createErr error
+	deleteErr error
+}
+
+func (m *mockScheduler) CreateSchedule(_ context.Context, input *scheduler.CreateScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.createErr != nil {
+		return nil, m.createErr
+	}
+	m.created = append(m.created, input)
+	return &scheduler.CreateScheduleOutput{}, nil
+}
+
+func (m *mockScheduler) DeleteSchedule(_ context.Context, input *scheduler.DeleteScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.DeleteScheduleOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.deleteErr != nil {
+		return nil, m.deleteErr
+	}
+	m.deleted = append(m.deleted, input)
+	return &scheduler.DeleteScheduleOutput{}, nil
 }
 
 // ---------------------------------------------------------------------------

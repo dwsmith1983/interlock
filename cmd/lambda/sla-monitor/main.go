@@ -1,6 +1,6 @@
-// sla-monitor Lambda handles SLA calculations and alert firing for the
-// Step Function workflow. It supports two modes: "calculate" (compute warning
-// and breach times) and "fire-alert" (publish SLA events to EventBridge).
+// sla-monitor Lambda handles SLA calculations, alert firing, and schedule
+// management for the Step Function workflow. Modes: calculate, fire-alert,
+// schedule, cancel, reconcile.
 package main
 
 import (
@@ -12,6 +12,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/store"
@@ -35,10 +36,14 @@ func main() {
 	}
 
 	deps := &ilambda.Deps{
-		Store:        s,
-		EventBridge:  eventbridge.NewFromConfig(cfg),
-		EventBusName: os.Getenv("EVENT_BUS_NAME"),
-		Logger:       logger,
+		Store:              s,
+		EventBridge:        eventbridge.NewFromConfig(cfg),
+		Scheduler:          scheduler.NewFromConfig(cfg),
+		EventBusName:       os.Getenv("EVENT_BUS_NAME"),
+		SLAMonitorARN:      os.Getenv("SLA_MONITOR_ARN"),
+		SchedulerRoleARN:   os.Getenv("SCHEDULER_ROLE_ARN"),
+		SchedulerGroupName: os.Getenv("SCHEDULER_GROUP_NAME"),
+		Logger:             logger,
 	}
 
 	lambda.Start(func(ctx context.Context, input ilambda.SLAMonitorInput) (ilambda.SLAMonitorOutput, error) {

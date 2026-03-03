@@ -8,13 +8,17 @@ import (
 
 // Deps holds all dependencies for Lambda handlers.
 type Deps struct {
-	Store           *store.Store
-	ConfigCache     *store.ConfigCache
-	SFNClient       SFNAPI
-	EventBridge     EventBridgeAPI
-	TriggerRunner   TriggerExecutor
-	StatusChecker   StatusChecker
-	StateMachineARN string
-	EventBusName    string
-	Logger          *slog.Logger
+	Store              *store.Store
+	ConfigCache        *store.ConfigCache
+	SFNClient          SFNAPI
+	EventBridge        EventBridgeAPI
+	Scheduler          SchedulerAPI
+	TriggerRunner      TriggerExecutor
+	StatusChecker      StatusChecker
+	StateMachineARN    string
+	EventBusName       string
+	SLAMonitorARN      string // target ARN for Scheduler to invoke
+	SchedulerRoleARN   string // execution role for Scheduler
+	SchedulerGroupName string // EventBridge Scheduler group name
+	Logger             *slog.Logger
 }
