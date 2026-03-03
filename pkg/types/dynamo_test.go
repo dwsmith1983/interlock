@@ -64,4 +64,5 @@ func TestJobEventConstants(t *testing.T) {
 	assert.Equal(t, "success", types.JobEventSuccess)
 	assert.Equal(t, "fail", types.JobEventFail)
 	assert.Equal(t, "timeout", types.JobEventTimeout)
+	assert.Equal(t, "infra-trigger-failure", types.JobEventInfraTriggerFailure)
 }
