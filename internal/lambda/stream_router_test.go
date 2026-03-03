@@ -498,3 +498,48 @@ func TestStreamRouter_TriggerValueMismatch_NoSFN(t *testing.T) {
 	defer sfnMock.mu.Unlock()
 	assert.Empty(t, sfnMock.executions, "expected no SFN when trigger value does not match")
 }
+
+// ---------------------------------------------------------------------------
+// ResolveExecutionDate tests
+// ---------------------------------------------------------------------------
+
+func TestResolveExecutionDate_WithDateAndHour(t *testing.T) {
+	data := map[string]interface{}{"date": "20260303", "hour": "10", "complete": true}
+	got := lambda.ResolveExecutionDate(data)
+	if got != "2026-03-03T10" {
+		t.Errorf("got %q, want %q", got, "2026-03-03T10")
+	}
+}
+
+func TestResolveExecutionDate_DashedDate(t *testing.T) {
+	data := map[string]interface{}{"date": "2026-03-03", "hour": "10"}
+	got := lambda.ResolveExecutionDate(data)
+	if got != "2026-03-03T10" {
+		t.Errorf("got %q, want %q", got, "2026-03-03T10")
+	}
+}
+
+func TestResolveExecutionDate_DateOnly(t *testing.T) {
+	data := map[string]interface{}{"date": "20260303"}
+	got := lambda.ResolveExecutionDate(data)
+	if got != "2026-03-03" {
+		t.Errorf("got %q, want %q", got, "2026-03-03")
+	}
+}
+
+func TestResolveExecutionDate_NoFields(t *testing.T) {
+	data := map[string]interface{}{"complete": true}
+	got := lambda.ResolveExecutionDate(data)
+	today := time.Now().Format("2006-01-02")
+	if got != today {
+		t.Errorf("got %q, want %q", got, today)
+	}
+}
+
+func TestResolveExecutionDate_HourWithLeadingZero(t *testing.T) {
+	data := map[string]interface{}{"date": "20260303", "hour": "03"}
+	got := lambda.ResolveExecutionDate(data)
+	if got != "2026-03-03T03" {
+		t.Errorf("got %q, want %q", got, "2026-03-03T03")
+	}
+}

@@ -634,6 +634,143 @@ func TestOrchestrator_ValidationExhausted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Trigger date-arg injection tests
+// ---------------------------------------------------------------------------
+
+func TestOrchestrator_Trigger_InjectsHourlyGlueArgs(t *testing.T) {
+	pipelineID := "silver-cdr-hour"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Job: types.JobConfig{
+			Type: types.TriggerGlue,
+			Config: map[string]interface{}{
+				"jobName":   "cdr-agg-hour",
+				"arguments": map[string]interface{}{"--s3_bucket": "my-bucket"},
+			},
+		},
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+	}
+
+	executor := &mockTriggerExecutor{
+		result: map[string]interface{}{"glue_job_run_id": "jr-100"},
+	}
+
+	d := newTestDeps(ddb)
+	d.TriggerRunner = executor
+
+	_, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "trigger",
+		PipelineID: pipelineID,
+		ScheduleID: "stream",
+		Date:       "2026-03-03T10",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if executor.cfg == nil || executor.cfg.Glue == nil {
+		t.Fatal("expected glue config")
+	}
+	args := executor.cfg.Glue.Arguments
+	if args["--par_day"] != "20260303" {
+		t.Errorf("--par_day = %q, want %q", args["--par_day"], "20260303")
+	}
+	if args["--par_hour"] != "10" {
+		t.Errorf("--par_hour = %q, want %q", args["--par_hour"], "10")
+	}
+	if args["--s3_bucket"] != "my-bucket" {
+		t.Errorf("--s3_bucket = %q, want %q", args["--s3_bucket"], "my-bucket")
+	}
+}
+
+func TestOrchestrator_Trigger_InjectsDailyGlueArgs(t *testing.T) {
+	pipelineID := "silver-cdr-day"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Job: types.JobConfig{
+			Type: types.TriggerGlue,
+			Config: map[string]interface{}{
+				"jobName": "cdr-agg-day",
+			},
+		},
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+	}
+
+	executor := &mockTriggerExecutor{
+		result: map[string]interface{}{"glue_job_run_id": "jr-200"},
+	}
+
+	d := newTestDeps(ddb)
+	d.TriggerRunner = executor
+
+	_, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "trigger",
+		PipelineID: pipelineID,
+		ScheduleID: "cron",
+		Date:       "2026-03-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	args := executor.cfg.Glue.Arguments
+	if args["--par_day"] != "20260303" {
+		t.Errorf("--par_day = %q, want %q", args["--par_day"], "20260303")
+	}
+	if _, ok := args["--par_hour"]; ok {
+		t.Error("--par_hour should not be set for daily pipeline")
+	}
+}
+
+func TestOrchestrator_Trigger_NonGlueSkipsInjection(t *testing.T) {
+	pipelineID := "bronze-cdr"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Job: types.JobConfig{
+			Type: types.TriggerHTTP,
+			Config: map[string]interface{}{
+				"url":    "https://example.com/audit",
+				"method": "POST",
+			},
+		},
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+	}
+
+	executor := &mockTriggerExecutor{
+		result: map[string]interface{}{"statusCode": 200},
+	}
+
+	d := newTestDeps(ddb)
+	d.TriggerRunner = executor
+
+	_, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "trigger",
+		PipelineID: pipelineID,
+		ScheduleID: "cron",
+		Date:       "2026-03-03T10",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !executor.called {
+		t.Error("executor not called")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Unknown mode test
 // ---------------------------------------------------------------------------
 

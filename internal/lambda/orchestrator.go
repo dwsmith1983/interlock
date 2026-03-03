@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dwsmith1983/interlock/internal/validation"
@@ -78,6 +79,7 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 	if err != nil {
 		return OrchestratorOutput{Mode: "trigger", Error: fmt.Sprintf("build trigger config: %v", err)}, nil
 	}
+	injectDateArgs(&triggerCfg, input.Date)
 
 	metadata, err := d.TriggerRunner.Execute(ctx, &triggerCfg)
 	if err != nil {
@@ -274,4 +276,33 @@ func extractRunID(metadata map[string]interface{}) string {
 		}
 	}
 	return ""
+}
+
+// injectDateArgs parses the execution date and injects --par_day (and --par_hour
+// for hourly dates) into Glue trigger arguments. Only modifies Glue triggers.
+func injectDateArgs(tc *types.TriggerConfig, date string) {
+	if tc.Glue == nil {
+		return
+	}
+	if tc.Glue.Arguments == nil {
+		tc.Glue.Arguments = make(map[string]string)
+	}
+
+	datePart, hourPart := ParseExecutionDate(date)
+	// Convert YYYY-MM-DD to YYYYMMDD for Glue.
+	parDay := strings.ReplaceAll(datePart, "-", "")
+	tc.Glue.Arguments["--par_day"] = parDay
+	if hourPart != "" {
+		tc.Glue.Arguments["--par_hour"] = hourPart
+	}
+}
+
+// ParseExecutionDate splits a composite date into date and hour parts.
+// "2026-03-03T10" -> ("2026-03-03", "10")
+// "2026-03-03"    -> ("2026-03-03", "")
+func ParseExecutionDate(date string) (datePart, hourPart string) {
+	if idx := strings.Index(date, "T"); idx >= 0 {
+		return date[:idx], date[idx+1:]
+	}
+	return date, ""
 }

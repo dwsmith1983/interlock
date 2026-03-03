@@ -471,6 +471,65 @@ func TestSLAMonitor_Reconcile_ReturnsDeadlines(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Hourly date resolution tests
+// ---------------------------------------------------------------------------
+
+func TestSLACalculate_HourlyDate_RelativeDeadline(t *testing.T) {
+	out, err := lambda.HandleSLAMonitor(context.Background(), &lambda.Deps{}, lambda.SLAMonitorInput{
+		Mode:             "calculate",
+		PipelineID:       "silver-cdr-hour",
+		ScheduleID:       "stream",
+		Date:             "2026-03-03T10",
+		Deadline:         ":30",
+		ExpectedDuration: "10m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Breach at 10:30, warning at 10:20
+	if !strings.Contains(out.BreachAt, "T10:30:00") {
+		t.Errorf("breachAt = %q, want *T10:30:00*", out.BreachAt)
+	}
+	if !strings.Contains(out.WarningAt, "T10:20:00") {
+		t.Errorf("warningAt = %q, want *T10:20:00*", out.WarningAt)
+	}
+}
+
+func TestSLACalculate_HourlyDate_AbsoluteDeadline(t *testing.T) {
+	out, err := lambda.HandleSLAMonitor(context.Background(), &lambda.Deps{}, lambda.SLAMonitorInput{
+		Mode:             "calculate",
+		PipelineID:       "silver-cdr-hour",
+		ScheduleID:       "stream",
+		Date:             "2026-03-03T10",
+		Deadline:         "11:00",
+		ExpectedDuration: "15m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.BreachAt, "T11:00:00") {
+		t.Errorf("breachAt = %q, want *T11:00:00*", out.BreachAt)
+	}
+}
+
+func TestSLACalculate_DailyDate_Unchanged(t *testing.T) {
+	out, err := lambda.HandleSLAMonitor(context.Background(), &lambda.Deps{}, lambda.SLAMonitorInput{
+		Mode:             "calculate",
+		PipelineID:       "silver-cdr-day",
+		ScheduleID:       "cron",
+		Date:             "2026-03-03",
+		Deadline:         "02:00",
+		ExpectedDuration: "30m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out.BreachAt, "T02:00:00") {
+		t.Errorf("breachAt = %q, want *T02:00:00*", out.BreachAt)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Unknown mode test
 // ---------------------------------------------------------------------------
 

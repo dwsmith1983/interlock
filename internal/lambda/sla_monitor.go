@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,13 +58,27 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 
 	now := time.Now().In(loc)
 
-	// Parse the execution date to build a full timestamp.
+	// Parse the execution date. Supports:
+	//   "2006-01-02"    — daily
+	//   "2006-01-02T15" — hourly (hour encoded in date)
 	baseDate := now
+	baseHour := -1 // -1 means "use current hour" for relative deadlines
 	if input.Date != "" {
-		parsed, err := time.Parse("2006-01-02", input.Date)
+		datePart, hourPart := ParseExecutionDate(input.Date)
+		parsed, err := time.Parse("2006-01-02", datePart)
 		if err == nil {
-			baseDate = time.Date(parsed.Year(), parsed.Month(), parsed.Day(),
-				now.Hour(), now.Minute(), 0, 0, loc)
+			if hourPart != "" {
+				h := 0
+				if parsed, atoiErr := strconv.Atoi(hourPart); atoiErr == nil {
+					h = parsed
+					baseHour = h
+				}
+				baseDate = time.Date(parsed.Year(), parsed.Month(), parsed.Day(),
+					h, 0, 0, 0, loc)
+			} else {
+				baseDate = time.Date(parsed.Year(), parsed.Month(), parsed.Day(),
+					now.Hour(), now.Minute(), 0, 0, loc)
+			}
 		}
 	}
 
@@ -73,15 +88,15 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 	var breachAt time.Time
 	dl := input.Deadline
 	if strings.HasPrefix(dl, ":") {
-		// Relative to current hour: ":30" means current_hour:30
 		deadline, err := time.Parse("04", strings.TrimPrefix(dl, ":"))
 		if err != nil {
 			return SLAMonitorOutput{}, fmt.Errorf("parse deadline %q: %w", dl, err)
 		}
+		hour := baseDate.Hour()
 		breachAt = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
-			baseDate.Hour(), deadline.Minute(), 0, 0, loc)
-		// If breach is already past, push to next hour
-		if breachAt.Before(now) {
+			hour, deadline.Minute(), 0, 0, loc)
+		// Only push to next hour if no explicit hour was set (daily pipeline)
+		if baseHour < 0 && breachAt.Before(now) {
 			breachAt = breachAt.Add(time.Hour)
 		}
 	} else {
