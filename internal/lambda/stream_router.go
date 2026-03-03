@@ -243,7 +243,11 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		return fmt.Errorf("acquire trigger lock for %q: %w", pipelineID, err)
 	}
 	if !acquired {
-		d.Logger.Info("trigger lock already held",
+		// Check if this is late data arriving after a completed pipeline.
+		if err := checkLateDataArrival(ctx, d, pipelineID, scheduleID, date); err != nil {
+			d.Logger.WarnContext(ctx, "late data check failed", "error", err)
+		}
+		d.Logger.InfoContext(ctx, "trigger lock already held",
 			"pipelineId", pipelineID,
 			"schedule", scheduleID,
 			"date", date,
@@ -264,6 +268,41 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		"schedule", scheduleID,
 		"date", date,
 	)
+	return nil
+}
+
+// checkLateDataArrival detects sensor updates after a pipeline has completed
+// successfully. If the trigger is in terminal COMPLETED state and the latest
+// job event is success, this sensor write represents late data that arrived
+// after post-job monitoring closed. Dual-writes a joblog entry and publishes
+// a LATE_DATA_ARRIVAL event.
+func checkLateDataArrival(ctx context.Context, d *Deps, pipelineID, schedule, date string) error {
+	trigger, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
+	if err != nil || trigger == nil {
+		return err
+	}
+
+	if trigger.Status != types.TriggerStatusCompleted {
+		return nil // still running or failed — not late data
+	}
+
+	job, err := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
+	if err != nil || job == nil {
+		return err
+	}
+
+	if job.Event != types.JobEventSuccess {
+		return nil // job didn't succeed — not a "late data after success" scenario
+	}
+
+	// Dual-write: joblog entry (audit) + EventBridge event (alerting).
+	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+		types.JobEventLateDataArrival, "", 0,
+		"sensor updated after pipeline completed successfully")
+
+	_ = publishEvent(ctx, d, string(types.EventLateDataArrival), pipelineID, schedule, date,
+		fmt.Sprintf("late data arrival for %s: sensor updated after job completion", pipelineID))
+
 	return nil
 }
 

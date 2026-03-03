@@ -528,6 +528,121 @@ func TestStreamRouter_TriggerValueMismatch_NoSFN(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Late data arrival tests
+// ---------------------------------------------------------------------------
+
+func TestStreamRouter_LateDataArrival_CompletedSuccess(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	date := time.Now().Format("2006-01-02")
+
+	// Seed a COMPLETED trigger (pipeline finished successfully).
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	// Seed a successful job event in the joblog.
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1709280000000")},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+	})
+
+	// Send a sensor write — lock is held, pipeline completed with success.
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No SFN execution (lock held).
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "should not start SFN when lock held")
+	sfnMock.mu.Unlock()
+
+	// Should have published LATE_DATA_ARRIVAL event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "expected one EventBridge event")
+	assert.Equal(t, string(types.EventLateDataArrival), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestStreamRouter_LateDataArrival_StillRunning_Silent(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	date := time.Now().Format("2006-01-02")
+
+	// Seed a RUNNING trigger (normal in-flight execution).
+	seedTriggerLock(mock, "gold-revenue", "stream", date)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions)
+	sfnMock.mu.Unlock()
+
+	// No late data event — this is normal operation.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "should not publish late data event for RUNNING trigger")
+}
+
+func TestStreamRouter_LateDataArrival_CompletedFailed_Silent(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	date := time.Now().Format("2006-01-02")
+
+	// Seed a COMPLETED trigger but with a failed job.
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	// Seed a failed job event.
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1709280000000")},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventFail},
+	})
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No late data event — pipeline didn't succeed.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "should not publish late data event for failed job")
+}
+
+// ---------------------------------------------------------------------------
 // ResolveExecutionDate tests
 // ---------------------------------------------------------------------------
 
