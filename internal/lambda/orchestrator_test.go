@@ -584,6 +584,53 @@ func TestOrchestrator_CheckJob_PollsRunning(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_CheckJob_SkipsInfraFailureEvent(t *testing.T) {
+	pipelineID := "silver-cdr-hour"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Job:      types.JobConfig{Type: types.TriggerGlue},
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			// Return an infra-trigger-failure event as the latest joblog entry.
+			return &dynamodb.QueryOutput{
+				Items: []map[string]ddbtypes.AttributeValue{
+					jobItem(pipelineID, "hourly", "2026-03-02", "1709280000000", types.JobEventInfraTriggerFailure),
+				},
+			}, nil
+		},
+	}
+
+	checker := &mockStatusChecker{
+		result: lambda.StatusResult{State: "succeeded", Message: "SUCCEEDED"},
+	}
+
+	d := newTestDeps(ddb)
+	d.StatusChecker = checker
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "check-job",
+		PipelineID: pipelineID,
+		ScheduleID: "hourly",
+		Date:       "2026-03-02",
+		RunID:      "jr-999",
+		Metadata:   map[string]interface{}{"glue_job_name": "cdr-agg-hour", "glue_job_run_id": "jr-999"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Event != "success" {
+		t.Errorf("event = %q, want %q — infra-trigger-failure should be skipped", out.Event, "success")
+	}
+	if !checker.called {
+		t.Error("StatusChecker should be called when only infra-trigger-failure events exist")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Post-run tests
 // ---------------------------------------------------------------------------

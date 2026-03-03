@@ -86,7 +86,9 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 		errMsg := fmt.Sprintf("trigger execute: %v", err)
 		// Log infra failure to joblog for audit trail, then return Lambda error
 		// so Step Functions Retry handles exponential backoff.
-		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventInfraTriggerFailure, "", 0, errMsg)
+		if writeErr := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventInfraTriggerFailure, "", 0, errMsg); writeErr != nil {
+			d.Logger.WarnContext(ctx, "failed to write infra trigger failure to joblog", "error", writeErr, "pipeline", input.PipelineID)
+		}
 		return OrchestratorOutput{}, fmt.Errorf("%s", errMsg)
 	}
 
@@ -112,10 +114,15 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 	}
 
 	if record != nil {
-		return OrchestratorOutput{
-			Mode:  "check-job",
-			Event: record.Event,
-		}, nil
+		// Only return terminal events; skip intermediate events like
+		// infra-trigger-failure so the StatusChecker can poll actual job status.
+		switch record.Event {
+		case types.JobEventSuccess, types.JobEventFail, types.JobEventTimeout:
+			return OrchestratorOutput{
+				Mode:  "check-job",
+				Event: record.Event,
+			}, nil
+		}
 	}
 
 	// No joblog entry — try polling the trigger API directly.
