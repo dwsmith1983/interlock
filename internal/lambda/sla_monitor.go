@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,7 +69,8 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 		if err == nil {
 			if hourPart != "" {
 				h := 0
-				if _, scanErr := fmt.Sscanf(hourPart, "%d", &h); scanErr == nil {
+				if parsed, atoiErr := strconv.Atoi(hourPart); atoiErr == nil {
+					h = parsed
 					baseHour = h
 				}
 				baseDate = time.Date(parsed.Year(), parsed.Month(), parsed.Day(),
