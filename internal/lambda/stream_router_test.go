@@ -3,6 +3,7 @@ package lambda_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -685,4 +686,180 @@ func TestResolveExecutionDate_HourWithLeadingZero(t *testing.T) {
 	if got != "2026-03-03T03" {
 		t.Errorf("got %q, want %q", got, "2026-03-03T03")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Rerun request helpers and tests
+// ---------------------------------------------------------------------------
+
+// makeRerunRequestRecord builds a DynamoDB stream event record for a RERUN_REQUEST# write.
+func makeRerunRequestRecord(pipelineID, schedule, date string) events.DynamoDBEventRecord {
+	pk := types.PipelinePK(pipelineID)
+	sk := types.RerunRequestSK(schedule, date)
+	return events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+		},
+	}
+}
+
+// seedJobEvent inserts a job log record into the mock joblog table.
+func seedJobEvent(mock *mockDDB, pipelineID, schedule, date, timestamp, event string) {
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(schedule, date, timestamp)},
+		"event": &ddbtypes.AttributeValueMemberS{Value: event},
+	})
+}
+
+// seedSensor inserts a sensor record with a data map into the mock control table.
+func seedSensor(mock *mockDDB, pipelineID, sensorKey string, data map[string]interface{}) {
+	item := map[string]ddbtypes.AttributeValue{
+		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK(sensorKey)},
+	}
+	if data != nil {
+		dataAV := make(map[string]ddbtypes.AttributeValue, len(data))
+		for k, v := range data {
+			switch val := v.(type) {
+			case string:
+				dataAV[k] = &ddbtypes.AttributeValueMemberS{Value: val}
+			case float64:
+				dataAV[k] = &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%g", val)}
+			case int64:
+				dataAV[k] = &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", val)}
+			}
+		}
+		item["data"] = &ddbtypes.AttributeValueMemberM{Value: dataAV}
+	}
+	mock.putRaw(testControlTable, item)
+}
+
+func TestStreamRouter_RerunRequest_FailedJob_Allowed(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	const schedule = "stream"
+	const date = "2026-03-01"
+
+	// Seed a failed job event.
+	seedJobEvent(mock, "gold-revenue", schedule, date, "1709280000000", types.JobEventFail)
+
+	record := makeRerunRequestRecord("gold-revenue", schedule, date)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should have started a new SFN execution.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for manual rerun of failed job")
+	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
+}
+
+func TestStreamRouter_RerunRequest_SuccessDataChanged_Allowed(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	const schedule = "stream"
+	const date = "2026-03-01"
+
+	// Seed a successful job event with timestamp 1000000.
+	seedJobEvent(mock, "gold-revenue", schedule, date, "1000000", types.JobEventSuccess)
+
+	// Seed a sensor with updatedAt AFTER the job timestamp.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"updatedAt": float64(2000000), // newer than job timestamp
+		"status":    "ready",
+	})
+
+	record := makeRerunRequestRecord("gold-revenue", schedule, date)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Data changed — SFN should start.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution when sensor data changed after success")
+	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
+}
+
+func TestStreamRouter_RerunRequest_SuccessDataUnchanged_Rejected(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	const schedule = "stream"
+	const date = "2026-03-01"
+
+	// Seed a successful job event with timestamp 2000000.
+	seedJobEvent(mock, "gold-revenue", schedule, date, "2000000", types.JobEventSuccess)
+
+	// Seed a sensor with updatedAt BEFORE the job timestamp.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"updatedAt": float64(1000000), // older than job timestamp
+		"status":    "ready",
+	})
+
+	record := makeRerunRequestRecord("gold-revenue", schedule, date)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No SFN execution — data unchanged.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN execution when data unchanged after success")
+
+	// Should have published RERUN_REJECTED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "expected one EventBridge event for rejection")
+	assert.Equal(t, string(types.EventRerunRejected), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestStreamRouter_RerunRequest_InfraExhausted_Allowed(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	const schedule = "stream"
+	const date = "2026-03-01"
+
+	// Seed an infra-trigger-exhausted job event.
+	seedJobEvent(mock, "gold-revenue", schedule, date, "1709280000000", types.JobEventInfraTriggerExhausted)
+
+	record := makeRerunRequestRecord("gold-revenue", schedule, date)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should have started a new SFN execution.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for manual rerun of infra-exhausted job")
+	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
 }
