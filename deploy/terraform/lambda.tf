@@ -139,7 +139,7 @@ resource "aws_lambda_function" "sla_monitor" {
   environment {
     variables = {
       EVENT_BUS_NAME       = aws_cloudwatch_event_bus.interlock.name
-      SLA_MONITOR_ARN      = aws_lambda_function.sla_monitor.arn
+      SLA_MONITOR_ARN      = "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${var.environment}-interlock-sla-monitor"
       SCHEDULER_ROLE_ARN   = aws_iam_role.scheduler_sla.arn
       SCHEDULER_GROUP_NAME = aws_scheduler_schedule_group.sla.name
     }
