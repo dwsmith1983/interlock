@@ -234,7 +234,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 
 	// Resolve schedule ID and date.
 	scheduleID := resolveScheduleID(cfg)
-	date := now.Format("2006-01-02")
+	date := ResolveExecutionDate(sensorData)
 
 	// Acquire trigger lock to prevent duplicate executions.
 	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, scheduleID, date, triggerLockTTL)
@@ -416,6 +416,33 @@ func convertAttributeValue(av events.DynamoDBAttributeValue) interface{} {
 	default:
 		return nil
 	}
+}
+
+// ResolveExecutionDate builds the execution date from sensor data fields.
+// If both "date" and "hour" are present, returns "YYYY-MM-DDThh".
+// If only "date", returns "YYYY-MM-DD". Falls back to today's date.
+func ResolveExecutionDate(sensorData map[string]interface{}) string {
+	dateStr, _ := sensorData["date"].(string)
+	hourStr, _ := sensorData["hour"].(string)
+
+	if dateStr == "" {
+		return time.Now().Format("2006-01-02")
+	}
+
+	normalized := normalizeDate(dateStr)
+
+	if hourStr != "" {
+		return normalized + "T" + hourStr
+	}
+	return normalized
+}
+
+// normalizeDate converts YYYYMMDD to YYYY-MM-DD. Already-dashed dates pass through.
+func normalizeDate(s string) string {
+	if len(s) == 8 && !strings.Contains(s, "-") {
+		return s[:4] + "-" + s[4:6] + "-" + s[6:8]
+	}
+	return s
 }
 
 // resolveScheduleID returns "cron" if the pipeline uses a cron schedule,
