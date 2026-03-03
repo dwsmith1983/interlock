@@ -135,7 +135,7 @@
             "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
-          "IntervalSeconds": 5,
+          "IntervalSeconds": 30,
           "MaxAttempts": 4,
           "BackoffRate": 2
         }
