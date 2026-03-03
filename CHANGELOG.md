@@ -19,17 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Declarative validation rules** replace the archetype/trait/evaluator system. Pipeline configs define validation as YAML rules (`exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_gt`) — no custom evaluator code needed.
 - **3 DynamoDB tables** (control, joblog, rerun) replace the single-table design for clearer access patterns and independent scaling.
 - **4 Lambda functions** (stream-router, orchestrator, sla-monitor, watchdog) replace the previous 7+ handlers. The orchestrator is a multi-mode handler covering evaluate, trigger, check-job, and post-run.
-- **~12-state Step Functions workflow** with parallel SLA monitoring branch replaces the 47-state machine.
+- **18-state sequential Step Functions workflow** replaces the 47-state machine. SLA monitoring uses EventBridge Scheduler instead of a parallel branch.
 - **EventBridge events** replace SNS for all alerting and lifecycle notifications.
 - **Reusable Terraform module** — consumers deploy infrastructure without framework code in their repo.
 - **Framework reads DynamoDB only** — external processes push sensor data into the control table.
-- **Sequential Step Functions workflow** (18 states) replaces the previous parallel-branch design. SLA monitoring uses EventBridge Scheduler instead of a parallel Wait/Fire branch within the state machine.
 - **sla-monitor Lambda** supports 5 modes: `schedule`, `cancel`, `fire-alert`, `calculate`, `reconcile`.
 - **Trigger state** retries infrastructure failures independently of job failure retries (`maxRetries`). Exhausted trigger retries route to SLA cleanup and graceful termination instead of crashing.
 
 ### Removed
 
-- Redis and Postgres storage providers (AWS-only going forward)
+- Redis and Postgres storage providers (AWS-first; GCP and Azure planned after AWS stabilizes)
 - CLI binary (`cmd/interlock`) and HTTP server
 - Archetype, trait, and evaluator subprocess system
 - Local mode (Docker Compose + Redis)

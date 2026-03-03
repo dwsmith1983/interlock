@@ -28,7 +28,7 @@ Each event is published with a `detail-type` field that classifies the event. Us
 
 ### SLA Events
 
-Published by the **sla-monitor** Lambda from the SLA monitoring branch of the Step Functions state machine.
+Published by the **sla-monitor** Lambda via EventBridge Scheduler callbacks and during SLA cleanup in the Step Functions state machine.
 
 | Detail Type | Meaning | When |
 |---|---|---|
@@ -38,7 +38,7 @@ Published by the **sla-monitor** Lambda from the SLA monitoring branch of the St
 
 ### Lifecycle Events
 
-Published by the **orchestrator** Lambda during the evaluation and execution branches.
+Published by the **orchestrator** and **stream-router** Lambdas during the pipeline lifecycle.
 
 | Detail Type | Meaning | When |
 |---|---|---|
@@ -49,6 +49,7 @@ Published by the **orchestrator** Lambda during the evaluation and execution bra
 | `JOB_FAILED` | Triggered job failed | Job polling detects failure |
 | `JOB_TIMEOUT` | Triggered job timed out | Job polling detects timeout |
 | `RETRY_EXHAUSTED` | All retry attempts consumed | Job failed `maxRetries` times without success |
+| `INFRA_FAILURE` | Unrecoverable infrastructure error | Step Functions execution reaches Fail state |
 
 ### Watchdog Events
 
