@@ -996,6 +996,107 @@ func TestOrchestrator_Trigger_NonGlueSkipsInjection(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Trigger-exhausted tests
+// ---------------------------------------------------------------------------
+
+func TestOrchestrator_TriggerExhausted(t *testing.T) {
+	ddb := newMockDDB()
+
+	// Pre-acquire trigger lock to simulate stream-router behavior.
+	ddb.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	d := newTestDeps(ddb)
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "trigger-exhausted",
+		PipelineID: "pipe-1",
+		ScheduleID: "stream",
+		Date:       "2026-03-01",
+		ErrorInfo: map[string]interface{}{
+			"Error": "States.TaskFailed",
+			"Cause": "ConcurrentRunsExceededException: Concurrent runs exceeded.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Mode != "trigger-exhausted" {
+		t.Errorf("mode = %q, want %q", out.Mode, "trigger-exhausted")
+	}
+	if out.Status != "exhausted" {
+		t.Errorf("status = %q, want %q", out.Status, "exhausted")
+	}
+
+	// Verify joblog entry was written (query for JOB# prefix).
+	jobItems, _ := ddb.Query(context.Background(), &dynamodb.QueryInput{
+		TableName:              strPtr("joblog"),
+		KeyConditionExpression: strPtr("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":pk":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+			":prefix": &ddbtypes.AttributeValueMemberS{Value: "JOB#stream#2026-03-01#"},
+		},
+	})
+	if len(jobItems.Items) != 1 {
+		t.Fatalf("expected 1 joblog entry, got %d", len(jobItems.Items))
+	}
+	jobEvent := jobItems.Items[0]["event"].(*ddbtypes.AttributeValueMemberS).Value
+	if jobEvent != types.JobEventInfraTriggerExhausted {
+		t.Errorf("joblog event = %q, want %q", jobEvent, types.JobEventInfraTriggerExhausted)
+	}
+	jobError := jobItems.Items[0]["error"].(*ddbtypes.AttributeValueMemberS).Value
+	if !strings.Contains(jobError, "ConcurrentRunsExceededException") {
+		t.Errorf("joblog error = %q, want it to contain ConcurrentRunsExceededException", jobError)
+	}
+
+	// Verify EventBridge event was published.
+	eb := d.EventBridge.(*mockEventBridge)
+	if len(eb.events) != 1 {
+		t.Fatalf("expected 1 EventBridge call, got %d", len(eb.events))
+	}
+
+	// Verify trigger lock was released — re-acquire should succeed.
+	lockKey := ddbItemKey("control", types.PipelinePK("pipe-1"), types.TriggerSK("stream", "2026-03-01"))
+	if _, exists := ddb.items[lockKey]; exists {
+		t.Error("trigger lock should be released after exhaustion")
+	}
+}
+
+func TestOrchestrator_TriggerExhausted_NoErrorInfo(t *testing.T) {
+	ddb := newMockDDB()
+	d := newTestDeps(ddb)
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "trigger-exhausted",
+		PipelineID: "pipe-1",
+		ScheduleID: "stream",
+		Date:       "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != "exhausted" {
+		t.Errorf("status = %q, want %q", out.Status, "exhausted")
+	}
+
+	// Joblog should still be written with empty error.
+	jobItems, _ := ddb.Query(context.Background(), &dynamodb.QueryInput{
+		TableName:              strPtr("joblog"),
+		KeyConditionExpression: strPtr("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":pk":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+			":prefix": &ddbtypes.AttributeValueMemberS{Value: "JOB#stream#2026-03-01#"},
+		},
+	})
+	if len(jobItems.Items) != 1 {
+		t.Fatalf("expected 1 joblog entry, got %d", len(jobItems.Items))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Unknown mode test
 // ---------------------------------------------------------------------------
 

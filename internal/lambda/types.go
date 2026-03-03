@@ -52,7 +52,8 @@ type OrchestratorInput struct {
 	ScheduleID string                 `json:"scheduleId"`
 	Date       string                 `json:"date"`
 	RunID      string                 `json:"runId,omitempty"`
-	Metadata   map[string]interface{} `json:"metadata,omitempty"` // trigger metadata for status polling
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`  // trigger metadata for status polling
+	ErrorInfo  map[string]interface{} `json:"errorInfo,omitempty"` // error details from SFN Catch
 }
 
 // OrchestratorOutput is the output of the orchestrator Lambda.
