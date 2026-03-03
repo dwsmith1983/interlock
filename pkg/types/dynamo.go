@@ -45,7 +45,11 @@ const (
 	JobEventSuccess             = "success"
 	JobEventFail                = "fail"
 	JobEventTimeout             = "timeout"
-	JobEventInfraTriggerFailure = "infra-trigger-failure"
+	JobEventInfraTriggerFailure   = "infra-trigger-failure"
+	JobEventInfraTriggerExhausted = "infra-trigger-exhausted"
+	JobEventLateDataArrival       = "late-data-arrival"
+	JobEventRerunAccepted         = "rerun-accepted"
+	JobEventRerunRejected         = "rerun-rejected"
 )
 
 // ---------------------------------------------------------------------------

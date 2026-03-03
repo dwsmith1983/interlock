@@ -18,6 +18,8 @@ const (
 	EventJobFailed           EventDetailType = "JOB_FAILED"
 	EventValidationPassed    EventDetailType = "VALIDATION_PASSED"
 	EventInfraFailure        EventDetailType = "INFRA_FAILURE"
+	EventLateDataArrival     EventDetailType = "LATE_DATA_ARRIVAL"
+	EventRerunRejected       EventDetailType = "RERUN_REJECTED"
 )
 
 // EventSource is the EventBridge source for all interlock events.
