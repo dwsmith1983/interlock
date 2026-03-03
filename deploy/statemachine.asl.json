@@ -117,7 +117,7 @@
     },
     "Trigger": {
       "Type": "Task",
-      "Comment": "Invoke the pipeline trigger; returns a runId and metadata",
+      "Comment": "Invoke the pipeline trigger; returns a runId and metadata. Infra failures return Lambda errors retried with exponential backoff (30s, 60s, 120s, 240s).",
       "Resource": "${orchestrator_arn}",
       "Parameters": {
         "mode": "trigger",
@@ -135,8 +135,8 @@
             "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
+          "IntervalSeconds": 30,
+          "MaxAttempts": 4,
           "BackoffRate": 2
         }
       ],
@@ -144,7 +144,7 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.errorInfo",
-          "Next": "InfraFailure"
+          "Next": "CheckCancelSLA"
         }
       ]
     },

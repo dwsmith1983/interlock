@@ -42,9 +42,10 @@ const (
 	TriggerStatusFailedFinal = "FAILED_FINAL"
 
 	// Job event outcomes (job log table).
-	JobEventSuccess = "success"
-	JobEventFail    = "fail"
-	JobEventTimeout = "timeout"
+	JobEventSuccess             = "success"
+	JobEventFail                = "fail"
+	JobEventTimeout             = "timeout"
+	JobEventInfraTriggerFailure = "infra-trigger-failure"
 )
 
 // ---------------------------------------------------------------------------
