@@ -175,7 +175,7 @@ When sensor data is written to DynamoDB, the following happens automatically:
 3. The state machine calls the **orchestrator** Lambda to evaluate validation rules against sensor data
 4. If rules pass (all or any, depending on `validation.trigger`), the orchestrator triggers the job
 5. The state machine polls job status until completion
-6. In parallel, the **sla-monitor** branch tracks SLA deadlines and fires `SLA_WARNING` / `SLA_BREACH` events to EventBridge if needed
+6. If SLA is configured, the state machine creates **EventBridge Scheduler** entries that fire `SLA_WARNING` / `SLA_BREACH` events at exact deadlines
 
 No manual intervention required. The entire lifecycle is automated.
 

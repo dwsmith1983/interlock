@@ -154,7 +154,7 @@ A single state machine (`{env}-interlock-pipeline`) orchestrates the full pipeli
 5. **Poll** -- orchestrator checks job status at intervals
 6. **Complete** -- emit success/failure event to EventBridge
 
-The SLA monitor runs as a parallel branch, checking deadlines independently of the main evaluation loop.
+SLA monitoring uses EventBridge Scheduler — one-time schedule entries fire warning and breach alerts at exact timestamps, independent of the main evaluation loop.
 
 The ASL definition is at `deploy/statemachine.asl.json` and uses `templatefile()` to substitute Lambda ARNs.
 

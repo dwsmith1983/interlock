@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	schedulerTypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // HandleSLAMonitor processes SLA monitor requests from Step Functions.
@@ -199,7 +200,7 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 
 	// Determine final SLA status from the timestamps passed in
 	now := time.Now().UTC()
-	alertType := "SLA_MET"
+	alertType := string(types.EventSLAMet)
 	if input.BreachAt != "" {
 		breachAt, _ := time.Parse(time.RFC3339, input.BreachAt)
 		warningAt, _ := time.Parse(time.RFC3339, input.WarningAt)
@@ -211,9 +212,9 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 	}
 
 	// Publish SLA_MET — the only outcome not already fired by the Scheduler
-	if alertType == "SLA_MET" {
-		_ = publishEvent(ctx, d, "SLA_MET", input.PipelineID, input.ScheduleID, input.Date,
-			fmt.Sprintf("pipeline %s: SLA_MET", input.PipelineID))
+	if alertType == string(types.EventSLAMet) {
+		_ = publishEvent(ctx, d, string(types.EventSLAMet), input.PipelineID, input.ScheduleID, input.Date,
+			fmt.Sprintf("pipeline %s: %s", input.PipelineID, types.EventSLAMet))
 	}
 
 	d.Logger.InfoContext(ctx, "cancelled SLA schedules",
