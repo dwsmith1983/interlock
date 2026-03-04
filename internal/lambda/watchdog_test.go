@@ -301,7 +301,7 @@ func TestWatchdog_Reconcile_SkipsAlreadyTriggered(t *testing.T) {
 	})
 
 	// Seed existing trigger lock — already triggered for today.
-	seedTriggerLock(mock, "gold-revenue", "stream", "2026-03-04")
+	seedTriggerLock(mock, "gold-revenue", "2026-03-04")
 
 	err := lambda.HandleWatchdog(context.Background(), d)
 	require.NoError(t, err)
@@ -502,7 +502,7 @@ func TestWatchdog_Reconcile_PerHour_PartiallyTriggered(t *testing.T) {
 	})
 
 	// Seed trigger lock for T10 — only T11 should be recovered.
-	seedTriggerLock(mock, "bronze-cdr", "stream", "2026-03-04T10")
+	seedTriggerLock(mock, "bronze-cdr", "2026-03-04T10")
 
 	err := lambda.HandleWatchdog(context.Background(), d)
 	require.NoError(t, err)

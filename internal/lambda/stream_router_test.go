@@ -55,10 +55,10 @@ func seedConfig(mock *mockDDB, cfg types.PipelineConfig) {
 }
 
 // seedTriggerLock pre-inserts a trigger lock row to simulate a held lock.
-func seedTriggerLock(mock *mockDDB, pipelineID, schedule, date string) {
+func seedTriggerLock(mock *mockDDB, pipelineID, date string) {
 	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
 		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
 		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
 	})
 }
@@ -222,7 +222,7 @@ func TestStreamRouter_SensorMatch_LockHeld_NoSFN(t *testing.T) {
 
 	// Pre-insert a trigger lock.
 	date := time.Now().Format("2006-01-02")
-	seedTriggerLock(mock, "gold-revenue", "stream", date)
+	seedTriggerLock(mock, "gold-revenue", date)
 
 	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
 		"status": events.NewStringAttribute("ready"),
@@ -586,7 +586,7 @@ func TestStreamRouter_LateDataArrival_StillRunning_Silent(t *testing.T) {
 	date := time.Now().Format("2006-01-02")
 
 	// Seed a RUNNING trigger (normal in-flight execution).
-	seedTriggerLock(mock, "gold-revenue", "stream", date)
+	seedTriggerLock(mock, "gold-revenue", date)
 
 	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
 		"status": events.NewStringAttribute("ready"),
