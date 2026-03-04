@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ValidationExhausted` now ends the Step Functions execution as `FAILED` instead of `SUCCEEDED` (#41)
 - Joblog entry written on validation exhaustion for audit trail completeness (#41)
 - Watchdog prefix-matches trigger records for per-hour pipelines instead of requiring exact key match (#41)
+- SLA deadline calculation for daily pipelines with next-day deadlines (e.g., `"02:00"`) now rolls forward 24 hours when the computed breach time is already past (#43)
 
 ## [0.4.0] - 2026-03-03
 

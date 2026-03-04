@@ -107,6 +107,9 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 		}
 		breachAt = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
 			deadline.Hour(), deadline.Minute(), 0, 0, loc)
+		if breachAt.Before(now) {
+			breachAt = breachAt.Add(24 * time.Hour)
+		}
 	}
 	warningAt := breachAt.Add(-dur)
 
