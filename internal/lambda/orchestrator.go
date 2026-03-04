@@ -201,6 +201,10 @@ func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 // handleValidationExhausted publishes a VALIDATION_EXHAUSTED event when
 // the evaluation window closes without all rules passing.
 func handleValidationExhausted(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
+	if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventValidationExhausted, "", 0, "evaluation window exhausted without passing"); err != nil {
+		return OrchestratorOutput{}, fmt.Errorf("write validation-exhausted joblog: %w", err)
+	}
+
 	_ = publishEvent(ctx, d, string(types.EventValidationExhausted), input.PipelineID, input.ScheduleID, input.Date, "evaluation window exhausted without passing")
 
 	return OrchestratorOutput{

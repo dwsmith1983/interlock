@@ -217,8 +217,14 @@ func (m *mockDDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func
 
 	pkVal := input.ExpressionAttributeValues[":pk"].(*ddbtypes.AttributeValueMemberS).Value
 	prefixVal := ""
-	if p, ok := input.ExpressionAttributeValues[":prefix"]; ok {
-		prefixVal = p.(*ddbtypes.AttributeValueMemberS).Value
+	for k, v := range input.ExpressionAttributeValues {
+		if k == ":pk" {
+			continue
+		}
+		if s, ok := v.(*ddbtypes.AttributeValueMemberS); ok {
+			prefixVal = s.Value
+			break
+		}
 	}
 
 	table := *input.TableName

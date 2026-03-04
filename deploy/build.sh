@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
-LAMBDA_HANDLERS=(stream-router orchestrator sla-monitor watchdog)
+LAMBDA_HANDLERS=(stream-router orchestrator sla-monitor watchdog event-sink alert-dispatcher)
 
 echo "==> Cleaning dist directory"
 rm -rf "$DIST_DIR"

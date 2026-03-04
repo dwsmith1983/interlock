@@ -49,6 +49,25 @@ variable "sfn_timeout_seconds" {
   default     = 43200
 }
 
+variable "events_table_ttl_days" {
+  description = "TTL in days for records in the events table"
+  type        = number
+  default     = 90
+}
+
+variable "slack_bot_token" {
+  description = "Slack Bot API token for alert notifications (empty = logging only)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "slack_channel_id" {
+  description = "Slack channel ID for alert notifications"
+  type        = string
+  default     = ""
+}
+
 variable "enable_glue_trigger" {
   description = "Enable IAM permissions for Glue job triggering"
   type        = bool

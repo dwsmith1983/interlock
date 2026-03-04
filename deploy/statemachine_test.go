@@ -285,7 +285,7 @@ func TestASL_HasTriggerResultRouting(t *testing.T) {
 
 	var hasTrigger choiceState
 	require.NoError(t, json.Unmarshal(asl.States["HasTriggerResult"], &hasTrigger))
-	assert.Equal(t, "Done", hasTrigger.Default, "no trigger result should go to Done")
+	assert.Equal(t, "FailValidationExhausted", hasTrigger.Default, "no trigger result should fail as validation exhausted")
 	require.NotEmpty(t, hasTrigger.Choices)
 	assert.Equal(t, "WaitForJob", hasTrigger.Choices[0].Next, "with trigger result should poll job")
 }

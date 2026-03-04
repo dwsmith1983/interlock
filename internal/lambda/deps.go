@@ -15,10 +15,14 @@ type Deps struct {
 	Scheduler          SchedulerAPI
 	TriggerRunner      TriggerExecutor
 	StatusChecker      StatusChecker
+	HTTPClient         HTTPDoer
 	StateMachineARN    string
 	EventBusName       string
 	SLAMonitorARN      string // target ARN for Scheduler to invoke
 	SchedulerRoleARN   string // execution role for Scheduler
 	SchedulerGroupName string // EventBridge Scheduler group name
+	SlackBotToken      string
+	SlackChannelID     string
+	EventsTTLDays      int
 	Logger             *slog.Logger
 }

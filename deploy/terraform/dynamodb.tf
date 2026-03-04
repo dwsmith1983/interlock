@@ -52,6 +52,47 @@ resource "aws_dynamodb_table" "joblog" {
   tags = var.tags
 }
 
+resource "aws_dynamodb_table" "events" {
+  name         = "${var.environment}-interlock-events"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "PK"
+  range_key    = "SK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+
+  attribute {
+    name = "SK"
+    type = "S"
+  }
+
+  attribute {
+    name = "eventType"
+    type = "S"
+  }
+
+  attribute {
+    name = "timestamp"
+    type = "N"
+  }
+
+  global_secondary_index {
+    name            = "GSI1"
+    hash_key        = "eventType"
+    range_key       = "timestamp"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = var.tags
+}
+
 resource "aws_dynamodb_table" "rerun" {
   name         = "${var.environment}-interlock-rerun"
   billing_mode = "PAY_PER_REQUEST"

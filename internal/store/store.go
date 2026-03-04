@@ -20,10 +20,11 @@ type DynamoAPI interface {
 // Compile-time check that the real DynamoDB client satisfies DynamoAPI.
 var _ DynamoAPI = (*dynamodb.Client)(nil)
 
-// Store provides DynamoDB access to the control, job-log, and re-run tables.
+// Store provides DynamoDB access to the control, job-log, re-run, and events tables.
 type Store struct {
 	Client       DynamoAPI
 	ControlTable string
 	JobLogTable  string
 	RerunTable   string
+	EventsTable  string
 }

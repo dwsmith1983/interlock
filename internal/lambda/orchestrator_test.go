@@ -858,6 +858,50 @@ func TestOrchestrator_ValidationExhausted(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_ValidationExhausted_WritesJoblog(t *testing.T) {
+	ddb := newMockDDB()
+	d := newTestDeps(ddb)
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "validation-exhausted",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Mode != "validation-exhausted" {
+		t.Errorf("mode = %q, want %q", out.Mode, "validation-exhausted")
+	}
+	if out.Status != "exhausted" {
+		t.Errorf("status = %q, want %q", out.Status, "exhausted")
+	}
+
+	// Verify joblog entry was written (query for JOB# prefix).
+	jobItems, _ := ddb.Query(context.Background(), &dynamodb.QueryInput{
+		TableName:              strPtr("joblog"),
+		KeyConditionExpression: strPtr("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":pk":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-orders")},
+			":prefix": &ddbtypes.AttributeValueMemberS{Value: "JOB#daily#2026-03-01#"},
+		},
+	})
+	if len(jobItems.Items) != 1 {
+		t.Fatalf("expected 1 joblog entry, got %d", len(jobItems.Items))
+	}
+	jobEvent := jobItems.Items[0]["event"].(*ddbtypes.AttributeValueMemberS).Value
+	if jobEvent != types.JobEventValidationExhausted {
+		t.Errorf("joblog event = %q, want %q", jobEvent, types.JobEventValidationExhausted)
+	}
+
+	// Verify EventBridge event is still published.
+	eb := d.EventBridge.(*mockEventBridge)
+	if len(eb.events) != 1 {
+		t.Fatalf("expected 1 EventBridge call, got %d", len(eb.events))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Trigger date-arg injection tests
 // ---------------------------------------------------------------------------

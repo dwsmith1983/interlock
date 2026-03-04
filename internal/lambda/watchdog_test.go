@@ -14,12 +14,12 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// seedTriggerRow inserts a TRIGGER# row with status and TTL into the mock.
-func seedTriggerRow(mock *mockDDB, pipelineID, schedule, date, status string, ttl int64) {
+// seedTriggerRow inserts a running TRIGGER# row with TTL into the mock.
+func seedTriggerRow(mock *mockDDB, pipelineID, date string, ttl int64) {
 	item := map[string]ddbtypes.AttributeValue{
 		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
-		"status": &ddbtypes.AttributeValueMemberS{Value: status},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("cron", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
 	}
 	if ttl > 0 {
 		item["ttl"] = &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttl)}
@@ -33,7 +33,7 @@ func TestWatchdog_StaleTrigger_PublishesSFNTimeout(t *testing.T) {
 
 	// Seed a TRIGGER# row with a TTL in the past.
 	pastTTL := time.Now().Add(-1 * time.Hour).Unix()
-	seedTriggerRow(mock, "gold-revenue", "cron", "2026-03-01", types.TriggerStatusRunning, pastTTL)
+	seedTriggerRow(mock, "gold-revenue", "2026-03-01", pastTTL)
 
 	err := lambda.HandleWatchdog(context.Background(), d)
 	require.NoError(t, err)
@@ -60,7 +60,7 @@ func TestWatchdog_FreshTrigger_NoAlert(t *testing.T) {
 
 	// Seed a TRIGGER# row with a TTL in the future.
 	futureTTL := time.Now().Add(12 * time.Hour).Unix()
-	seedTriggerRow(mock, "gold-revenue", "cron", "2026-03-01", types.TriggerStatusRunning, futureTTL)
+	seedTriggerRow(mock, "gold-revenue", "2026-03-01", futureTTL)
 
 	err := lambda.HandleWatchdog(context.Background(), d)
 	require.NoError(t, err)
@@ -117,7 +117,7 @@ func TestWatchdog_SchedulePresent_NoAlert(t *testing.T) {
 
 	// Seed a TRIGGER# row for today.
 	today := time.Now().Format("2006-01-02")
-	seedTriggerRow(mock, "bronze-ingest", "cron", today, types.TriggerStatusRunning, time.Now().Add(12*time.Hour).Unix())
+	seedTriggerRow(mock, "bronze-ingest", today, time.Now().Add(12*time.Hour).Unix())
 
 	err := lambda.HandleWatchdog(context.Background(), d)
 	require.NoError(t, err)
@@ -158,6 +158,37 @@ func TestWatchdog_CalendarExcluded_NoAlert(t *testing.T) {
 	ebMock.mu.Lock()
 	defer ebMock.mu.Unlock()
 	assert.Empty(t, ebMock.events, "expected no EventBridge events for calendar-excluded day")
+}
+
+func TestWatchdog_HourlyTriggerRows_NoMissedAlert(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed an hourly cron-scheduled pipeline config.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-cdr"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "10 * * * *",
+			Timezone:   "UTC",
+			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "http://example.com"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed per-hour TRIGGER# rows (as created by per-hour execution model).
+	today := time.Now().Format("2006-01-02")
+	seedTriggerRow(mock, "bronze-cdr", today+"T00", time.Now().Add(12*time.Hour).Unix())
+	seedTriggerRow(mock, "bronze-cdr", today+"T01", time.Now().Add(12*time.Hour).Unix())
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No SCHEDULE_MISSED alert — per-hour triggers satisfy the daily check.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "expected no EventBridge events when per-hour triggers exist")
 }
 
 func TestWatchdog_StreamTriggered_NoMissedCheck(t *testing.T) {

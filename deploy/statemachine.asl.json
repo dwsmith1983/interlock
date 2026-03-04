@@ -239,7 +239,12 @@
           "Next": "WaitForJob"
         }
       ],
-      "Default": "Done"
+      "Default": "FailValidationExhausted"
+    },
+    "FailValidationExhausted": {
+      "Type": "Fail",
+      "Error": "ValidationExhausted",
+      "Cause": "Evaluation window closed without all validation rules passing"
     },
     "WaitForJob": {
       "Type": "Wait",
