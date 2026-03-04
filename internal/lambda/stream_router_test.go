@@ -693,9 +693,9 @@ func TestResolveExecutionDate_HourWithLeadingZero(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // makeRerunRequestRecord builds a DynamoDB stream event record for a RERUN_REQUEST# write.
-func makeRerunRequestRecord(pipelineID, schedule, date string) events.DynamoDBEventRecord {
-	pk := types.PipelinePK(pipelineID)
-	sk := types.RerunRequestSK(schedule, date)
+func makeRerunRequestRecord() events.DynamoDBEventRecord {
+	pk := types.PipelinePK("gold-revenue")
+	sk := types.RerunRequestSK("stream", "2026-03-01")
 	return events.DynamoDBEventRecord{
 		EventName: "INSERT",
 		Change: events.DynamoDBStreamRecord{
@@ -712,10 +712,10 @@ func makeRerunRequestRecord(pipelineID, schedule, date string) events.DynamoDBEv
 }
 
 // seedJobEvent inserts a job log record into the mock joblog table.
-func seedJobEvent(mock *mockDDB, pipelineID, schedule, date, timestamp, event string) {
+func seedJobEvent(mock *mockDDB, timestamp, event string) {
 	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
-		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
-		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(schedule, date, timestamp)},
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", "2026-03-01", timestamp)},
 		"event": &ddbtypes.AttributeValueMemberS{Value: event},
 	})
 }
@@ -750,13 +750,10 @@ func TestStreamRouter_RerunRequest_FailedJob_Allowed(t *testing.T) {
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
 
-	const schedule = "stream"
-	const date = "2026-03-01"
-
 	// Seed a failed job event.
-	seedJobEvent(mock, "gold-revenue", schedule, date, "1709280000000", types.JobEventFail)
+	seedJobEvent(mock, "1709280000000", types.JobEventFail)
 
-	record := makeRerunRequestRecord("gold-revenue", schedule, date)
+	record := makeRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -776,11 +773,8 @@ func TestStreamRouter_RerunRequest_SuccessDataChanged_Allowed(t *testing.T) {
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
 
-	const schedule = "stream"
-	const date = "2026-03-01"
-
 	// Seed a successful job event with timestamp 1000000.
-	seedJobEvent(mock, "gold-revenue", schedule, date, "1000000", types.JobEventSuccess)
+	seedJobEvent(mock, "1000000", types.JobEventSuccess)
 
 	// Seed a sensor with updatedAt AFTER the job timestamp.
 	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
@@ -788,7 +782,7 @@ func TestStreamRouter_RerunRequest_SuccessDataChanged_Allowed(t *testing.T) {
 		"status":    "ready",
 	})
 
-	record := makeRerunRequestRecord("gold-revenue", schedule, date)
+	record := makeRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -808,11 +802,8 @@ func TestStreamRouter_RerunRequest_SuccessDataUnchanged_Rejected(t *testing.T) {
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
 
-	const schedule = "stream"
-	const date = "2026-03-01"
-
 	// Seed a successful job event with timestamp 2000000.
-	seedJobEvent(mock, "gold-revenue", schedule, date, "2000000", types.JobEventSuccess)
+	seedJobEvent(mock, "2000000", types.JobEventSuccess)
 
 	// Seed a sensor with updatedAt BEFORE the job timestamp.
 	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
@@ -820,7 +811,7 @@ func TestStreamRouter_RerunRequest_SuccessDataUnchanged_Rejected(t *testing.T) {
 		"status":    "ready",
 	})
 
-	record := makeRerunRequestRecord("gold-revenue", schedule, date)
+	record := makeRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -845,13 +836,10 @@ func TestStreamRouter_RerunRequest_InfraExhausted_Allowed(t *testing.T) {
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
 
-	const schedule = "stream"
-	const date = "2026-03-01"
-
 	// Seed an infra-trigger-exhausted job event.
-	seedJobEvent(mock, "gold-revenue", schedule, date, "1709280000000", types.JobEventInfraTriggerExhausted)
+	seedJobEvent(mock, "1709280000000", types.JobEventInfraTriggerExhausted)
 
-	record := makeRerunRequestRecord("gold-revenue", schedule, date)
+	record := makeRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
