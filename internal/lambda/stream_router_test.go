@@ -163,6 +163,34 @@ func TestStreamRouter_SensorMatch_StartsSFN(t *testing.T) {
 	require.Len(t, ebMock.events, 1, "expected one EventBridge event")
 }
 
+func TestStreamRouter_SensorPrefixMatch_PerPeriodKey(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	// Per-period sensor key: "upstream-complete#2026-03-03T18" should prefix-match
+	// the trigger key "upstream-complete".
+	record := makeSensorRecord("gold-revenue", "upstream-complete#2026-03-03T18", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+		"date":   events.NewStringAttribute("20260303"),
+		"hour":   events.NewStringAttribute("18"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "per-period sensor key should match via prefix")
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	assert.Equal(t, "2026-03-03T18", input["date"], "date should come from sensor data")
+}
+
 func TestStreamRouter_SensorNoMatch_NoSFN(t *testing.T) {
 	mock := newMockDDB()
 	d, sfnMock, _ := testDeps(mock)
