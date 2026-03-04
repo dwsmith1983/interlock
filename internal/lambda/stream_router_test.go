@@ -3,6 +3,7 @@ package lambda_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
@@ -528,6 +529,121 @@ func TestStreamRouter_TriggerValueMismatch_NoSFN(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Late data arrival tests
+// ---------------------------------------------------------------------------
+
+func TestStreamRouter_LateDataArrival_CompletedSuccess(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	date := time.Now().Format("2006-01-02")
+
+	// Seed a COMPLETED trigger (pipeline finished successfully).
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	// Seed a successful job event in the joblog.
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1709280000000")},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+	})
+
+	// Send a sensor write — lock is held, pipeline completed with success.
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No SFN execution (lock held).
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "should not start SFN when lock held")
+	sfnMock.mu.Unlock()
+
+	// Should have published LATE_DATA_ARRIVAL event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "expected one EventBridge event")
+	assert.Equal(t, string(types.EventLateDataArrival), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestStreamRouter_LateDataArrival_StillRunning_Silent(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	date := time.Now().Format("2006-01-02")
+
+	// Seed a RUNNING trigger (normal in-flight execution).
+	seedTriggerLock(mock, "gold-revenue", "stream", date)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions)
+	sfnMock.mu.Unlock()
+
+	// No late data event — this is normal operation.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "should not publish late data event for RUNNING trigger")
+}
+
+func TestStreamRouter_LateDataArrival_CompletedFailed_Silent(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	date := time.Now().Format("2006-01-02")
+
+	// Seed a COMPLETED trigger but with a failed job.
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	// Seed a failed job event.
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1709280000000")},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventFail},
+	})
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No late data event — pipeline didn't succeed.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "should not publish late data event for failed job")
+}
+
+// ---------------------------------------------------------------------------
 // ResolveExecutionDate tests
 // ---------------------------------------------------------------------------
 
@@ -570,4 +686,168 @@ func TestResolveExecutionDate_HourWithLeadingZero(t *testing.T) {
 	if got != "2026-03-03T03" {
 		t.Errorf("got %q, want %q", got, "2026-03-03T03")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Rerun request helpers and tests
+// ---------------------------------------------------------------------------
+
+// makeRerunRequestRecord builds a DynamoDB stream event record for a RERUN_REQUEST# write.
+func makeRerunRequestRecord() events.DynamoDBEventRecord {
+	pk := types.PipelinePK("gold-revenue")
+	sk := types.RerunRequestSK("stream", "2026-03-01")
+	return events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+		},
+	}
+}
+
+// seedJobEvent inserts a job log record into the mock joblog table.
+func seedJobEvent(mock *mockDDB, timestamp, event string) {
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", "2026-03-01", timestamp)},
+		"event": &ddbtypes.AttributeValueMemberS{Value: event},
+	})
+}
+
+// seedSensor inserts a sensor record with a data map into the mock control table.
+func seedSensor(mock *mockDDB, pipelineID, sensorKey string, data map[string]interface{}) {
+	item := map[string]ddbtypes.AttributeValue{
+		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK(sensorKey)},
+	}
+	if data != nil {
+		dataAV := make(map[string]ddbtypes.AttributeValue, len(data))
+		for k, v := range data {
+			switch val := v.(type) {
+			case string:
+				dataAV[k] = &ddbtypes.AttributeValueMemberS{Value: val}
+			case float64:
+				dataAV[k] = &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%g", val)}
+			case int64:
+				dataAV[k] = &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", val)}
+			}
+		}
+		item["data"] = &ddbtypes.AttributeValueMemberM{Value: dataAV}
+	}
+	mock.putRaw(testControlTable, item)
+}
+
+func TestStreamRouter_RerunRequest_FailedJob_Allowed(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a failed job event.
+	seedJobEvent(mock, "1709280000000", types.JobEventFail)
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should have started a new SFN execution.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for manual rerun of failed job")
+	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
+}
+
+func TestStreamRouter_RerunRequest_SuccessDataChanged_Allowed(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a successful job event with timestamp 1000000.
+	seedJobEvent(mock, "1000000", types.JobEventSuccess)
+
+	// Seed a sensor with updatedAt AFTER the job timestamp.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"updatedAt": float64(2000000), // newer than job timestamp
+		"status":    "ready",
+	})
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Data changed — SFN should start.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution when sensor data changed after success")
+	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
+}
+
+func TestStreamRouter_RerunRequest_SuccessDataUnchanged_Rejected(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a successful job event with timestamp 2000000.
+	seedJobEvent(mock, "2000000", types.JobEventSuccess)
+
+	// Seed a sensor with updatedAt BEFORE the job timestamp.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"updatedAt": float64(1000000), // older than job timestamp
+		"status":    "ready",
+	})
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No SFN execution — data unchanged.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN execution when data unchanged after success")
+
+	// Should have published RERUN_REJECTED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "expected one EventBridge event for rejection")
+	assert.Equal(t, string(types.EventRerunRejected), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestStreamRouter_RerunRequest_InfraExhausted_Allowed(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed an infra-trigger-exhausted job event.
+	seedJobEvent(mock, "1709280000000", types.JobEventInfraTriggerExhausted)
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should have started a new SFN execution.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for manual rerun of infra-exhausted job")
+	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
 }

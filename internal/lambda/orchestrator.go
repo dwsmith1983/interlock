@@ -25,6 +25,8 @@ func HandleOrchestrator(ctx context.Context, d *Deps, input OrchestratorInput) (
 		return handlePostRun(ctx, d, input)
 	case "validation-exhausted":
 		return handleValidationExhausted(ctx, d, input)
+	case "trigger-exhausted":
+		return handleTriggerExhausted(ctx, d, input)
 	default:
 		return OrchestratorOutput{}, fmt.Errorf("unknown orchestrator mode: %q", input.Mode)
 	}
@@ -233,6 +235,36 @@ func remapPerPeriodSensors(sensors map[string]map[string]interface{}, date strin
 			}
 		}
 	}
+}
+
+// handleTriggerExhausted publishes RETRY_EXHAUSTED when trigger retries are
+// exhausted, writes a joblog entry for audit, and releases the trigger lock
+// so the pipeline can be re-triggered.
+func handleTriggerExhausted(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
+	errMsg := ""
+	if cause, ok := input.ErrorInfo["Cause"].(string); ok {
+		errMsg = cause
+	}
+
+	// Dual-write: joblog entry (audit) + EventBridge event (alerting).
+	if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
+		types.JobEventInfraTriggerExhausted, "", 0, errMsg); err != nil {
+		return OrchestratorOutput{}, fmt.Errorf("write trigger-exhausted joblog: %w", err)
+	}
+
+	_ = publishEvent(ctx, d, string(types.EventRetryExhausted), input.PipelineID, input.ScheduleID, input.Date,
+		fmt.Sprintf("trigger retries exhausted for %s: %s", input.PipelineID, errMsg))
+
+	// Release lock so pipeline can be re-triggered.
+	if err := d.Store.ReleaseTriggerLock(ctx, input.PipelineID, input.ScheduleID, input.Date); err != nil {
+		d.Logger.WarnContext(ctx, "failed to release trigger lock after exhaustion",
+			"pipeline", input.PipelineID, "error", err)
+	}
+
+	return OrchestratorOutput{
+		Mode:   "trigger-exhausted",
+		Status: "exhausted",
+	}, nil
 }
 
 // buildTriggerConfig converts a JobConfig into a TriggerConfig by

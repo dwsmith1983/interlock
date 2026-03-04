@@ -51,6 +51,8 @@ func handleRecord(ctx context.Context, d *Deps, record events.DynamoDBEventRecor
 		return nil
 	case strings.HasPrefix(sk, "JOB#"):
 		return handleJobLogEvent(ctx, d, pk, sk, record)
+	case strings.HasPrefix(sk, "RERUN_REQUEST#"):
+		return handleRerunRequest(ctx, d, pk, sk, record)
 	default:
 		return nil
 	}
@@ -173,6 +175,179 @@ func handleJobSuccess(ctx context.Context, d *Deps, pipelineID, schedule, date s
 		fmt.Sprintf("job completed for %s", pipelineID))
 }
 
+// handleRerunRequest processes a RERUN_REQUEST# stream record. It implements
+// a circuit breaker that prevents unnecessary re-runs when the previous run
+// succeeded and no sensor data has changed since.
+func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, _ events.DynamoDBEventRecord) error {
+	pipelineID := strings.TrimPrefix(pk, "PIPELINE#")
+	if pipelineID == pk {
+		return fmt.Errorf("unexpected PK format: %q", pk)
+	}
+
+	schedule, date, err := parseRerunRequestSK(sk)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
+	if err != nil {
+		return fmt.Errorf("load config for %q: %w", pipelineID, err)
+	}
+	if cfg == nil {
+		d.Logger.Warn("no config found for pipeline, skipping rerun request", "pipelineId", pipelineID)
+		return nil
+	}
+
+	job, err := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
+	if err != nil {
+		return fmt.Errorf("get latest job event for %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+
+	// Decision logic:
+	// - No job record → allow (never ran)
+	// - Failed/timeout/infra-exhausted → allow (previous run was not successful)
+	// - Success → check sensor freshness (only re-run if data changed)
+	allowed := true
+	reason := ""
+
+	if job != nil {
+		switch job.Event {
+		case types.JobEventFail, types.JobEventTimeout, types.JobEventInfraTriggerExhausted:
+			// Terminal failure — always allow rerun.
+			allowed = true
+		case types.JobEventSuccess:
+			// Check if sensor data has changed since the successful job.
+			fresh, err := checkSensorFreshness(ctx, d, pipelineID, job.SK)
+			if err != nil {
+				return fmt.Errorf("check sensor freshness for %q: %w", pipelineID, err)
+			}
+			if !fresh {
+				allowed = false
+				reason = "previous run succeeded and no sensor data has changed"
+			}
+		default:
+			// Unknown event — allow to be safe.
+			allowed = true
+		}
+	}
+
+	if !allowed {
+		// Write rejection audit trail.
+		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+			types.JobEventRerunRejected, "", 0, reason)
+
+		_ = publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
+			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, reason))
+
+		d.Logger.Info("rerun request rejected",
+			"pipelineId", pipelineID,
+			"schedule", schedule,
+			"date", date,
+			"reason", reason,
+		)
+		return nil
+	}
+
+	// Write acceptance audit trail.
+	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+		types.JobEventRerunAccepted, "", 0, "")
+
+	// Release existing lock and re-acquire for the new execution.
+	if err := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); err != nil {
+		return fmt.Errorf("release trigger lock for %q: %w", pipelineID, err)
+	}
+
+	if _, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, triggerLockTTL); err != nil {
+		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
+	}
+
+	execName := fmt.Sprintf("%s-%s-%s-manual-rerun-%d", pipelineID, schedule, date, time.Now().Unix())
+	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
+		return fmt.Errorf("start SFN manual rerun for %q: %w", pipelineID, err)
+	}
+
+	d.Logger.Info("started manual rerun",
+		"pipelineId", pipelineID,
+		"schedule", schedule,
+		"date", date,
+	)
+	return nil
+}
+
+// parseRerunRequestSK extracts schedule and date from a RERUN_REQUEST# sort key.
+// Expected format: RERUN_REQUEST#<schedule>#<date>
+func parseRerunRequestSK(sk string) (schedule, date string, err error) {
+	trimmed := strings.TrimPrefix(sk, "RERUN_REQUEST#")
+	parts := strings.SplitN(trimmed, "#", 2)
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("invalid RERUN_REQUEST SK format: %q", sk)
+	}
+	return parts[0], parts[1], nil
+}
+
+// checkSensorFreshness determines whether any sensor data has been updated
+// after the given job completed. The job timestamp is extracted from the job
+// SK (format: JOB#schedule#date#<unixMillis>). Returns true if data has
+// changed (rerun should proceed) or if freshness cannot be determined.
+func checkSensorFreshness(ctx context.Context, d *Deps, pipelineID, jobSK string) (bool, error) {
+	// Extract timestamp from the job SK.
+	parts := strings.Split(jobSK, "#")
+	if len(parts) < 4 {
+		// Can't parse timestamp — allow to be safe.
+		return true, nil
+	}
+	jobTimestamp, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+	if err != nil {
+		// Can't parse timestamp — allow to be safe.
+		return true, nil
+	}
+
+	sensors, err := d.Store.GetAllSensors(ctx, pipelineID)
+	if err != nil {
+		return false, fmt.Errorf("get sensors for %q: %w", pipelineID, err)
+	}
+	if len(sensors) == 0 {
+		// No sensors — can't prove unchanged, allow.
+		return true, nil
+	}
+
+	hasAnyUpdatedAt := false
+	for _, data := range sensors {
+		updatedAt, ok := data["updatedAt"]
+		if !ok {
+			continue
+		}
+		hasAnyUpdatedAt = true
+
+		var ts int64
+		switch v := updatedAt.(type) {
+		case float64:
+			ts = int64(v)
+		case int64:
+			ts = v
+		case string:
+			ts, err = strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				continue
+			}
+		default:
+			continue
+		}
+
+		if ts > jobTimestamp {
+			return true, nil // Data changed after job — allow rerun.
+		}
+	}
+
+	if !hasAnyUpdatedAt {
+		// No sensors have updatedAt — can't prove unchanged, allow.
+		return true, nil
+	}
+
+	// All sensor timestamps are older than the job — data unchanged.
+	return false, nil
+}
+
 // handleSensorEvent evaluates the trigger condition for a sensor write
 // and starts the Step Function execution if all conditions are met.
 func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record events.DynamoDBEventRecord) error {
@@ -243,7 +418,11 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		return fmt.Errorf("acquire trigger lock for %q: %w", pipelineID, err)
 	}
 	if !acquired {
-		d.Logger.Info("trigger lock already held",
+		// Check if this is late data arriving after a completed pipeline.
+		if err := checkLateDataArrival(ctx, d, pipelineID, scheduleID, date); err != nil {
+			d.Logger.WarnContext(ctx, "late data check failed", "error", err)
+		}
+		d.Logger.InfoContext(ctx, "trigger lock already held",
 			"pipelineId", pipelineID,
 			"schedule", scheduleID,
 			"date", date,
@@ -264,6 +443,41 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		"schedule", scheduleID,
 		"date", date,
 	)
+	return nil
+}
+
+// checkLateDataArrival detects sensor updates after a pipeline has completed
+// successfully. If the trigger is in terminal COMPLETED state and the latest
+// job event is success, this sensor write represents late data that arrived
+// after post-job monitoring closed. Dual-writes a joblog entry and publishes
+// a LATE_DATA_ARRIVAL event.
+func checkLateDataArrival(ctx context.Context, d *Deps, pipelineID, schedule, date string) error {
+	trigger, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
+	if err != nil || trigger == nil {
+		return err
+	}
+
+	if trigger.Status != types.TriggerStatusCompleted {
+		return nil // still running or failed — not late data
+	}
+
+	job, err := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
+	if err != nil || job == nil {
+		return err
+	}
+
+	if job.Event != types.JobEventSuccess {
+		return nil // job didn't succeed — not a "late data after success" scenario
+	}
+
+	// Dual-write: joblog entry (audit) + EventBridge event (alerting).
+	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+		types.JobEventLateDataArrival, "", 0,
+		"sensor updated after pipeline completed successfully")
+
+	_ = publishEvent(ctx, d, string(types.EventLateDataArrival), pipelineID, schedule, date,
+		fmt.Sprintf("late data arrival for %s: sensor updated after job completion", pipelineID))
+
 	return nil
 }
 

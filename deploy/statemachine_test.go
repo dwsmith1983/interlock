@@ -137,6 +137,7 @@ func TestASL_TopLevelStatesExist(t *testing.T) {
 		"CheckJob",
 		"IsJobDone",
 		"CheckCancelSLA",
+		"TriggerRetryExhausted",
 		"CancelSLASchedules",
 		"InfraFailure",
 		"Done",
@@ -365,6 +366,28 @@ func TestASL_ScheduleSLACatchDoesNotBlock(t *testing.T) {
 	require.NotEmpty(t, sched.Catch)
 	assert.Equal(t, "HasTriggerResult", sched.Catch[0].Next,
 		"ScheduleSLAAlerts catch should continue to HasTriggerResult, not block pipeline")
+}
+
+func TestASL_TriggerRetryExhaustedFlow(t *testing.T) {
+	asl := loadASL(t)
+
+	// Trigger Catch routes to TriggerRetryExhausted (not CheckCancelSLA directly).
+	var trigger taskState
+	require.NoError(t, json.Unmarshal(asl.States["Trigger"], &trigger))
+	require.NotEmpty(t, trigger.Catch)
+	assert.Equal(t, "TriggerRetryExhausted", trigger.Catch[0].Next,
+		"Trigger catch should route to TriggerRetryExhausted")
+
+	// TriggerRetryExhausted → CheckCancelSLA.
+	var exhausted taskState
+	require.NoError(t, json.Unmarshal(asl.States["TriggerRetryExhausted"], &exhausted))
+	assert.Equal(t, "CheckCancelSLA", exhausted.Next,
+		"TriggerRetryExhausted should proceed to CheckCancelSLA")
+
+	// TriggerRetryExhausted Catch falls through to CheckCancelSLA (best-effort).
+	require.NotEmpty(t, exhausted.Catch)
+	assert.Equal(t, "CheckCancelSLA", exhausted.Catch[0].Next,
+		"TriggerRetryExhausted catch should fall through to CheckCancelSLA")
 }
 
 func TestASL_CancelSLACatchDoesNotBlock(t *testing.T) {

@@ -27,6 +27,8 @@ func TestEventDetailTypeConstants(t *testing.T) {
 		{types.EventJobFailed, "JOB_FAILED"},
 		{types.EventValidationPassed, "VALIDATION_PASSED"},
 		{types.EventInfraFailure, "INFRA_FAILURE"},
+		{types.EventLateDataArrival, "LATE_DATA_ARRIVAL"},
+		{types.EventRerunRejected, "RERUN_REJECTED"},
 	}
 
 	for _, tt := range tests {

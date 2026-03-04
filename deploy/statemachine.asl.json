@@ -144,6 +144,40 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.errorInfo",
+          "Next": "TriggerRetryExhausted"
+        }
+      ]
+    },
+    "TriggerRetryExhausted": {
+      "Type": "Task",
+      "Comment": "Publish RETRY_EXHAUSTED event, write joblog entry, release trigger lock",
+      "Resource": "${orchestrator_arn}",
+      "Parameters": {
+        "mode": "trigger-exhausted",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date",
+        "errorInfo.$": "$.errorInfo"
+      },
+      "ResultPath": "$.triggerExhaustedResult",
+      "Next": "CheckCancelSLA",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
           "Next": "CheckCancelSLA"
         }
       ]
