@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- SLA deadline calculation for daily pipelines with next-day deadlines (e.g., `"02:00"`) now rolls forward 24 hours when the computed breach time is already past. Previously, a daily pipeline with execution date March 4 and deadline `"02:00"` would compute breach at `2026-03-04T02:00Z` (same day, before data arrives) instead of `2026-03-05T02:00Z` (next day).
+
 ## [0.4.0] - 2026-03-03
 
 ### Added

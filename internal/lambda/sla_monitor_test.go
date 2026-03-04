@@ -19,7 +19,7 @@ func TestSLAMonitor_Calculate_Basic(t *testing.T) {
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 		Mode:             "calculate",
 		PipelineID:       "gold-orders",
-		Date:             "2026-03-01",
+		Date:             "2030-03-01",
 		Deadline:         "08:00",
 		ExpectedDuration: "30m",
 	})
@@ -27,11 +27,11 @@ func TestSLAMonitor_Calculate_Basic(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Expect full ISO 8601 timestamps for SFN TimestampPath
-	if out.WarningAt != "2026-03-01T07:30:00Z" {
-		t.Errorf("warningAt = %q, want %q", out.WarningAt, "2026-03-01T07:30:00Z")
+	if out.WarningAt != "2030-03-01T07:30:00Z" {
+		t.Errorf("warningAt = %q, want %q", out.WarningAt, "2030-03-01T07:30:00Z")
 	}
-	if out.BreachAt != "2026-03-01T08:00:00Z" {
-		t.Errorf("breachAt = %q, want %q", out.BreachAt, "2026-03-01T08:00:00Z")
+	if out.BreachAt != "2030-03-01T08:00:00Z" {
+		t.Errorf("breachAt = %q, want %q", out.BreachAt, "2030-03-01T08:00:00Z")
 	}
 }
 
@@ -40,7 +40,7 @@ func TestSLAMonitor_Calculate_Midnight(t *testing.T) {
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 		Mode:             "calculate",
 		PipelineID:       "gold-orders",
-		Date:             "2026-03-01",
+		Date:             "2030-03-01",
 		Deadline:         "00:30",
 		ExpectedDuration: "1h",
 	})
@@ -48,11 +48,11 @@ func TestSLAMonitor_Calculate_Midnight(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Warning wraps to previous day
-	if out.WarningAt != "2026-02-28T23:30:00Z" {
-		t.Errorf("warningAt = %q, want %q", out.WarningAt, "2026-02-28T23:30:00Z")
+	if out.WarningAt != "2030-02-28T23:30:00Z" {
+		t.Errorf("warningAt = %q, want %q", out.WarningAt, "2030-02-28T23:30:00Z")
 	}
-	if out.BreachAt != "2026-03-01T00:30:00Z" {
-		t.Errorf("breachAt = %q, want %q", out.BreachAt, "2026-03-01T00:30:00Z")
+	if out.BreachAt != "2030-03-01T00:30:00Z" {
+		t.Errorf("breachAt = %q, want %q", out.BreachAt, "2030-03-01T00:30:00Z")
 	}
 }
 
@@ -99,6 +99,34 @@ func TestSLAMonitor_Calculate_RelativeDeadline(t *testing.T) {
 	// Breach minute should be :30
 	if !strings.Contains(out.BreachAt, ":30:00Z") {
 		t.Errorf("breachAt %q should have minute 30", out.BreachAt)
+	}
+}
+
+func TestSLAMonitor_Calculate_DailyDeadlineRollsForward(t *testing.T) {
+	// Daily pipeline with execution date in the past and a small-hour deadline.
+	// The SLA deadline "02:00" for date 2026-03-04 means 2026-03-05T02:00:00Z
+	// (next day) because 2026-03-04T02:00 is already past.
+	d := &lambda.Deps{Logger: slog.Default()}
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:             "calculate",
+		PipelineID:       "silver-cdr-day",
+		Date:             "2024-01-15",
+		Deadline:         "02:00",
+		ExpectedDuration: "30m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// breachAt should NOT be 2024-01-15T02:00:00Z (in the past).
+	// It should roll forward by 24h to 2024-01-16T02:00:00Z.
+	if out.BreachAt == "2024-01-15T02:00:00Z" {
+		t.Errorf("breachAt = %q, should have rolled forward past now", out.BreachAt)
+	}
+	if out.BreachAt != "2024-01-16T02:00:00Z" {
+		t.Errorf("breachAt = %q, want %q", out.BreachAt, "2024-01-16T02:00:00Z")
+	}
+	if out.WarningAt != "2024-01-16T01:30:00Z" {
+		t.Errorf("warningAt = %q, want %q", out.WarningAt, "2024-01-16T01:30:00Z")
 	}
 }
 
