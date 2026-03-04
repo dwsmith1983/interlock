@@ -18,9 +18,20 @@ func HandleEventSink(ctx context.Context, d *Deps, input EventBridgeInput) error
 		return fmt.Errorf("unmarshal event detail: %w", err)
 	}
 
+	// Use the event's original timestamp when available; fall back to ingestion time.
+	var tsMillis int64
+	if !detail.Timestamp.IsZero() {
+		tsMillis = detail.Timestamp.UnixMilli()
+	} else {
+		tsMillis = time.Now().UnixMilli()
+	}
+
 	now := time.Now()
-	tsMillis := now.UnixMilli()
-	ttl := now.Add(time.Duration(d.EventsTTLDays) * 24 * time.Hour).Unix()
+	ttlDays := d.EventsTTLDays
+	if ttlDays <= 0 {
+		ttlDays = 90
+	}
+	ttl := now.Add(time.Duration(ttlDays) * 24 * time.Hour).Unix()
 	sk := fmt.Sprintf("%d#%s", tsMillis, input.DetailType)
 
 	item := map[string]ddbtypes.AttributeValue{
@@ -40,8 +51,9 @@ func HandleEventSink(ctx context.Context, d *Deps, input EventBridgeInput) error
 		Item:      item,
 	})
 	if err != nil {
-		return fmt.Errorf("write event to events table: %w", err)
+		return fmt.Errorf("write event to events table (pipeline=%s type=%s): %w", detail.PipelineID, input.DetailType, err)
 	}
 
+	d.Logger.InfoContext(ctx, "event written", "pipeline", detail.PipelineID, "eventType", input.DetailType, "sk", sk)
 	return nil
 }
