@@ -3,6 +3,7 @@ package lambda
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
@@ -38,6 +39,11 @@ type StatusChecker interface {
 type SchedulerAPI interface {
 	CreateSchedule(ctx context.Context, input *scheduler.CreateScheduleInput, opts ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error)
 	DeleteSchedule(ctx context.Context, input *scheduler.DeleteScheduleInput, opts ...func(*scheduler.Options)) (*scheduler.DeleteScheduleOutput, error)
+}
+
+// HTTPDoer abstracts HTTP client for testing.
+type HTTPDoer interface {
+	Do(req *http.Request) (*http.Response, error)
 }
 
 // StatusResult is a normalized job status from the trigger runner.
