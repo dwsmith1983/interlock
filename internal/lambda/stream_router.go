@@ -196,9 +196,10 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		return nil
 	}
 
-	// Check if this sensor key matches the trigger condition.
+	// Check if this sensor key matches the trigger condition (prefix match
+	// allows per-period sensor keys like "hourly-status#2026-03-03T18").
 	sensorKey := strings.TrimPrefix(sk, "SENSOR#")
-	if sensorKey != trigger.Key {
+	if !strings.HasPrefix(sensorKey, trigger.Key) {
 		return nil
 	}
 
