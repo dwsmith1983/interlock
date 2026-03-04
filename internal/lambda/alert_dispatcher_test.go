@@ -49,7 +49,7 @@ func (m *mockHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
-func buildSQSRecord(t *testing.T, messageID string, detailType string, detail types.InterlockEvent) sqsevents.SQSMessage {
+func buildSQSRecord(t *testing.T, messageID, detailType string, detail types.InterlockEvent) sqsevents.SQSMessage {
 	t.Helper()
 	detailJSON, err := json.Marshal(detail)
 	if err != nil {

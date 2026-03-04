@@ -96,8 +96,8 @@ func processAlertMessage(ctx context.Context, d *Deps, record events.SQSMessage)
 		return fmt.Errorf("post to slack: %w", err)
 	}
 	defer func() {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
 	}()
 
 	if resp.StatusCode != http.StatusOK {
