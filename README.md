@@ -17,8 +17,13 @@ Sensor data → DynamoDB Stream → stream-router Lambda → Step Functions
                                            (rules)     (job)       (deadlines)
                                                │           │
                                                ▼           ▼
-                                           EventBridge  EventBridge
-                                           (alerts)    (lifecycle)
+                                           EventBridge ──────────────────┐
+                                           (all events)                  │
+                                               │                         │
+                                    ┌──────────┼──────────┐              │
+                                    ▼                     ▼              ▼
+                               event-sink          SQS alert queue  CloudWatch
+                               (→ events table)    (→ alert-dispatcher → Slack)
 ```
 
 ### Declarative Validation Rules
@@ -50,10 +55,11 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
 ```
 ┌───────────────────┐     DynamoDB Stream     ┌───────────────────────────┐
 │    DynamoDB       │ ────────────────────►   │     stream-router         │
-│  3 tables:        │                         │  sensor → evaluate        │
+│  4 tables:        │                         │  sensor → evaluate        │
 │  - control        │                         │  config → cache invalidate│
 │  - joblog         │                         │  job-log → rerun/success  │
 │  - rerun          │                         └───────┬───────────────────┘
+│  - events         │
 └───────────────────┘                                 │
                                           ┌───────────▼──────────────┐
                                           │     Step Functions       │
@@ -79,6 +85,8 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
 | `orchestrator` | Multi-mode handler: evaluate rules, trigger jobs, check status, post-run validation |
 | `sla-monitor` | Schedules SLA alerts via EventBridge Scheduler; cancels on job completion |
 | `watchdog` | Detects stale trigger executions and missed cron schedules |
+| `event-sink` | Writes all EventBridge events to the events table for centralized logging |
+| `alert-dispatcher` | Delivers Slack notifications from SQS alert queue with message threading |
 
 ### DynamoDB Tables
 
@@ -87,6 +95,7 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
 | `control` | Pipeline configs, sensor data, run state (PK/SK design) |
 | `joblog` | Job execution event log (trigger, success, failure) |
 | `rerun` | Rerun request tracking |
+| `events` | Centralized event log with GSI for querying by type and timestamp |
 
 ## Pipeline Configuration
 
@@ -164,6 +173,10 @@ module "interlock" {
 
 The module creates all required infrastructure: DynamoDB tables, Lambda functions, Step Functions state machine, EventBridge rules, and IAM roles.
 
+## Example
+
+See [interlock-aws-example](https://github.com/dwsmith1983/interlock-aws-example) for a complete telecom ETL deployment with 6 pipelines, bronze/silver medallion architecture, and a CloudFront dashboard.
+
 ## Project Structure
 
 ```
@@ -172,7 +185,9 @@ interlock/
 │   ├── stream-router/       # DynamoDB Stream → Step Functions
 │   ├── orchestrator/        # Evaluate, trigger, check-job, post-run
 │   ├── sla-monitor/         # SLA deadline calculations + alerts
-│   └── watchdog/            # Missed schedule + stale run detection
+│   ├── watchdog/            # Missed schedule + stale run detection
+│   ├── event-sink/          # EventBridge → events table
+│   └── alert-dispatcher/    # SQS → Slack (Bot API with threading)
 ├── pkg/types/               # Public domain types (pipeline config, events, DynamoDB keys)
 ├── internal/
 │   ├── lambda/              # Lambda handler logic + shared types
@@ -202,6 +217,7 @@ make lint            # go fmt + go vet
 
 - Go 1.24+
 - AWS CLI v2 + Terraform >= 1.5 (for deployment)
+- Slack Bot token with `chat:write` scope (for alert notifications)
 
 ## License
 
