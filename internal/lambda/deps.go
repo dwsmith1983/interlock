@@ -20,5 +20,6 @@ type Deps struct {
 	SLAMonitorARN      string // target ARN for Scheduler to invoke
 	SchedulerRoleARN   string // execution role for Scheduler
 	SchedulerGroupName string // EventBridge Scheduler group name
+	EventsTTLDays      int
 	Logger             *slog.Logger
 }

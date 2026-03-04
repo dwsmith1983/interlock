@@ -90,3 +90,10 @@ type SLAMonitorOutput struct {
 	AlertType string `json:"alertType,omitempty"`
 	FiredAt   string `json:"firedAt,omitempty"`
 }
+
+// EventBridgeInput represents the envelope of an EventBridge event.
+type EventBridgeInput struct {
+	Source     string `json:"source"`
+	DetailType string `json:"detail-type"`
+	Detail     string `json:"detail"`
+}
