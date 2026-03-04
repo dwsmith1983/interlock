@@ -160,6 +160,37 @@ func TestWatchdog_CalendarExcluded_NoAlert(t *testing.T) {
 	assert.Empty(t, ebMock.events, "expected no EventBridge events for calendar-excluded day")
 }
 
+func TestWatchdog_HourlyTriggerRows_NoMissedAlert(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed an hourly cron-scheduled pipeline config.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-cdr"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "10 * * * *",
+			Timezone:   "UTC",
+			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "http://example.com"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed per-hour TRIGGER# rows (as created by per-hour execution model).
+	today := time.Now().Format("2006-01-02")
+	seedTriggerRow(mock, "bronze-cdr", "cron", today+"T00", types.TriggerStatusRunning, time.Now().Add(12*time.Hour).Unix())
+	seedTriggerRow(mock, "bronze-cdr", "cron", today+"T01", types.TriggerStatusRunning, time.Now().Add(12*time.Hour).Unix())
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No SCHEDULE_MISSED alert — per-hour triggers satisfy the daily check.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "expected no EventBridge events when per-hour triggers exist")
+}
+
 func TestWatchdog_StreamTriggered_NoMissedCheck(t *testing.T) {
 	mock := newMockDDB()
 	d, _, ebMock := testDeps(mock)

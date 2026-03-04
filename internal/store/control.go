@@ -306,6 +306,28 @@ func (s *Store) GetTrigger(ctx context.Context, pipelineID, schedule, date strin
 	return &rec, nil
 }
 
+// HasTriggerForDate returns true if any TRIGGER# row exists for the given
+// pipeline, schedule, and date prefix. This handles both daily triggers
+// (date="2026-03-04") and per-hour triggers (date="2026-03-04T00", etc.)
+// by matching the SK prefix "TRIGGER#<schedule>#<datePrefix>".
+func (s *Store) HasTriggerForDate(ctx context.Context, pipelineID, schedule, datePrefix string) (bool, error) {
+	skPrefix := "TRIGGER#" + schedule + "#" + datePrefix
+	out, err := s.Client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              &s.ControlTable,
+		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :skPrefix)"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":pk":       &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			":skPrefix": &ddbtypes.AttributeValueMemberS{Value: skPrefix},
+		},
+		Limit:  aws.Int32(1),
+		Select: ddbtypes.SelectCount,
+	})
+	if err != nil {
+		return false, fmt.Errorf("query triggers for %q/%s/%s: %w", pipelineID, schedule, datePrefix, err)
+	}
+	return out.Count > 0, nil
+}
+
 // SetTriggerStatus updates only the status attribute of an existing trigger row,
 // preserving TTL and other attributes.
 func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date, status string) error {

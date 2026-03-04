@@ -122,15 +122,15 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		// Resolve schedule ID for cron pipelines.
 		scheduleID := resolveScheduleID(cfg)
 
-		// Check if a TRIGGER# row exists for today.
-		trigger, err := d.Store.GetTrigger(ctx, id, scheduleID, today)
+		// Check if any TRIGGER# row exists for today (covers both daily
+		// and per-hour trigger rows, e.g. "2026-03-04" and "2026-03-04T00").
+		found, err := d.Store.HasTriggerForDate(ctx, id, scheduleID, today)
 		if err != nil {
 			d.Logger.Error("failed to check trigger for missed schedule",
 				"pipelineId", id, "error", err)
 			continue
 		}
-		if trigger != nil {
-			// Trigger exists — not missed.
+		if found {
 			continue
 		}
 
