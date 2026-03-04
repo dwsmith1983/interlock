@@ -220,3 +220,306 @@ func TestWatchdog_StreamTriggered_NoMissedCheck(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	assert.Empty(t, ebMock.events, "expected no EventBridge events for stream-triggered pipeline")
 }
+
+// ---------------------------------------------------------------------------
+// Sensor trigger reconciliation tests
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_Reconcile_TriggersRecovery(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	// Seed a sensor-triggered pipeline config.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed sensor that meets the trigger condition.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+		"date":   "2026-03-04",
+	})
+
+	// No trigger lock — reconciliation should recover this trigger.
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Expect 1 SFN execution for the recovered trigger.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for recovered trigger")
+
+	// Expect 1 TRIGGER_RECOVERED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var recoveredCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
+			recoveredCount++
+		}
+	}
+	assert.Equal(t, 1, recoveredCount, "expected one TRIGGER_RECOVERED event")
+}
+
+func TestWatchdog_Reconcile_SkipsAlreadyTriggered(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	// Seed a sensor-triggered pipeline config.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed sensor that meets the trigger condition.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+		"date":   "2026-03-04",
+	})
+
+	// Seed existing trigger lock — already triggered for today.
+	seedTriggerLock(mock, "gold-revenue", "2026-03-04")
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Expect no SFN executions — lock already held.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN executions when trigger lock already held")
+
+	// Expect no TRIGGER_RECOVERED events.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventTriggerRecovered), *ev.Entries[0].DetailType,
+			"should not publish TRIGGER_RECOVERED when lock exists")
+	}
+}
+
+func TestWatchdog_Reconcile_ConditionNotMet(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	// Seed a sensor-triggered pipeline config expecting status=ready.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed sensor with status=pending (does NOT match trigger condition).
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "pending",
+		"date":   "2026-03-04",
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Expect no SFN executions — condition not met.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN executions when trigger condition not met")
+
+	// Expect no TRIGGER_RECOVERED events.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventTriggerRecovered), *ev.Entries[0].DetailType,
+			"should not publish TRIGGER_RECOVERED when condition not met")
+	}
+}
+
+func TestWatchdog_Reconcile_CalendarExcluded(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	todayUTC := time.Now().UTC().Format("2006-01-02")
+
+	// Seed a sensor-triggered pipeline with today excluded.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Timezone: "UTC",
+			Exclude: &types.ExclusionConfig{
+				Dates: []string{todayUTC},
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed sensor that meets the trigger condition.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+		"date":   todayUTC,
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Expect no SFN executions — today is excluded.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN executions when calendar-excluded")
+
+	// Expect no TRIGGER_RECOVERED events.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventTriggerRecovered), *ev.Entries[0].DetailType,
+			"should not publish TRIGGER_RECOVERED on excluded day")
+	}
+}
+
+func TestWatchdog_Reconcile_PerHour_MultipleRecoveries(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	// Seed a sensor-triggered pipeline with trigger key "hourly-status".
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-cdr"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "hourly-status",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed TWO per-hour sensors that prefix-match the trigger key.
+	seedSensor(mock, "bronze-cdr", "hourly-status#2026-03-04T10", map[string]interface{}{
+		"status": "ready",
+		"date":   "2026-03-04",
+		"hour":   "10",
+	})
+	seedSensor(mock, "bronze-cdr", "hourly-status#2026-03-04T11", map[string]interface{}{
+		"status": "ready",
+		"date":   "2026-03-04",
+		"hour":   "11",
+	})
+
+	// No trigger locks — both should be recovered.
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Expect 2 SFN executions (one per hour).
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Len(t, sfnMock.executions, 2, "expected two SFN executions for two per-hour recoveries")
+
+	// Expect 2 TRIGGER_RECOVERED events.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var recoveredCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
+			recoveredCount++
+		}
+	}
+	assert.Equal(t, 2, recoveredCount, "expected two TRIGGER_RECOVERED events")
+}
+
+func TestWatchdog_Reconcile_PerHour_PartiallyTriggered(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	// Seed a sensor-triggered pipeline with trigger key "hourly-status".
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-cdr"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "hourly-status",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed TWO per-hour sensors that prefix-match the trigger key.
+	seedSensor(mock, "bronze-cdr", "hourly-status#2026-03-04T10", map[string]interface{}{
+		"status": "ready",
+		"date":   "2026-03-04",
+		"hour":   "10",
+	})
+	seedSensor(mock, "bronze-cdr", "hourly-status#2026-03-04T11", map[string]interface{}{
+		"status": "ready",
+		"date":   "2026-03-04",
+		"hour":   "11",
+	})
+
+	// Seed trigger lock for T10 — only T11 should be recovered.
+	seedTriggerLock(mock, "bronze-cdr", "2026-03-04T10")
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Expect 1 SFN execution (only T11).
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Len(t, sfnMock.executions, 1, "expected one SFN execution for T11 recovery only")
+
+	// Expect 1 TRIGGER_RECOVERED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var recoveredCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
+			recoveredCount++
+		}
+	}
+	assert.Equal(t, 1, recoveredCount, "expected one TRIGGER_RECOVERED event for T11 only")
+}

@@ -20,6 +20,7 @@ const (
 	EventInfraFailure        EventDetailType = "INFRA_FAILURE"
 	EventLateDataArrival     EventDetailType = "LATE_DATA_ARRIVAL"
 	EventRerunRejected       EventDetailType = "RERUN_REJECTED"
+	EventTriggerRecovered    EventDetailType = "TRIGGER_RECOVERED"
 )
 
 // EventSource is the EventBridge source for all interlock events.
