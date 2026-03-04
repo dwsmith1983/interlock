@@ -2,6 +2,7 @@ package lambda_test
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
@@ -168,6 +169,14 @@ func TestSLAMonitor_Schedule_CreatesTwo(t *testing.T) {
 	// Verify schedule expressions are at() format
 	if !strings.HasPrefix(*sched.created[0].ScheduleExpression, "at(") {
 		t.Errorf("warning schedule expression %q should start with 'at('", *sched.created[0].ScheduleExpression)
+	}
+	// Verify warning payload includes BreachAt for suppression
+	var warningPayload lambda.SLAMonitorInput
+	if err := json.Unmarshal([]byte(*sched.created[0].Target.Input), &warningPayload); err != nil {
+		t.Fatalf("unmarshal warning payload: %v", err)
+	}
+	if warningPayload.BreachAt == "" {
+		t.Error("warning schedule payload should include breachAt for suppression")
 	}
 }
 
@@ -362,6 +371,70 @@ func TestSLAMonitor_FireAlert_Breach(t *testing.T) {
 	}
 }
 
+func TestSLAMonitor_FireAlert_WarningSuppressedPastBreach(t *testing.T) {
+	// When fire-alert receives SLA_WARNING with a BreachAt in the past,
+	// the warning should be suppressed (breach already fired or imminent).
+	eb := &mockEventBridge{}
+	d := &lambda.Deps{
+		EventBridge:  eb,
+		EventBusName: "test-bus",
+		Logger:       slog.Default(),
+	}
+
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_WARNING",
+		BreachAt:   "2020-01-01T00:00:00Z", // well in the past
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.AlertType != "SLA_WARNING" {
+		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_WARNING")
+	}
+	// Warning should be suppressed — breach time already passed
+	if len(eb.events) != 0 {
+		t.Errorf("expected 0 EventBridge events (warning suppressed), got %d", len(eb.events))
+	}
+}
+
+func TestSLAMonitor_FireAlert_WarningFiredBeforeBreach(t *testing.T) {
+	// When fire-alert receives SLA_WARNING with a BreachAt in the future,
+	// the warning should fire normally.
+	eb := &mockEventBridge{}
+	d := &lambda.Deps{
+		EventBridge:  eb,
+		EventBusName: "test-bus",
+		Logger:       slog.Default(),
+	}
+
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_WARNING",
+		BreachAt:   "2099-01-01T00:00:00Z", // far in the future
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.AlertType != "SLA_WARNING" {
+		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_WARNING")
+	}
+	// Warning should fire normally — breach hasn't happened yet
+	if len(eb.events) != 1 {
+		t.Fatalf("expected 1 EventBridge event (warning fires), got %d", len(eb.events))
+	}
+	entry := eb.events[0].Entries[0]
+	if *entry.DetailType != "SLA_WARNING" {
+		t.Errorf("detail type = %q, want %q", *entry.DetailType, "SLA_WARNING")
+	}
+}
+
 func TestSLAMonitor_FireAlert_NoEventBridge(t *testing.T) {
 	d := &lambda.Deps{
 		EventBridge:  nil,
@@ -442,9 +515,9 @@ func TestSLAMonitor_Reconcile_Breach(t *testing.T) {
 	if out.AlertType != "SLA_BREACH" {
 		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_BREACH")
 	}
-	// Should fire both warning and breach events
-	if len(eb.events) != 2 {
-		t.Errorf("expected 2 EventBridge calls for SLA_BREACH, got %d", len(eb.events))
+	// Should fire breach event only (warning suppressed — breach already past)
+	if len(eb.events) != 1 {
+		t.Errorf("expected 1 EventBridge call for SLA_BREACH, got %d", len(eb.events))
 	}
 }
 

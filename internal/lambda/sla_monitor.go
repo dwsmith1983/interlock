@@ -119,6 +119,15 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 // handleSLAFireAlert publishes an SLA alert event to EventBridge and
 // returns the alert metadata.
 func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
+	if input.AlertType == "SLA_WARNING" && input.BreachAt != "" {
+		breachAt, err := time.Parse(time.RFC3339, input.BreachAt)
+		if err == nil && !time.Now().UTC().Before(breachAt) {
+			d.Logger.InfoContext(ctx, "suppressing SLA_WARNING (past breach time)",
+				"pipeline", input.PipelineID, "breachAt", input.BreachAt)
+			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: time.Now().UTC().Format(time.RFC3339)}, nil
+		}
+	}
+
 	msg := fmt.Sprintf("pipeline %s: %s", input.PipelineID, input.AlertType)
 
 	if err := publishEvent(ctx, d, input.AlertType, input.PipelineID, input.ScheduleID, input.Date, msg); err != nil {
@@ -127,7 +136,7 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 
 	return SLAMonitorOutput{
 		AlertType: input.AlertType,
-		FiredAt:   time.Now().Format(time.RFC3339),
+		FiredAt:   time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -161,6 +170,9 @@ func handleSLASchedule(ctx context.Context, d *Deps, input SLAMonitorInput) (SLA
 			ScheduleID: input.ScheduleID,
 			Date:       input.Date,
 			AlertType:  alert.alertType,
+		}
+		if alert.alertType == "SLA_WARNING" {
+			payload.BreachAt = calc.BreachAt
 		}
 		if err := createOneTimeSchedule(ctx, d, name, alert.timestamp, payload); err != nil {
 			return SLAMonitorOutput{}, fmt.Errorf("create %s schedule: %w", alert.suffix, err)
@@ -280,9 +292,6 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 	var alertType string
 	switch {
 	case now.After(breachAt) || now.Equal(breachAt):
-		// Past breach — fire both warning and breach
-		_ = publishEvent(ctx, d, "SLA_WARNING", input.PipelineID, input.ScheduleID, input.Date,
-			fmt.Sprintf("pipeline %s: SLA_WARNING (retroactive)", input.PipelineID))
 		_ = publishEvent(ctx, d, "SLA_BREACH", input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: SLA_BREACH", input.PipelineID))
 		alertType = "SLA_BREACH"
