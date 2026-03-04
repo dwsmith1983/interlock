@@ -67,6 +67,7 @@ Published by the **watchdog** Lambda, invoked on an EventBridge schedule (defaul
 | Detail Type | Meaning | When |
 |---|---|---|
 | `SCHEDULE_MISSED` | No evaluation started by the schedule deadline | Watchdog detects absence of expected pipeline activity |
+| `TRIGGER_RECOVERED` | Sensor trigger condition met but no trigger existed | Watchdog re-evaluated sensor data and self-healed a missed trigger |
 
 ## Event Payload Structure
 
