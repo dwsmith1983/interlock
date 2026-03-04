@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dwsmith1983/interlock/internal/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -18,6 +19,9 @@ func HandleWatchdog(ctx context.Context, d *Deps) error {
 	}
 	if err := detectMissedSchedules(ctx, d); err != nil {
 		d.Logger.Error("missed schedule detection failed", "error", err)
+	}
+	if err := reconcileSensorTriggers(ctx, d); err != nil {
+		d.Logger.Error("sensor trigger reconciliation failed", "error", err)
 	}
 	return nil
 }
@@ -94,6 +98,94 @@ func parseTriggerRecord(tr types.ControlRecord) (pipelineID, schedule, date stri
 		return "", "", "", fmt.Errorf("invalid TRIGGER SK format: %q", tr.SK)
 	}
 	return pipelineID, parts[0], parts[1], nil
+}
+
+// reconcileSensorTriggers re-evaluates trigger conditions for sensor-triggered
+// pipelines. If a sensor meets the trigger condition but no trigger lock exists,
+// the watchdog acquires the lock, starts the SFN, and publishes TRIGGER_RECOVERED.
+// This self-heals missed triggers caused by silent completion-write failures.
+func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
+	configs, err := d.ConfigCache.GetAll(ctx)
+	if err != nil {
+		return fmt.Errorf("load configs: %w", err)
+	}
+
+	now := time.Now()
+
+	for id, cfg := range configs {
+		trigger := cfg.Schedule.Trigger
+		if trigger == nil || cfg.Schedule.Cron != "" {
+			continue
+		}
+
+		if isExcluded(cfg, now) {
+			continue
+		}
+
+		sensors, err := d.Store.GetAllSensors(ctx, id)
+		if err != nil {
+			d.Logger.Error("failed to get sensors for reconciliation",
+				"pipelineId", id, "error", err)
+			continue
+		}
+
+		scheduleID := resolveScheduleID(cfg)
+
+		for sensorKey, sensorData := range sensors {
+			if !strings.HasPrefix(sensorKey, trigger.Key) {
+				continue
+			}
+
+			rule := types.ValidationRule{
+				Key:   trigger.Key,
+				Check: trigger.Check,
+				Field: trigger.Field,
+				Value: trigger.Value,
+			}
+			result := validation.EvaluateRule(rule, sensorData, now)
+			if !result.Passed {
+				continue
+			}
+
+			date := ResolveExecutionDate(sensorData)
+
+			found, err := d.Store.HasTriggerForDate(ctx, id, scheduleID, date)
+			if err != nil {
+				d.Logger.Error("trigger check failed during reconciliation",
+					"pipelineId", id, "date", date, "error", err)
+				continue
+			}
+			if found {
+				continue
+			}
+
+			acquired, err := d.Store.AcquireTriggerLock(ctx, id, scheduleID, date, triggerLockTTL)
+			if err != nil {
+				d.Logger.Error("lock acquisition failed during reconciliation",
+					"pipelineId", id, "date", date, "error", err)
+				continue
+			}
+			if !acquired {
+				continue
+			}
+
+			if err := startSFN(ctx, d, cfg, id, scheduleID, date); err != nil {
+				d.Logger.Error("SFN start failed during reconciliation",
+					"pipelineId", id, "date", date, "error", err)
+				continue
+			}
+
+			_ = publishEvent(ctx, d, string(types.EventTriggerRecovered), id, scheduleID, date,
+				fmt.Sprintf("trigger recovered for %s/%s/%s", id, scheduleID, date))
+
+			d.Logger.Info("recovered missed trigger",
+				"pipelineId", id,
+				"schedule", scheduleID,
+				"date", date,
+			)
+		}
+	}
+	return nil
 }
 
 // detectMissedSchedules checks all cron-scheduled pipelines to see if today's
