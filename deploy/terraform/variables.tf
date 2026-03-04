@@ -49,6 +49,19 @@ variable "sfn_timeout_seconds" {
   default     = 43200
 }
 
+variable "events_table_ttl_days" {
+  description = "TTL in days for records in the events table"
+  type        = number
+  default     = 90
+}
+
+variable "slack_webhook_url" {
+  description = "Slack incoming webhook URL for alert notifications (empty = logging only)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "enable_glue_trigger" {
   description = "Enable IAM permissions for Glue job triggering"
   type        = bool

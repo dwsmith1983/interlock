@@ -18,6 +18,16 @@ output "rerun_table_name" {
   value       = aws_dynamodb_table.rerun.name
 }
 
+output "events_table_name" {
+  description = "Name of the events DynamoDB table"
+  value       = aws_dynamodb_table.events.name
+}
+
+output "events_table_arn" {
+  description = "ARN of the events DynamoDB table"
+  value       = aws_dynamodb_table.events.arn
+}
+
 output "event_bus_name" {
   description = "Name of the EventBridge event bus"
   value       = aws_cloudwatch_event_bus.interlock.name
