@@ -7,35 +7,20 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
-	"github.com/dwsmith1983/interlock/internal/store"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background())
-	if err != nil {
-		logger.Error("failed to load AWS config", "error", err)
-		os.Exit(1)
-	}
-
-	ddbClient := dynamodb.NewFromConfig(cfg)
-	s := &store.Store{
-		Client:      ddbClient,
-		EventsTable: os.Getenv("EVENTS_TABLE"),
-	}
-
 	deps := &ilambda.Deps{
-		Store:           s,
 		SlackWebhookURL: os.Getenv("SLACK_WEBHOOK_URL"),
-		HTTPClient:      &http.Client{},
+		HTTPClient:      &http.Client{Timeout: 10 * time.Second},
 		Logger:          logger,
 	}
 
