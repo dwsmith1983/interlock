@@ -109,7 +109,10 @@ resource "aws_lambda_function" "alert_dispatcher" {
 
   environment {
     variables = {
-      SLACK_WEBHOOK_URL = var.slack_webhook_url
+      SLACK_BOT_TOKEN  = var.slack_bot_token
+      SLACK_CHANNEL_ID = var.slack_channel_id
+      EVENTS_TABLE     = aws_dynamodb_table.events.name
+      EVENTS_TTL_DAYS  = var.events_table_ttl_days
     }
   }
 
@@ -347,6 +350,19 @@ resource "aws_iam_role_policy" "alert_dispatcher_sqs" {
   })
 }
 
+resource "aws_iam_role_policy" "alert_dispatcher_dynamodb" {
+  name = "dynamodb-events-thread"
+  role = aws_iam_role.lambda["alert-dispatcher"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+      Resource = [aws_dynamodb_table.events.arn]
+    }]
+  })
+}
+
 # -----------------------------------------------------------------------------
 # DynamoDB Streams — stream-router (control + joblog streams)
 # -----------------------------------------------------------------------------
@@ -431,13 +447,13 @@ resource "aws_sqs_queue" "stream_router_joblog_dlq" {
 # =============================================================================
 
 resource "aws_lambda_event_source_mapping" "control_stream" {
-  event_source_arn                   = aws_dynamodb_table.control.stream_arn
-  function_name                      = aws_lambda_function.stream_router.arn
-  starting_position                  = "LATEST"
-  batch_size                         = 10
-  bisect_batch_on_function_error     = true
-  maximum_retry_attempts             = 3
-  function_response_types            = ["ReportBatchItemFailures"]
+  event_source_arn               = aws_dynamodb_table.control.stream_arn
+  function_name                  = aws_lambda_function.stream_router.arn
+  starting_position              = "LATEST"
+  batch_size                     = 10
+  bisect_batch_on_function_error = true
+  maximum_retry_attempts         = 3
+  function_response_types        = ["ReportBatchItemFailures"]
 
   destination_config {
     on_failure {
@@ -447,13 +463,13 @@ resource "aws_lambda_event_source_mapping" "control_stream" {
 }
 
 resource "aws_lambda_event_source_mapping" "joblog_stream" {
-  event_source_arn                   = aws_dynamodb_table.joblog.stream_arn
-  function_name                      = aws_lambda_function.stream_router.arn
-  starting_position                  = "LATEST"
-  batch_size                         = 10
-  bisect_batch_on_function_error     = true
-  maximum_retry_attempts             = 3
-  function_response_types            = ["ReportBatchItemFailures"]
+  event_source_arn               = aws_dynamodb_table.joblog.stream_arn
+  function_name                  = aws_lambda_function.stream_router.arn
+  starting_position              = "LATEST"
+  batch_size                     = 10
+  bisect_batch_on_function_error = true
+  maximum_retry_attempts         = 3
+  function_response_types        = ["ReportBatchItemFailures"]
 
   destination_config {
     on_failure {

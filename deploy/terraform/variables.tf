@@ -55,11 +55,17 @@ variable "events_table_ttl_days" {
   default     = 90
 }
 
-variable "slack_webhook_url" {
-  description = "Slack incoming webhook URL for alert notifications (empty = logging only)"
+variable "slack_bot_token" {
+  description = "Slack Bot API token for alert notifications (empty = logging only)"
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "slack_channel_id" {
+  description = "Slack channel ID for alert notifications"
+  type        = string
+  default     = ""
 }
 
 variable "enable_glue_trigger" {
