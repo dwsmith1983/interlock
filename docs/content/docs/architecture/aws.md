@@ -1,7 +1,7 @@
 ---
 title: AWS Architecture
 weight: 2
-description: 3 DynamoDB tables, 4 Lambda functions, Step Functions, EventBridge, and Terraform module.
+description: 4 DynamoDB tables, 6 Lambda functions, Step Functions, EventBridge, and Terraform module.
 ---
 
 Interlock runs as a fully serverless, event-driven system on AWS. External processes push sensor data into DynamoDB. DynamoDB Streams trigger a routing Lambda that starts Step Function executions. The orchestrator and SLA monitor Lambdas handle the pipeline lifecycle within the state machine. A watchdog Lambda runs independently on a schedule to detect silent failures.
@@ -28,11 +28,14 @@ External processes ──→ DynamoDB control table (SENSOR# writes)
 
 EventBridge schedule ──→ watchdog Lambda ──→ DynamoDB (scan for stale/missed)
                                            ──→ EventBridge (publish alerts)
+
+EventBridge rules ──→ event-sink Lambda ──→ events table (all events)
+                  ──→ SQS alert queue ──→ alert-dispatcher Lambda ──→ Slack
 ```
 
 ## DynamoDB Tables
 
-Interlock uses three DynamoDB tables, each with a composite primary key (`PK`, `SK`) and pay-per-request billing:
+Interlock uses four DynamoDB tables, each with a composite primary key (`PK`, `SK`) and pay-per-request billing:
 
 ### Control Table
 
@@ -64,7 +67,18 @@ Tracks retry attempts for failed job executions.
 |---|---|---|---|
 | Rerun record | `PIPELINE#{id}` | `RERUN#{schedule}#{date}#{attempt}` | Retry attempt metadata |
 
-All three tables have TTL enabled on a `ttl` attribute for automatic cleanup of expired records.
+### Events Table
+
+Centralized log of all EventBridge events. The event-sink Lambda writes every event to this table. Used by dashboards and audit queries.
+
+| Entity | PK | SK | Purpose |
+|---|---|---|---|
+| Event | `PIPELINE#{id}` | `{tsMillis}#{eventType}` | Timestamped event record |
+| Thread | `PIPELINE#{id}` | `THREAD#{schedule}#{date}` | Slack thread storage for alert-dispatcher |
+
+GSI1 (`eventType` → `timestamp`) enables querying all events of a specific type across pipelines.
+
+All four tables have TTL enabled on a `ttl` attribute for automatic cleanup of expired records.
 
 ## Lambda Functions
 
@@ -115,6 +129,18 @@ Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs two in
 2. **Missed schedules** -- loads all cron-scheduled pipeline configs, checks for missing `TRIGGER#` records for today's date. Publishes `SCHEDULE_MISSED` events for pipelines past their expected start time.
 
 See [Watchdog](../watchdog) for the full algorithm.
+
+### event-sink
+
+Receives EventBridge events via a rule that matches all `source: "interlock"` events. Writes each event to the events table with the pipeline ID as PK and a composite `{tsMillis}#{eventType}` as SK. TTL is set based on `EVENTS_TTL_DAYS` (default: 90).
+
+### alert-dispatcher
+
+Processes messages from the SQS alert queue. Formats pipeline events into Slack Block Kit messages and posts them using the Slack Bot API (`chat.postMessage`).
+
+**Threading**: looks up existing thread records in the events table (`THREAD#{scheduleId}#{date}`). If a thread exists for the pipeline-day, replies in-thread. Otherwise, posts a new message and saves the thread timestamp for subsequent alerts.
+
+**Error handling**: Slack API errors return batch item failures so SQS retries individual messages. Thread lookup/save errors are logged but don't fail the message delivery.
 
 ## Step Functions State Machine
 
@@ -201,10 +227,12 @@ Each Lambda function has its own IAM role with least-privilege policies:
 
 | Function | DynamoDB | EventBridge | Other |
 |---|---|---|---|
-| stream-router | Read/write all 3 tables + stream access | PutEvents | `states:StartExecution`, SQS SendMessage (DLQs) |
-| orchestrator | Read/write all 3 tables | PutEvents | Conditional trigger permissions (Glue, EMR, etc.) |
-| sla-monitor | None | PutEvents | -- |
-| watchdog | Read all 3 tables, write control only | PutEvents | -- |
+| stream-router | Read/write control, joblog, rerun + stream access | PutEvents | `states:StartExecution`, SQS SendMessage (DLQs) |
+| orchestrator | Read/write control, joblog, rerun | PutEvents | Conditional trigger permissions (Glue, EMR, etc.) |
+| sla-monitor | None | PutEvents | `scheduler:CreateSchedule`, `scheduler:DeleteSchedule` |
+| watchdog | Read control, joblog, rerun; write control only | PutEvents | -- |
+| event-sink | Write events table | -- | -- |
+| alert-dispatcher | Read/write events table (thread storage) | -- | SQS ReceiveMessage/DeleteMessage |
 
 Trigger permissions for the orchestrator are opt-in via Terraform variables (`enable_glue_trigger`, `enable_emr_trigger`, etc.).
 
@@ -220,8 +248,8 @@ deploy/
 ├── build.sh                 # Lambda build script (Go → zip)
 └── terraform/
     ├── main.tf              # Provider, module-level config
-    ├── dynamodb.tf          # 3 tables (control, joblog, rerun)
-    ├── lambda.tf            # 4 functions, IAM, DLQs, event source mappings
+    ├── dynamodb.tf          # 4 tables (control, joblog, rerun, events)
+    ├── lambda.tf            # 6 functions, IAM, DLQs, event source mappings
     ├── stepfunctions.tf     # State machine + execution role
     ├── eventbridge.tf       # Custom bus + watchdog schedule
     ├── config_loader.tf     # Pipeline YAML loading
