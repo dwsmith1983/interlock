@@ -4,7 +4,7 @@ weight: 1
 description: EventBridge-based event publishing, detail types, and consumer patterns.
 ---
 
-Interlock publishes all lifecycle and alert events to a custom EventBridge event bus. Consumers subscribe to events by creating EventBridge rules that match on detail types. There are no built-in alert sinks -- you route events to whatever targets your organization uses (SNS, SQS, Lambda, CloudWatch Logs, etc.).
+Interlock publishes all lifecycle and alert events to a custom EventBridge event bus. The framework includes two built-in consumers: an **event-sink** Lambda that logs all events to a DynamoDB events table, and an **alert-dispatcher** Lambda that delivers Slack notifications with message threading. You can also create custom rules to route events to SNS, SQS, Lambda, CloudWatch Logs, or any other EventBridge target.
 
 ## EventBridge Event Bus
 
@@ -50,6 +50,15 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `JOB_TIMEOUT` | Triggered job timed out | Job polling detects timeout |
 | `RETRY_EXHAUSTED` | All retry attempts consumed | Job failed `maxRetries` times without success |
 | `INFRA_FAILURE` | Unrecoverable infrastructure error | Step Functions execution reaches Fail state |
+
+### Rerun Events
+
+Published by the **stream-router** when processing rerun requests and late data arrivals.
+
+| Detail Type | Meaning | When |
+|---|---|---|
+| `LATE_DATA_ARRIVAL` | Sensor updated after job completed | Sensor `updatedAt` is newer than joblog `completedAt` |
+| `RERUN_REJECTED` | Rerun request rejected by circuit breaker | No new sensor data since last job completion |
 
 ### Watchdog Events
 
@@ -162,6 +171,34 @@ resource "aws_cloudwatch_event_rule" "gold_pipeline_events" {
   })
 }
 ```
+
+## Built-In Observability
+
+### Event Sink
+
+The Terraform module deploys an `event-sink` Lambda that captures all EventBridge events to a DynamoDB events table. This provides a queryable audit log without any additional configuration.
+
+The events table uses:
+- **PK**: `PIPELINE#{pipelineId}` — all events for a pipeline
+- **SK**: `{tsMillis}#{eventType}` — sorted by timestamp
+- **GSI1**: `eventType` → `timestamp` — query all events of a given type
+
+Records expire after a configurable TTL (default: 90 days via `events_ttl_days` variable).
+
+### Alert Dispatcher (Slack)
+
+The module deploys an `alert-dispatcher` Lambda that reads from an SQS alert queue and posts formatted notifications to Slack using the Bot API (`chat.postMessage`).
+
+**Configuration:**
+
+| Variable | Description |
+|---|---|
+| `slack_bot_token` | Bot token with `chat:write` scope (sensitive) |
+| `slack_channel_id` | Channel ID to post alerts to |
+
+**Message threading**: alerts for the same pipeline, schedule, and date are grouped into a single Slack thread. The first alert creates the thread; subsequent alerts reply in-thread. Thread records are stored in the events table and expire with the same TTL.
+
+**SLA warning suppression**: when an SLA breach has already occurred, the `fire-alert` handler suppresses the corresponding `SLA_WARNING` to prevent duplicate notifications.
 
 ## Consumer Patterns
 
