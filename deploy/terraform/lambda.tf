@@ -7,12 +7,13 @@
 # -----------------------------------------------------------------------------
 
 locals {
-  lambda_names = toset(["stream-router", "orchestrator", "sla-monitor", "watchdog"])
+  lambda_names = toset(["stream-router", "orchestrator", "sla-monitor", "watchdog", "event-sink", "alert-dispatcher"])
 
   table_arns = [
     aws_dynamodb_table.control.arn,
     aws_dynamodb_table.joblog.arn,
     aws_dynamodb_table.rerun.arn,
+    aws_dynamodb_table.events.arn,
   ]
 
   table_and_index_arns = flatten([
@@ -65,6 +66,55 @@ resource "aws_cloudwatch_log_group" "lambda" {
 # =============================================================================
 # Lambda functions
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# event-sink — writes all EventBridge events to the centralized events table
+# -----------------------------------------------------------------------------
+
+resource "aws_lambda_function" "event_sink" {
+  function_name    = "${var.environment}-interlock-event-sink"
+  role             = aws_iam_role.lambda["event-sink"].arn
+  handler          = "bootstrap"
+  runtime          = "provided.al2023"
+  architectures    = ["arm64"]
+  memory_size      = 128
+  timeout          = 30
+  filename         = "${var.dist_path}/event-sink.zip"
+  source_code_hash = filebase64sha256("${var.dist_path}/event-sink.zip")
+
+  environment {
+    variables = {
+      EVENTS_TABLE    = aws_dynamodb_table.events.name
+      EVENTS_TTL_DAYS = var.events_table_ttl_days
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.lambda["event-sink"]]
+}
+
+# -----------------------------------------------------------------------------
+# alert-dispatcher — sends Slack notifications from SQS alert queue
+# -----------------------------------------------------------------------------
+
+resource "aws_lambda_function" "alert_dispatcher" {
+  function_name    = "${var.environment}-interlock-alert-dispatcher"
+  role             = aws_iam_role.lambda["alert-dispatcher"].arn
+  handler          = "bootstrap"
+  runtime          = "provided.al2023"
+  architectures    = ["arm64"]
+  memory_size      = 128
+  timeout          = 30
+  filename         = "${var.dist_path}/alert-dispatcher.zip"
+  source_code_hash = filebase64sha256("${var.dist_path}/alert-dispatcher.zip")
+
+  environment {
+    variables = {
+      SLACK_WEBHOOK_URL = var.slack_webhook_url
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.lambda["alert-dispatcher"]]
+}
 
 # -----------------------------------------------------------------------------
 # 1. stream-router — processes DynamoDB stream events from control + joblog
@@ -257,10 +307,44 @@ data "aws_iam_policy_document" "eventbridge_put" {
 }
 
 resource "aws_iam_role_policy" "eventbridge_put" {
-  for_each = local.lambda_names
+  for_each = toset(["stream-router", "orchestrator", "sla-monitor", "watchdog"])
   name     = "eventbridge-put"
   role     = aws_iam_role.lambda[each.key].id
   policy   = data.aws_iam_policy_document.eventbridge_put.json
+}
+
+# -----------------------------------------------------------------------------
+# DynamoDB write — event-sink (events table only)
+# -----------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "event_sink_dynamodb" {
+  name = "dynamodb-events-write"
+  role = aws_iam_role.lambda["event-sink"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:PutItem"]
+      Resource = [aws_dynamodb_table.events.arn]
+    }]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# SQS receive — alert-dispatcher (alert queue)
+# -----------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "alert_dispatcher_sqs" {
+  name = "sqs-alert-receive"
+  role = aws_iam_role.lambda["alert-dispatcher"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+      Resource = [aws_sqs_queue.alert.arn]
+    }]
+  })
 }
 
 # -----------------------------------------------------------------------------

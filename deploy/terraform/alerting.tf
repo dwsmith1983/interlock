@@ -39,3 +39,14 @@ resource "aws_sqs_queue_policy" "alert" {
     }]
   })
 }
+
+# -----------------------------------------------------------------------------
+# SQS → alert-dispatcher Lambda event source mapping
+# -----------------------------------------------------------------------------
+
+resource "aws_lambda_event_source_mapping" "alert_dispatcher" {
+  event_source_arn        = aws_sqs_queue.alert.arn
+  function_name           = aws_lambda_function.alert_dispatcher.arn
+  batch_size              = 1
+  function_response_types = ["ReportBatchItemFailures"]
+}
