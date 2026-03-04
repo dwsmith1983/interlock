@@ -46,6 +46,8 @@ func handleEvaluate(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		return OrchestratorOutput{Mode: "evaluate", Error: err.Error()}, nil
 	}
 
+	remapPerPeriodSensors(sensors, input.Date)
+
 	result := validation.EvaluateRules(cfg.Validation.Trigger, cfg.Validation.Rules, sensors, time.Now())
 
 	if result.Passed {
@@ -178,6 +180,8 @@ func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 		return OrchestratorOutput{Mode: "post-run", Error: err.Error()}, nil
 	}
 
+	remapPerPeriodSensors(sensors, input.Date)
+
 	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, time.Now())
 
 	status := "not_ready"
@@ -201,6 +205,34 @@ func handleValidationExhausted(ctx context.Context, d *Deps, input OrchestratorI
 		Mode:   "validation-exhausted",
 		Status: "exhausted",
 	}, nil
+}
+
+// remapPerPeriodSensors adds base-key aliases for per-period sensor keys.
+// For example, sensor "hourly-status#20260303T07" becomes accessible under
+// key "hourly-status" when the execution date is "2026-03-03T07". This allows
+// validation rules with key "hourly-status" to match per-period sensor records.
+// Handles both normalized (2026-03-03) and compact (20260303) date formats.
+func remapPerPeriodSensors(sensors map[string]map[string]interface{}, date string) {
+	if date == "" {
+		return
+	}
+	// Build candidate suffixes: the normalized date and compact form.
+	suffixes := []string{"#" + date}
+	compact := strings.ReplaceAll(date, "-", "")
+	if compact != date {
+		suffixes = append(suffixes, "#"+compact)
+	}
+	for key, data := range sensors {
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(key, suffix) {
+				base := strings.TrimSuffix(key, suffix)
+				if _, exists := sensors[base]; !exists {
+					sensors[base] = data
+				}
+				break
+			}
+		}
+	}
 }
 
 // buildTriggerConfig converts a JobConfig into a TriggerConfig by

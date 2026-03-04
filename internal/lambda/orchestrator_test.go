@@ -262,6 +262,93 @@ func TestOrchestrator_Evaluate_ConfigNotFound(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_Evaluate_PerPeriodSensorKey(t *testing.T) {
+	pipelineID := "silver-cdr-hour"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Validation: types.ValidationConfig{
+			Trigger: "ALL",
+			Rules: []types.ValidationRule{
+				{Key: "hourly-status", Check: types.CheckEquals, Field: "complete", Value: true},
+				{Key: "hourly-status", Check: types.CheckGTE, Field: "pct_of_expected", Value: float64(0.7)},
+			},
+		},
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			// Sensor key uses compact date (from sensor.py): hourly-status#20260303T07
+			return &dynamodb.QueryOutput{
+				Items: []map[string]ddbtypes.AttributeValue{
+					sensorItem(pipelineID, "hourly-status#20260303T07", map[string]ddbtypes.AttributeValue{
+						"complete":        &ddbtypes.AttributeValueMemberBOOL{Value: true},
+						"pct_of_expected": &ddbtypes.AttributeValueMemberN{Value: "0.95"},
+					}),
+				},
+			}, nil
+		},
+	}
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "evaluate",
+		PipelineID: pipelineID,
+		ScheduleID: "stream",
+		Date:       "2026-03-03T07",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != "passed" {
+		t.Errorf("status = %q, want %q — per-period sensor key should be remapped to base key; results = %v", out.Status, "passed", out.Results)
+	}
+}
+
+func TestOrchestrator_Evaluate_PerPeriodDailySensorKey(t *testing.T) {
+	pipelineID := "silver-cdr-day"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Validation: types.ValidationConfig{
+			Trigger: "ALL",
+			Rules: []types.ValidationRule{
+				{Key: "daily-status", Check: types.CheckEquals, Field: "all_hours_complete", Value: true},
+			},
+		},
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{
+				Items: []map[string]ddbtypes.AttributeValue{
+					sensorItem(pipelineID, "daily-status#20260303", map[string]ddbtypes.AttributeValue{
+						"all_hours_complete": &ddbtypes.AttributeValueMemberBOOL{Value: true},
+					}),
+				},
+			}, nil
+		},
+	}
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "evaluate",
+		PipelineID: pipelineID,
+		ScheduleID: "stream",
+		Date:       "2026-03-03",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != "passed" {
+		t.Errorf("status = %q, want %q — daily per-period sensor should be remapped; results = %v", out.Status, "passed", out.Results)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Trigger tests
 // ---------------------------------------------------------------------------
