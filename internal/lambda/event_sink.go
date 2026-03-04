@@ -14,7 +14,7 @@ import (
 // HandleEventSink writes an EventBridge event to the centralized events table.
 func HandleEventSink(ctx context.Context, d *Deps, input EventBridgeInput) error {
 	var detail types.InterlockEvent
-	if err := json.Unmarshal([]byte(input.Detail), &detail); err != nil {
+	if err := json.Unmarshal(input.Detail, &detail); err != nil {
 		return fmt.Errorf("unmarshal event detail: %w", err)
 	}
 

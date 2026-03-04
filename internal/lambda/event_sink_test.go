@@ -40,7 +40,7 @@ func TestHandleEventSink_WritesEvent(t *testing.T) {
 	input := lambda.EventBridgeInput{
 		Source:     "interlock",
 		DetailType: "SLA_BREACH",
-		Detail:     string(detailJSON),
+		Detail:     detailJSON,
 	}
 
 	err = lambda.HandleEventSink(context.Background(), deps, input)
@@ -130,7 +130,7 @@ func TestHandleEventSink_InvalidDetail(t *testing.T) {
 	input := lambda.EventBridgeInput{
 		Source:     "interlock",
 		DetailType: "SLA_BREACH",
-		Detail:     "not valid json{{{",
+		Detail:     json.RawMessage("not valid json{{{"),
 	}
 
 	err := lambda.HandleEventSink(context.Background(), deps, input)

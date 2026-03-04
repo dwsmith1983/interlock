@@ -2,6 +2,7 @@ package lambda
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
@@ -93,7 +94,7 @@ type SLAMonitorOutput struct {
 
 // EventBridgeInput represents the envelope of an EventBridge event.
 type EventBridgeInput struct {
-	Source     string `json:"source"`
-	DetailType string `json:"detail-type"`
-	Detail     string `json:"detail"`
+	Source     string          `json:"source"`
+	DetailType string          `json:"detail-type"`
+	Detail     json.RawMessage `json:"detail"`
 }
