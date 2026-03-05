@@ -2,9 +2,12 @@ package lambda
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	schedulerTypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 
 	"github.com/dwsmith1983/interlock/internal/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -22,6 +25,9 @@ func HandleWatchdog(ctx context.Context, d *Deps) error {
 	}
 	if err := reconcileSensorTriggers(ctx, d); err != nil {
 		d.Logger.Error("sensor trigger reconciliation failed", "error", err)
+	}
+	if err := scheduleSLAAlerts(ctx, d); err != nil {
+		d.Logger.Error("proactive SLA scheduling failed", "error", err)
 	}
 	return nil
 }
@@ -252,4 +258,107 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		)
 	}
 	return nil
+}
+
+// scheduleSLAAlerts proactively creates EventBridge Scheduler entries for all
+// pipelines with SLA configs. This ensures warnings/breaches fire even when
+// pipelines never trigger (data never arrives, sensor fails, etc.).
+// Idempotency: deterministic scheduler names; ConflictException = already exists.
+func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
+	if d.Scheduler == nil {
+		return nil
+	}
+
+	configs, err := d.ConfigCache.GetAll(ctx)
+	if err != nil {
+		return fmt.Errorf("load configs: %w", err)
+	}
+
+	now := time.Now()
+
+	for id, cfg := range configs {
+		if cfg.SLA == nil {
+			continue
+		}
+
+		if isExcluded(cfg, now) {
+			continue
+		}
+
+		scheduleID := resolveScheduleID(cfg)
+		date := resolveWatchdogSLADate(cfg, now)
+
+		calc, err := handleSLACalculate(SLAMonitorInput{
+			Mode:             "calculate",
+			PipelineID:       id,
+			ScheduleID:       scheduleID,
+			Date:             date,
+			Deadline:         cfg.SLA.Deadline,
+			ExpectedDuration: cfg.SLA.ExpectedDuration,
+			Timezone:         cfg.SLA.Timezone,
+		})
+		if err != nil {
+			d.Logger.Error("SLA calculate failed", "pipelineId", id, "error", err)
+			continue
+		}
+
+		breachAt, _ := time.Parse(time.RFC3339, calc.BreachAt)
+		if !breachAt.IsZero() && !breachAt.After(now) {
+			continue
+		}
+
+		var scheduleErr bool
+		for _, alert := range []struct {
+			suffix    string
+			alertType string
+			timestamp string
+		}{
+			{"warning", "SLA_WARNING", calc.WarningAt},
+			{"breach", "SLA_BREACH", calc.BreachAt},
+		} {
+			name := slaScheduleName(id, scheduleID, date, alert.suffix)
+			payload := SLAMonitorInput{
+				Mode:       "fire-alert",
+				PipelineID: id,
+				ScheduleID: scheduleID,
+				Date:       date,
+				AlertType:  alert.alertType,
+			}
+			if alert.alertType == "SLA_WARNING" {
+				payload.BreachAt = calc.BreachAt
+			}
+			if err := createOneTimeSchedule(ctx, d, name, alert.timestamp, payload); err != nil {
+				var conflict *schedulerTypes.ConflictException
+				if errors.As(err, &conflict) {
+					continue
+				}
+				d.Logger.Error("create SLA schedule failed",
+					"pipelineId", id, "suffix", alert.suffix, "error", err)
+				scheduleErr = true
+			}
+		}
+
+		if !scheduleErr {
+			d.Logger.Info("proactive SLA schedules ensured",
+				"pipelineId", id,
+				"date", date,
+				"warningAt", calc.WarningAt,
+				"breachAt", calc.BreachAt,
+			)
+		}
+	}
+	return nil
+}
+
+// resolveWatchdogSLADate determines the execution date for SLA scheduling.
+//   - Hourly pipelines (relative deadline like ":30"): previous hour composite
+//     date, e.g. "2026-03-05T13" when the clock is 14:xx.
+//   - Daily pipelines (absolute deadline like "02:00"): today's date,
+//     so handleSLACalculate rolls the deadline forward to the next occurrence.
+func resolveWatchdogSLADate(cfg *types.PipelineConfig, now time.Time) string {
+	if strings.HasPrefix(cfg.SLA.Deadline, ":") {
+		prev := now.Add(-time.Hour)
+		return prev.Format("2006-01-02") + "T" + fmt.Sprintf("%02d", prev.Hour())
+	}
+	return now.Format("2006-01-02")
 }

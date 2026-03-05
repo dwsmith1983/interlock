@@ -7,6 +7,7 @@ import (
 	"time"
 
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	schedulerTypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -522,4 +523,167 @@ func TestWatchdog_Reconcile_PerHour_PartiallyTriggered(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, recoveredCount, "expected one TRIGGER_RECOVERED event for T11 only")
+}
+
+func TestWatchdog_ScheduleSLAAlerts_CreatesSchedules(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-hour"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "hourly-status",
+				Check: types.CheckEquals,
+				Field: "complete",
+				Value: "true",
+			},
+			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         ":30",
+			ExpectedDuration: "10m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	assert.Len(t, schedMock.created, 2, "expected 2 SLA schedules (warning + breach)")
+
+	for _, s := range schedMock.created {
+		assert.Contains(t, *s.Name, "silver-cdr-hour")
+	}
+}
+
+func TestWatchdog_ScheduleSLAAlerts_NoSLAConfig_Skips(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SchedulerGroupName = "interlock-sla"
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-ingest"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "0 6 * * *",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	assert.Empty(t, schedMock.created, "expected no SLA schedules for pipeline without SLA config")
+}
+
+func TestWatchdog_ScheduleSLAAlerts_ConflictSkips(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{
+		createErr: &schedulerTypes.ConflictException{Message: strPtr("already exists")},
+	}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-hour"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "hourly-status",
+				Check: types.CheckEquals,
+				Field: "complete",
+				Value: "true",
+			},
+			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         ":30",
+			ExpectedDuration: "10m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+}
+
+func TestWatchdog_ScheduleSLAAlerts_DailyPipeline(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "0 2 * * *",
+			Timezone:   "UTC",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         "02:00",
+			ExpectedDuration: "30m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test-day"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	assert.Len(t, schedMock.created, 2, "expected 2 SLA schedules for daily pipeline")
+}
+
+func TestWatchdog_ScheduleSLAAlerts_NoSchedulerClient_Skips(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-hour"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "hourly-status",
+				Check: types.CheckEquals,
+				Field: "complete",
+				Value: "true",
+			},
+			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         ":30",
+			ExpectedDuration: "10m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
 }
