@@ -534,20 +534,19 @@ func TestWatchdog_ScheduleSLAAlerts_CreatesSchedules(t *testing.T) {
 	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
 	d.SchedulerGroupName = "interlock-sla"
 
+	// Use a daily absolute deadline ("02:00") — handleSLACalculate rolls it
+	// forward when past, so breach is always in the future regardless of
+	// when this test runs. Hourly ":MM" deadlines are time-dependent and
+	// would fail if the previous hour's breach is already past.
 	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "silver-cdr-hour"},
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},
 		Schedule: types.ScheduleConfig{
-			Trigger: &types.TriggerCondition{
-				Key:   "hourly-status",
-				Check: types.CheckEquals,
-				Field: "complete",
-				Value: "true",
-			},
-			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
+			Cron:       "0 2 * * *",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		SLA: &types.SLAConfig{
-			Deadline:         ":30",
-			ExpectedDuration: "10m",
+			Deadline:         "02:00",
+			ExpectedDuration: "30m",
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
 		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
@@ -562,7 +561,7 @@ func TestWatchdog_ScheduleSLAAlerts_CreatesSchedules(t *testing.T) {
 	assert.Len(t, schedMock.created, 2, "expected 2 SLA schedules (warning + breach)")
 
 	for _, s := range schedMock.created {
-		assert.Contains(t, *s.Name, "silver-cdr-hour")
+		assert.Contains(t, *s.Name, "silver-cdr-day")
 	}
 }
 
@@ -603,20 +602,16 @@ func TestWatchdog_ScheduleSLAAlerts_ConflictSkips(t *testing.T) {
 	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
 	d.SchedulerGroupName = "interlock-sla"
 
+	// Use daily deadline to avoid time-dependent breach-past skip.
 	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "silver-cdr-hour"},
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},
 		Schedule: types.ScheduleConfig{
-			Trigger: &types.TriggerCondition{
-				Key:   "hourly-status",
-				Check: types.CheckEquals,
-				Field: "complete",
-				Value: "true",
-			},
-			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
+			Cron:       "0 2 * * *",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		SLA: &types.SLAConfig{
-			Deadline:         ":30",
-			ExpectedDuration: "10m",
+			Deadline:         "02:00",
+			ExpectedDuration: "30m",
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
 		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
@@ -665,19 +660,14 @@ func TestWatchdog_ScheduleSLAAlerts_NoSchedulerClient_Skips(t *testing.T) {
 	d, _, _ := testDeps(mock)
 
 	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "silver-cdr-hour"},
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},
 		Schedule: types.ScheduleConfig{
-			Trigger: &types.TriggerCondition{
-				Key:   "hourly-status",
-				Check: types.CheckEquals,
-				Field: "complete",
-				Value: "true",
-			},
-			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
+			Cron:       "0 2 * * *",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		SLA: &types.SLAConfig{
-			Deadline:         ":30",
-			ExpectedDuration: "10m",
+			Deadline:         "02:00",
+			ExpectedDuration: "30m",
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
 		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
