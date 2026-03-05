@@ -93,7 +93,7 @@
         "date.$": "$.date"
       },
       "ResultPath": "$.validationExhaustedResult",
-      "Next": "CheckSLAConfig",
+      "Next": "CheckCancelSLA",
       "Retry": [
         {
           "ErrorEquals": [
@@ -126,7 +126,7 @@
         "date.$": "$.date"
       },
       "ResultPath": "$.triggerResult",
-      "Next": "CheckSLAConfig",
+      "Next": "HasTriggerResult",
       "Retry": [
         {
           "ErrorEquals": [
@@ -179,53 +179,6 @@
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.errorInfo",
           "Next": "CheckCancelSLA"
-        }
-      ]
-    },
-    "CheckSLAConfig": {
-      "Type": "Choice",
-      "Comment": "Schedule SLA alerts if SLA config is provided, otherwise skip",
-      "Choices": [
-        {
-          "Variable": "$.config.sla",
-          "IsPresent": true,
-          "Next": "ScheduleSLAAlerts"
-        }
-      ],
-      "Default": "HasTriggerResult"
-    },
-    "ScheduleSLAAlerts": {
-      "Type": "Task",
-      "Comment": "Create one-time EventBridge Scheduler entries for SLA warning and breach",
-      "Resource": "${sla_monitor_arn}",
-      "Parameters": {
-        "mode": "schedule",
-        "pipelineId.$": "$.pipelineId",
-        "scheduleId.$": "$.scheduleId",
-        "date.$": "$.date",
-        "deadline.$": "$.config.sla.deadline",
-        "expectedDuration.$": "$.config.sla.expectedDuration"
-      },
-      "ResultPath": "$.slaSchedule",
-      "Next": "HasTriggerResult",
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "Lambda.ServiceException",
-            "Lambda.AWSLambdaException",
-            "Lambda.TooManyRequestsException",
-            "States.TaskFailed"
-          ],
-          "IntervalSeconds": 2,
-          "MaxAttempts": 3,
-          "BackoffRate": 2
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "ResultPath": "$.errorInfo",
-          "Next": "HasTriggerResult"
         }
       ]
     },
@@ -321,7 +274,7 @@
       "Comment": "Cancel SLA schedules if SLA was configured, otherwise finish",
       "Choices": [
         {
-          "Variable": "$.slaSchedule",
+          "Variable": "$.config.sla",
           "IsPresent": true,
           "Next": "CancelSLASchedules"
         }
@@ -337,8 +290,8 @@
         "pipelineId.$": "$.pipelineId",
         "scheduleId.$": "$.scheduleId",
         "date.$": "$.date",
-        "warningAt.$": "$.slaSchedule.warningAt",
-        "breachAt.$": "$.slaSchedule.breachAt"
+        "deadline.$": "$.config.sla.deadline",
+        "expectedDuration.$": "$.config.sla.expectedDuration"
       },
       "ResultPath": "$.slaResult",
       "Next": "Done",

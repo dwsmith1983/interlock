@@ -130,8 +130,6 @@ func TestASL_TopLevelStatesExist(t *testing.T) {
 		"CheckWindowExhausted",
 		"ValidationExhausted",
 		"Trigger",
-		"CheckSLAConfig",
-		"ScheduleSLAAlerts",
 		"HasTriggerResult",
 		"WaitForJob",
 		"CheckJob",
@@ -259,25 +257,13 @@ func TestASL_EvalLoopFlow(t *testing.T) {
 	assert.Equal(t, "Trigger", ready.Choices[0].Next)
 }
 
-func TestASL_TriggerToSLAFlow(t *testing.T) {
+func TestASL_TriggerToHasTriggerResult(t *testing.T) {
 	asl := loadASL(t)
 
-	// Trigger → CheckSLAConfig
+	// Trigger → HasTriggerResult (proactive SLA: scheduling moved to watchdog)
 	var trigger taskState
 	require.NoError(t, json.Unmarshal(asl.States["Trigger"], &trigger))
-	assert.Equal(t, "CheckSLAConfig", trigger.Next)
-
-	// CheckSLAConfig: SLA → ScheduleSLAAlerts, default → HasTriggerResult
-	var slaCheck choiceState
-	require.NoError(t, json.Unmarshal(asl.States["CheckSLAConfig"], &slaCheck))
-	assert.Equal(t, "HasTriggerResult", slaCheck.Default)
-	require.NotEmpty(t, slaCheck.Choices)
-	assert.Equal(t, "ScheduleSLAAlerts", slaCheck.Choices[0].Next)
-
-	// ScheduleSLAAlerts → HasTriggerResult
-	var sched taskState
-	require.NoError(t, json.Unmarshal(asl.States["ScheduleSLAAlerts"], &sched))
-	assert.Equal(t, "HasTriggerResult", sched.Next)
+	assert.Equal(t, "HasTriggerResult", trigger.Next)
 }
 
 func TestASL_HasTriggerResultRouting(t *testing.T) {
@@ -336,10 +322,10 @@ func TestASL_CancelSLAFlow(t *testing.T) {
 func TestASL_ValidationExhaustedToSLA(t *testing.T) {
 	asl := loadASL(t)
 
-	// ValidationExhausted → CheckSLAConfig
+	// ValidationExhausted → CheckCancelSLA (proactive SLA: scheduling moved to watchdog)
 	var exhausted taskState
 	require.NoError(t, json.Unmarshal(asl.States["ValidationExhausted"], &exhausted))
-	assert.Equal(t, "CheckSLAConfig", exhausted.Next)
+	assert.Equal(t, "CheckCancelSLA", exhausted.Next)
 }
 
 func TestASL_TerminalStates(t *testing.T) {
@@ -354,18 +340,6 @@ func TestASL_TerminalStates(t *testing.T) {
 	var inf stateBase
 	require.NoError(t, json.Unmarshal(asl.States["InfraFailure"], &inf))
 	assert.Equal(t, "Fail", inf.Type)
-}
-
-func TestASL_ScheduleSLACatchDoesNotBlock(t *testing.T) {
-	asl := loadASL(t)
-
-	// ScheduleSLAAlerts Catch should route to HasTriggerResult (not InfraFailure)
-	// SLA scheduling failure should not kill the pipeline
-	var sched taskState
-	require.NoError(t, json.Unmarshal(asl.States["ScheduleSLAAlerts"], &sched))
-	require.NotEmpty(t, sched.Catch)
-	assert.Equal(t, "HasTriggerResult", sched.Catch[0].Next,
-		"ScheduleSLAAlerts catch should continue to HasTriggerResult, not block pipeline")
 }
 
 func TestASL_TriggerRetryExhaustedFlow(t *testing.T) {

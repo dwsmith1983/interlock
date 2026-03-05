@@ -196,6 +196,16 @@ func handleSLASchedule(ctx context.Context, d *Deps, input SLAMonitorInput) (SLA
 // Warning/breach events were already published at the correct time by the
 // Scheduler-invoked fire-alert calls.
 func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
+	// If warningAt/breachAt not provided, recalculate from deadline/expectedDuration.
+	if input.WarningAt == "" && input.BreachAt == "" && input.Deadline != "" {
+		calc, err := handleSLACalculate(input)
+		if err != nil {
+			return SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
+		}
+		input.WarningAt = calc.WarningAt
+		input.BreachAt = calc.BreachAt
+	}
+
 	if d.Scheduler != nil {
 		for _, suffix := range []string{"warning", "breach"} {
 			name := slaScheduleName(input.PipelineID, input.ScheduleID, input.Date, suffix)
