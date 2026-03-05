@@ -330,6 +330,43 @@ func TestSLAMonitor_Cancel_NoScheduler(t *testing.T) {
 	}
 }
 
+func TestSLAMonitor_Cancel_RecalculatesWhenTimesNotProvided(t *testing.T) {
+	sched := &mockScheduler{}
+	eb := &mockEventBridge{}
+	d := &lambda.Deps{
+		Scheduler:          sched,
+		SchedulerGroupName: "interlock-sla",
+		EventBridge:        eb,
+		EventBusName:       "test-bus",
+		Logger:             slog.Default(),
+	}
+
+	// Cancel with deadline/expectedDuration instead of warningAt/breachAt.
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:             "cancel",
+		PipelineID:       "silver-cdr-hour",
+		ScheduleID:       "stream",
+		Date:             "2026-12-31T23",
+		Deadline:         ":30",
+		ExpectedDuration: "10m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.AlertType != "SLA_MET" {
+		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_MET")
+	}
+	if out.WarningAt == "" || out.BreachAt == "" {
+		t.Error("cancel with recalculation should return warningAt and breachAt")
+	}
+	if len(sched.deleted) != 2 {
+		t.Fatalf("expected 2 schedules deleted, got %d", len(sched.deleted))
+	}
+	if len(eb.events) != 1 {
+		t.Fatalf("expected 1 EventBridge call for SLA_MET, got %d", len(eb.events))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Fire-alert tests
 // ---------------------------------------------------------------------------
