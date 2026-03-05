@@ -61,3 +61,24 @@ resource "aws_iam_role_policy" "sla_monitor_scheduler" {
   role   = aws_iam_role.lambda["sla-monitor"].id
   policy = data.aws_iam_policy_document.scheduler_manage.json
 }
+
+# IAM policy for watchdog Lambda to create Scheduler schedules
+resource "aws_iam_role_policy" "watchdog_scheduler" {
+  name = "scheduler-create"
+  role = aws_iam_role.lambda["watchdog"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["scheduler:CreateSchedule"]
+        Resource = ["arn:aws:scheduler:*:*:schedule/${aws_scheduler_schedule_group.sla.name}/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
+        Resource = [aws_iam_role.scheduler_sla.arn]
+      }
+    ]
+  })
+}
