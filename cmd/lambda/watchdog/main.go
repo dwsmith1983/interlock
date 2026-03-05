@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/store"
@@ -41,6 +42,8 @@ func main() {
 	deps := &ilambda.Deps{
 		Store:              s,
 		ConfigCache:        cache,
+		SFNClient:          sfn.NewFromConfig(cfg),
+		StateMachineARN:    os.Getenv("STATE_MACHINE_ARN"),
 		EventBridge:        eventbridge.NewFromConfig(cfg),
 		EventBusName:       os.Getenv("EVENT_BUS_NAME"),
 		Scheduler:          scheduler.NewFromConfig(cfg),

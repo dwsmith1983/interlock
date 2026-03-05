@@ -221,6 +221,7 @@ resource "aws_lambda_function" "watchdog" {
       CONTROL_TABLE        = aws_dynamodb_table.control.name
       JOBLOG_TABLE         = aws_dynamodb_table.joblog.name
       RERUN_TABLE          = aws_dynamodb_table.rerun.name
+      STATE_MACHINE_ARN    = aws_sfn_state_machine.pipeline.arn
       EVENT_BUS_NAME       = aws_cloudwatch_event_bus.interlock.name
       SLA_MONITOR_ARN      = aws_lambda_function.sla_monitor.arn
       SCHEDULER_ROLE_ARN   = aws_iam_role.scheduler_sla.arn
@@ -404,9 +405,10 @@ data "aws_iam_policy_document" "sfn_start" {
 }
 
 resource "aws_iam_role_policy" "sfn_start" {
-  name   = "sfn-start"
-  role   = aws_iam_role.lambda["stream-router"].id
-  policy = data.aws_iam_policy_document.sfn_start.json
+  for_each = toset(["stream-router", "watchdog"])
+  name     = "sfn-start"
+  role     = aws_iam_role.lambda[each.key].id
+  policy   = data.aws_iam_policy_document.sfn_start.json
 }
 
 # -----------------------------------------------------------------------------
