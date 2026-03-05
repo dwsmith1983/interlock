@@ -624,12 +624,35 @@ func TestSLACalculate_HourlyDate_RelativeDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Breach at 10:30, warning at 10:20
-	if !strings.Contains(out.BreachAt, "T10:30:00") {
-		t.Errorf("breachAt = %q, want *T10:30:00*", out.BreachAt)
+	// Hourly pipeline: data for hour 10 is processed in hour 11,
+	// so ":30" means 11:30 (processing window), warning at 11:20.
+	if !strings.Contains(out.BreachAt, "T11:30:00") {
+		t.Errorf("breachAt = %q, want *T11:30:00*", out.BreachAt)
 	}
-	if !strings.Contains(out.WarningAt, "T10:20:00") {
-		t.Errorf("warningAt = %q, want *T10:20:00*", out.WarningAt)
+	if !strings.Contains(out.WarningAt, "T11:20:00") {
+		t.Errorf("warningAt = %q, want *T11:20:00*", out.WarningAt)
+	}
+}
+
+func TestSLACalculate_HourlyDate_Hour23Rollover(t *testing.T) {
+	// Hour 23 data is processed in hour 0 of the next day.
+	out, err := lambda.HandleSLAMonitor(context.Background(), &lambda.Deps{}, lambda.SLAMonitorInput{
+		Mode:             "calculate",
+		PipelineID:       "silver-cdr-hour",
+		ScheduleID:       "stream",
+		Date:             "2026-03-03T23",
+		Deadline:         ":30",
+		ExpectedDuration: "10m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// ":30" for hour 23 → breach at 2026-03-04T00:30:00Z (next day)
+	if out.BreachAt != "2026-03-04T00:30:00Z" {
+		t.Errorf("breachAt = %q, want %q", out.BreachAt, "2026-03-04T00:30:00Z")
+	}
+	if out.WarningAt != "2026-03-04T00:20:00Z" {
+		t.Errorf("warningAt = %q, want %q", out.WarningAt, "2026-03-04T00:20:00Z")
 	}
 }
 
