@@ -2,6 +2,7 @@ package lambda
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/dwsmith1983/interlock/internal/store"
 )
@@ -24,5 +25,6 @@ type Deps struct {
 	SlackBotToken      string
 	SlackChannelID     string
 	EventsTTLDays      int
+	StartedAt          time.Time // set at Lambda cold start; watchdog skips pre-start schedules
 	Logger             *slog.Logger
 }

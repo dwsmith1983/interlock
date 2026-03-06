@@ -525,6 +525,85 @@ func TestWatchdog_Reconcile_PerHour_PartiallyTriggered(t *testing.T) {
 	assert.Equal(t, 1, recoveredCount, "expected one TRIGGER_RECOVERED event for T11 only")
 }
 
+func TestWatchdog_MissedSchedule_SkipsPreDeployment(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed an hourly cron-scheduled pipeline.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-cdr"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "10 * * * *",
+			Timezone:   "UTC",
+			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "http://example.com"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Compute last :10 fire in UTC (matches production code's timezone handling).
+	nowUTC := time.Now().UTC()
+	lastFire := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), nowUTC.Hour(), 10, 0, 0, time.UTC)
+	if lastFire.After(nowUTC) {
+		lastFire = lastFire.Add(-time.Hour)
+	}
+	// StartedAt is AFTER the last :10 fire — should suppress the alert.
+	d.StartedAt = lastFire.Add(1 * time.Minute)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No SCHEDULE_MISSED alert — the :10 fire was before deployment.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventScheduleMissed), *ev.Entries[0].DetailType,
+			"should not publish SCHEDULE_MISSED for pre-deployment schedule")
+	}
+}
+
+func TestWatchdog_MissedSchedule_AlertsPostDeployment(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed an hourly cron-scheduled pipeline.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-cdr"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "10 * * * *",
+			Timezone:   "UTC",
+			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "http://example.com"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Compute last :10 fire in UTC (matches production code's timezone handling).
+	nowUTC := time.Now().UTC()
+	lastFire := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), nowUTC.Hour(), 10, 0, 0, time.UTC)
+	if lastFire.After(nowUTC) {
+		lastFire = lastFire.Add(-time.Hour)
+	}
+	// StartedAt is BEFORE the last :10 fire — should alert.
+	d.StartedAt = lastFire.Add(-1 * time.Minute)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Should have a SCHEDULE_MISSED alert.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var missedCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType == string(types.EventScheduleMissed) {
+			missedCount++
+		}
+	}
+	assert.Equal(t, 1, missedCount, "expected one SCHEDULE_MISSED event for post-deployment schedule")
+}
+
 func TestWatchdog_ScheduleSLAAlerts_CreatesSchedules(t *testing.T) {
 	mock := newMockDDB()
 	d, _, _ := testDeps(mock)

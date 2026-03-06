@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -194,6 +195,43 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 	return nil
 }
 
+// lastCronFire returns the most recent expected fire time for a cron expression.
+// Supports the minute-hour patterns used by this system: "MM * * * *" (hourly)
+// and "MM HH * * *" (daily). Returns zero time for unsupported patterns.
+func lastCronFire(cron string, now time.Time, loc *time.Location) time.Time {
+	fields := strings.Fields(cron)
+	if len(fields) < 5 {
+		return time.Time{}
+	}
+	minute, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return time.Time{}
+	}
+	localNow := now.In(loc)
+
+	if fields[1] == "*" {
+		// Hourly: fires at :MM every hour.
+		candidate := time.Date(localNow.Year(), localNow.Month(), localNow.Day(),
+			localNow.Hour(), minute, 0, 0, loc)
+		if candidate.After(localNow) {
+			candidate = candidate.Add(-time.Hour)
+		}
+		return candidate
+	}
+
+	hour, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return time.Time{}
+	}
+	// Daily: fires at HH:MM every day.
+	candidate := time.Date(localNow.Year(), localNow.Month(), localNow.Day(),
+		hour, minute, 0, 0, loc)
+	if candidate.After(localNow) {
+		candidate = candidate.Add(-24 * time.Hour)
+	}
+	return candidate
+}
+
 // detectMissedSchedules checks all cron-scheduled pipelines to see if today's
 // trigger is missing. If a pipeline should have started by now but has no
 // TRIGGER# row, a SCHEDULE_MISSED event is published.
@@ -215,6 +253,20 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		// Skip calendar-excluded days.
 		if isExcluded(cfg, now) {
 			continue
+		}
+
+		// Only alert for schedules that should have fired after this Lambda
+		// started. Prevents retroactive alerts after fresh deploys.
+		if !d.StartedAt.IsZero() {
+			loc := time.UTC
+			if cfg.Schedule.Timezone != "" {
+				if parsed, err := time.LoadLocation(cfg.Schedule.Timezone); err == nil {
+					loc = parsed
+				}
+			}
+			if lastFire := lastCronFire(cfg.Schedule.Cron, now, loc); !lastFire.IsZero() && lastFire.Before(d.StartedAt) {
+				continue
+			}
 		}
 
 		// Resolve schedule ID for cron pipelines.
