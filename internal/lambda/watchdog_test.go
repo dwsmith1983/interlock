@@ -797,6 +797,47 @@ func TestWatchdog_ScheduleSLAAlerts_SkipsCompletedTrigger(t *testing.T) {
 	assert.Empty(t, schedMock.created, "expected no SLA schedules for completed pipeline")
 }
 
+func TestWatchdog_ScheduleSLAAlerts_SkipsByJoblogNoTrigger(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-cdr"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "5 * * * *",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         ":30",
+			ExpectedDuration: "10m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	// No trigger row, but joblog has a success event (cron pipeline finished).
+	prevHour := time.Now().Add(-time.Hour)
+	date := prevHour.Format("2006-01-02") + "T" + fmt.Sprintf("%02d", prevHour.Hour())
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("bronze-cdr")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("cron", date, "1709280000000")},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	assert.Empty(t, schedMock.created, "expected no SLA schedules when joblog shows completion")
+}
+
 func TestWatchdog_ScheduleSLAAlerts_SkipsFailedFinalTrigger(t *testing.T) {
 	mock := newMockDDB()
 	d, _, _ := testDeps(mock)

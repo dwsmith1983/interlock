@@ -135,6 +135,12 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 			d.Logger.InfoContext(ctx, "suppressing SLA alert (pipeline already finished)",
 				"pipeline", input.PipelineID, "date", input.Date, "triggerStatus", tr.Status, "alertType", input.AlertType)
 			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: time.Now().UTC().Format(time.RFC3339)}, nil
+		} else if isJobTerminal(ctx, d, input.PipelineID, input.ScheduleID, input.Date) {
+			// Joblog fallback: trigger row may be nil (cron pipeline), RUNNING
+			// (not yet updated), or TTL-expired. Check joblog as secondary signal.
+			d.Logger.InfoContext(ctx, "suppressing SLA alert (terminal joblog event found)",
+				"pipeline", input.PipelineID, "date", input.Date, "alertType", input.AlertType)
+			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: time.Now().UTC().Format(time.RFC3339)}, nil
 		}
 	}
 
@@ -339,4 +345,24 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 		BreachAt:  calc.BreachAt,
 		FiredAt:   now.Format(time.RFC3339),
 	}, nil
+}
+
+// isJobTerminal checks the joblog for a terminal event (success, fail, timeout).
+// Returns true if the pipeline has finished processing for the given date.
+func isJobTerminal(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) bool {
+	rec, err := d.Store.GetLatestJobEvent(ctx, pipelineID, scheduleID, date)
+	if err != nil {
+		d.Logger.WarnContext(ctx, "joblog lookup failed, not suppressing",
+			"pipeline", pipelineID, "error", err)
+		return false
+	}
+	if rec == nil {
+		return false
+	}
+	switch rec.Event {
+	case types.JobEventSuccess, types.JobEventFail, types.JobEventTimeout:
+		return true
+	default:
+		return false
+	}
 }

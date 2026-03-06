@@ -346,6 +346,8 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 			d.Logger.Warn("trigger lookup failed in SLA scheduling", "pipelineId", id, "error", err)
 		} else if tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal) {
 			continue
+		} else if isJobTerminal(ctx, d, id, scheduleID, date) {
+			continue
 		}
 
 		calc, err := handleSLACalculate(SLAMonitorInput{
