@@ -664,7 +664,7 @@ func TestSLAMonitor_FireAlert_SuppressedByJoblogNoTrigger(t *testing.T) {
 	d, _, ebMock := testDeps(mock)
 
 	// No trigger row, but joblog shows success (cron pipeline or TTL-expired trigger).
-	mock.putRaw("joblog", jobItem("gold-orders", "daily", "2026-03-01", "1709280000000", types.JobEventSuccess))
+	mock.putRaw("joblog", jobItem("gold-orders", "daily", "2026-03-01", types.JobEventSuccess))
 
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 		Mode:       "fire-alert",
@@ -697,7 +697,7 @@ func TestSLAMonitor_FireAlert_SuppressedByJoblogRunningTrigger(t *testing.T) {
 		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
 		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
 	})
-	mock.putRaw("joblog", jobItem("gold-orders", "daily", "2026-03-01", "1709280000000", types.JobEventSuccess))
+	mock.putRaw("joblog", jobItem("gold-orders", "daily", "2026-03-01", types.JobEventSuccess))
 
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 		Mode:       "fire-alert",
@@ -725,7 +725,7 @@ func TestSLAMonitor_FireAlert_NotSuppressedByInfraFailure(t *testing.T) {
 	d, _, ebMock := testDeps(mock)
 
 	// Only infra-trigger-failure in joblog — should NOT suppress (still retrying).
-	mock.putRaw("joblog", jobItem("gold-orders", "daily", "2026-03-01", "1709280000000", types.JobEventInfraTriggerFailure))
+	mock.putRaw("joblog", jobItem("gold-orders", "daily", "2026-03-01", types.JobEventInfraTriggerFailure))
 
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 		Mode:       "fire-alert",

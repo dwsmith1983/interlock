@@ -127,19 +127,24 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
 	// Suppress alerts for pipelines that already completed or permanently failed.
 	if d.Store != nil {
+		suppressed := false
 		tr, err := d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
-		if err != nil {
+		switch {
+		case err != nil:
 			d.Logger.WarnContext(ctx, "trigger lookup failed in fire-alert, proceeding with alert",
 				"pipeline", input.PipelineID, "error", err)
-		} else if tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal) {
+		case tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal):
 			d.Logger.InfoContext(ctx, "suppressing SLA alert (pipeline already finished)",
 				"pipeline", input.PipelineID, "date", input.Date, "triggerStatus", tr.Status, "alertType", input.AlertType)
-			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: time.Now().UTC().Format(time.RFC3339)}, nil
-		} else if isJobTerminal(ctx, d, input.PipelineID, input.ScheduleID, input.Date) {
+			suppressed = true
+		case isJobTerminal(ctx, d, input.PipelineID, input.ScheduleID, input.Date):
 			// Joblog fallback: trigger row may be nil (cron pipeline), RUNNING
 			// (not yet updated), or TTL-expired. Check joblog as secondary signal.
 			d.Logger.InfoContext(ctx, "suppressing SLA alert (terminal joblog event found)",
 				"pipeline", input.PipelineID, "date", input.Date, "alertType", input.AlertType)
+			suppressed = true
+		}
+		if suppressed {
 			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: time.Now().UTC().Format(time.RFC3339)}, nil
 		}
 	}

@@ -113,10 +113,10 @@ func sensorItem(pipelineID, sensorKey string, data map[string]ddbtypes.Attribute
 	return item
 }
 
-func jobItem(pipelineID, schedule, date, timestamp, event string) map[string]ddbtypes.AttributeValue {
+func jobItem(pipelineID, schedule, date, event string) map[string]ddbtypes.AttributeValue {
 	return map[string]ddbtypes.AttributeValue{
 		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
-		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(schedule, date, timestamp)},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(schedule, date, "1709280000000")},
 		"event": &ddbtypes.AttributeValueMemberS{Value: event},
 	}
 }
@@ -547,7 +547,7 @@ func TestOrchestrator_CheckJob_Found(t *testing.T) {
 		queryFn: func(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 			return &dynamodb.QueryOutput{
 				Items: []map[string]ddbtypes.AttributeValue{
-					jobItem(pipelineID, "daily", "2026-03-01", "1709280000000", "success"),
+					jobItem(pipelineID, "daily", "2026-03-01", "success"),
 				},
 			}, nil
 		},
@@ -726,7 +726,7 @@ func TestOrchestrator_CheckJob_SkipsInfraFailureEvent(t *testing.T) {
 			// Return an infra-trigger-failure event as the latest joblog entry.
 			return &dynamodb.QueryOutput{
 				Items: []map[string]ddbtypes.AttributeValue{
-					jobItem(pipelineID, "hourly", "2026-03-02", "1709280000000", types.JobEventInfraTriggerFailure),
+					jobItem(pipelineID, "hourly", "2026-03-02", types.JobEventInfraTriggerFailure),
 				},
 			}, nil
 		},
