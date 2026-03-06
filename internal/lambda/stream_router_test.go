@@ -39,6 +39,7 @@ func testDeps(mock *mockDDB) (*lambda.Deps, *mockSFN, *mockEventBridge) {
 		EventBridge:     ebMock,
 		StateMachineARN: "arn:aws:states:us-east-1:123456789012:stateMachine:test",
 		EventBusName:    "interlock-bus",
+		StartedAt:       time.Now().Add(-24 * time.Hour),
 		Logger:          slog.Default(),
 	}
 	return d, sfnMock, ebMock
