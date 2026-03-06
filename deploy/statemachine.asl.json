@@ -242,7 +242,7 @@
     },
     "IsJobDone": {
       "Type": "Choice",
-      "Comment": "Route on job-check outcome: terminal events proceed to SLA cancel, otherwise keep polling",
+      "Comment": "Route on job-check outcome: terminal events proceed to trigger completion, otherwise keep polling",
       "Choices": [
         {
           "Not": {
@@ -254,20 +254,54 @@
         {
           "Variable": "$.checkJobResult.event",
           "StringEquals": "success",
-          "Next": "CheckCancelSLA"
+          "Next": "CompleteTrigger"
         },
         {
           "Variable": "$.checkJobResult.event",
           "StringEquals": "fail",
-          "Next": "CheckCancelSLA"
+          "Next": "CompleteTrigger"
         },
         {
           "Variable": "$.checkJobResult.event",
           "StringEquals": "timeout",
-          "Next": "CheckCancelSLA"
+          "Next": "CompleteTrigger"
         }
       ],
       "Default": "WaitForJob"
+    },
+    "CompleteTrigger": {
+      "Type": "Task",
+      "Comment": "Set trigger row to terminal status: COMPLETED on success, FAILED_FINAL on fail/timeout",
+      "Resource": "${orchestrator_arn}",
+      "Parameters": {
+        "mode": "complete-trigger",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date",
+        "event.$": "$.checkJobResult.event"
+      },
+      "ResultPath": "$.completeTriggerResult",
+      "Next": "CheckCancelSLA",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "CheckCancelSLA"
+        }
+      ]
     },
     "CheckCancelSLA": {
       "Type": "Choice",
