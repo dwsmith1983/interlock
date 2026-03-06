@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-03-05
+
+### Fixed
+
+- **Hourly SLA deadline offset**: relative deadline `:MM` for hourly pipelines (date format `2026-03-05T12`) now resolves to H+1:MM instead of H:MM. Data for hour H isn't generated until ~H+1:00, so the previous calculation set the breach deadline before data existed — guaranteeing a false breach every execution. Daily pipelines are unchanged.
+
 ## [0.5.1] - 2026-03-05
 
 ### Added
@@ -229,6 +235,8 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.5.2]: https://github.com/dwsmith1983/interlock/releases/tag/v0.5.2
+[0.5.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.5.1
 [0.5.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.5.0
 [0.4.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.4.0
 [0.3.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.3.1

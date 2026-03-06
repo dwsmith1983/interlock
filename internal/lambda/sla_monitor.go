@@ -96,8 +96,11 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 		hour := baseDate.Hour()
 		breachAt = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
 			hour, deadline.Minute(), 0, 0, loc)
-		// Only push to next hour if no explicit hour was set (daily pipeline)
-		if baseHour < 0 && breachAt.Before(now) {
+		if baseHour >= 0 {
+			// Hourly pipeline: data for hour H is processed in hour H+1,
+			// so ":MM" means MM minutes into the processing window (H+1).
+			breachAt = breachAt.Add(time.Hour)
+		} else if breachAt.Before(now) {
 			breachAt = breachAt.Add(time.Hour)
 		}
 	} else {
