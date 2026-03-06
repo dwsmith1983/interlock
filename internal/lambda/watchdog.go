@@ -340,6 +340,14 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 		scheduleID := resolveScheduleID(cfg)
 		date := resolveWatchdogSLADate(cfg, now)
 
+		// Skip if pipeline already completed or permanently failed for this date.
+		tr, err := d.Store.GetTrigger(ctx, id, scheduleID, date)
+		if err != nil {
+			d.Logger.Warn("trigger lookup failed in SLA scheduling", "pipelineId", id, "error", err)
+		} else if tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal) {
+			continue
+		}
+
 		calc, err := handleSLACalculate(SLAMonitorInput{
 			Mode:             "calculate",
 			PipelineID:       id,

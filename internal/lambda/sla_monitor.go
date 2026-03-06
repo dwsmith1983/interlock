@@ -125,6 +125,19 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 // handleSLAFireAlert publishes an SLA alert event to EventBridge and
 // returns the alert metadata.
 func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
+	// Suppress alerts for pipelines that already completed or permanently failed.
+	if d.Store != nil {
+		tr, err := d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
+		if err != nil {
+			d.Logger.WarnContext(ctx, "trigger lookup failed in fire-alert, proceeding with alert",
+				"pipeline", input.PipelineID, "error", err)
+		} else if tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal) {
+			d.Logger.InfoContext(ctx, "suppressing SLA alert (pipeline already finished)",
+				"pipeline", input.PipelineID, "date", input.Date, "triggerStatus", tr.Status, "alertType", input.AlertType)
+			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: time.Now().UTC().Format(time.RFC3339)}, nil
+		}
+	}
+
 	if input.AlertType == "SLA_WARNING" && input.BreachAt != "" {
 		breachAt, err := time.Parse(time.RFC3339, input.BreachAt)
 		if err == nil && !time.Now().UTC().Before(breachAt) {
