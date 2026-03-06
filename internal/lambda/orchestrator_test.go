@@ -113,10 +113,10 @@ func sensorItem(pipelineID, sensorKey string, data map[string]ddbtypes.Attribute
 	return item
 }
 
-func jobItem(pipelineID, schedule, date, timestamp, event string) map[string]ddbtypes.AttributeValue {
+func jobItem(pipelineID, schedule, date, event string) map[string]ddbtypes.AttributeValue {
 	return map[string]ddbtypes.AttributeValue{
 		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
-		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(schedule, date, timestamp)},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(schedule, date, "1709280000000")},
 		"event": &ddbtypes.AttributeValueMemberS{Value: event},
 	}
 }
@@ -547,7 +547,7 @@ func TestOrchestrator_CheckJob_Found(t *testing.T) {
 		queryFn: func(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
 			return &dynamodb.QueryOutput{
 				Items: []map[string]ddbtypes.AttributeValue{
-					jobItem(pipelineID, "daily", "2026-03-01", "1709280000000", "success"),
+					jobItem(pipelineID, "daily", "2026-03-01", "success"),
 				},
 			}, nil
 		},
@@ -726,7 +726,7 @@ func TestOrchestrator_CheckJob_SkipsInfraFailureEvent(t *testing.T) {
 			// Return an infra-trigger-failure event as the latest joblog entry.
 			return &dynamodb.QueryOutput{
 				Items: []map[string]ddbtypes.AttributeValue{
-					jobItem(pipelineID, "hourly", "2026-03-02", "1709280000000", types.JobEventInfraTriggerFailure),
+					jobItem(pipelineID, "hourly", "2026-03-02", types.JobEventInfraTriggerFailure),
 				},
 			}, nil
 		},
@@ -1137,6 +1137,104 @@ func TestOrchestrator_TriggerExhausted_NoErrorInfo(t *testing.T) {
 	})
 	if len(jobItems.Items) != 1 {
 		t.Fatalf("expected 1 joblog entry, got %d", len(jobItems.Items))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Complete-trigger tests
+// ---------------------------------------------------------------------------
+
+func TestOrchestrator_CompleteTrigger_Success(t *testing.T) {
+	ddb := newMockDDB()
+
+	// Pre-create trigger lock (simulates stream-router acquiring it).
+	ddb.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-06T15")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "complete-trigger",
+		PipelineID: "pipe-1",
+		ScheduleID: "stream",
+		Date:       "2026-03-06T15",
+		Event:      "success",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Mode != "complete-trigger" {
+		t.Errorf("mode = %q, want %q", out.Mode, "complete-trigger")
+	}
+	if out.Status != types.TriggerStatusCompleted {
+		t.Errorf("status = %q, want %q", out.Status, types.TriggerStatusCompleted)
+	}
+
+	// Verify trigger row was updated to COMPLETED.
+	key := ddbItemKey("control", types.PipelinePK("pipe-1"), types.TriggerSK("stream", "2026-03-06T15"))
+	item, exists := ddb.items[key]
+	if !exists {
+		t.Fatal("trigger row should still exist")
+	}
+	status := item["status"].(*ddbtypes.AttributeValueMemberS).Value
+	if status != types.TriggerStatusCompleted {
+		t.Errorf("trigger status = %q, want %q", status, types.TriggerStatusCompleted)
+	}
+}
+
+func TestOrchestrator_CompleteTrigger_Fail(t *testing.T) {
+	ddb := newMockDDB()
+	ddb.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-06T15")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "complete-trigger",
+		PipelineID: "pipe-1",
+		ScheduleID: "stream",
+		Date:       "2026-03-06T15",
+		Event:      "fail",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != types.TriggerStatusFailedFinal {
+		t.Errorf("status = %q, want %q", out.Status, types.TriggerStatusFailedFinal)
+	}
+
+	key := ddbItemKey("control", types.PipelinePK("pipe-1"), types.TriggerSK("stream", "2026-03-06T15"))
+	status := ddb.items[key]["status"].(*ddbtypes.AttributeValueMemberS).Value
+	if status != types.TriggerStatusFailedFinal {
+		t.Errorf("trigger status = %q, want %q", status, types.TriggerStatusFailedFinal)
+	}
+}
+
+func TestOrchestrator_CompleteTrigger_Timeout(t *testing.T) {
+	ddb := newMockDDB()
+	ddb.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-06")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "complete-trigger",
+		PipelineID: "pipe-1",
+		ScheduleID: "stream",
+		Date:       "2026-03-06",
+		Event:      "timeout",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != types.TriggerStatusFailedFinal {
+		t.Errorf("status = %q, want %q", out.Status, types.TriggerStatusFailedFinal)
 	}
 }
 

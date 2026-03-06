@@ -659,6 +659,93 @@ func TestSLAMonitor_FireAlert_FiresWhenNoTrigger(t *testing.T) {
 	}
 }
 
+func TestSLAMonitor_FireAlert_SuppressedByJoblogNoTrigger(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// No trigger row, but joblog shows success (cron pipeline or TTL-expired trigger).
+	mock.putRaw("joblog", jobItem("gold-orders", "daily", "2026-03-01", types.JobEventSuccess))
+
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_WARNING",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.AlertType != "SLA_WARNING" {
+		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_WARNING")
+	}
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	if len(ebMock.events) != 0 {
+		t.Errorf("expected 0 EventBridge events (suppressed by joblog), got %d", len(ebMock.events))
+	}
+}
+
+func TestSLAMonitor_FireAlert_SuppressedByJoblogRunningTrigger(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Trigger still RUNNING but joblog shows success (race: status not yet updated).
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-orders")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+	mock.putRaw("joblog", jobItem("gold-orders", "daily", "2026-03-01", types.JobEventSuccess))
+
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_BREACH",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.AlertType != "SLA_BREACH" {
+		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_BREACH")
+	}
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	if len(ebMock.events) != 0 {
+		t.Errorf("expected 0 EventBridge events (suppressed by joblog), got %d", len(ebMock.events))
+	}
+}
+
+func TestSLAMonitor_FireAlert_NotSuppressedByInfraFailure(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Only infra-trigger-failure in joblog — should NOT suppress (still retrying).
+	mock.putRaw("joblog", jobItem("gold-orders", "daily", "2026-03-01", types.JobEventInfraTriggerFailure))
+
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_BREACH",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	if len(ebMock.events) != 1 {
+		t.Fatalf("expected 1 EventBridge event (infra-failure is not terminal), got %d", len(ebMock.events))
+	}
+	_ = out
+}
+
 // ---------------------------------------------------------------------------
 // Reconcile tests
 // ---------------------------------------------------------------------------
