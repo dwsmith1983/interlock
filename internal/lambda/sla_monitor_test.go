@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
 	"github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -522,6 +525,137 @@ func TestSLAMonitor_FireAlert_NoEventBridge(t *testing.T) {
 	}
 	if out.FiredAt == "" {
 		t.Error("firedAt should not be empty even when EventBridge is nil")
+	}
+}
+
+func TestSLAMonitor_FireAlert_SuppressedWhenCompleted(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed a COMPLETED trigger for the pipeline/date.
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-orders")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	for _, alertType := range []string{"SLA_WARNING", "SLA_BREACH"} {
+		out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+			Mode:       "fire-alert",
+			PipelineID: "gold-orders",
+			ScheduleID: "daily",
+			Date:       "2026-03-01",
+			AlertType:  alertType,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error for %s: %v", alertType, err)
+		}
+		if out.AlertType != alertType {
+			t.Errorf("alertType = %q, want %q", out.AlertType, alertType)
+		}
+		if out.FiredAt == "" {
+			t.Errorf("firedAt should not be empty for suppressed %s", alertType)
+		}
+	}
+
+	// No events should be published — both were suppressed.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	if len(ebMock.events) != 0 {
+		t.Errorf("expected 0 EventBridge events (suppressed), got %d", len(ebMock.events))
+	}
+}
+
+func TestSLAMonitor_FireAlert_SuppressedWhenFailedFinal(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed a FAILED_FINAL trigger for the pipeline/date.
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-orders")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusFailedFinal},
+	})
+
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_BREACH",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.AlertType != "SLA_BREACH" {
+		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_BREACH")
+	}
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	if len(ebMock.events) != 0 {
+		t.Errorf("expected 0 EventBridge events (suppressed), got %d", len(ebMock.events))
+	}
+}
+
+func TestSLAMonitor_FireAlert_FiresWhenRunning(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed a RUNNING trigger — alert should fire normally.
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-orders")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_BREACH",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.AlertType != "SLA_BREACH" {
+		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_BREACH")
+	}
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	if len(ebMock.events) != 1 {
+		t.Fatalf("expected 1 EventBridge event (fires normally), got %d", len(ebMock.events))
+	}
+	if *ebMock.events[0].Entries[0].DetailType != "SLA_BREACH" {
+		t.Errorf("detail type = %q, want %q", *ebMock.events[0].Entries[0].DetailType, "SLA_BREACH")
+	}
+}
+
+func TestSLAMonitor_FireAlert_FiresWhenNoTrigger(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// No trigger row exists — alert should fire (pipeline never started).
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_WARNING",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.AlertType != "SLA_WARNING" {
+		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_WARNING")
+	}
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	if len(ebMock.events) != 1 {
+		t.Fatalf("expected 1 EventBridge event (fires normally), got %d", len(ebMock.events))
 	}
 }
 

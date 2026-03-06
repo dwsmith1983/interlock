@@ -756,3 +756,83 @@ func TestWatchdog_ScheduleSLAAlerts_NoSchedulerClient_Skips(t *testing.T) {
 	err := lambda.HandleWatchdog(context.Background(), d)
 	require.NoError(t, err)
 }
+
+func TestWatchdog_ScheduleSLAAlerts_SkipsCompletedTrigger(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "0 2 * * *",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         "02:00",
+			ExpectedDuration: "30m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed a COMPLETED trigger for the resolved date.
+	today := time.Now().Format("2006-01-02")
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("silver-cdr-day")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("cron", today)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	assert.Empty(t, schedMock.created, "expected no SLA schedules for completed pipeline")
+}
+
+func TestWatchdog_ScheduleSLAAlerts_SkipsFailedFinalTrigger(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "0 2 * * *",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         "02:00",
+			ExpectedDuration: "30m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed a FAILED_FINAL trigger for the resolved date.
+	today := time.Now().Format("2006-01-02")
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("silver-cdr-day")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("cron", today)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusFailedFinal},
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	assert.Empty(t, schedMock.created, "expected no SLA schedules for FAILED_FINAL pipeline")
+}
