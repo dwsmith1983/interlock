@@ -27,6 +27,8 @@ func HandleOrchestrator(ctx context.Context, d *Deps, input OrchestratorInput) (
 		return handleValidationExhausted(ctx, d, input)
 	case "trigger-exhausted":
 		return handleTriggerExhausted(ctx, d, input)
+	case "complete-trigger":
+		return handleCompleteTrigger(ctx, d, input)
 	default:
 		return OrchestratorOutput{}, fmt.Errorf("unknown orchestrator mode: %q", input.Mode)
 	}
@@ -268,6 +270,24 @@ func handleTriggerExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 	return OrchestratorOutput{
 		Mode:   "trigger-exhausted",
 		Status: "exhausted",
+	}, nil
+}
+
+// handleCompleteTrigger sets the trigger row to its terminal status.
+// Success → COMPLETED; fail/timeout → FAILED_FINAL.
+func handleCompleteTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
+	status := types.TriggerStatusCompleted
+	if input.Event != types.JobEventSuccess {
+		status = types.TriggerStatusFailedFinal
+	}
+
+	if err := d.Store.SetTriggerStatus(ctx, input.PipelineID, input.ScheduleID, input.Date, status); err != nil {
+		return OrchestratorOutput{}, fmt.Errorf("set trigger status: %w", err)
+	}
+
+	return OrchestratorOutput{
+		Mode:   "complete-trigger",
+		Status: status,
 	}, nil
 }
 
