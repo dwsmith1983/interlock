@@ -234,6 +234,12 @@ func runSFN(t *testing.T, ctx context.Context, d *lambda.Deps, mock *mockDDB, eb
 
 			metadata := triggerOut.Metadata
 			runID := triggerOut.RunID
+			jobCheckInterval := 60 // must match buildSFNConfig JobCheckIntervalSeconds default
+			jobPollWindow := 3600  // must match buildSFNConfig JobPollWindowSeconds default
+			if sc.pipeline.Job.JobPollWindowSeconds != nil && *sc.pipeline.Job.JobPollWindowSeconds > 0 {
+				jobPollWindow = *sc.pipeline.Job.JobPollWindowSeconds
+			}
+			jobPollElapsed := 0
 			for i := 0; i < 100; i++ {
 				checkOut, err := lambda.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
 					Mode: "check-job", PipelineID: pid, ScheduleID: sid, Date: date,
@@ -246,6 +252,16 @@ func runSFN(t *testing.T, ctx context.Context, d *lambda.Deps, mock *mockDDB, eb
 				}
 				if checkOut.Event != "" {
 					jobEvent = checkOut.Event
+					break
+				}
+				jobPollElapsed += jobCheckInterval
+				if jobPollElapsed >= jobPollWindow {
+					// JobPollExhausted → InjectTimeoutEvent
+					_, _ = lambda.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
+						Mode: "job-poll-exhausted", PipelineID: pid, ScheduleID: sid, Date: date,
+						RunID: runID,
+					})
+					jobEvent = "timeout"
 					break
 				}
 			}
@@ -658,6 +674,30 @@ func TestE2E_PrimarySFNPaths(t *testing.T) {
 		assert.Empty(t, r.events)
 		// Trigger stays RUNNING — watchdog will detect it later
 		assert.Equal(t, types.TriggerStatusRunning, e2eTriggerStatus(mock, "pipe-a7"))
+	})
+
+	t.Run("JobPollWindowExhausted", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{} // empty seq → always returns "running"
+		d, _, eb := buildE2EDeps(mock, tr, sc)
+
+		pollWindow := 120 // 2 minutes
+		cfg := e2ePipeline("pipe-poll-exhaust")
+		cfg.Job.JobPollWindowSeconds = &pollWindow
+
+		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
+			pipeline: cfg,
+			sensors:  map[string]map[string]interface{}{"upstream-complete": {"status": "ready"}},
+		})
+
+		assert.Equal(t, sfnDone, r.terminal)
+		assert.Contains(t, r.events, "VALIDATION_PASSED")
+		assert.Contains(t, r.events, "JOB_TRIGGERED")
+		assert.Contains(t, r.events, "JOB_POLL_EXHAUSTED")
+		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-poll-exhaust"))
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-poll-exhaust"), types.JobEventJobPollExhausted)
+		assertAlertFormats(t, eb)
 	})
 }
 
