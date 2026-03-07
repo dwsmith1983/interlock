@@ -1443,6 +1443,14 @@ func TestWatchdog_ScheduleSLAAlerts_HourlyPipeline_UsesCompositeDate(t *testing.
 	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
 	d.SchedulerGroupName = "interlock-sla"
 
+	// Fix time at 14:10 UTC so the :30 deadline (14:30) is still in the future
+	// and the cron "5 * * * *" last fired at 14:05 (after StartedAt).
+	fixedNow := time.Date(2026, 3, 7, 14, 10, 0, 0, time.UTC)
+	origNow := lambda.WatchdogNowFunc
+	lambda.WatchdogNowFunc = func() time.Time { return fixedNow }
+	t.Cleanup(func() { lambda.WatchdogNowFunc = origNow })
+	d.StartedAt = fixedNow.Add(-5 * time.Minute)
+
 	// Hourly pipeline with relative deadline — resolveWatchdogSLADate should
 	// produce a composite date like "2026-03-07T13".
 	cfg := types.PipelineConfig{

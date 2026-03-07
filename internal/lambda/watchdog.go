@@ -14,6 +14,10 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+// WatchdogNowFunc returns the current time. Tests override this variable
+// to make watchdog behavior deterministic.
+var WatchdogNowFunc = time.Now
+
 // HandleWatchdog runs periodic health checks. It detects stale trigger
 // executions (Step Function timeouts) and missed cron schedules. Errors from
 // each check are logged but do not prevent the other check from running.
@@ -42,7 +46,7 @@ func detectStaleTriggers(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("scan running triggers: %w", err)
 	}
 
-	now := time.Now()
+	now := WatchdogNowFunc()
 	for _, tr := range triggers {
 		if !isStaleTrigger(tr, now) {
 			continue
@@ -124,7 +128,7 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := time.Now()
+	now := WatchdogNowFunc()
 
 	for id, cfg := range configs {
 		trigger := cfg.Schedule.Trigger
@@ -259,7 +263,7 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := time.Now()
+	now := WatchdogNowFunc()
 	today := now.Format("2006-01-02")
 
 	for id, cfg := range configs {
@@ -352,7 +356,7 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := time.Now()
+	now := WatchdogNowFunc()
 
 	for id, cfg := range configs {
 		if cfg.SLA == nil {
