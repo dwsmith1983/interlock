@@ -78,6 +78,7 @@ resource "aws_cloudwatch_event_rule" "alert_events" {
       "INFRA_FAILURE",
       "SFN_TIMEOUT",
       "SCHEDULE_MISSED",
+      "DATA_DRIFT",
     ]
   })
 }
