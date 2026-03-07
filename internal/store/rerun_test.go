@@ -163,3 +163,71 @@ func TestWriteRerun_CountReruns_QueryError(t *testing.T) {
 		t.Errorf("expected 'count reruns' (inner) context in error, got: %v", err)
 	}
 }
+
+func TestCountRerunsBySource_Empty(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	// Empty sources should return 0 without querying.
+	count, err := s.CountRerunsBySource(context.Background(), "pipe-1", "daily", "2026-03-01", nil)
+	if err != nil {
+		t.Fatalf("CountRerunsBySource: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+}
+
+func TestCountRerunsBySource_FiltersByReason(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	pk := types.PipelinePK("pipe-1")
+
+	// Seed 3 reruns with different reasons.
+	reasons := []string{"data-drift", "manual", "late-data"}
+	for i, reason := range reasons {
+		mock.putRaw("rerun", map[string]ddbtypes.AttributeValue{
+			"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+			"SK":     &ddbtypes.AttributeValueMemberS{Value: types.RerunSK("daily", "2026-03-01", i)},
+			"reason": &ddbtypes.AttributeValueMemberS{Value: reason},
+		})
+	}
+
+	// Count only drift sources (data-drift + late-data).
+	count, err := s.CountRerunsBySource(context.Background(), "pipe-1", "daily", "2026-03-01", []string{"data-drift", "late-data"})
+	if err != nil {
+		t.Fatalf("CountRerunsBySource: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2 (data-drift + late-data)", count)
+	}
+
+	// Count only manual.
+	count, err = s.CountRerunsBySource(context.Background(), "pipe-1", "daily", "2026-03-01", []string{"manual"})
+	if err != nil {
+		t.Fatalf("CountRerunsBySource: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (manual only)", count)
+	}
+}
+
+func TestCountRerunsBySource_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("throttled")
+	mock.errFn = errOnOp("Query", injected)
+
+	_, err := s.CountRerunsBySource(context.Background(), "pipe-1", "daily", "2026-03-01", []string{"manual"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "count reruns by source") {
+		t.Errorf("expected context in error message, got: %v", err)
+	}
+}

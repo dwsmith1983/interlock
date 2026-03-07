@@ -219,6 +219,31 @@ func (m *mockDDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func
 		items = append(items, copyItem(item))
 	}
 
+	// Apply FilterExpression (basic "reason IN (:s0, :s1, ...)" support).
+	if input.FilterExpression != nil {
+		expr := *input.FilterExpression
+		if strings.HasPrefix(expr, "reason IN (") {
+			// Extract placeholder names from the expression.
+			inner := expr[len("reason IN (") : len(expr)-1]
+			parts := strings.Split(inner, ", ")
+			allowed := make(map[string]bool)
+			for _, p := range parts {
+				if v, ok := input.ExpressionAttributeValues[strings.TrimSpace(p)]; ok {
+					allowed[v.(*ddbtypes.AttributeValueMemberS).Value] = true
+				}
+			}
+			var filtered []map[string]ddbtypes.AttributeValue
+			for _, item := range items {
+				if r, ok := item["reason"]; ok {
+					if allowed[r.(*ddbtypes.AttributeValueMemberS).Value] {
+						filtered = append(filtered, item)
+					}
+				}
+			}
+			items = filtered
+		}
+	}
+
 	// Sort by SK ascending (default) or descending when ScanIndexForward is false.
 	sort.Slice(items, func(i, j int) bool {
 		skI := items[i]["SK"].(*ddbtypes.AttributeValueMemberS).Value
