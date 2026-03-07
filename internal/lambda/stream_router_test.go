@@ -358,12 +358,13 @@ func makeJobRecord(pipelineID, jobEvent string) events.DynamoDBEventRecord {
 	}
 }
 
-// seedRerun inserts an existing RERUN# row into the mock rerun table.
+// seedRerun inserts an existing RERUN# row into the mock rerun table
+// with reason "job-fail-retry" (the source used by handleJobFailure).
 func seedRerun(mock *mockDDB, pipelineID, schedule, date string, attempt int) {
 	mock.putRaw("rerun", map[string]ddbtypes.AttributeValue{
 		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
 		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.RerunSK(schedule, date, attempt)},
-		"reason": &ddbtypes.AttributeValueMemberS{Value: "fail"},
+		"reason": &ddbtypes.AttributeValueMemberS{Value: "job-fail-retry"},
 	})
 }
 
@@ -486,6 +487,38 @@ func TestStreamRouter_JobTimeout_TreatedAsFailure(t *testing.T) {
 	defer sfnMock.mu.Unlock()
 	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for timeout rerun")
 	assert.Contains(t, *sfnMock.executions[0].Name, "rerun-0")
+}
+
+func TestStreamRouter_JobFail_DriftRerunsIgnored(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a drift rerun (should NOT count toward failure budget).
+	mock.putRaw("rerun", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.RerunSK("stream", "2026-03-01", 0)},
+		"reason": &ddbtypes.AttributeValueMemberS{Value: "data-drift"},
+	})
+	// Seed a manual rerun (should NOT count toward failure budget).
+	mock.putRaw("rerun", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.RerunSK("stream", "2026-03-01", 1)},
+		"reason": &ddbtypes.AttributeValueMemberS{Value: "manual"},
+	})
+
+	// Job failure should still trigger a rerun (drift/manual don't consume failure budget).
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "drift/manual reruns should not consume failure budget")
 }
 
 func TestStreamRouter_JobFail_NoConfig_Skips(t *testing.T) {

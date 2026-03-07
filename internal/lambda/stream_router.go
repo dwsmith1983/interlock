@@ -116,7 +116,7 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 
 	maxRetries := cfg.Job.MaxRetries
 
-	rerunCount, err := d.Store.CountReruns(ctx, pipelineID, schedule, date)
+	rerunCount, err := d.Store.CountRerunsBySource(ctx, pipelineID, schedule, date, []string{"job-fail-retry"})
 	if err != nil {
 		return fmt.Errorf("count reruns for %q/%s/%s: %w", pipelineID, schedule, date, err)
 	}
@@ -141,7 +141,7 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 	}
 
 	// Under retry limit — write rerun record and restart the pipeline.
-	attempt, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, jobEvent, jobEvent)
+	attempt, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, "job-fail-retry", jobEvent)
 	if err != nil {
 		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
 	}
