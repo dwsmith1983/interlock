@@ -2728,3 +2728,93 @@ func TestRerun_DeletesPostrunBaseline(t *testing.T) {
 	mock.mu.Unlock()
 	assert.False(t, sensorExists, "postrun-baseline sensor should be deleted after rerun acceptance")
 }
+
+func TestStreamRouter_JobFail_PermanentUsesCodeRetries(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	cfg.Job.MaxRetries = 3
+	cfg.Job.MaxCodeRetries = intPtr(0) // disabled — immediate FAILED_FINAL
+	seedConfig(mock, cfg)
+
+	// Seed a joblog entry with PERMANENT category.
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":       &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":       &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", "2026-03-01", fmt.Sprintf("%d", time.Now().UnixMilli()))},
+		"event":    &ddbtypes.AttributeValueMemberS{Value: types.JobEventFail},
+		"category": &ddbtypes.AttributeValueMemberS{Value: "PERMANENT"},
+	})
+
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// MaxCodeRetries=0 → immediate FAILED_FINAL, no SFN started
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "PERMANENT with MaxCodeRetries=0 should not retry")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.True(t, len(ebMock.events) > 0, "should publish RETRY_EXHAUSTED")
+}
+
+func TestStreamRouter_JobFail_TransientUsesMaxRetries(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	cfg.Job.MaxRetries = 3
+	cfg.Job.MaxCodeRetries = intPtr(0) // would block if category was checked wrong
+	seedConfig(mock, cfg)
+
+	// Seed a joblog entry with TRANSIENT category.
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":       &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":       &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", "2026-03-01", fmt.Sprintf("%d", time.Now().UnixMilli()))},
+		"event":    &ddbtypes.AttributeValueMemberS{Value: types.JobEventFail},
+		"category": &ddbtypes.AttributeValueMemberS{Value: "TRANSIENT"},
+	})
+
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// TRANSIENT uses MaxRetries=3, no reruns yet → should retry
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Len(t, sfnMock.executions, 1, "TRANSIENT should use MaxRetries and retry")
+}
+
+func TestStreamRouter_JobFail_EmptyCategoryUsesMaxRetries(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	cfg.Job.MaxRetries = 3
+	cfg.Job.MaxCodeRetries = intPtr(0)
+	seedConfig(mock, cfg)
+
+	// Seed a joblog entry WITHOUT category (backward compat).
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", "2026-03-01", fmt.Sprintf("%d", time.Now().UnixMilli()))},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventFail},
+	})
+
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No category → uses MaxRetries=3, no reruns → should retry
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Len(t, sfnMock.executions, 1, "empty category should use MaxRetries (backward compat)")
+}

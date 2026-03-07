@@ -137,6 +137,20 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 
 	maxRetries := cfg.Job.MaxRetries
 
+	// Check if the latest failure has a category for budget selection.
+	latestJob, jobErr := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
+	if jobErr != nil {
+		d.Logger.Warn("could not read latest job event for failure category",
+			"pipelineId", pipelineID, "error", jobErr)
+	}
+	if latestJob != nil {
+		switch types.FailureCategory(latestJob.Category) {
+		case types.FailurePermanent:
+			maxRetries = types.IntOrDefault(cfg.Job.MaxCodeRetries, 1)
+		}
+		// TRANSIENT, TIMEOUT, or empty → use cfg.Job.MaxRetries (already set).
+	}
+
 	rerunCount, err := d.Store.CountRerunsBySource(ctx, pipelineID, schedule, date, []string{"job-fail-retry"})
 	if err != nil {
 		return fmt.Errorf("count reruns for %q/%s/%s: %w", pipelineID, schedule, date, err)
