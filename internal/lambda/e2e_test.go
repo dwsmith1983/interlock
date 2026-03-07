@@ -1363,7 +1363,7 @@ func TestE2E_RerunLimits(t *testing.T) {
 		}))
 
 		// Seed one existing drift rerun — at limit (budget=1, count=1)
-		seedRerunWithReason(mock, "pipe-rl1", "stream", "2026-03-07", 0, "data-drift")
+		seedRerunWithReason(mock, "pipe-rl1", "2026-03-07", "data-drift")
 
 		// Send a data-drift RERUN_REQUEST — should be rejected
 		sfnCountBefore := len(sfnM.executions)
@@ -1410,7 +1410,7 @@ func TestE2E_RerunLimits(t *testing.T) {
 		}))
 
 		// Seed one existing data-drift rerun — uses up the drift budget
-		seedRerunWithReason(mock, "pipe-rl2", "stream", "2026-03-07", 0, "data-drift")
+		seedRerunWithReason(mock, "pipe-rl2", "2026-03-07", "data-drift")
 
 		// Send a late-data RERUN_REQUEST — should be rejected because
 		// late-data shares the drift budget (count 1 >= budget 1)

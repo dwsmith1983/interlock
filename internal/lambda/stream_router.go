@@ -157,8 +157,7 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 			"pipelineId", pipelineID, "error", jobErr)
 	}
 	if latestJob != nil {
-		switch types.FailureCategory(latestJob.Category) {
-		case types.FailurePermanent:
+		if types.FailureCategory(latestJob.Category) == types.FailurePermanent {
 			maxRetries = types.IntOrDefault(cfg.Job.MaxCodeRetries, 1)
 		}
 		// TRANSIENT, TIMEOUT, or empty → use cfg.Job.MaxRetries (already set).

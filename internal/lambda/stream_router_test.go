@@ -2525,11 +2525,11 @@ func makeRerunRequestWithReason(reason string) events.DynamoDBEventRecord {
 }
 
 // seedRerunWithReason inserts a RERUN# row with a specific reason into the
-// mock rerun table.
-func seedRerunWithReason(mock *mockDDB, pipelineID, schedule, date string, attempt int, reason string) {
+// mock rerun table. Uses schedule "stream" and attempt 0 (test defaults).
+func seedRerunWithReason(mock *mockDDB, pipelineID, date, reason string) {
 	mock.putRaw("rerun", map[string]ddbtypes.AttributeValue{
 		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.RerunSK(schedule, date, attempt)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.RerunSK("stream", date, 0)},
 		"reason": &ddbtypes.AttributeValueMemberS{Value: reason},
 	})
 }
@@ -2550,7 +2550,7 @@ func TestRerun_DriftLimitExceeded(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Seed 1 existing drift rerun — at limit.
-	seedRerunWithReason(mock, "gold-revenue", "stream", "2026-03-01", 0, "data-drift")
+	seedRerunWithReason(mock, "gold-revenue", "2026-03-01", "data-drift")
 
 	record := makeRerunRequestWithReason("data-drift")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
@@ -2578,7 +2578,7 @@ func TestRerun_ManualLimitExceeded(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Seed 1 existing manual rerun — at limit.
-	seedRerunWithReason(mock, "gold-revenue", "stream", "2026-03-01", 0, "manual")
+	seedRerunWithReason(mock, "gold-revenue", "2026-03-01", "manual")
 
 	record := makeRerunRequestWithReason("manual")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
@@ -2630,7 +2630,7 @@ func TestRerun_LateDataCountsAsDrift(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Seed 1 existing late-data rerun — shares drift budget.
-	seedRerunWithReason(mock, "gold-revenue", "stream", "2026-03-01", 0, "late-data")
+	seedRerunWithReason(mock, "gold-revenue", "2026-03-01", "late-data")
 
 	// Submit a data-drift request — should be rejected because late-data
 	// and data-drift share the same budget.

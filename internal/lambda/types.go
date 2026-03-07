@@ -48,7 +48,7 @@ type HTTPDoer interface {
 
 // StatusResult is a normalized job status from the trigger runner.
 type StatusResult struct {
-	State           string                // "succeeded", "failed", "running"
+	State           string // "succeeded", "failed", "running"
 	Message         string
 	FailureCategory types.FailureCategory // TRANSIENT, PERMANENT, TIMEOUT, or empty
 }

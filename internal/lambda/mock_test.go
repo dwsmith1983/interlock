@@ -294,7 +294,7 @@ func (m *mockDDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func
 
 // matchesQueryFilter evaluates a FilterExpression against an item.
 // Supports "reason IN (:s0, :s1, ...)" pattern used by CountRerunsBySource.
-func matchesQueryFilter(expr string, values map[string]ddbtypes.AttributeValue, item map[string]ddbtypes.AttributeValue) bool {
+func matchesQueryFilter(expr string, values, item map[string]ddbtypes.AttributeValue) bool {
 	expr = strings.TrimSpace(expr)
 
 	// Parse "field IN (:v0, :v1, ...)" pattern.

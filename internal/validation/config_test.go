@@ -12,9 +12,9 @@ func intPtr(v int) *int { return &v }
 
 func TestValidatePipelineConfig(t *testing.T) {
 	tests := []struct {
-		name      string
-		cfg       types.PipelineConfig
-		wantCount int
+		name       string
+		cfg        types.PipelineConfig
+		wantCount  int
 		wantSubstr string
 	}{
 		{
