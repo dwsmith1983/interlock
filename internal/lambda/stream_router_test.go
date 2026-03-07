@@ -577,6 +577,57 @@ func TestStreamRouter_LateDataArrival_CompletedSuccess(t *testing.T) {
 	assert.Equal(t, string(types.EventLateDataArrival), *ebMock.events[0].Entries[0].DetailType)
 }
 
+func TestStreamRouter_LateDataArrival_WritesRerunRequest(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	date := time.Now().Format("2006-01-02")
+
+	// Seed a COMPLETED trigger (pipeline finished successfully).
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	// Seed a successful job event in the joblog.
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1709280000000")},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+	})
+
+	// Send a sensor write — lock is held, pipeline completed with success.
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should have published LATE_DATA_ARRIVAL event (existing behavior).
+	ebMock.mu.Lock()
+	require.Len(t, ebMock.events, 1, "expected one EventBridge event")
+	assert.Equal(t, string(types.EventLateDataArrival), *ebMock.events[0].Entries[0].DetailType)
+	ebMock.mu.Unlock()
+
+	// Should have written a RERUN_REQUEST to the control table.
+	pk := types.PipelinePK("gold-revenue")
+	sk := types.RerunRequestSK("stream", date)
+	key := ddbItemKey(testControlTable, pk, sk)
+
+	mock.mu.Lock()
+	item, ok := mock.items[key]
+	mock.mu.Unlock()
+
+	require.True(t, ok, "expected RERUN_REQUEST item in control table")
+	assert.Equal(t, "late-data", item["reason"].(*ddbtypes.AttributeValueMemberS).Value)
+}
+
 func TestStreamRouter_LateDataArrival_StillRunning_Silent(t *testing.T) {
 	mock := newMockDDB()
 	d, sfnMock, ebMock := testDeps(mock)

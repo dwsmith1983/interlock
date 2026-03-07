@@ -478,6 +478,11 @@ func checkLateDataArrival(ctx context.Context, d *Deps, pipelineID, schedule, da
 	_ = publishEvent(ctx, d, string(types.EventLateDataArrival), pipelineID, schedule, date,
 		fmt.Sprintf("late data arrival for %s: sensor updated after job completion", pipelineID))
 
+	// Trigger a re-run — circuit breaker in handleRerunRequest will validate sensor freshness.
+	if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, schedule, date, "late-data"); writeErr != nil {
+		d.Logger.WarnContext(ctx, "failed to write rerun request on late data", "pipelineId", pipelineID, "error", writeErr)
+	}
+
 	return nil
 }
 
