@@ -152,17 +152,24 @@ func TestASL_TopLevelStatesExist(t *testing.T) {
 		"ValidationExhausted",
 		"Trigger",
 		"HasTriggerResult",
+		"InitJobPollLoop",
 		"WaitForJob",
 		"CheckJob",
 		"IsJobDone",
+		"IncrementJobPollElapsed",
+		"CheckJobPollExhausted",
+		"JobPollExhausted",
+		"InjectTimeoutEvent",
 		"CheckHasPostRun",
 		"InitPostRunLoop",
 		"PostRunEvaluate",
 		"IsPostRunDone",
 		"WaitForPostRun",
 		"IncrementPostRunElapsed",
+		"CompleteTrigger",
 		"CheckCancelSLA",
 		"TriggerRetryExhausted",
+		"FailValidationExhausted",
 		"CancelSLASchedules",
 		"InfraFailure",
 		"Done",
@@ -300,11 +307,16 @@ func TestASL_HasTriggerResultRouting(t *testing.T) {
 	require.NoError(t, json.Unmarshal(asl.States["HasTriggerResult"], &hasTrigger))
 	assert.Equal(t, "FailValidationExhausted", hasTrigger.Default, "no trigger result should fail as validation exhausted")
 	require.NotEmpty(t, hasTrigger.Choices)
-	assert.Equal(t, "WaitForJob", hasTrigger.Choices[0].Next, "with trigger result should poll job")
+	assert.Equal(t, "InitJobPollLoop", hasTrigger.Choices[0].Next, "with trigger result should init job poll loop")
 }
 
 func TestASL_JobPollingFlow(t *testing.T) {
 	asl := loadASL(t)
+
+	// InitJobPollLoop → WaitForJob
+	var initLoop stateBase
+	require.NoError(t, json.Unmarshal(asl.States["InitJobPollLoop"], &initLoop))
+	assert.Equal(t, "WaitForJob", initLoop.Next)
 
 	// WaitForJob → CheckJob
 	var wait stateBase
@@ -316,10 +328,10 @@ func TestASL_JobPollingFlow(t *testing.T) {
 	require.NoError(t, json.Unmarshal(asl.States["CheckJob"], &check))
 	assert.Equal(t, "IsJobDone", check.Next)
 
-	// IsJobDone: success → CheckHasPostRun, fail/timeout → CompleteTrigger, default → WaitForJob
+	// IsJobDone: success → CheckHasPostRun, fail/timeout → CompleteTrigger, default → IncrementJobPollElapsed
 	var done choiceState
 	require.NoError(t, json.Unmarshal(asl.States["IsJobDone"], &done))
-	assert.Equal(t, "WaitForJob", done.Default)
+	assert.Equal(t, "IncrementJobPollElapsed", done.Default)
 	// Check that success routes to CheckHasPostRun
 	foundPostRunRoute := false
 	foundComplete := false
@@ -417,4 +429,34 @@ func TestASL_CancelSLACatchDoesNotBlock(t *testing.T) {
 	require.NotEmpty(t, cancel.Catch)
 	assert.Equal(t, "Done", cancel.Catch[0].Next,
 		"CancelSLASchedules catch should continue to Done, not block pipeline")
+}
+
+func TestASL_JobPollExhaustionFlow(t *testing.T) {
+	asl := loadASL(t)
+
+	// IncrementJobPollElapsed → CheckJobPollExhausted
+	var inc stateBase
+	require.NoError(t, json.Unmarshal(asl.States["IncrementJobPollElapsed"], &inc))
+	assert.Equal(t, "CheckJobPollExhausted", inc.Next)
+
+	// CheckJobPollExhausted: exhausted → JobPollExhausted, default → WaitForJob
+	var check choiceState
+	require.NoError(t, json.Unmarshal(asl.States["CheckJobPollExhausted"], &check))
+	assert.Equal(t, "WaitForJob", check.Default)
+	require.NotEmpty(t, check.Choices)
+	assert.Equal(t, "JobPollExhausted", check.Choices[0].Next)
+
+	// JobPollExhausted → InjectTimeoutEvent
+	var exhausted taskState
+	require.NoError(t, json.Unmarshal(asl.States["JobPollExhausted"], &exhausted))
+	assert.Equal(t, "InjectTimeoutEvent", exhausted.Next)
+
+	// InjectTimeoutEvent → CompleteTrigger
+	var inject stateBase
+	require.NoError(t, json.Unmarshal(asl.States["InjectTimeoutEvent"], &inject))
+	assert.Equal(t, "CompleteTrigger", inject.Next)
+
+	// JobPollExhausted Catch falls through to InjectTimeoutEvent (best-effort)
+	require.NotEmpty(t, exhausted.Catch)
+	assert.Equal(t, "InjectTimeoutEvent", exhausted.Catch[0].Next)
 }

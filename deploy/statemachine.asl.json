@@ -190,7 +190,7 @@
         {
           "Variable": "$.triggerResult",
           "IsPresent": true,
-          "Next": "WaitForJob"
+          "Next": "InitJobPollLoop"
         }
       ],
       "Default": "FailValidationExhausted"
@@ -199,6 +199,13 @@
       "Type": "Fail",
       "Error": "ValidationExhausted",
       "Cause": "Evaluation window closed without all validation rules passing"
+    },
+    "InitJobPollLoop": {
+      "Type": "Pass",
+      "Comment": "Initialize elapsed-seconds counter for job poll window",
+      "Result": { "elapsedSeconds": 0 },
+      "ResultPath": "$.jobPollLoop",
+      "Next": "WaitForJob"
     },
     "WaitForJob": {
       "Type": "Wait",
@@ -250,7 +257,7 @@
             "Variable": "$.checkJobResult.event",
             "IsPresent": true
           },
-          "Next": "WaitForJob"
+          "Next": "IncrementJobPollElapsed"
         },
         {
           "Variable": "$.checkJobResult.event",
@@ -268,7 +275,69 @@
           "Next": "CompleteTrigger"
         }
       ],
+      "Default": "IncrementJobPollElapsed"
+    },
+    "IncrementJobPollElapsed": {
+      "Type": "Pass",
+      "Comment": "Track total elapsed seconds in job poll window",
+      "Parameters": {
+        "elapsedSeconds.$": "States.MathAdd($.jobPollLoop.elapsedSeconds, $.config.jobCheckIntervalSeconds)"
+      },
+      "ResultPath": "$.jobPollLoop",
+      "Next": "CheckJobPollExhausted"
+    },
+    "CheckJobPollExhausted": {
+      "Type": "Choice",
+      "Comment": "Has the job poll window been exceeded?",
+      "Choices": [
+        {
+          "Variable": "$.jobPollLoop.elapsedSeconds",
+          "NumericGreaterThanEqualsPath": "$.config.jobPollWindowSeconds",
+          "Next": "JobPollExhausted"
+        }
+      ],
       "Default": "WaitForJob"
+    },
+    "JobPollExhausted": {
+      "Type": "Task",
+      "Comment": "Publish JOB_POLL_EXHAUSTED event and write timeout joblog",
+      "Resource": "${orchestrator_arn}",
+      "Parameters": {
+        "mode": "job-poll-exhausted",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date",
+        "runId.$": "$.triggerResult.runId"
+      },
+      "ResultPath": "$.jobPollExhaustedResult",
+      "Next": "InjectTimeoutEvent",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "InjectTimeoutEvent"
+        }
+      ]
+    },
+    "InjectTimeoutEvent": {
+      "Type": "Pass",
+      "Comment": "Inject timeout event so CompleteTrigger reads event=timeout",
+      "Result": { "event": "timeout" },
+      "ResultPath": "$.checkJobResult",
+      "Next": "CompleteTrigger"
     },
     "CheckHasPostRun": {
       "Type": "Choice",
