@@ -48,8 +48,9 @@ type HTTPDoer interface {
 
 // StatusResult is a normalized job status from the trigger runner.
 type StatusResult struct {
-	State   string // "succeeded", "failed", "running"
-	Message string
+	State           string                // "succeeded", "failed", "running"
+	Message         string
+	FailureCategory types.FailureCategory // TRANSIENT, PERMANENT, TIMEOUT, or empty
 }
 
 // OrchestratorInput is the input to the orchestrator Lambda from Step Functions.

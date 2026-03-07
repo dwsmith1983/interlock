@@ -13,9 +13,28 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+type jobEventOpts struct {
+	category string
+}
+
+// JobEventOption configures optional fields on WriteJobEvent.
+type JobEventOption func(*jobEventOpts)
+
+// WithFailureCategory sets the failure category on the job event record.
+func WithFailureCategory(c types.FailureCategory) JobEventOption {
+	return func(o *jobEventOpts) {
+		o.category = string(c)
+	}
+}
+
 // WriteJobEvent appends a job event record to the job log table.
 // Optional fields (runID, duration, errMsg) are omitted when empty/zero.
-func (s *Store) WriteJobEvent(ctx context.Context, pipelineID, schedule, date, event, runID string, duration int64, errMsg string) error {
+func (s *Store) WriteJobEvent(ctx context.Context, pipelineID, schedule, date, event, runID string, duration int64, errMsg string, opts ...JobEventOption) error {
+	var o jobEventOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	timestamp := fmt.Sprintf("%d", time.Now().UTC().UnixMilli())
 	sk := types.JobSK(schedule, date, timestamp)
 	ttl := time.Now().Add(30 * 24 * time.Hour).Unix()
@@ -35,6 +54,9 @@ func (s *Store) WriteJobEvent(ctx context.Context, pipelineID, schedule, date, e
 	}
 	if errMsg != "" {
 		item["error"] = &ddbtypes.AttributeValueMemberS{Value: errMsg}
+	}
+	if o.category != "" {
+		item["category"] = &ddbtypes.AttributeValueMemberS{Value: o.category}
 	}
 
 	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{

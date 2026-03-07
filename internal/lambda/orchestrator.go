@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/internal/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -159,7 +160,11 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		_ = publishEvent(ctx, d, string(types.EventJobCompleted), input.PipelineID, input.ScheduleID, input.Date, "job succeeded")
 		return OrchestratorOutput{Mode: "check-job", Event: "success"}, nil
 	case "failed":
-		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventFail, input.RunID, 0, result.Message)
+		var writeOpts []store.JobEventOption
+		if result.FailureCategory != "" {
+			writeOpts = append(writeOpts, store.WithFailureCategory(result.FailureCategory))
+		}
+		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventFail, input.RunID, 0, result.Message, writeOpts...)
 		_ = publishEvent(ctx, d, string(types.EventJobFailed), input.PipelineID, input.ScheduleID, input.Date, "job failed: "+result.Message)
 		return OrchestratorOutput{Mode: "check-job", Event: "fail"}, nil
 	default:

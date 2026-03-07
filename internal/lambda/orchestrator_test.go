@@ -3184,3 +3184,120 @@ func TestJobPollExhausted_WriteJobEventError(t *testing.T) {
 		t.Errorf("error = %q, want it to contain 'write job-poll-exhausted joblog'", err.Error())
 	}
 }
+
+func TestCheckJob_FailedWithCategory(t *testing.T) {
+	pipelineID := "silver-cdr-hour"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Job:      types.JobConfig{Type: types.TriggerGlue},
+	}
+
+	var capturedItem map[string]ddbtypes.AttributeValue
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{Items: nil}, nil
+		},
+		putItemFn: func(_ context.Context, input *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			if *input.TableName == "joblog" {
+				capturedItem = input.Item
+			}
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	checker := &mockStatusChecker{
+		result: lambda.StatusResult{
+			State:           "failed",
+			Message:         "OOM killed",
+			FailureCategory: types.FailurePermanent,
+		},
+	}
+
+	d := newTestDeps(ddb)
+	d.StatusChecker = checker
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "check-job",
+		PipelineID: pipelineID,
+		ScheduleID: "hourly",
+		Date:       "2026-03-02",
+		RunID:      "jr-999",
+		Metadata:   map[string]interface{}{"glue_job_name": "cdr-agg-hour", "glue_job_run_id": "jr-999"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Event != "fail" {
+		t.Errorf("event = %q, want %q", out.Event, "fail")
+	}
+	if capturedItem == nil {
+		t.Fatal("expected joblog PutItem to be called")
+	}
+	catAttr, ok := capturedItem["category"]
+	if !ok {
+		t.Fatal("expected category attribute in joblog item")
+	}
+	catVal := catAttr.(*ddbtypes.AttributeValueMemberS).Value
+	if catVal != "PERMANENT" {
+		t.Errorf("category = %q, want %q", catVal, "PERMANENT")
+	}
+}
+
+func TestCheckJob_FailedWithoutCategory(t *testing.T) {
+	pipelineID := "silver-cdr-hour"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		Job:      types.JobConfig{Type: types.TriggerGlue},
+	}
+
+	var capturedItem map[string]ddbtypes.AttributeValue
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{Items: nil}, nil
+		},
+		putItemFn: func(_ context.Context, input *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			if *input.TableName == "joblog" {
+				capturedItem = input.Item
+			}
+			return &dynamodb.PutItemOutput{}, nil
+		},
+	}
+
+	checker := &mockStatusChecker{
+		result: lambda.StatusResult{
+			State:           "failed",
+			Message:         "OOM killed",
+			FailureCategory: "",
+		},
+	}
+
+	d := newTestDeps(ddb)
+	d.StatusChecker = checker
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "check-job",
+		PipelineID: pipelineID,
+		ScheduleID: "hourly",
+		Date:       "2026-03-02",
+		RunID:      "jr-999",
+		Metadata:   map[string]interface{}{"glue_job_name": "cdr-agg-hour", "glue_job_run_id": "jr-999"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Event != "fail" {
+		t.Errorf("event = %q, want %q", out.Event, "fail")
+	}
+	if capturedItem == nil {
+		t.Fatal("expected joblog PutItem to be called")
+	}
+	if _, ok := capturedItem["category"]; ok {
+		t.Error("expected category attribute to be absent when FailureCategory is empty")
+	}
+}
