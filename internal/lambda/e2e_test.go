@@ -1004,6 +1004,88 @@ func TestE2E_AutoRetries(t *testing.T) {
 }
 
 // =========================================================================
+// Failure Classification (PERMANENT category routing)
+// =========================================================================
+
+func TestE2E_FailureClassification(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("PermanentFailureNoRetry", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{seq: []lambda.StatusResult{{
+			State: "failed", Message: "syntax error", FailureCategory: types.FailurePermanent,
+		}}}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-fc1")
+		cfg.Job.MaxRetries = 3
+		cfg.Job.MaxCodeRetries = intPtr(0)
+
+		// Phase 1: SFN runs, job fails with PERMANENT category
+		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
+			pipeline: cfg,
+			sensors:  map[string]map[string]interface{}{"upstream-complete": {"status": "ready"}},
+		})
+		assert.Equal(t, sfnDone, r.terminal)
+		assert.Contains(t, r.events, "JOB_FAILED")
+
+		// Phase 2: Stream event from JOB#fail record
+		jobSK := findLatestJobSK(mock, "pipe-fc1")
+		require.NotEmpty(t, jobSK)
+
+		sfnCountBefore := len(sfnM.executions)
+		eb.mu.Lock()
+		eb.events = nil
+		eb.mu.Unlock()
+
+		err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-fc1", jobSK, "fail"))
+		require.NoError(t, err)
+
+		// Verify: no retry (MaxCodeRetries=0), RETRY_EXHAUSTED event
+		sfnM.mu.Lock()
+		assert.Equal(t, sfnCountBefore, len(sfnM.executions), "PERMANENT with MaxCodeRetries=0 should not retry")
+		sfnM.mu.Unlock()
+		assert.Contains(t, collectEventTypes(eb), "RETRY_EXHAUSTED")
+		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-fc1"))
+		assertAlertFormats(t, eb)
+	})
+
+	t.Run("PermanentFailureOneRetry", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{seq: []lambda.StatusResult{{
+			State: "failed", Message: "import error", FailureCategory: types.FailurePermanent,
+		}}}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-fc2")
+		cfg.Job.MaxRetries = 3
+		cfg.Job.MaxCodeRetries = intPtr(1)
+
+		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
+			pipeline: cfg,
+			sensors:  map[string]map[string]interface{}{"upstream-complete": {"status": "ready"}},
+		})
+		assert.Equal(t, sfnDone, r.terminal)
+		assert.Contains(t, r.events, "JOB_FAILED")
+
+		// Phase 2: First failure should retry (0 < 1)
+		jobSK := findLatestJobSK(mock, "pipe-fc2")
+		require.NotEmpty(t, jobSK)
+
+		sfnCountBefore := len(sfnM.executions)
+		err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-fc2", jobSK, "fail"))
+		require.NoError(t, err)
+
+		sfnM.mu.Lock()
+		assert.Greater(t, len(sfnM.executions), sfnCountBefore, "PERMANENT with MaxCodeRetries=1 should retry once")
+		sfnM.mu.Unlock()
+		assertAlertFormats(t, eb)
+	})
+}
+
+// =========================================================================
 // Re-Run / Replay (Manual via RERUN_REQUEST)
 // =========================================================================
 
