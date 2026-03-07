@@ -27,6 +27,9 @@ type CloudWatchLogsAPI interface {
 // defaultGlueLogGroup is the standard CloudWatch log group for Glue v2 jobs.
 const defaultGlueLogGroup = "/aws-glue/jobs/logs-v2"
 
+// defaultGlueErrorLogGroup is the CloudWatch log group for Glue job errors.
+const defaultGlueErrorLogGroup = "/aws-glue/jobs/error"
+
 // ExecuteGlue starts an AWS Glue job run.
 func ExecuteGlue(ctx context.Context, cfg *types.GlueTriggerConfig, client GlueAPI) (map[string]interface{}, error) {
 	if cfg.JobName == "" {
@@ -83,14 +86,14 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 	switch state {
 	case gluetypes.JobRunStateSucceeded:
 		// Glue can report SUCCEEDED when the Spark job actually failed
-		// (driver exits 0 despite SparkException). Cross-check the RCA
-		// log stream for GlueExceptionAnalysisJobFailed events.
+		// (driver exits 0 despite SparkException, or disk-full errors).
+		// Cross-check RCA insights and the error log group.
 		if failed, reason := r.verifyGlueRCA(ctx, runID, out.JobRun.LogGroupName); failed {
-			msg := "SUCCEEDED (RCA: JobFailed)"
-			if reason != "" {
-				msg = fmt.Sprintf("SUCCEEDED (RCA: %s)", reason)
-			}
-			return StatusResult{State: RunCheckFailed, Message: msg, FailureCategory: types.FailureTransient}, nil
+			return StatusResult{
+				State:           RunCheckFailed,
+				Message:         fmt.Sprintf("SUCCEEDED (%s)", reason),
+				FailureCategory: types.FailureTransient,
+			}, nil
 		}
 		return StatusResult{State: RunCheckSucceeded, Message: string(state)}, nil
 	case gluetypes.JobRunStateTimeout:
@@ -102,16 +105,22 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 	}
 }
 
-// verifyGlueRCA checks the CloudWatch RCA log stream for a Glue job run.
-// Returns (true, reason) if the RCA indicates the job actually failed despite
-// the API reporting SUCCEEDED. Returns (false, "") on any error or if no
-// failure is found — callers should trust the Glue API in that case.
+// verifyGlueRCA checks CloudWatch logs for a Glue job run to detect false
+// successes. It performs two checks:
+//  1. RCA log stream for GlueExceptionAnalysisJobFailed events (Spark exceptions
+//     where the driver exits 0).
+//  2. Error log group (/aws-glue/jobs/error) for any error entries (catches
+//     failures like disk-full errors that Glue's RCA may not detect).
+//
+// Returns (true, reason) if either check finds failure evidence. Returns
+// (false, "") on any error or if no failure is found.
 func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *string) (failed bool, reason string) {
 	client, err := r.getCWLogsClient("")
 	if err != nil {
 		return false, ""
 	}
 
+	// Check 1: RCA log stream for GlueExceptionAnalysisJobFailed.
 	logGroup := defaultGlueLogGroup
 	if logGroupName != nil && *logGroupName != "" {
 		logGroup = *logGroupName
@@ -124,15 +133,29 @@ func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *
 		FilterPattern:  aws.String("GlueExceptionAnalysisJobFailed"),
 		Limit:          aws.Int32(1),
 	})
-	if err != nil {
-		// Graceful: log group may not exist, permissions may be missing, etc.
-		return false, ""
+	if err == nil && len(out.Events) > 0 {
+		r := extractGlueFailureReason(aws.ToString(out.Events[0].Message))
+		if r != "" {
+			return true, "RCA: " + r
+		}
+		return true, "RCA: JobFailed"
 	}
 
-	if len(out.Events) > 0 {
-		reason := extractGlueFailureReason(aws.ToString(out.Events[0].Message))
-		return true, reason
+	// Check 2: Error log group for any error entries for this run.
+	errorLogGroup := defaultGlueErrorLogGroup
+	errOut, err := client.FilterLogEvents(ctx, &cloudwatchlogs.FilterLogEventsInput{
+		LogGroupName:   &errorLogGroup,
+		LogStreamNames: []string{runID},
+		Limit:          aws.Int32(1),
+	})
+	if err == nil && len(errOut.Events) > 0 {
+		msg := aws.ToString(errOut.Events[0].Message)
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		return true, "error-log: " + msg
 	}
+
 	return false, ""
 }
 
