@@ -163,7 +163,7 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 	// Build structured detail for alert consumers.
 	status := "not started"
 	if tr != nil {
-		status = string(tr.Status)
+		status = tr.Status
 	}
 	source := "schedule"
 	actionHint := "pipeline not started — check sensor data"
