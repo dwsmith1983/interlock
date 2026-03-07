@@ -30,6 +30,8 @@ func HandleOrchestrator(ctx context.Context, d *Deps, input OrchestratorInput) (
 		return handleTriggerExhausted(ctx, d, input)
 	case "complete-trigger":
 		return handleCompleteTrigger(ctx, d, input)
+	case "job-poll-exhausted":
+		return handleJobPollExhausted(ctx, d, input)
 	default:
 		return OrchestratorOutput{}, fmt.Errorf("unknown orchestrator mode: %q", input.Mode)
 	}
@@ -270,6 +272,23 @@ func handleValidationExhausted(ctx context.Context, d *Deps, input OrchestratorI
 
 	return OrchestratorOutput{
 		Mode:   "validation-exhausted",
+		Status: "exhausted",
+	}, nil
+}
+
+// handleJobPollExhausted publishes a JOB_POLL_EXHAUSTED event when the
+// job poll window closes without the job reaching a terminal state.
+func handleJobPollExhausted(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
+	if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
+		types.JobEventJobPollExhausted, input.RunID, 0, "job poll window exhausted"); err != nil {
+		return OrchestratorOutput{}, fmt.Errorf("write job-poll-exhausted joblog: %w", err)
+	}
+
+	_ = publishEvent(ctx, d, string(types.EventJobPollExhausted), input.PipelineID, input.ScheduleID, input.Date,
+		"job poll window exhausted")
+
+	return OrchestratorOutput{
+		Mode:   "job-poll-exhausted",
 		Status: "exhausted",
 	}, nil
 }

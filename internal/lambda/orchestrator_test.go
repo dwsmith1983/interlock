@@ -3107,3 +3107,80 @@ func TestParseExecutionDate_Daily(t *testing.T) {
 		t.Errorf("hourPart = %q, want empty", hourPart)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// handleJobPollExhausted — happy path + error branch
+// ---------------------------------------------------------------------------
+
+func TestOrchestrator_JobPollExhausted_WritesJoblog(t *testing.T) {
+	ddb := newMockDDB()
+	d := newTestDeps(ddb)
+
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "job-poll-exhausted",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		RunID:      "jr_abc123",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Mode != "job-poll-exhausted" {
+		t.Errorf("mode = %q, want %q", out.Mode, "job-poll-exhausted")
+	}
+	if out.Status != "exhausted" {
+		t.Errorf("status = %q, want %q", out.Status, "exhausted")
+	}
+
+	// Verify joblog entry was written.
+	jobItems, _ := ddb.Query(context.Background(), &dynamodb.QueryInput{
+		TableName:              strPtr("joblog"),
+		KeyConditionExpression: strPtr("PK = :pk AND begins_with(SK, :prefix)"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":pk":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-orders")},
+			":prefix": &ddbtypes.AttributeValueMemberS{Value: "JOB#daily#2026-03-01#"},
+		},
+	})
+	if len(jobItems.Items) != 1 {
+		t.Fatalf("expected 1 joblog entry, got %d", len(jobItems.Items))
+	}
+	jobEvent := jobItems.Items[0]["event"].(*ddbtypes.AttributeValueMemberS).Value
+	if jobEvent != types.JobEventJobPollExhausted {
+		t.Errorf("joblog event = %q, want %q", jobEvent, types.JobEventJobPollExhausted)
+	}
+	// Verify runId is stored.
+	runID := jobItems.Items[0]["runId"].(*ddbtypes.AttributeValueMemberS).Value
+	if runID != "jr_abc123" {
+		t.Errorf("joblog runId = %q, want %q", runID, "jr_abc123")
+	}
+
+	// Verify EventBridge event was published.
+	eb := d.EventBridge.(*mockEventBridge)
+	if len(eb.events) != 1 {
+		t.Fatalf("expected 1 EventBridge call, got %d", len(eb.events))
+	}
+}
+
+func TestJobPollExhausted_WriteJobEventError(t *testing.T) {
+	ddb := &mockDynamo{
+		putItemFn: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+			return nil, fmt.Errorf("dynamodb: write capacity exceeded")
+		},
+	}
+
+	d := newTestDeps(ddb)
+	_, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "job-poll-exhausted",
+		PipelineID: "pipe-1",
+		ScheduleID: "stream",
+		Date:       "2026-03-01",
+		RunID:      "jr_xyz",
+	})
+	if err == nil {
+		t.Fatal("expected Lambda error when WriteJobEvent fails")
+	}
+	if !strings.Contains(err.Error(), "write job-poll-exhausted joblog") {
+		t.Errorf("error = %q, want it to contain 'write job-poll-exhausted joblog'", err.Error())
+	}
+}

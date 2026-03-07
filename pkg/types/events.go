@@ -12,6 +12,7 @@ const (
 	EventValidationExhausted EventDetailType = "VALIDATION_EXHAUSTED"
 	EventRetryExhausted      EventDetailType = "RETRY_EXHAUSTED"
 	EventSFNTimeout          EventDetailType = "SFN_TIMEOUT"
+	EventJobPollExhausted    EventDetailType = "JOB_POLL_EXHAUSTED"
 	EventScheduleMissed      EventDetailType = "SCHEDULE_MISSED"
 	EventJobTriggered        EventDetailType = "JOB_TRIGGERED"
 	EventJobCompleted        EventDetailType = "JOB_COMPLETED"
