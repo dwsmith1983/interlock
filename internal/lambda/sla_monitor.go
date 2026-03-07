@@ -126,9 +126,11 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 // returns the alert metadata.
 func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
 	// Suppress alerts for pipelines that already completed or permanently failed.
+	var tr *types.ControlRecord
 	if d.Store != nil {
 		suppressed := false
-		tr, err := d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
+		var err error
+		tr, err = d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
 		switch {
 		case err != nil:
 			d.Logger.WarnContext(ctx, "trigger lookup failed in fire-alert, proceeding with alert",
@@ -158,9 +160,35 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 		}
 	}
 
+	// Build structured detail for alert consumers.
+	status := "not started"
+	if tr != nil {
+		status = string(tr.Status)
+	}
+	source := "schedule"
+	actionHint := "pipeline not started — check sensor data"
+	switch {
+	case status == types.TriggerStatusRunning:
+		actionHint = "pipeline running — may complete before breach"
+	case status == "not started" && input.AlertType == "SLA_BREACH":
+		actionHint = "pipeline not started — investigate trigger"
+	}
+
+	alertDetail := map[string]interface{}{
+		"status":     status,
+		"source":     source,
+		"actionHint": actionHint,
+	}
+	if input.BreachAt != "" {
+		alertDetail["breachAt"] = input.BreachAt
+	}
+	if input.Deadline != "" {
+		alertDetail["deadline"] = input.Deadline
+	}
+
 	msg := fmt.Sprintf("pipeline %s: %s", input.PipelineID, input.AlertType)
 
-	if err := publishEvent(ctx, d, input.AlertType, input.PipelineID, input.ScheduleID, input.Date, msg); err != nil {
+	if err := publishEvent(ctx, d, input.AlertType, input.PipelineID, input.ScheduleID, input.Date, msg, alertDetail); err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("publish SLA event: %w", err)
 	}
 
@@ -329,16 +357,23 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 	warningAt, _ := time.Parse(time.RFC3339, calc.WarningAt)
 	breachAt, _ := time.Parse(time.RFC3339, calc.BreachAt)
 
+	reconcileDetail := map[string]interface{}{
+		"source":     "reconciliation",
+		"warningAt":  calc.WarningAt,
+		"breachAt":   calc.BreachAt,
+		"actionHint": "fired by reconciliation fallback — check Scheduler health",
+	}
+
 	var alertType string
 	switch {
 	case now.After(breachAt) || now.Equal(breachAt):
 		_ = publishEvent(ctx, d, "SLA_BREACH", input.PipelineID, input.ScheduleID, input.Date,
-			fmt.Sprintf("pipeline %s: SLA_BREACH", input.PipelineID))
+			fmt.Sprintf("pipeline %s: SLA_BREACH", input.PipelineID), reconcileDetail)
 		alertType = "SLA_BREACH"
 	case now.After(warningAt) || now.Equal(warningAt):
 		// Past warning but before breach — fire warning only
 		_ = publishEvent(ctx, d, "SLA_WARNING", input.PipelineID, input.ScheduleID, input.Date,
-			fmt.Sprintf("pipeline %s: SLA_WARNING", input.PipelineID))
+			fmt.Sprintf("pipeline %s: SLA_WARNING", input.PipelineID), reconcileDetail)
 		alertType = "SLA_WARNING"
 	default:
 		alertType = "SLA_MET"

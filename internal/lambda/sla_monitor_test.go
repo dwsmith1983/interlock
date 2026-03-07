@@ -925,3 +925,181 @@ func TestSLAMonitor_UnknownMode(t *testing.T) {
 		t.Fatal("expected error for unknown mode")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Detail enrichment tests
+// ---------------------------------------------------------------------------
+
+func TestFireAlert_IncludesDetailInEvent(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// No trigger row and no joblog — pipeline never started.
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_WARNING",
+		BreachAt:   "2099-01-01T00:00:00Z", // far future so warning fires
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.AlertType != "SLA_WARNING" {
+		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_WARNING")
+	}
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	if len(ebMock.events) != 1 {
+		t.Fatalf("expected 1 EventBridge event, got %d", len(ebMock.events))
+	}
+
+	// Parse the detail JSON to verify the Detail map.
+	detailJSON := *ebMock.events[0].Entries[0].Detail
+	var evt types.InterlockEvent
+	if err := json.Unmarshal([]byte(detailJSON), &evt); err != nil {
+		t.Fatalf("unmarshal event detail: %v", err)
+	}
+
+	if evt.Detail == nil {
+		t.Fatal("expected Detail map to be present in event")
+	}
+	if s, ok := evt.Detail["status"].(string); !ok || s != "not started" {
+		t.Errorf("detail.status = %v, want %q", evt.Detail["status"], "not started")
+	}
+	if s, ok := evt.Detail["source"].(string); !ok || s != "schedule" {
+		t.Errorf("detail.source = %v, want %q", evt.Detail["source"], "schedule")
+	}
+	if s, ok := evt.Detail["actionHint"].(string); !ok || !strings.Contains(s, "check sensor data") {
+		t.Errorf("detail.actionHint = %v, want to contain %q", evt.Detail["actionHint"], "check sensor data")
+	}
+	if _, ok := evt.Detail["breachAt"]; !ok {
+		t.Error("detail.breachAt should be present when input.BreachAt is set")
+	}
+}
+
+func TestFireAlert_RunningStatus_DetailHint(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed a RUNNING trigger.
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-orders")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	_, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_WARNING",
+		BreachAt:   "2099-01-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	if len(ebMock.events) != 1 {
+		t.Fatalf("expected 1 EventBridge event, got %d", len(ebMock.events))
+	}
+
+	detailJSON := *ebMock.events[0].Entries[0].Detail
+	var evt types.InterlockEvent
+	if err := json.Unmarshal([]byte(detailJSON), &evt); err != nil {
+		t.Fatalf("unmarshal event detail: %v", err)
+	}
+
+	if s, _ := evt.Detail["status"].(string); s != types.TriggerStatusRunning {
+		t.Errorf("detail.status = %q, want %q", s, types.TriggerStatusRunning)
+	}
+	if s, _ := evt.Detail["actionHint"].(string); !strings.Contains(s, "may complete before breach") {
+		t.Errorf("detail.actionHint = %q, want to contain %q", s, "may complete before breach")
+	}
+}
+
+func TestFireAlert_BreachNotStarted_DetailHint(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// No trigger — pipeline not started, breach alert.
+	_, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "gold-orders",
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+		AlertType:  "SLA_BREACH",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	if len(ebMock.events) != 1 {
+		t.Fatalf("expected 1 EventBridge event, got %d", len(ebMock.events))
+	}
+
+	detailJSON := *ebMock.events[0].Entries[0].Detail
+	var evt types.InterlockEvent
+	if err := json.Unmarshal([]byte(detailJSON), &evt); err != nil {
+		t.Fatalf("unmarshal event detail: %v", err)
+	}
+
+	if s, _ := evt.Detail["actionHint"].(string); !strings.Contains(s, "investigate trigger") {
+		t.Errorf("detail.actionHint = %q, want to contain %q", s, "investigate trigger")
+	}
+}
+
+func TestReconcile_IncludesDetailInEvent(t *testing.T) {
+	eb := &mockEventBridge{}
+	d := &lambda.Deps{
+		EventBridge:  eb,
+		EventBusName: "test-bus",
+		Logger:       slog.Default(),
+	}
+
+	// Past breach — reconcile should fire SLA_BREACH with detail.
+	_, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:             "reconcile",
+		PipelineID:       "silver-cdr-hour",
+		ScheduleID:       "stream",
+		Date:             "2020-01-01",
+		Deadline:         "01:00",
+		ExpectedDuration: "10m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(eb.events) != 1 {
+		t.Fatalf("expected 1 EventBridge event, got %d", len(eb.events))
+	}
+
+	detailJSON := *eb.events[0].Entries[0].Detail
+	var evt types.InterlockEvent
+	if err := json.Unmarshal([]byte(detailJSON), &evt); err != nil {
+		t.Fatalf("unmarshal event detail: %v", err)
+	}
+
+	if evt.Detail == nil {
+		t.Fatal("expected Detail map to be present in reconcile event")
+	}
+	if s, _ := evt.Detail["source"].(string); s != "reconciliation" {
+		t.Errorf("detail.source = %q, want %q", s, "reconciliation")
+	}
+	if s, _ := evt.Detail["actionHint"].(string); !strings.Contains(s, "Scheduler health") {
+		t.Errorf("detail.actionHint = %q, want to contain %q", s, "Scheduler health")
+	}
+	if _, ok := evt.Detail["warningAt"]; !ok {
+		t.Error("detail.warningAt should be present in reconcile event")
+	}
+	if _, ok := evt.Detail["breachAt"]; !ok {
+		t.Error("detail.breachAt should be present in reconcile event")
+	}
+}
