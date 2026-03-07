@@ -1,6 +1,7 @@
 {
   "Comment": "Interlock v2 pipeline lifecycle: evaluation, trigger, job polling, SLA monitoring via EventBridge Scheduler",
   "StartAt": "InitEvalLoop",
+  "TimeoutSeconds": ${sfn_timeout_seconds},
   "States": {
     "InitEvalLoop": {
       "Type": "Pass",
@@ -136,7 +137,7 @@
             "States.TaskFailed"
           ],
           "IntervalSeconds": 30,
-          "MaxAttempts": 4,
+          "MaxAttempts": ${trigger_max_attempts},
           "BackoffRate": 2
         }
       ],

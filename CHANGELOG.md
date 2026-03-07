@@ -5,10 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.3] - 2026-03-07
+## [0.6.0] - 2026-03-07
 
 ### Added
 
+- **SFN global timeout**: Step Function definition includes `TimeoutSeconds` (default 4h, configurable via `sfn_timeout_seconds` Terraform variable). Prevents unbounded execution if the orchestrator loop stalls.
+- **Configurable trigger retry count**: Trigger state `MaxAttempts` is now driven by `trigger_max_attempts` Terraform variable (default 3, previously hardcoded 4). Reduces retry budget from 4 to 3 attempts.
 - **Trigger terminal status lifecycle**: new `CompleteTrigger` ASL state sets trigger row to `COMPLETED` on job success and `FAILED_FINAL` on fail/timeout. New orchestrator `complete-trigger` mode with `Event` input field. Previously `TriggerStatusCompleted` was defined but never written, leaving all triggers stuck at `RUNNING` after SFN completion.
 
 ### Fixed
@@ -249,7 +251,7 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
-[0.5.3]: https://github.com/dwsmith1983/interlock/releases/tag/v0.5.3
+[0.6.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.6.0
 [0.5.2]: https://github.com/dwsmith1983/interlock/releases/tag/v0.5.2
 [0.5.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.5.1
 [0.5.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.5.0

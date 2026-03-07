@@ -3,6 +3,7 @@ package deploy_test
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,9 +13,10 @@ import (
 // --- ASL structural types ---
 
 type aslDefinition struct {
-	Comment string                     `json:"Comment"`
-	StartAt string                     `json:"StartAt"`
-	States  map[string]json.RawMessage `json:"States"`
+	Comment        string                     `json:"Comment"`
+	StartAt        string                     `json:"StartAt"`
+	TimeoutSeconds int                        `json:"TimeoutSeconds"`
+	States         map[string]json.RawMessage `json:"States"`
 }
 
 type stateBase struct {
@@ -51,13 +53,26 @@ type taskState struct {
 
 // --- helpers ---
 
+// renderASLTemplate replaces Terraform template variables with default values
+// so the raw ASL template can be parsed as valid JSON.
+// NOTE: numeric defaults must stay in sync with deploy/terraform/variables.tf.
+func renderASLTemplate(data []byte) []byte {
+	s := string(data)
+	s = strings.ReplaceAll(s, "${sfn_timeout_seconds}", "14400")
+	s = strings.ReplaceAll(s, "${trigger_max_attempts}", "3")
+	s = strings.ReplaceAll(s, "${orchestrator_arn}", "arn:aws:lambda:us-east-1:123456789012:function:orchestrator")
+	s = strings.ReplaceAll(s, "${sla_monitor_arn}", "arn:aws:lambda:us-east-1:123456789012:function:sla-monitor")
+	return []byte(s)
+}
+
 func loadASL(t *testing.T) aslDefinition {
 	t.Helper()
 	data, err := os.ReadFile("statemachine.asl.json")
 	require.NoError(t, err, "reading ASL file")
 
+	rendered := renderASLTemplate(data)
 	var asl aslDefinition
-	require.NoError(t, json.Unmarshal(data, &asl), "parsing ASL JSON")
+	require.NoError(t, json.Unmarshal(rendered, &asl), "parsing ASL JSON")
 	return asl
 }
 
@@ -102,8 +117,14 @@ func TestASL_ValidJSON(t *testing.T) {
 	data, err := os.ReadFile("statemachine.asl.json")
 	require.NoError(t, err)
 
+	rendered := renderASLTemplate(data)
 	var raw map[string]interface{}
-	require.NoError(t, json.Unmarshal(data, &raw), "ASL file must be valid JSON")
+	require.NoError(t, json.Unmarshal(rendered, &raw), "ASL template must produce valid JSON")
+}
+
+func TestASL_HasGlobalTimeout(t *testing.T) {
+	asl := loadASL(t)
+	assert.Greater(t, asl.TimeoutSeconds, 0, "ASL must have a positive global TimeoutSeconds")
 }
 
 func TestASL_HasRequiredFields(t *testing.T) {
