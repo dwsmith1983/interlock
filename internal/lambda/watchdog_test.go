@@ -907,8 +907,9 @@ func TestWatchdog_StaleTrigger_TTLExactlyNow_NoAlert(t *testing.T) {
 	mock := newMockDDB()
 	d, _, ebMock := testDeps(mock)
 
-	// Seed with TTL exactly at now boundary (isStaleTrigger uses > not >=).
-	seedTriggerRow(mock, "gold-revenue", "2026-03-01", time.Now().Unix())
+	// Seed with TTL slightly in the future (isStaleTrigger uses > not >=).
+	// Use +5s buffer to avoid flaky races between seed and internal time.Now().
+	seedTriggerRow(mock, "gold-revenue", "2026-03-01", time.Now().Add(5*time.Second).Unix())
 
 	err := lambda.HandleWatchdog(context.Background(), d)
 	require.NoError(t, err)
@@ -1036,13 +1037,15 @@ func TestWatchdog_StaleTrigger_DetailFields(t *testing.T) {
 func TestWatchdog_MissedSchedule_DetailFields(t *testing.T) {
 	mock := newMockDDB()
 	d, _, ebMock := testDeps(mock)
+	// Push StartedAt far into the past so the pre-deployment filter never skips.
+	d.StartedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "bronze-ingest"},
 		Schedule: types.ScheduleConfig{
-			Cron:       "0 6 * * *",
+			Cron:       "0 0 * * *",
 			Timezone:   "UTC",
-			Time:       "06:00",
+			Time:       "00:01",
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
@@ -1067,13 +1070,12 @@ func TestWatchdog_MissedSchedule_DetailFields(t *testing.T) {
 		}
 	}
 
-	if missedEvent != nil {
-		require.NotNil(t, missedEvent.Detail)
-		assert.Equal(t, "watchdog", missedEvent.Detail["source"])
-		assert.Equal(t, "0 6 * * *", missedEvent.Detail["cron"])
-		assert.Contains(t, missedEvent.Detail["actionHint"], "cron")
-		assert.Equal(t, "06:00", missedEvent.Detail["expectedTime"])
-	}
+	require.NotNil(t, missedEvent, "expected a SCHEDULE_MISSED event to be published")
+	require.NotNil(t, missedEvent.Detail)
+	assert.Equal(t, "watchdog", missedEvent.Detail["source"])
+	assert.Equal(t, "0 0 * * *", missedEvent.Detail["cron"])
+	assert.Contains(t, missedEvent.Detail["actionHint"], "cron")
+	assert.Equal(t, "00:01", missedEvent.Detail["expectedTime"])
 }
 
 // ---------------------------------------------------------------------------
@@ -1309,11 +1311,10 @@ func TestWatchdog_ScheduleSLAAlerts_HourlyPipeline_UsesCompositeDate(t *testing.
 	schedMock.mu.Lock()
 	defer schedMock.mu.Unlock()
 
-	if len(schedMock.created) > 0 {
-		// Verify the schedule name contains a composite date (has T).
-		name := *schedMock.created[0].Name
-		assert.Contains(t, name, "T", "hourly pipeline SLA schedule name should contain composite date")
-	}
+	require.NotEmpty(t, schedMock.created, "expected SLA schedules to be created for hourly pipeline")
+	// Verify the schedule name contains a composite date (has T).
+	name := *schedMock.created[0].Name
+	assert.Contains(t, name, "T", "hourly pipeline SLA schedule name should contain composite date")
 }
 
 func TestWatchdog_ScheduleSLAAlerts_CalendarExcluded_Skips(t *testing.T) {

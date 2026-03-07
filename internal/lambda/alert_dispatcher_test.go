@@ -742,8 +742,7 @@ func TestHandleAlertDispatcher_EmptyRecords(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleAlertDispatcher_PartialFailure(t *testing.T) {
-	// First call succeeds, second fails with Slack API error.
-	callCount := 0
+	// First record succeeds, second fails with invalid JSON body.
 	httpClient := &mockHTTPClient{status: 200}
 
 	deps := newAlertDeps(httpClient, "xoxb-test-token", "C123456")
@@ -768,7 +767,6 @@ func TestHandleAlertDispatcher_PartialFailure(t *testing.T) {
 	assert.Equal(t, "msg-bad", resp.BatchItemFailures[0].ItemIdentifier)
 	// Good message should have been processed.
 	assert.Len(t, httpClient.requests, 1)
-	_ = callCount
 }
 
 // ---------------------------------------------------------------------------
