@@ -87,9 +87,10 @@ const (
 
 // JobConfig defines what to trigger and how many retries.
 type JobConfig struct {
-	Type       TriggerType            `yaml:"type" json:"type"`
-	Config     map[string]interface{} `yaml:"config" json:"config"`
-	MaxRetries int                    `yaml:"maxRetries,omitempty" json:"maxRetries,omitempty"`
+	Type                 TriggerType            `yaml:"type" json:"type"`
+	Config               map[string]interface{} `yaml:"config" json:"config"`
+	MaxRetries           int                    `yaml:"maxRetries,omitempty" json:"maxRetries,omitempty"`
+	JobPollWindowSeconds *int                   `yaml:"jobPollWindowSeconds,omitempty" json:"jobPollWindowSeconds,omitempty"`
 }
 
 // PostRunConfig defines optional post-completion validation.

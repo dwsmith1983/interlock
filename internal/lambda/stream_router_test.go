@@ -1797,6 +1797,85 @@ func TestBuildSFNConfig_WithSLA(t *testing.T) {
 	assert.Equal(t, "UTC", sla["timezone"], "SLA timezone defaults to UTC")
 }
 
+func TestBuildSFNConfig_JobPollWindowDefault(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	cfgMap := input["config"].(map[string]interface{})
+	assert.Equal(t, float64(3600), cfgMap["jobPollWindowSeconds"], "default job poll window should be 1h")
+}
+
+func TestBuildSFNConfig_JobPollWindowOverride(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	pollWindow := 7200
+	cfg := testStreamConfig()
+	cfg.Job.JobPollWindowSeconds = &pollWindow
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	cfgMap := input["config"].(map[string]interface{})
+	assert.Equal(t, float64(7200), cfgMap["jobPollWindowSeconds"], "should use config override")
+}
+
+func TestBuildSFNConfig_JobPollWindowZeroUsesDefault(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	zero := 0
+	cfg := testStreamConfig()
+	cfg.Job.JobPollWindowSeconds = &zero
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	cfgMap := input["config"].(map[string]interface{})
+	assert.Equal(t, float64(3600), cfgMap["jobPollWindowSeconds"], "zero should fall back to default")
+}
+
 // ---------------------------------------------------------------------------
 // extractSensorData (tested indirectly through sensor trigger evaluation)
 // ---------------------------------------------------------------------------

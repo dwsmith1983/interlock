@@ -500,6 +500,7 @@ type sfnConfig struct {
 	EvaluationIntervalSeconds int              `json:"evaluationIntervalSeconds"`
 	EvaluationWindowSeconds   int              `json:"evaluationWindowSeconds"`
 	JobCheckIntervalSeconds   int              `json:"jobCheckIntervalSeconds"`
+	JobPollWindowSeconds      int              `json:"jobPollWindowSeconds"`
 	PostRunIntervalSeconds    int              `json:"postRunIntervalSeconds,omitempty"`
 	PostRunWindowSeconds      int              `json:"postRunWindowSeconds,omitempty"`
 	HasPostRun                bool             `json:"hasPostRun"`
@@ -512,6 +513,7 @@ func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
 		EvaluationIntervalSeconds: 300,  // 5m default
 		EvaluationWindowSeconds:   3600, // 1h default
 		JobCheckIntervalSeconds:   60,   // 1m default
+		JobPollWindowSeconds:      3600, // 1h default
 	}
 
 	if d, err := time.ParseDuration(cfg.Schedule.Evaluation.Interval); err == nil && d > 0 {
@@ -519,6 +521,10 @@ func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
 	}
 	if d, err := time.ParseDuration(cfg.Schedule.Evaluation.Window); err == nil && d > 0 {
 		sc.EvaluationWindowSeconds = int(d.Seconds())
+	}
+
+	if cfg.Job.JobPollWindowSeconds != nil && *cfg.Job.JobPollWindowSeconds > 0 {
+		sc.JobPollWindowSeconds = *cfg.Job.JobPollWindowSeconds
 	}
 
 	if cfg.SLA != nil {
