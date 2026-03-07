@@ -76,8 +76,6 @@ type e2eScenario struct {
 	date                 string
 	sensors              map[string]map[string]interface{}
 	sensorUpdates        map[int]map[string]map[string]interface{} // eval iteration (1-indexed) → sensor key → data
-	triggerErr           error
-	triggerMeta          map[string]interface{}
 	jobSequence          []lambda.StatusResult
 	postRunSensorUpdates []map[string]map[string]interface{} // per post-run iteration
 	evalErr              error                               // simulate Lambda crash during evaluate
@@ -97,7 +95,7 @@ type e2eResult struct {
 // E2E deps builder
 // ---------------------------------------------------------------------------
 
-func buildE2EDeps(mock *mockDDB, tr *mockTriggerRunner, sc *mockStatusPoller) (*lambda.Deps, *mockSFN, *mockEventBridge, *mockScheduler) {
+func buildE2EDeps(mock *mockDDB, tr *mockTriggerRunner, sc *mockStatusPoller) (*lambda.Deps, *mockSFN, *mockEventBridge) {
 	s := &store.Store{
 		Client:       mock,
 		ControlTable: testControlTable,
@@ -125,7 +123,7 @@ func buildE2EDeps(mock *mockDDB, tr *mockTriggerRunner, sc *mockStatusPoller) (*
 		StartedAt:          time.Now().Add(-24 * time.Hour),
 		Logger:             slog.Default(),
 	}
-	return d, sfnM, ebM, schedM
+	return d, sfnM, ebM
 }
 
 // ---------------------------------------------------------------------------
@@ -348,11 +346,11 @@ func collectEventTypes(eb *mockEventBridge) []string {
 	return out
 }
 
-func collectJoblogEvents(mock *mockDDB, pipelineID, schedule, date string) []string {
+func collectJoblogEvents(mock *mockDDB, pipelineID string) []string {
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
 	pk := types.PipelinePK(pipelineID)
-	prefix := "joblog#" + pk + "#JOB#" + schedule + "#" + date + "#"
+	prefix := "joblog#" + pk + "#JOB#stream#2026-03-07#"
 	var out []string
 	for k, item := range mock.items {
 		if !strings.HasPrefix(k, prefix) {
@@ -366,10 +364,10 @@ func collectJoblogEvents(mock *mockDDB, pipelineID, schedule, date string) []str
 	return out
 }
 
-func e2eTriggerStatus(mock *mockDDB, pipelineID, schedule, date string) string {
+func e2eTriggerStatus(mock *mockDDB, pipelineID string) string {
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
-	key := ddbItemKey(testControlTable, types.PipelinePK(pipelineID), types.TriggerSK(schedule, date))
+	key := ddbItemKey(testControlTable, types.PipelinePK(pipelineID), types.TriggerSK("stream", "2026-03-07"))
 	item, ok := mock.items[key]
 	if !ok {
 		return ""
@@ -380,10 +378,10 @@ func e2eTriggerStatus(mock *mockDDB, pipelineID, schedule, date string) string {
 	return ""
 }
 
-func hasRerunRequest(mock *mockDDB, pipelineID, schedule, date string) bool {
+func hasRerunRequest(mock *mockDDB, pipelineID string) bool {
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
-	key := ddbItemKey(testControlTable, types.PipelinePK(pipelineID), types.RerunRequestSK(schedule, date))
+	key := ddbItemKey(testControlTable, types.PipelinePK(pipelineID), types.RerunRequestSK("stream", "2026-03-07"))
 	_, ok := mock.items[key]
 	return ok
 }
@@ -436,8 +434,8 @@ func makeJobStreamEvent(pipelineID, sk, event string) lambda.StreamEvent {
 	}
 }
 
-func makeRerunRequestStreamEvent(pipelineID, schedule, date string) lambda.StreamEvent {
-	sk := types.RerunRequestSK(schedule, date)
+func makeRerunRequestStreamEvent(pipelineID string) lambda.StreamEvent {
+	sk := types.RerunRequestSK("stream", "2026-03-07")
 	return lambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{{
 			EventName: "INSERT",
@@ -456,11 +454,11 @@ func makeRerunRequestStreamEvent(pipelineID, schedule, date string) lambda.Strea
 	}
 }
 
-func findLatestJobSK(mock *mockDDB, pipelineID, schedule, date string) string {
+func findLatestJobSK(mock *mockDDB, pipelineID string) string {
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
 	pk := types.PipelinePK(pipelineID)
-	prefix := "joblog#" + pk + "#JOB#" + schedule + "#" + date + "#"
+	prefix := "joblog#" + pk + "#JOB#stream#2026-03-07#"
 	var latest string
 	for k, item := range mock.items {
 		if !strings.HasPrefix(k, prefix) {
@@ -487,19 +485,19 @@ func pastSLATimes() (warningAt, breachAt string) {
 }
 
 // =========================================================================
-// Group A: Primary SFN Execution Paths
+// Primary SFN Execution Paths
 // =========================================================================
 
-func TestE2E_GroupA_PrimarySFNPaths(t *testing.T) {
+func TestE2E_PrimarySFNPaths(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("A1_HappyPath", func(t *testing.T) {
+	t.Run("HappyPath", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{
 			{State: "running"}, {State: "succeeded"},
 		}}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 		warnAt, breachAt := futureSLATimes()
 
 		cfg := e2ePipeline("pipe-a1")
@@ -521,16 +519,16 @@ func TestE2E_GroupA_PrimarySFNPaths(t *testing.T) {
 		assert.Contains(t, r.events, "JOB_TRIGGERED")
 		assert.Contains(t, r.events, "JOB_COMPLETED")
 		assert.Contains(t, r.events, "SLA_MET")
-		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-a1", "stream", "2026-03-07"))
-		assert.Contains(t, collectJoblogEvents(mock, "pipe-a1", "stream", "2026-03-07"), "success")
+		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-a1"))
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-a1"), "success")
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("A2_ExtendedEvaluation", func(t *testing.T) {
+	t.Run("ExtendedEvaluation", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-a2")
 		cfg.Validation.Rules = []types.ValidationRule{
@@ -551,15 +549,15 @@ func TestE2E_GroupA_PrimarySFNPaths(t *testing.T) {
 		assert.Contains(t, r.events, "VALIDATION_PASSED")
 		assert.Contains(t, r.events, "JOB_TRIGGERED")
 		assert.Contains(t, r.events, "JOB_COMPLETED")
-		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-a2", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-a2"))
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("A3_ValidationExhausted", func(t *testing.T) {
+	t.Run("ValidationExhausted", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-a3")
 		cfg.Validation.Rules = []types.ValidationRule{
@@ -575,17 +573,17 @@ func TestE2E_GroupA_PrimarySFNPaths(t *testing.T) {
 		assert.Equal(t, 12, r.evalCount) // 1h window / 5m interval
 		assert.Contains(t, r.events, "VALIDATION_EXHAUSTED")
 		assert.NotContains(t, r.events, "VALIDATION_PASSED")
-		assert.Contains(t, collectJoblogEvents(mock, "pipe-a3", "stream", "2026-03-07"), "validation-exhausted")
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-a3"), "validation-exhausted")
 		// Trigger lock stays RUNNING (no release in validation-exhausted path)
-		assert.Equal(t, types.TriggerStatusRunning, e2eTriggerStatus(mock, "pipe-a3", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusRunning, e2eTriggerStatus(mock, "pipe-a3"))
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("A4_TriggerInfraFailure", func(t *testing.T) {
+	t.Run("TriggerInfraFailure", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{err: errors.New("connection refused")}
 		sc := &mockStatusPoller{}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
 			pipeline: e2ePipeline("pipe-a4"),
@@ -596,18 +594,18 @@ func TestE2E_GroupA_PrimarySFNPaths(t *testing.T) {
 		assert.Equal(t, 1, r.evalCount)
 		assert.Contains(t, r.events, "VALIDATION_PASSED")
 		assert.Contains(t, r.events, "RETRY_EXHAUSTED")
-		joblogs := collectJoblogEvents(mock, "pipe-a4", "stream", "2026-03-07")
+		joblogs := collectJoblogEvents(mock, "pipe-a4")
 		assert.Contains(t, joblogs, "infra-trigger-exhausted")
 		// Lock released by trigger-exhausted
-		assert.Equal(t, "", e2eTriggerStatus(mock, "pipe-a4", "stream", "2026-03-07"))
+		assert.Equal(t, "", e2eTriggerStatus(mock, "pipe-a4"))
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("A5_JobFailure", func(t *testing.T) {
+	t.Run("JobFailure", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "failed", Message: "OOM"}}}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
 			pipeline: e2ePipeline("pipe-a5"),
@@ -618,16 +616,16 @@ func TestE2E_GroupA_PrimarySFNPaths(t *testing.T) {
 		assert.Contains(t, r.events, "VALIDATION_PASSED")
 		assert.Contains(t, r.events, "JOB_TRIGGERED")
 		assert.Contains(t, r.events, "JOB_FAILED")
-		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-a5", "stream", "2026-03-07"))
-		assert.Contains(t, collectJoblogEvents(mock, "pipe-a5", "stream", "2026-03-07"), "fail")
+		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-a5"))
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-a5"), "fail")
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("A6_JobTimeout", func(t *testing.T) {
+	t.Run("JobTimeout", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{} // not used; timeout comes from joblog
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
 			pipeline:         e2ePipeline("pipe-a6"),
@@ -638,16 +636,16 @@ func TestE2E_GroupA_PrimarySFNPaths(t *testing.T) {
 		assert.Equal(t, sfnDone, r.terminal)
 		assert.Contains(t, r.events, "VALIDATION_PASSED")
 		assert.Contains(t, r.events, "JOB_TRIGGERED")
-		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-a6", "stream", "2026-03-07"))
-		assert.Contains(t, collectJoblogEvents(mock, "pipe-a6", "stream", "2026-03-07"), "timeout")
+		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-a6"))
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-a6"), "timeout")
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("A7_InfraFailure", func(t *testing.T) {
+	t.Run("InfraFailure", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
 			pipeline: e2ePipeline("pipe-a7"),
@@ -659,22 +657,22 @@ func TestE2E_GroupA_PrimarySFNPaths(t *testing.T) {
 		assert.Equal(t, 0, r.evalCount)
 		assert.Empty(t, r.events)
 		// Trigger stays RUNNING — watchdog will detect it later
-		assert.Equal(t, types.TriggerStatusRunning, e2eTriggerStatus(mock, "pipe-a7", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusRunning, e2eTriggerStatus(mock, "pipe-a7"))
 	})
 }
 
 // =========================================================================
-// Group B: Post-Run Monitoring
+// Post-Run Monitoring
 // =========================================================================
 
-func TestE2E_GroupB_PostRunMonitoring(t *testing.T) {
+func TestE2E_PostRunMonitoring(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("B1_PostRunPasses", func(t *testing.T) {
+	t.Run("PostRunPasses", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-b1")
 		cfg.PostRun = &types.PostRunConfig{
@@ -686,22 +684,22 @@ func TestE2E_GroupB_PostRunMonitoring(t *testing.T) {
 			pipeline: cfg,
 			sensors: map[string]map[string]interface{}{
 				"upstream-complete": {"status": "ready"},
-				"quality-check":    {"status": "passed"},
+				"quality-check":     {"status": "passed"},
 			},
 		})
 
 		assert.Equal(t, sfnDone, r.terminal)
 		assert.Contains(t, r.events, "JOB_COMPLETED")
 		assert.NotContains(t, r.events, "DATA_DRIFT")
-		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b1", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b1"))
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("B2_DriftDetected", func(t *testing.T) {
+	t.Run("DriftDetected", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-b2")
 		cfg.PostRun = &types.PostRunConfig{
@@ -713,7 +711,7 @@ func TestE2E_GroupB_PostRunMonitoring(t *testing.T) {
 			pipeline: cfg,
 			sensors: map[string]map[string]interface{}{
 				"upstream-complete": {"status": "ready"},
-				"audit-result":     {"sensor_count": float64(100)},
+				"audit-result":      {"sensor_count": float64(100)},
 			},
 			postRunSensorUpdates: []map[string]map[string]interface{}{
 				{}, // iteration 0: no updates; baseline saved
@@ -723,16 +721,16 @@ func TestE2E_GroupB_PostRunMonitoring(t *testing.T) {
 
 		assert.Equal(t, sfnDone, r.terminal)
 		assert.Contains(t, r.events, "DATA_DRIFT")
-		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b2", "stream", "2026-03-07"))
-		assert.True(t, hasRerunRequest(mock, "pipe-b2", "stream", "2026-03-07"), "drift should write RERUN_REQUEST")
+		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b2"))
+		assert.True(t, hasRerunRequest(mock, "pipe-b2"), "drift should write RERUN_REQUEST")
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("B3_WindowExhausted", func(t *testing.T) {
+	t.Run("WindowExhausted", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-b3")
 		cfg.PostRun = &types.PostRunConfig{
@@ -747,23 +745,23 @@ func TestE2E_GroupB_PostRunMonitoring(t *testing.T) {
 
 		assert.Equal(t, sfnDone, r.terminal)
 		assert.NotContains(t, r.events, "DATA_DRIFT")
-		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b3", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b3"))
 		assertAlertFormats(t, eb)
 	})
 }
 
 // =========================================================================
-// Group C: SLA Monitoring
+// SLA Monitoring
 // =========================================================================
 
-func TestE2E_GroupC_SLAMonitoring(t *testing.T) {
+func TestE2E_SLAMonitoring(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("C1_SLAMet", func(t *testing.T) {
+	t.Run("SLAMet", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 		warnAt, breachAt := futureSLATimes()
 
 		cfg := e2ePipeline("pipe-c1")
@@ -781,11 +779,11 @@ func TestE2E_GroupC_SLAMonitoring(t *testing.T) {
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("C2_SLAWarningFired", func(t *testing.T) {
+	t.Run("SLAWarningFired", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-c2")
 		cfg.SLA = &types.SLAConfig{Deadline: "23:59", ExpectedDuration: "30m"}
@@ -806,11 +804,11 @@ func TestE2E_GroupC_SLAMonitoring(t *testing.T) {
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("C3_SLABreachFired", func(t *testing.T) {
+	t.Run("SLABreachFired", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-c3")
 		cfg.SLA = &types.SLAConfig{Deadline: "23:59", ExpectedDuration: "30m"}
@@ -828,11 +826,11 @@ func TestE2E_GroupC_SLAMonitoring(t *testing.T) {
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("C4_SLABreachThenJobSucceeds", func(t *testing.T) {
+	t.Run("SLABreachThenJobSucceeds", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 		warnAt, breachAt := pastSLATimes()
 
 		cfg := e2ePipeline("pipe-c4")
@@ -861,23 +859,23 @@ func TestE2E_GroupC_SLAMonitoring(t *testing.T) {
 
 		assert.Equal(t, sfnDone, r.terminal)
 		assert.Equal(t, "SLA_BREACH", r.slaOutcome) // cancel sees breach in the past
-		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-c4", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-c4"))
 		assertAlertFormats(t, eb)
 	})
 }
 
 // =========================================================================
-// Group D: Automatic Retries (Stream-Router Job Failure Handling)
+// Automatic Retries (Stream-Router Job Failure Handling)
 // =========================================================================
 
-func TestE2E_GroupD_AutoRetries(t *testing.T) {
+func TestE2E_AutoRetries(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("D1_JobFailAutoRetrySuccess", func(t *testing.T) {
+	t.Run("JobFailAutoRetrySuccess", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "failed", Message: "OOM"}}}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-d1")
 		cfg.Job.MaxRetries = 2
@@ -889,10 +887,10 @@ func TestE2E_GroupD_AutoRetries(t *testing.T) {
 		})
 		assert.Equal(t, sfnDone, r.terminal)
 		assert.Contains(t, r.events, "JOB_FAILED")
-		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-d1", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-d1"))
 
 		// Phase 2: Simulate DynamoDB stream event for the JOB#fail record
-		jobSK := findLatestJobSK(mock, "pipe-d1", "stream", "2026-03-07")
+		jobSK := findLatestJobSK(mock, "pipe-d1")
 		require.NotEmpty(t, jobSK, "should have a joblog entry")
 
 		sfnCountBefore := len(sfnM.executions)
@@ -906,11 +904,11 @@ func TestE2E_GroupD_AutoRetries(t *testing.T) {
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("D2_JobFailRetryExhausted", func(t *testing.T) {
+	t.Run("JobFailRetryExhausted", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "failed"}}}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-d2")
 		cfg.Job.MaxRetries = 0 // no retries allowed
@@ -922,7 +920,7 @@ func TestE2E_GroupD_AutoRetries(t *testing.T) {
 		assert.Equal(t, sfnDone, r.terminal)
 
 		// Simulate JOB#fail stream event
-		jobSK := findLatestJobSK(mock, "pipe-d2", "stream", "2026-03-07")
+		jobSK := findLatestJobSK(mock, "pipe-d2")
 		require.NotEmpty(t, jobSK)
 
 		sfnCountBefore := len(sfnM.executions)
@@ -938,23 +936,23 @@ func TestE2E_GroupD_AutoRetries(t *testing.T) {
 		assert.Equal(t, sfnCountBefore, len(sfnM.executions), "should not start rerun")
 		sfnM.mu.Unlock()
 		assert.Contains(t, collectEventTypes(eb), "RETRY_EXHAUSTED")
-		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-d2", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-d2"))
 		assertAlertFormats(t, eb)
 	})
 }
 
 // =========================================================================
-// Group E: Re-Run / Replay (Manual via RERUN_REQUEST)
+// Re-Run / Replay (Manual via RERUN_REQUEST)
 // =========================================================================
 
-func TestE2E_GroupE_RerunReplay(t *testing.T) {
+func TestE2E_RerunReplay(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("E1_RerunAccepted", func(t *testing.T) {
+	t.Run("RerunAccepted", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-e1")
 		seedConfig(mock, cfg)
@@ -977,22 +975,22 @@ func TestE2E_GroupE_RerunReplay(t *testing.T) {
 
 		// Process RERUN_REQUEST stream event
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-e1", "stream", "2026-03-07"))
+		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-e1"))
 		require.NoError(t, err)
 
 		// Verify: new SFN started, rerun-accepted joblog written
 		sfnM.mu.Lock()
 		assert.Greater(t, len(sfnM.executions), sfnCountBefore, "should start rerun SFN")
 		sfnM.mu.Unlock()
-		assert.Contains(t, collectJoblogEvents(mock, "pipe-e1", "stream", "2026-03-07"), "rerun-accepted")
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-e1"), "rerun-accepted")
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("E2_RerunRejected", func(t *testing.T) {
+	t.Run("RerunRejected", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-e2")
 		seedConfig(mock, cfg)
@@ -1014,7 +1012,7 @@ func TestE2E_GroupE_RerunReplay(t *testing.T) {
 		}))
 
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-e2", "stream", "2026-03-07"))
+		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-e2"))
 		require.NoError(t, err)
 
 		// Verify: no SFN, RERUN_REJECTED published
@@ -1022,15 +1020,15 @@ func TestE2E_GroupE_RerunReplay(t *testing.T) {
 		assert.Equal(t, sfnCountBefore, len(sfnM.executions), "should not start SFN")
 		sfnM.mu.Unlock()
 		assert.Contains(t, collectEventTypes(eb), "RERUN_REJECTED")
-		assert.Contains(t, collectJoblogEvents(mock, "pipe-e2", "stream", "2026-03-07"), "rerun-rejected")
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-e2"), "rerun-rejected")
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("E3_LateDataArrival", func(t *testing.T) {
+	t.Run("LateDataArrival", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-e3")
 		seedConfig(mock, cfg)
@@ -1056,24 +1054,24 @@ func TestE2E_GroupE_RerunReplay(t *testing.T) {
 		// Lock already held → late data path
 		evts := collectEventTypes(eb)
 		assert.Contains(t, evts, "LATE_DATA_ARRIVAL")
-		assert.Contains(t, collectJoblogEvents(mock, "pipe-e3", "stream", "2026-03-07"), "late-data-arrival")
-		assert.True(t, hasRerunRequest(mock, "pipe-e3", "stream", "2026-03-07"), "late data should write RERUN_REQUEST")
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-e3"), "late-data-arrival")
+		assert.True(t, hasRerunRequest(mock, "pipe-e3"), "late data should write RERUN_REQUEST")
 		assertAlertFormats(t, eb)
 	})
 }
 
 // =========================================================================
-// Group F: Drift → Re-Trigger Compound Scenarios
+// Drift → Re-Trigger Compound Scenarios
 // =========================================================================
 
-func TestE2E_GroupF_DriftRetrigger(t *testing.T) {
+func TestE2E_DriftRetrigger(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("F1_DriftRetriggerSuccess", func(t *testing.T) {
+	t.Run("DriftRetriggerSuccess", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-f1")
 		cfg.PostRun = &types.PostRunConfig{
@@ -1086,7 +1084,7 @@ func TestE2E_GroupF_DriftRetrigger(t *testing.T) {
 			pipeline: cfg,
 			sensors: map[string]map[string]interface{}{
 				"upstream-complete": {"status": "ready"},
-				"audit-result":     {"sensor_count": float64(100)},
+				"audit-result":      {"sensor_count": float64(100)},
 			},
 			postRunSensorUpdates: []map[string]map[string]interface{}{
 				{},
@@ -1095,11 +1093,11 @@ func TestE2E_GroupF_DriftRetrigger(t *testing.T) {
 		})
 		assert.Equal(t, sfnDone, r.terminal)
 		assert.Contains(t, r.events, "DATA_DRIFT")
-		assert.True(t, hasRerunRequest(mock, "pipe-f1", "stream", "2026-03-07"))
+		assert.True(t, hasRerunRequest(mock, "pipe-f1"))
 
 		// Phase 2: Stream-router processes RERUN_REQUEST
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f1", "stream", "2026-03-07"))
+		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f1"))
 		require.NoError(t, err)
 
 		// Verify: new SFN started for re-trigger
@@ -1109,11 +1107,11 @@ func TestE2E_GroupF_DriftRetrigger(t *testing.T) {
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("F2_DriftRetriggerJobFails", func(t *testing.T) {
+	t.Run("DriftRetriggerJobFails", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-f2")
 		cfg.PostRun = &types.PostRunConfig{
@@ -1125,7 +1123,7 @@ func TestE2E_GroupF_DriftRetrigger(t *testing.T) {
 			pipeline: cfg,
 			sensors: map[string]map[string]interface{}{
 				"upstream-complete": {"status": "ready"},
-				"audit-result":     {"sensor_count": float64(100)},
+				"audit-result":      {"sensor_count": float64(100)},
 			},
 			postRunSensorUpdates: []map[string]map[string]interface{}{
 				{},
@@ -1136,7 +1134,7 @@ func TestE2E_GroupF_DriftRetrigger(t *testing.T) {
 		assert.Contains(t, r.events, "DATA_DRIFT")
 
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f2", "stream", "2026-03-07"))
+		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f2"))
 		require.NoError(t, err)
 
 		sfnM.mu.Lock()
@@ -1145,11 +1143,11 @@ func TestE2E_GroupF_DriftRetrigger(t *testing.T) {
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("F3_DriftRetriggerInfraFailure", func(t *testing.T) {
+	t.Run("DriftRetriggerInfraFailure", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-f3")
 		cfg.PostRun = &types.PostRunConfig{
@@ -1161,7 +1159,7 @@ func TestE2E_GroupF_DriftRetrigger(t *testing.T) {
 			pipeline: cfg,
 			sensors: map[string]map[string]interface{}{
 				"upstream-complete": {"status": "ready"},
-				"audit-result":     {"sensor_count": float64(200)},
+				"audit-result":      {"sensor_count": float64(200)},
 			},
 			postRunSensorUpdates: []map[string]map[string]interface{}{
 				{},
@@ -1173,7 +1171,7 @@ func TestE2E_GroupF_DriftRetrigger(t *testing.T) {
 
 		// Phase 2: verify the RERUN_REQUEST was written, allowing re-trigger
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f3", "stream", "2026-03-07"))
+		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f3"))
 		require.NoError(t, err)
 
 		sfnM.mu.Lock()
@@ -1184,17 +1182,17 @@ func TestE2E_GroupF_DriftRetrigger(t *testing.T) {
 }
 
 // =========================================================================
-// Group G: Watchdog Health Checks
+// Watchdog Health Checks
 // =========================================================================
 
-func TestE2E_GroupG_Watchdog(t *testing.T) {
+func TestE2E_Watchdog(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("G1_StaleTriggerDetected", func(t *testing.T) {
+	t.Run("StaleTriggerDetected", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-g1")
 		seedConfig(mock, cfg)
@@ -1212,15 +1210,15 @@ func TestE2E_GroupG_Watchdog(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Contains(t, collectEventTypes(eb), "SFN_TIMEOUT")
-		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-g1", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-g1"))
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("G2_MissedCronSchedule", func(t *testing.T) {
+	t.Run("MissedCronSchedule", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		// Cron-scheduled pipeline: fires at minute 0 every hour
 		cfg := types.PipelineConfig{
@@ -1250,22 +1248,161 @@ func TestE2E_GroupG_Watchdog(t *testing.T) {
 		assert.Contains(t, collectEventTypes(eb), "SCHEDULE_MISSED")
 		assertAlertFormats(t, eb)
 	})
+
+	t.Run("ReconcileSkipsCompletedPipeline", func(t *testing.T) {
+		// Sensor condition met, no trigger row (simulates TTL expiry), but
+		// joblog has terminal "success" event → watchdog must NOT re-trigger.
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-g3")
+		seedConfig(mock, cfg)
+
+		// Seed sensor that satisfies the trigger condition.
+		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-g3", "upstream-complete", map[string]interface{}{
+			"status": "ready", "date": "2026-03-07",
+		}))
+
+		// No trigger row — simulates TTL expiry after completion.
+		// Seed terminal joblog entry to prove pipeline already ran.
+		ts := fmt.Sprintf("%d", time.Now().UnixMilli())
+		sk := types.JobSK("stream", "2026-03-07", ts)
+		mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+			"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-g3")},
+			"SK":    &ddbtypes.AttributeValueMemberS{Value: sk},
+			"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+		})
+
+		sfnM.mu.Lock()
+		sfnCountBefore := len(sfnM.executions)
+		sfnM.mu.Unlock()
+
+		err := lambda.HandleWatchdog(ctx, d)
+		require.NoError(t, err)
+
+		// No TRIGGER_RECOVERED event, no SFN started.
+		assert.NotContains(t, collectEventTypes(eb), "TRIGGER_RECOVERED")
+		sfnM.mu.Lock()
+		assert.Equal(t, sfnCountBefore, len(sfnM.executions), "should not re-trigger completed pipeline")
+		sfnM.mu.Unlock()
+	})
+
+	t.Run("ReconcileSkipsFailedPipeline", func(t *testing.T) {
+		// Same as above but with a terminal "fail" joblog event.
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-g4")
+		seedConfig(mock, cfg)
+
+		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-g4", "upstream-complete", map[string]interface{}{
+			"status": "ready", "date": "2026-03-07",
+		}))
+
+		ts := fmt.Sprintf("%d", time.Now().UnixMilli())
+		sk := types.JobSK("stream", "2026-03-07", ts)
+		mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+			"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-g4")},
+			"SK":    &ddbtypes.AttributeValueMemberS{Value: sk},
+			"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventFail},
+		})
+
+		sfnM.mu.Lock()
+		sfnCountBefore := len(sfnM.executions)
+		sfnM.mu.Unlock()
+
+		err := lambda.HandleWatchdog(ctx, d)
+		require.NoError(t, err)
+
+		assert.NotContains(t, collectEventTypes(eb), "TRIGGER_RECOVERED")
+		sfnM.mu.Lock()
+		assert.Equal(t, sfnCountBefore, len(sfnM.executions), "should not re-trigger failed pipeline")
+		sfnM.mu.Unlock()
+	})
+
+	t.Run("ReconcileRecoversGenuineMiss", func(t *testing.T) {
+		// Sensor condition met, no trigger, no joblog → genuine miss → recovery.
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-g5")
+		seedConfig(mock, cfg)
+
+		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-g5", "upstream-complete", map[string]interface{}{
+			"status": "ready", "date": "2026-03-07",
+		}))
+
+		sfnM.mu.Lock()
+		sfnCountBefore := len(sfnM.executions)
+		sfnM.mu.Unlock()
+
+		err := lambda.HandleWatchdog(ctx, d)
+		require.NoError(t, err)
+
+		assert.Contains(t, collectEventTypes(eb), "TRIGGER_RECOVERED")
+		sfnM.mu.Lock()
+		assert.Greater(t, len(sfnM.executions), sfnCountBefore, "should recover missed trigger")
+		sfnM.mu.Unlock()
+		assert.Equal(t, types.TriggerStatusRunning, e2eTriggerStatus(mock, "pipe-g5"))
+	})
+
+	t.Run("TerminalTriggerRetainsRecord", func(t *testing.T) {
+		// Full SFN run → COMPLETED status → trigger record persists (TTL removed).
+		// Then watchdog runs → no TRIGGER_RECOVERED because HasTriggerForDate returns true.
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
+		d, _, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-g6")
+		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
+			pipeline: cfg,
+			sensors:  map[string]map[string]interface{}{"upstream-complete": {"status": "ready"}},
+		})
+		assert.Equal(t, sfnDone, r.terminal)
+		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-g6"))
+
+		// Verify trigger record still exists (TTL removed by SetTriggerStatus).
+		mock.mu.Lock()
+		trigKey := ddbItemKey(testControlTable, types.PipelinePK("pipe-g6"), types.TriggerSK("stream", "2026-03-07"))
+		trigItem, exists := mock.items[trigKey]
+		hasTTL := false
+		if exists {
+			_, hasTTL = trigItem["ttl"]
+		}
+		mock.mu.Unlock()
+		assert.True(t, exists, "trigger record should persist after terminal status")
+		assert.False(t, hasTTL, "TTL should be removed on terminal trigger")
+
+		// Run watchdog — should NOT re-trigger because HasTriggerForDate finds the record.
+		eb2 := &mockEventBridge{}
+		d.EventBridge = eb2
+		err := lambda.HandleWatchdog(ctx, d)
+		require.NoError(t, err)
+		assert.NotContains(t, collectEventTypes(eb2), "TRIGGER_RECOVERED")
+	})
 }
 
 // =========================================================================
-// Group H: SLA Branch Completeness
+// SLA Branch Completeness
 // =========================================================================
 
-func TestE2E_GroupH_SLABranchCompleteness(t *testing.T) {
+func TestE2E_SLABranchCompleteness(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("H1_SLAWarningOutcome", func(t *testing.T) {
+	t.Run("SLAWarningOutcome", func(t *testing.T) {
 		// Cancel when warning has passed but breach is still in the future.
 		// Expected: cancel returns SLA_WARNING (not SLA_MET or SLA_BREACH).
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		// Warning 1h in the past, breach 1h in the future.
 		warnAt := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
@@ -1287,12 +1424,12 @@ func TestE2E_GroupH_SLABranchCompleteness(t *testing.T) {
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("H2_SLAFireAlertSuppression", func(t *testing.T) {
+	t.Run("SLAFireAlertSuppression", func(t *testing.T) {
 		// Fire-alert called after pipeline completed → alert suppressed.
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-h2")
 		cfg.SLA = &types.SLAConfig{Deadline: "23:59", ExpectedDuration: "30m"}
@@ -1318,19 +1455,19 @@ func TestE2E_GroupH_SLABranchCompleteness(t *testing.T) {
 }
 
 // =========================================================================
-// Group I: Stream-Router Entry Points
+// Stream-Router Entry Points
 // =========================================================================
 
-func TestE2E_GroupI_StreamRouterEntryPoints(t *testing.T) {
+func TestE2E_StreamRouterEntryPoints(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("I1_InitialSensorTrigger", func(t *testing.T) {
+	t.Run("InitialSensorTrigger", func(t *testing.T) {
 		// Sensor event arrives → trigger condition met → lock acquired → SFN started.
 		// This is the fundamental entry point for stream-triggered pipelines.
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-i1")
 		seedConfig(mock, cfg)
@@ -1349,16 +1486,16 @@ func TestE2E_GroupI_StreamRouterEntryPoints(t *testing.T) {
 		sfnM.mu.Lock()
 		assert.Greater(t, len(sfnM.executions), sfnCountBefore, "sensor trigger should start SFN")
 		sfnM.mu.Unlock()
-		assert.Equal(t, types.TriggerStatusRunning, e2eTriggerStatus(mock, "pipe-i1", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusRunning, e2eTriggerStatus(mock, "pipe-i1"))
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("I2_JobTimeoutAutoRetry", func(t *testing.T) {
+	t.Run("JobTimeoutAutoRetry", func(t *testing.T) {
 		// Job timeout flows through handleJobFailure → auto-retry (same as fail).
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-i2")
 		cfg.Job.MaxRetries = 2
@@ -1385,12 +1522,12 @@ func TestE2E_GroupI_StreamRouterEntryPoints(t *testing.T) {
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("I3_RerunAfterFailure", func(t *testing.T) {
+	t.Run("RerunAfterFailure", func(t *testing.T) {
 		// RERUN_REQUEST when prior job was "fail" → allowed immediately (no freshness check).
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-i3")
 		seedConfig(mock, cfg)
@@ -1412,32 +1549,32 @@ func TestE2E_GroupI_StreamRouterEntryPoints(t *testing.T) {
 		}))
 
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-i3", "stream", "2026-03-07"))
+		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-i3"))
 		require.NoError(t, err)
 
 		// Verify: rerun accepted despite old sensor data (failure skips freshness check).
 		sfnM.mu.Lock()
 		assert.Greater(t, len(sfnM.executions), sfnCountBefore, "rerun after failure should be accepted without freshness check")
 		sfnM.mu.Unlock()
-		assert.Contains(t, collectJoblogEvents(mock, "pipe-i3", "stream", "2026-03-07"), "rerun-accepted")
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-i3"), "rerun-accepted")
 		assertAlertFormats(t, eb)
 	})
 }
 
 // =========================================================================
-// Group J: Cross-Handler Edge Cases
+// Cross-Handler Edge Cases
 // =========================================================================
 
-func TestE2E_GroupJ_CrossHandlerEdgeCases(t *testing.T) {
+func TestE2E_CrossHandlerEdgeCases(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("J1_WatchdogSelfHealing", func(t *testing.T) {
+	t.Run("WatchdogSelfHealing", func(t *testing.T) {
 		// reconcileSensorTriggers: sensor condition met, no trigger row →
 		// lock acquired, SFN started, TRIGGER_RECOVERED published.
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
-		d, sfnM, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-j1")
 		seedConfig(mock, cfg)
@@ -1457,17 +1594,17 @@ func TestE2E_GroupJ_CrossHandlerEdgeCases(t *testing.T) {
 		assert.Greater(t, len(sfnM.executions), sfnCountBefore, "watchdog should self-heal missed trigger")
 		sfnM.mu.Unlock()
 		assert.Contains(t, collectEventTypes(eb), "TRIGGER_RECOVERED")
-		assert.Equal(t, types.TriggerStatusRunning, e2eTriggerStatus(mock, "pipe-j1", "stream", "2026-03-07"))
+		assert.Equal(t, types.TriggerStatusRunning, e2eTriggerStatus(mock, "pipe-j1"))
 		assertAlertFormats(t, eb)
 	})
 
-	t.Run("J2_CheckJobNonTerminalFallthrough", func(t *testing.T) {
+	t.Run("CheckJobNonTerminalFallthrough", func(t *testing.T) {
 		// Joblog has "infra-trigger-failure" (non-terminal) → check-job skips it,
 		// falls through to StatusChecker → polls real job status → success.
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
-		d, _, eb, _ := buildE2EDeps(mock, tr, sc)
+		d, _, eb := buildE2EDeps(mock, tr, sc)
 
 		cfg := e2ePipeline("pipe-j2")
 
@@ -1482,8 +1619,8 @@ func TestE2E_GroupJ_CrossHandlerEdgeCases(t *testing.T) {
 		assert.Equal(t, sfnDone, r.terminal)
 		// check-job should have skipped the non-terminal entry and polled StatusChecker.
 		assert.Contains(t, r.events, "JOB_COMPLETED", "check-job should fall through non-terminal joblog to StatusChecker")
-		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-j2", "stream", "2026-03-07"))
-		joblogs := collectJoblogEvents(mock, "pipe-j2", "stream", "2026-03-07")
+		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-j2"))
+		joblogs := collectJoblogEvents(mock, "pipe-j2")
 		assert.Contains(t, joblogs, "success", "StatusChecker success should be written to joblog")
 		assertAlertFormats(t, eb)
 	})
@@ -1495,24 +1632,24 @@ func TestE2E_GroupJ_CrossHandlerEdgeCases(t *testing.T) {
 
 func TestE2E_AlertFormatAllEventTypes(t *testing.T) {
 	eventTypes := []struct {
-		detailType    string
+		detailType   string
 		wantEmojiHex string // raw byte prefix to check
 	}{
-		{"VALIDATION_PASSED", "\xe2\x84\xb9"},     // info
+		{"VALIDATION_PASSED", "\xe2\x84\xb9"},        // info
 		{"VALIDATION_EXHAUSTED", "\xf0\x9f\x94\xb4"}, // red circle
-		{"JOB_TRIGGERED", "\xe2\x84\xb9"},          // info
-		{"JOB_COMPLETED", "\xe2\x84\xb9"},           // info
-		{"JOB_FAILED", "\xf0\x9f\x94\xb4"},         // red circle
-		{"RETRY_EXHAUSTED", "\xf0\x9f\x94\xb4"},    // red circle
-		{"SLA_WARNING", "\xf0\x9f\x9f\xa1"},        // yellow circle
-		{"SLA_BREACH", "\xf0\x9f\x94\xb4"},         // red circle
-		{"SLA_MET", "\xe2\x9c\x85"},                // check mark
-		{"DATA_DRIFT", "\xf0\x9f\x94\xb4"},         // red circle
-		{"LATE_DATA_ARRIVAL", "\xe2\x84\xb9"},       // info
-		{"RERUN_REJECTED", "\xe2\x84\xb9"},          // info
-		{"SFN_TIMEOUT", "\xf0\x9f\x94\xb4"},        // red circle
-		{"SCHEDULE_MISSED", "\xf0\x9f\x94\xb4"},    // red circle
-		{"TRIGGER_RECOVERED", "\xe2\x84\xb9"},       // info
+		{"JOB_TRIGGERED", "\xe2\x84\xb9"},            // info
+		{"JOB_COMPLETED", "\xe2\x84\xb9"},            // info
+		{"JOB_FAILED", "\xf0\x9f\x94\xb4"},           // red circle
+		{"RETRY_EXHAUSTED", "\xf0\x9f\x94\xb4"},      // red circle
+		{"SLA_WARNING", "\xf0\x9f\x9f\xa1"},          // yellow circle
+		{"SLA_BREACH", "\xf0\x9f\x94\xb4"},           // red circle
+		{"SLA_MET", "\xe2\x9c\x85"},                  // check mark
+		{"DATA_DRIFT", "\xf0\x9f\x94\xb4"},           // red circle
+		{"LATE_DATA_ARRIVAL", "\xe2\x84\xb9"},        // info
+		{"RERUN_REJECTED", "\xe2\x84\xb9"},           // info
+		{"SFN_TIMEOUT", "\xf0\x9f\x94\xb4"},          // red circle
+		{"SCHEDULE_MISSED", "\xf0\x9f\x94\xb4"},      // red circle
+		{"TRIGGER_RECOVERED", "\xe2\x84\xb9"},        // info
 	}
 
 	for _, tt := range eventTypes {

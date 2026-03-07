@@ -374,16 +374,27 @@ func (s *Store) HasTriggerForDate(ctx context.Context, pipelineID, schedule, dat
 // SetTriggerStatus updates only the status attribute of an existing trigger row,
 // preserving TTL and other attributes.
 func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date, status string) error {
+	expr := "SET #status = :s"
+	names := map[string]string{
+		"#status": "status",
+	}
+
+	// Terminal statuses remove the TTL so DynamoDB doesn't auto-delete the
+	// trigger record. Without this, TTL expiry removes the record and the
+	// watchdog reconcile loop re-triggers completed pipelines.
+	if status == types.TriggerStatusCompleted || status == types.TriggerStatusFailedFinal {
+		expr = "SET #status = :s REMOVE #ttl"
+		names["#ttl"] = "ttl"
+	}
+
 	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.ControlTable,
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
 			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
 		},
-		UpdateExpression: aws.String("SET #status = :s"),
-		ExpressionAttributeNames: map[string]string{
-			"#status": "status",
-		},
+		UpdateExpression:         aws.String(expr),
+		ExpressionAttributeNames: names,
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":s": &ddbtypes.AttributeValueMemberS{Value: status},
 		},

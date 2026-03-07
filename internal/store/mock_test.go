@@ -115,10 +115,22 @@ func (m *mockDDB) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput,
 		}
 	}
 
-	// Parse "SET #name = :val" assignments from UpdateExpression and apply them.
+	// Parse UpdateExpression: supports SET and REMOVE clauses.
 	if input.UpdateExpression != nil {
-		expr := strings.TrimPrefix(*input.UpdateExpression, "SET ")
-		for _, assignment := range strings.Split(expr, ",") {
+		expr := *input.UpdateExpression
+
+		// Split into SET and REMOVE sections.
+		setExpr, removeExpr := "", ""
+		if idx := strings.Index(expr, " REMOVE "); idx >= 0 {
+			setExpr = expr[:idx]
+			removeExpr = expr[idx+len(" REMOVE "):]
+		} else {
+			setExpr = expr
+		}
+
+		// Apply SET assignments.
+		setExpr = strings.TrimPrefix(setExpr, "SET ")
+		for _, assignment := range strings.Split(setExpr, ",") {
 			parts := strings.SplitN(strings.TrimSpace(assignment), "=", 2)
 			if len(parts) != 2 {
 				continue
@@ -132,6 +144,17 @@ func (m *mockDDB) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput,
 			}
 			if val, ok := input.ExpressionAttributeValues[valRef]; ok {
 				item[attrName] = val
+			}
+		}
+
+		// Apply REMOVE deletions.
+		if removeExpr != "" {
+			for _, attr := range strings.Split(removeExpr, ",") {
+				attr = strings.TrimSpace(attr)
+				if resolved, ok := input.ExpressionAttributeNames[attr]; ok {
+					attr = resolved
+				}
+				delete(item, attr)
 			}
 		}
 	}

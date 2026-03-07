@@ -173,6 +173,13 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 				continue
 			}
 
+			// Guard against re-triggering completed pipelines whose trigger
+			// record was deleted by DynamoDB TTL. Check the joblog for a
+			// terminal event before acquiring a new lock.
+			if isJobTerminal(ctx, d, id, scheduleID, date) {
+				continue
+			}
+
 			acquired, err := d.Store.AcquireTriggerLock(ctx, id, scheduleID, date, triggerLockTTL)
 			if err != nil {
 				d.Logger.Error("lock acquisition failed during reconciliation",

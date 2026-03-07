@@ -1061,13 +1061,14 @@ func TestWatchdog_MissedSchedule_DetailFields(t *testing.T) {
 
 	var missedEvent *types.InterlockEvent
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventScheduleMissed) {
-			detailJSON := *ev.Entries[0].Detail
-			var evt types.InterlockEvent
-			require.NoError(t, json.Unmarshal([]byte(detailJSON), &evt))
-			missedEvent = &evt
-			break
+		if *ev.Entries[0].DetailType != string(types.EventScheduleMissed) {
+			continue
 		}
+		detailJSON := *ev.Entries[0].Detail
+		var evt types.InterlockEvent
+		require.NoError(t, json.Unmarshal([]byte(detailJSON), &evt))
+		missedEvent = &evt
+		break
 	}
 
 	require.NotNil(t, missedEvent, "expected a SCHEDULE_MISSED event to be published")
@@ -1208,6 +1209,160 @@ func TestWatchdog_Reconcile_NoTriggerCondition_Skips(t *testing.T) {
 	sfnMock.mu.Lock()
 	defer sfnMock.mu.Unlock()
 	assert.Empty(t, sfnMock.executions, "pipeline with no trigger should be skipped by reconciliation")
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile: joblog terminal guard
+// ---------------------------------------------------------------------------
+
+// seedJoblogEntry inserts a joblog event into the mock.
+func seedJoblogEntry(mock *mockDDB, pipelineID, event string) {
+	ts := fmt.Sprintf("%d", time.Now().UnixMilli())
+	sk := types.JobSK("stream", "2026-03-04", ts)
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: sk},
+		"event": &ddbtypes.AttributeValueMemberS{Value: event},
+	})
+}
+
+func TestWatchdog_Reconcile_SkipsTerminalSuccess(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key: "upstream-complete", Check: types.CheckEquals, Field: "status", Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready", "date": "2026-03-04",
+	})
+
+	// No trigger row (simulates TTL expiry), but joblog has terminal success.
+	seedJoblogEntry(mock, "gold-revenue", types.JobEventSuccess)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "reconcile should skip pipeline with terminal success joblog")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventTriggerRecovered), *ev.Entries[0].DetailType,
+			"should not publish TRIGGER_RECOVERED for completed pipeline")
+	}
+}
+
+func TestWatchdog_Reconcile_SkipsTerminalFail(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-transform"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key: "upstream-complete", Check: types.CheckEquals, Field: "status", Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+	seedSensor(mock, "silver-transform", "upstream-complete", map[string]interface{}{
+		"status": "ready", "date": "2026-03-04",
+	})
+
+	seedJoblogEntry(mock, "silver-transform", types.JobEventFail)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "reconcile should skip pipeline with terminal fail joblog")
+}
+
+func TestWatchdog_Reconcile_SkipsTerminalTimeout(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key: "upstream-complete", Check: types.CheckEquals, Field: "status", Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready", "date": "2026-03-04",
+	})
+
+	seedJoblogEntry(mock, "gold-revenue", types.JobEventTimeout)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "reconcile should skip pipeline with terminal timeout joblog")
+}
+
+func TestWatchdog_Reconcile_ProceedsOnNonTerminalJoblog(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key: "upstream-complete", Check: types.CheckEquals, Field: "status", Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready", "date": "2026-03-04",
+	})
+
+	// Non-terminal joblog event should NOT prevent recovery.
+	seedJoblogEntry(mock, "gold-revenue", types.JobEventInfraTriggerExhausted)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Len(t, sfnMock.executions, 1, "reconcile should proceed when joblog has only non-terminal events")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var recovered int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
+			recovered++
+		}
+	}
+	assert.Equal(t, 1, recovered, "should publish TRIGGER_RECOVERED for non-terminal joblog")
 }
 
 // ---------------------------------------------------------------------------

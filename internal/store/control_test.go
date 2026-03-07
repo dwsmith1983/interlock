@@ -268,7 +268,7 @@ func TestSetTriggerStatus(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	// Seed a trigger row with TTL to verify UpdateItem preserves it.
+	// Seed a trigger row with TTL.
 	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
 		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
 		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
@@ -276,13 +276,12 @@ func TestSetTriggerStatus(t *testing.T) {
 		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
 	})
 
-	// Update status.
+	// Update to COMPLETED — should remove TTL.
 	err := s.SetTriggerStatus(context.Background(), "pipe-1", "daily", "2026-03-01", types.TriggerStatusCompleted)
 	if err != nil {
 		t.Fatalf("SetTriggerStatus: %v", err)
 	}
 
-	// Read back via the mock to verify.
 	key := itemKey("control", types.PipelinePK("pipe-1"), types.TriggerSK("daily", "2026-03-01"))
 	mock.mu.Lock()
 	item, ok := mock.items[key]
@@ -296,10 +295,67 @@ func TestSetTriggerStatus(t *testing.T) {
 		t.Errorf("status = %q, want %q", status, types.TriggerStatusCompleted)
 	}
 
-	// Verify TTL was preserved (not stripped by UpdateItem).
+	// TTL should be REMOVED for terminal status.
+	if _, hasTTL := item["ttl"]; hasTTL {
+		t.Error("expected ttl attribute to be removed for COMPLETED status")
+	}
+}
+
+func TestSetTriggerStatus_FailedFinal_RemovesTTL(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+	})
+
+	err := s.SetTriggerStatus(context.Background(), "pipe-1", "daily", "2026-03-01", types.TriggerStatusFailedFinal)
+	if err != nil {
+		t.Fatalf("SetTriggerStatus: %v", err)
+	}
+
+	key := itemKey("control", types.PipelinePK("pipe-1"), types.TriggerSK("daily", "2026-03-01"))
+	mock.mu.Lock()
+	item := mock.items[key]
+	mock.mu.Unlock()
+
+	status := item["status"].(*ddbtypes.AttributeValueMemberS).Value
+	if status != types.TriggerStatusFailedFinal {
+		t.Errorf("status = %q, want %q", status, types.TriggerStatusFailedFinal)
+	}
+	if _, hasTTL := item["ttl"]; hasTTL {
+		t.Error("expected ttl attribute to be removed for FAILED_FINAL status")
+	}
+}
+
+func TestSetTriggerStatus_Running_PreservesTTL(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+	})
+
+	// Non-terminal status should preserve TTL.
+	err := s.SetTriggerStatus(context.Background(), "pipe-1", "daily", "2026-03-01", types.TriggerStatusRunning)
+	if err != nil {
+		t.Fatalf("SetTriggerStatus: %v", err)
+	}
+
+	key := itemKey("control", types.PipelinePK("pipe-1"), types.TriggerSK("daily", "2026-03-01"))
+	mock.mu.Lock()
+	item := mock.items[key]
+	mock.mu.Unlock()
+
 	ttlAttr, ok := item["ttl"]
 	if !ok {
-		t.Fatal("expected ttl attribute to be preserved")
+		t.Fatal("expected ttl attribute to be preserved for non-terminal status")
 	}
 	ttlVal := ttlAttr.(*ddbtypes.AttributeValueMemberN).Value
 	if ttlVal != "1740000000" {
