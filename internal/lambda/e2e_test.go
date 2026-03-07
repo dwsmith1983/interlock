@@ -470,6 +470,28 @@ func makeRerunRequestStreamEvent(pipelineID string) lambda.StreamEvent {
 	}
 }
 
+func makeRerunRequestWithReasonE2E(pipelineID, reason string) lambda.StreamEvent {
+	sk := types.RerunRequestSK("stream", "2026-03-07")
+	return lambda.StreamEvent{
+		Records: []events.DynamoDBEventRecord{{
+			EventName: "INSERT",
+			Change: events.DynamoDBStreamRecord{
+				Keys: map[string]events.DynamoDBAttributeValue{
+					"PK": events.NewStringAttribute(types.PipelinePK(pipelineID)),
+					"SK": events.NewStringAttribute(sk),
+				},
+				NewImage: map[string]events.DynamoDBAttributeValue{
+					"PK":     events.NewStringAttribute(types.PipelinePK(pipelineID)),
+					"SK":     events.NewStringAttribute(sk),
+					"reason": events.NewStringAttribute(reason),
+				},
+			},
+		}},
+	}
+}
+
+func intPtr(v int) *int { return &v }
+
 func findLatestJobSK(mock *mockDDB, pipelineID string) string {
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
@@ -1217,6 +1239,109 @@ func TestE2E_DriftRetrigger(t *testing.T) {
 		sfnM.mu.Lock()
 		assert.Greater(t, len(sfnM.executions), sfnCountBefore)
 		sfnM.mu.Unlock()
+		assertAlertFormats(t, eb)
+	})
+}
+
+// =========================================================================
+// Rerun Limit Enforcement
+// =========================================================================
+
+func TestE2E_RerunLimits(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("DriftRerunLimitExceeded", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-rl1")
+		cfg.Job.MaxDriftReruns = intPtr(1)
+		cfg.PostRun = &types.PostRunConfig{
+			Evaluation: &types.EvaluationWindow{Window: "10m", Interval: "5m"},
+			Rules:      []types.ValidationRule{{Key: "quality-check", Check: types.CheckExists}},
+		}
+		seedConfig(mock, cfg)
+
+		// Seed a completed trigger + successful job
+		seedTriggerLock(mock, "pipe-rl1", "2026-03-07")
+		require.NoError(t, d.Store.SetTriggerStatus(ctx, "pipe-rl1", "stream", "2026-03-07", types.TriggerStatusCompleted))
+		oldTS := fmt.Sprintf("%d", time.Now().Add(-1*time.Hour).UnixMilli())
+		mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+			"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-rl1")},
+			"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", "2026-03-07", oldTS)},
+			"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+		})
+
+		// Seed fresh sensor data (so circuit breaker would pass if reached)
+		freshTS := fmt.Sprintf("%d", time.Now().UnixMilli())
+		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-rl1", "upstream-complete", map[string]interface{}{
+			"status": "ready", "updatedAt": freshTS,
+		}))
+
+		// Seed one existing drift rerun — at limit (budget=1, count=1)
+		seedRerunWithReason(mock, "pipe-rl1", "stream", "2026-03-07", 0, "data-drift")
+
+		// Send a data-drift RERUN_REQUEST — should be rejected
+		sfnCountBefore := len(sfnM.executions)
+		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-rl1", "data-drift"))
+		require.NoError(t, err)
+
+		// Verify: no SFN started, RERUN_REJECTED event + joblog entry
+		sfnM.mu.Lock()
+		assert.Equal(t, sfnCountBefore, len(sfnM.executions), "should not start SFN when drift limit exceeded")
+		sfnM.mu.Unlock()
+		assert.Contains(t, collectEventTypes(eb), "RERUN_REJECTED")
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-rl1"), "rerun-rejected")
+		assertAlertFormats(t, eb)
+	})
+
+	t.Run("LateDataCountedAsDrift", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-rl2")
+		cfg.Job.MaxDriftReruns = intPtr(1)
+		cfg.PostRun = &types.PostRunConfig{
+			Evaluation: &types.EvaluationWindow{Window: "10m", Interval: "5m"},
+			Rules:      []types.ValidationRule{{Key: "quality-check", Check: types.CheckExists}},
+		}
+		seedConfig(mock, cfg)
+
+		// Seed a completed trigger + successful job
+		seedTriggerLock(mock, "pipe-rl2", "2026-03-07")
+		require.NoError(t, d.Store.SetTriggerStatus(ctx, "pipe-rl2", "stream", "2026-03-07", types.TriggerStatusCompleted))
+		oldTS := fmt.Sprintf("%d", time.Now().Add(-1*time.Hour).UnixMilli())
+		mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+			"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-rl2")},
+			"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", "2026-03-07", oldTS)},
+			"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+		})
+
+		// Seed fresh sensor data (so circuit breaker would pass if reached)
+		freshTS := fmt.Sprintf("%d", time.Now().UnixMilli())
+		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-rl2", "upstream-complete", map[string]interface{}{
+			"status": "ready", "updatedAt": freshTS,
+		}))
+
+		// Seed one existing data-drift rerun — uses up the drift budget
+		seedRerunWithReason(mock, "pipe-rl2", "stream", "2026-03-07", 0, "data-drift")
+
+		// Send a late-data RERUN_REQUEST — should be rejected because
+		// late-data shares the drift budget (count 1 >= budget 1)
+		sfnCountBefore := len(sfnM.executions)
+		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-rl2", "late-data"))
+		require.NoError(t, err)
+
+		// Verify: no SFN started, RERUN_REJECTED event + joblog entry
+		sfnM.mu.Lock()
+		assert.Equal(t, sfnCountBefore, len(sfnM.executions), "should not start SFN when drift budget exhausted by late-data")
+		sfnM.mu.Unlock()
+		assert.Contains(t, collectEventTypes(eb), "RERUN_REJECTED")
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-rl2"), "rerun-rejected")
 		assertAlertFormats(t, eb)
 	})
 }
