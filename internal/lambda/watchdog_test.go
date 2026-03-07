@@ -1517,3 +1517,42 @@ func TestWatchdog_ScheduleSLAAlerts_CalendarExcluded_Skips(t *testing.T) {
 	defer schedMock.mu.Unlock()
 	assert.Empty(t, schedMock.created, "calendar-excluded day should skip SLA scheduling")
 }
+
+func TestWatchdog_ScheduleSLAAlerts_SensorTriggered_Skips(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	// Sensor-triggered pipeline (no cron) — SLA scheduling happens in SFN,
+	// not proactively from the watchdog.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-cdr"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "hourly-status",
+				Check: "equals",
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         ":15",
+			ExpectedDuration: "3m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "bronze-cdr-etl"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	assert.Empty(t, schedMock.created, "sensor-triggered pipeline should not get proactive SLA scheduling")
+}

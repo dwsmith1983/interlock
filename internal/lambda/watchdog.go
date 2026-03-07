@@ -367,6 +367,13 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 			continue
 		}
 
+		// Sensor-triggered pipelines (no cron) get SLA scheduling when
+		// their SFN execution starts — proactive scheduling here would
+		// fire alerts for the previous hour before the pipeline runs.
+		if cfg.Schedule.Cron == "" {
+			continue
+		}
+
 		scheduleID := resolveScheduleID(cfg)
 		date := resolveWatchdogSLADate(cfg, now)
 
