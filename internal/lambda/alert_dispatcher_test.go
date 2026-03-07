@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/stretchr/testify/assert"
 
 	sqsevents "github.com/aws/aws-lambda-go/events"
 
@@ -491,4 +492,51 @@ func TestHandleAlertDispatcher_ThreadLookupFailsGracefully(t *testing.T) {
 	if _, hasThread := payload["thread_ts"]; hasThread {
 		t.Error("should not include thread_ts when DDB lookup fails")
 	}
+}
+
+func TestFormatAlertText_WithDetail(t *testing.T) {
+	detail := types.InterlockEvent{
+		PipelineID: "bronze-cdr",
+		Date:       "2026-03-06T16",
+		Message:    "pipeline bronze-cdr: SLA_WARNING",
+		Detail: map[string]interface{}{
+			"deadline":   ":15",
+			"breachAt":   "2026-03-06T17:15:00Z",
+			"status":     "not started",
+			"source":     "watchdog",
+			"actionHint": "pipeline not started — check sensor data",
+		},
+	}
+	text := lambda.FormatAlertText("SLA_WARNING", detail)
+	assert.Contains(t, text, "SLA_WARNING")
+	assert.Contains(t, text, "bronze-cdr")
+	assert.Contains(t, text, "not started")
+	assert.Contains(t, text, "watchdog")
+	assert.Contains(t, text, "check sensor data")
+	assert.Contains(t, text, "Deadline")
+	// Should NOT contain the raw message (detail overrides it).
+	assert.NotContains(t, text, "pipeline bronze-cdr: SLA_WARNING")
+}
+
+func TestFormatAlertText_NoDetail(t *testing.T) {
+	detail := types.InterlockEvent{
+		PipelineID: "test-pipe",
+		Date:       "2026-03-06",
+		Message:    "pipeline test-pipe: SLA_MET",
+	}
+	text := lambda.FormatAlertText("SLA_MET", detail)
+	assert.Contains(t, text, "SLA_MET")
+	assert.Contains(t, text, "test-pipe")
+	assert.Contains(t, text, "pipeline test-pipe: SLA_MET")
+}
+
+func TestAlertEmoji_DataDrift(t *testing.T) {
+	// alertEmoji is unexported; verify DATA_DRIFT gets red circle via FormatAlertText.
+	detail := types.InterlockEvent{
+		PipelineID: "drift-pipe",
+		Date:       "2026-03-06",
+		Message:    "drift detected",
+	}
+	text := lambda.FormatAlertText("DATA_DRIFT", detail)
+	assert.Contains(t, text, "\xf0\x9f\x94\xb4") // red circle emoji
 }
