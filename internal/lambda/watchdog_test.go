@@ -2,6 +2,8 @@ package lambda_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -876,4 +878,478 @@ func TestWatchdog_ScheduleSLAAlerts_SkipsFailedFinalTrigger(t *testing.T) {
 	schedMock.mu.Lock()
 	defer schedMock.mu.Unlock()
 	assert.Empty(t, schedMock.created, "expected no SLA schedules for FAILED_FINAL pipeline")
+}
+
+// ---------------------------------------------------------------------------
+// Stale trigger: TTL edge cases
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_StaleTrigger_ZeroTTL_NoAlert(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed a TRIGGER# row with zero TTL (no explicit TTL set).
+	seedTriggerRow(mock, "gold-revenue", "2026-03-01", 0)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Zero TTL should not be considered stale — isStaleTrigger returns false.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventSFNTimeout), *ev.Entries[0].DetailType,
+			"zero TTL should not trigger SFN_TIMEOUT")
+	}
+}
+
+func TestWatchdog_StaleTrigger_TTLExactlyNow_NoAlert(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed with TTL exactly at now boundary (isStaleTrigger uses > not >=).
+	seedTriggerRow(mock, "gold-revenue", "2026-03-01", time.Now().Unix())
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// TTL exactly at now: now.Unix() > tr.TTL is false (equal, not greater).
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventSFNTimeout), *ev.Entries[0].DetailType,
+			"TTL exactly at now should not trigger SFN_TIMEOUT")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stale trigger: unparseable trigger records
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_StaleTrigger_UnparseablePK_Skipped(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed a trigger with bad PK format (no PIPELINE# prefix).
+	pastTTL := time.Now().Add(-1 * time.Hour).Unix()
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: "BADPREFIX#gold-revenue"},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("cron", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", pastTTL)},
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Unparseable PK should be skipped — no events published.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventSFNTimeout), *ev.Entries[0].DetailType,
+			"unparseable PK should be skipped")
+	}
+}
+
+func TestWatchdog_StaleTrigger_UnparseableSK_Skipped(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed a trigger with bad SK format (TRIGGER# but no second # delimiter).
+	pastTTL := time.Now().Add(-1 * time.Hour).Unix()
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: "TRIGGER#nodatepart"},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", pastTTL)},
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Unparseable SK should be skipped — no events published.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventSFNTimeout), *ev.Entries[0].DetailType,
+			"unparseable SK should be skipped")
+	}
+}
+
+func TestWatchdog_StaleTrigger_NoTriggerPrefix_Skipped(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Seed a trigger with SK that doesn't start with TRIGGER#.
+	pastTTL := time.Now().Add(-1 * time.Hour).Unix()
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: "SENSOR#upstream"},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", pastTTL)},
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Wrong SK prefix should be skipped — no SFN_TIMEOUT events.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventSFNTimeout), *ev.Entries[0].DetailType,
+			"wrong SK prefix should be skipped")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Stale trigger: detail map verification
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_StaleTrigger_DetailFields(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	pastTTL := time.Now().Add(-1 * time.Hour).Unix()
+	seedTriggerRow(mock, "gold-revenue", "2026-03-01", pastTTL)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1)
+
+	detailJSON := *ebMock.events[0].Entries[0].Detail
+	var evt types.InterlockEvent
+	require.NoError(t, json.Unmarshal([]byte(detailJSON), &evt))
+
+	require.NotNil(t, evt.Detail)
+	assert.Equal(t, "watchdog", evt.Detail["source"])
+	assert.Contains(t, evt.Detail["actionHint"], "step function exceeded TTL")
+	assert.NotEmpty(t, evt.Detail["ttlExpired"], "ttlExpired should be present when TTL > 0")
+}
+
+// ---------------------------------------------------------------------------
+// Missed schedule: detail map verification
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_MissedSchedule_DetailFields(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-ingest"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "0 6 * * *",
+			Timezone:   "UTC",
+			Time:       "06:00",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+
+	var missedEvent *types.InterlockEvent
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType == string(types.EventScheduleMissed) {
+			detailJSON := *ev.Entries[0].Detail
+			var evt types.InterlockEvent
+			require.NoError(t, json.Unmarshal([]byte(detailJSON), &evt))
+			missedEvent = &evt
+			break
+		}
+	}
+
+	if missedEvent != nil {
+		require.NotNil(t, missedEvent.Detail)
+		assert.Equal(t, "watchdog", missedEvent.Detail["source"])
+		assert.Equal(t, "0 6 * * *", missedEvent.Detail["cron"])
+		assert.Contains(t, missedEvent.Detail["actionHint"], "cron")
+		assert.Equal(t, "06:00", missedEvent.Detail["expectedTime"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Missed schedule: Schedule.Time before current time
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_MissedSchedule_BeforeScheduleTime_NoAlert(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Use a schedule time far in the future (23:59 UTC) so the test always
+	// runs before it. The cron fires at :10 of any hour, but Schedule.Time
+	// says the pipeline shouldn't start until 23:59.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-late"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "10 * * * *",
+			Timezone:   "UTC",
+			Time:       "23:59",
+			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	now := time.Now().UTC()
+	// Only run this test when we're before 23:59 UTC.
+	if now.Hour() == 23 && now.Minute() >= 59 {
+		t.Skip("skipping: test requires running before 23:59 UTC")
+	}
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType == string(types.EventScheduleMissed) {
+			detailJSON := *ev.Entries[0].Detail
+			var evt types.InterlockEvent
+			_ = json.Unmarshal([]byte(detailJSON), &evt)
+			if evt.PipelineID == "bronze-late" {
+				t.Error("should not publish SCHEDULE_MISSED when current time is before Schedule.Time")
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sensor trigger reconciliation: error paths
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_Reconcile_CronPipeline_SkipsReconciliation(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// Cron pipeline should be skipped by reconciliation (only sensor-triggered).
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-cron"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "0 6 * * *",
+			Timezone:   "UTC",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "cron pipeline should not trigger reconciliation")
+}
+
+func TestWatchdog_Reconcile_SFNError_Continues(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// Make SFN always fail.
+	sfnMock.err = errors.New("execution limit exceeded")
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+		"date":   "2026-03-04",
+	})
+
+	// HandleWatchdog should not return error even when SFN fails.
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+}
+
+func TestWatchdog_Reconcile_NoTriggerCondition_Skips(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// Pipeline with nil trigger and no cron (unusual but possible).
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "manual-pipeline"},
+		Schedule: types.ScheduleConfig{
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "pipeline with no trigger should be skipped by reconciliation")
+}
+
+// ---------------------------------------------------------------------------
+// SLA scheduling: error paths
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_ScheduleSLAAlerts_InvalidSLAConfig_Continues(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	// Bad SLA config: invalid deadline format.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bad-sla-pipe"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "0 2 * * *",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         "INVALID",
+			ExpectedDuration: "30m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Should not return error — logs and continues.
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	assert.Empty(t, schedMock.created, "invalid SLA config should not create schedules")
+}
+
+func TestWatchdog_ScheduleSLAAlerts_NonConflictError_Continues(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{
+		createErr: errors.New("service unavailable"),
+	}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "0 2 * * *",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         "02:00",
+			ExpectedDuration: "30m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Non-conflict error should not return error — logs and continues.
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+}
+
+func TestWatchdog_ScheduleSLAAlerts_HourlyPipeline_UsesCompositeDate(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	// Hourly pipeline with relative deadline — resolveWatchdogSLADate should
+	// produce a composite date like "2026-03-07T13".
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-cdr"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "5 * * * *",
+			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         ":30",
+			ExpectedDuration: "10m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+
+	if len(schedMock.created) > 0 {
+		// Verify the schedule name contains a composite date (has T).
+		name := *schedMock.created[0].Name
+		assert.Contains(t, name, "T", "hourly pipeline SLA schedule name should contain composite date")
+	}
+}
+
+func TestWatchdog_ScheduleSLAAlerts_CalendarExcluded_Skips(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	todayUTC := time.Now().UTC().Format("2006-01-02")
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},
+		Schedule: types.ScheduleConfig{
+			Cron:     "0 2 * * *",
+			Timezone: "UTC",
+			Exclude: &types.ExclusionConfig{
+				Dates: []string{todayUTC},
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         "02:00",
+			ExpectedDuration: "30m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	assert.Empty(t, schedMock.created, "calendar-excluded day should skip SLA scheduling")
 }

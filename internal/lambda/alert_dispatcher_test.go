@@ -540,3 +540,363 @@ func TestAlertEmoji_DataDrift(t *testing.T) {
 	text := lambda.FormatAlertText("DATA_DRIFT", detail)
 	assert.Contains(t, text, "\xf0\x9f\x94\xb4") // red circle emoji
 }
+
+// ---------------------------------------------------------------------------
+// AlertEmoji: all event types
+// ---------------------------------------------------------------------------
+
+func TestAlertEmoji_AllEventTypes(t *testing.T) {
+	redCircle := "\xf0\x9f\x94\xb4"
+	yellowCircle := "\xf0\x9f\x9f\xa1"
+	checkMark := "\xe2\x9c\x85"
+	info := "\xe2\x84\xb9\xef\xb8\x8f"
+
+	tests := []struct {
+		eventType string
+		emoji     string
+	}{
+		{"SLA_BREACH", redCircle},
+		{"JOB_FAILED", redCircle},
+		{"VALIDATION_EXHAUSTED", redCircle},
+		{"RETRY_EXHAUSTED", redCircle},
+		{"INFRA_FAILURE", redCircle},
+		{"SFN_TIMEOUT", redCircle},
+		{"SCHEDULE_MISSED", redCircle},
+		{"DATA_DRIFT", redCircle},
+		{"SLA_WARNING", yellowCircle},
+		{"SLA_MET", checkMark},
+		{"UNKNOWN_TYPE", info},
+		{"JOB_TRIGGERED", info},
+		{"JOB_COMPLETED", info},
+		{"TRIGGER_RECOVERED", info},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.eventType, func(t *testing.T) {
+			detail := types.InterlockEvent{
+				PipelineID: "test-pipe",
+				Date:       "2026-03-06",
+				Message:    "test",
+			}
+			text := lambda.FormatAlertText(tc.eventType, detail)
+			assert.Contains(t, text, tc.emoji, "wrong emoji for %s", tc.eventType)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FormatAlertText: detail field combinations
+// ---------------------------------------------------------------------------
+
+func TestFormatAlertText_DeadlineOnly(t *testing.T) {
+	detail := types.InterlockEvent{
+		PipelineID: "bronze-cdr",
+		Date:       "2026-03-06",
+		Message:    "test",
+		Detail: map[string]interface{}{
+			"deadline": ":30",
+		},
+	}
+	text := lambda.FormatAlertText("SLA_WARNING", detail)
+	assert.Contains(t, text, "Deadline :30")
+	// Should NOT contain the "(breachAt)" format since breachAt is absent.
+	assert.NotContains(t, text, "(")
+}
+
+func TestFormatAlertText_DeadlineAndBreachAt(t *testing.T) {
+	detail := types.InterlockEvent{
+		PipelineID: "bronze-cdr",
+		Date:       "2026-03-06",
+		Message:    "test",
+		Detail: map[string]interface{}{
+			"deadline": ":30",
+			"breachAt": "2026-03-06T17:30:00Z",
+		},
+	}
+	text := lambda.FormatAlertText("SLA_WARNING", detail)
+	assert.Contains(t, text, "Deadline :30")
+	assert.Contains(t, text, "2026-03-06T17:30:00Z")
+}
+
+func TestFormatAlertText_StatusOnly(t *testing.T) {
+	detail := types.InterlockEvent{
+		PipelineID: "gold-orders",
+		Date:       "2026-03-06",
+		Message:    "test",
+		Detail: map[string]interface{}{
+			"status": "RUNNING",
+		},
+	}
+	text := lambda.FormatAlertText("SLA_BREACH", detail)
+	assert.Contains(t, text, "Status: RUNNING")
+}
+
+func TestFormatAlertText_CronField(t *testing.T) {
+	detail := types.InterlockEvent{
+		PipelineID: "bronze-ingest",
+		Date:       "2026-03-06",
+		Message:    "test",
+		Detail: map[string]interface{}{
+			"cron": "0 6 * * *",
+		},
+	}
+	text := lambda.FormatAlertText("SCHEDULE_MISSED", detail)
+	assert.Contains(t, text, "Cron: 0 6 * * *")
+}
+
+func TestFormatAlertText_ActionHintOnly(t *testing.T) {
+	detail := types.InterlockEvent{
+		PipelineID: "bronze-cdr",
+		Date:       "2026-03-06",
+		Message:    "test",
+		Detail: map[string]interface{}{
+			"actionHint": "check sensor data",
+		},
+	}
+	text := lambda.FormatAlertText("SLA_WARNING", detail)
+	assert.Contains(t, text, "check sensor data")
+	// actionHint uses the arrow prefix.
+	assert.Contains(t, text, "\u2192 check sensor data")
+}
+
+func TestFormatAlertText_SourceField(t *testing.T) {
+	detail := types.InterlockEvent{
+		PipelineID: "test-pipe",
+		Date:       "2026-03-06",
+		Message:    "test",
+		Detail: map[string]interface{}{
+			"source": "reconciliation",
+		},
+	}
+	text := lambda.FormatAlertText("SLA_BREACH", detail)
+	assert.Contains(t, text, "Source: reconciliation")
+}
+
+func TestFormatAlertText_AllFieldsCombined(t *testing.T) {
+	detail := types.InterlockEvent{
+		PipelineID: "bronze-cdr",
+		Date:       "2026-03-06T16",
+		Message:    "pipeline bronze-cdr: SLA_BREACH",
+		Detail: map[string]interface{}{
+			"deadline":   ":15",
+			"breachAt":   "2026-03-06T17:15:00Z",
+			"status":     "not started",
+			"source":     "schedule",
+			"cron":       "5 * * * *",
+			"actionHint": "pipeline not started — investigate trigger",
+		},
+	}
+	text := lambda.FormatAlertText("SLA_BREACH", detail)
+	assert.Contains(t, text, "SLA_BREACH")
+	assert.Contains(t, text, "bronze-cdr")
+	assert.Contains(t, text, "Deadline :15")
+	assert.Contains(t, text, "2026-03-06T17:15:00Z")
+	assert.Contains(t, text, "Status: not started")
+	assert.Contains(t, text, "Source: schedule")
+	assert.Contains(t, text, "Cron: 5 * * * *")
+	assert.Contains(t, text, "investigate trigger")
+}
+
+// ---------------------------------------------------------------------------
+// HandleAlertDispatcher: invalid detail JSON
+// ---------------------------------------------------------------------------
+
+func TestHandleAlertDispatcher_InvalidDetailJSON(t *testing.T) {
+	httpClient := &mockHTTPClient{status: 200}
+	deps := newAlertDeps(httpClient, "xoxb-test-token", "C123456")
+
+	// Valid envelope structure, but the detail field is invalid JSON.
+	// We construct the body string directly since json.Marshal would reject it.
+	body := `{"source":"interlock","detail-type":"SLA_BREACH","detail":"{not valid json"}`
+
+	sqsEvent := sqsevents.SQSEvent{
+		Records: []sqsevents.SQSMessage{
+			{MessageId: "msg-invalid-detail", Body: body},
+		},
+	}
+
+	resp, err := lambda.HandleAlertDispatcher(context.Background(), deps, sqsEvent)
+	assert.NoError(t, err)
+	assert.Len(t, resp.BatchItemFailures, 1)
+	assert.Equal(t, "msg-invalid-detail", resp.BatchItemFailures[0].ItemIdentifier)
+}
+
+// ---------------------------------------------------------------------------
+// HandleAlertDispatcher: empty records
+// ---------------------------------------------------------------------------
+
+func TestHandleAlertDispatcher_EmptyRecords(t *testing.T) {
+	httpClient := &mockHTTPClient{status: 200}
+	deps := newAlertDeps(httpClient, "xoxb-test-token", "C123456")
+
+	sqsEvent := sqsevents.SQSEvent{Records: []sqsevents.SQSMessage{}}
+
+	resp, err := lambda.HandleAlertDispatcher(context.Background(), deps, sqsEvent)
+	assert.NoError(t, err)
+	assert.Empty(t, resp.BatchItemFailures)
+	assert.Empty(t, httpClient.requests)
+}
+
+// ---------------------------------------------------------------------------
+// HandleAlertDispatcher: partial failure
+// ---------------------------------------------------------------------------
+
+func TestHandleAlertDispatcher_PartialFailure(t *testing.T) {
+	// First call succeeds, second fails with Slack API error.
+	callCount := 0
+	httpClient := &mockHTTPClient{status: 200}
+
+	deps := newAlertDeps(httpClient, "xoxb-test-token", "C123456")
+
+	goodRecord := buildSQSRecord(t, "msg-good", "SLA_MET", types.InterlockEvent{
+		PipelineID: "bronze-cdr", ScheduleID: "hourly", Date: "2026-03-04T10",
+		Message: "Met", Timestamp: time.Now(),
+	})
+
+	// For the bad record, we'll use a separate SQS event since we can't
+	// make the mock fail selectively. Instead, use invalid body for second message.
+	badRecord := sqsevents.SQSMessage{
+		MessageId: "msg-bad",
+		Body:      "{invalid-json###",
+	}
+
+	sqsEvent := sqsevents.SQSEvent{Records: []sqsevents.SQSMessage{goodRecord, badRecord}}
+
+	resp, err := lambda.HandleAlertDispatcher(context.Background(), deps, sqsEvent)
+	assert.NoError(t, err)
+	assert.Len(t, resp.BatchItemFailures, 1)
+	assert.Equal(t, "msg-bad", resp.BatchItemFailures[0].ItemIdentifier)
+	// Good message should have been processed.
+	assert.Len(t, httpClient.requests, 1)
+	_ = callCount
+}
+
+// ---------------------------------------------------------------------------
+// HandleAlertDispatcher: non-200 HTTP status
+// ---------------------------------------------------------------------------
+
+func TestHandleAlertDispatcher_Non200Status(t *testing.T) {
+	httpClient := &mockHTTPClient{status: 503}
+	deps := newAlertDeps(httpClient, "xoxb-test-token", "C123456")
+
+	detail := types.InterlockEvent{
+		PipelineID: "bronze-cdr",
+		ScheduleID: "hourly",
+		Date:       "2026-03-04T10",
+		Message:    "SLA breach",
+		Timestamp:  time.Now(),
+	}
+
+	record := buildSQSRecord(t, "msg-503", "SLA_BREACH", detail)
+	sqsEvent := sqsevents.SQSEvent{Records: []sqsevents.SQSMessage{record}}
+
+	resp, err := lambda.HandleAlertDispatcher(context.Background(), deps, sqsEvent)
+	assert.NoError(t, err)
+	assert.Len(t, resp.BatchItemFailures, 1)
+	assert.Equal(t, "msg-503", resp.BatchItemFailures[0].ItemIdentifier)
+}
+
+// ---------------------------------------------------------------------------
+// Threading: getThreadTs with nil/empty item
+// ---------------------------------------------------------------------------
+
+func TestHandleAlertDispatcher_ThreadLookup_NoItem(t *testing.T) {
+	httpClient := &mockHTTPClient{status: 200}
+	mock := newMockDDB()
+
+	deps := &lambda.Deps{
+		Store: &store.Store{
+			Client:      mock,
+			EventsTable: "events",
+		},
+		SlackBotToken:  "xoxb-test-token",
+		SlackChannelID: "C123456",
+		EventsTTLDays:  90,
+		HTTPClient:     httpClient,
+		Logger:         slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+	}
+
+	// No thread record in DDB — getThreadTs should return "".
+	detail := types.InterlockEvent{
+		PipelineID: "new-pipeline",
+		ScheduleID: "daily",
+		Date:       "2026-03-07",
+		Message:    "first alert",
+		Timestamp:  time.Now(),
+	}
+
+	record := buildSQSRecord(t, "msg-no-thread", "SLA_BREACH", detail)
+	sqsEvent := sqsevents.SQSEvent{Records: []sqsevents.SQSMessage{record}}
+
+	resp, err := lambda.HandleAlertDispatcher(context.Background(), deps, sqsEvent)
+	assert.NoError(t, err)
+	assert.Empty(t, resp.BatchItemFailures)
+
+	// Should have posted without thread_ts.
+	var payload map[string]interface{}
+	assert.NoError(t, json.Unmarshal(httpClient.bodies[0], &payload))
+	_, hasThread := payload["thread_ts"]
+	assert.False(t, hasThread, "should not have thread_ts when no thread record exists")
+
+	// Thread should now be saved.
+	getOut, err := mock.GetItem(context.Background(), &dynamodb.GetItemInput{
+		TableName: strPtr("events"),
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: "PIPELINE#new-pipeline"},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: "THREAD#daily#2026-03-07"},
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, getOut.Item, "thread should be saved after first message")
+}
+
+// ---------------------------------------------------------------------------
+// Threading: saveThreadTs error (graceful degradation)
+// ---------------------------------------------------------------------------
+
+// putErrorDDB wraps mockDDB but returns an error on PutItem calls.
+type putErrorDDB struct {
+	*mockDDB
+	putErr error
+}
+
+func (e *putErrorDDB) PutItem(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	return nil, e.putErr
+}
+
+func TestHandleAlertDispatcher_SaveThreadError_Graceful(t *testing.T) {
+	httpClient := &mockHTTPClient{status: 200}
+	errMock := &putErrorDDB{
+		mockDDB: newMockDDB(),
+		putErr:  errors.New("write capacity exceeded"),
+	}
+
+	deps := &lambda.Deps{
+		Store: &store.Store{
+			Client:      errMock,
+			EventsTable: "events",
+		},
+		SlackBotToken:  "xoxb-test-token",
+		SlackChannelID: "C123456",
+		EventsTTLDays:  90,
+		HTTPClient:     httpClient,
+		Logger:         slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+	}
+
+	detail := types.InterlockEvent{
+		PipelineID: "silver-cdr-hour",
+		ScheduleID: "hourly",
+		Date:       "2026-03-04T10",
+		Message:    "SLA breach",
+		Timestamp:  time.Now(),
+	}
+
+	record := buildSQSRecord(t, "msg-save-err", "SLA_BREACH", detail)
+	sqsEvent := sqsevents.SQSEvent{Records: []sqsevents.SQSMessage{record}}
+
+	// saveThreadTs error should be logged but NOT fail the message.
+	resp, err := lambda.HandleAlertDispatcher(context.Background(), deps, sqsEvent)
+	assert.NoError(t, err)
+	assert.Empty(t, resp.BatchItemFailures, "saveThreadTs error should not fail the message")
+	assert.Len(t, httpClient.requests, 1, "Slack should still have been called")
+}
