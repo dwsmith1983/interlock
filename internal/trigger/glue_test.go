@@ -2,8 +2,12 @@ package trigger
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	cwltypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
 	gluetypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
 
@@ -92,8 +96,11 @@ func TestCheckGlueStatus(t *testing.T) {
 					},
 				},
 			}
+			cwClient := &mockCWLogsClient{
+				filterOut: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
+			}
 
-			r := NewRunner(WithGlueClient(client))
+			r := NewRunner(WithGlueClient(client), WithCloudWatchLogsClient(cwClient))
 			result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
 				"glue_job_name":   "my-job",
 				"glue_job_run_id": "jr_123",
@@ -111,4 +118,180 @@ func TestCheckGlueStatus_MissingMetadata(t *testing.T) {
 	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{})
 	require.NoError(t, err)
 	assert.Equal(t, RunCheckRunning, result.State)
+}
+
+// --- CloudWatch RCA verification tests ---
+
+type mockCWLogsClient struct {
+	filterOut *cloudwatchlogs.FilterLogEventsOutput
+	filterErr error
+}
+
+func (m *mockCWLogsClient) FilterLogEvents(ctx context.Context, params *cloudwatchlogs.FilterLogEventsInput, optFns ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.FilterLogEventsOutput, error) {
+	return m.filterOut, m.filterErr
+}
+
+func TestCheckGlueStatus_RCADetectsFalseSuccess(t *testing.T) {
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState: gluetypes.JobRunStateSucceeded,
+			},
+		},
+	}
+	cwClient := &mockCWLogsClient{
+		filterOut: &cloudwatchlogs.FilterLogEventsOutput{
+			Events: []cwltypes.FilteredLogEvent{
+				{Message: aws.String(`{"Event":"GlueExceptionAnalysisJobFailed","Failure Reason":"No space left on device","Job Result":"JobFailed"}`)},
+			},
+		},
+	}
+
+	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckFailed, result.State)
+	assert.Contains(t, result.Message, "RCA")
+	assert.Contains(t, result.Message, "No space left on device")
+	assert.Equal(t, types.FailureTransient, result.FailureCategory)
+}
+
+func TestCheckGlueStatus_RCANoFailure(t *testing.T) {
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState: gluetypes.JobRunStateSucceeded,
+			},
+		},
+	}
+	cwClient := &mockCWLogsClient{
+		filterOut: &cloudwatchlogs.FilterLogEventsOutput{
+			Events: []cwltypes.FilteredLogEvent{},
+		},
+	}
+
+	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckSucceeded, result.State)
+	assert.Equal(t, "SUCCEEDED", result.Message)
+}
+
+func TestCheckGlueStatus_RCAErrorFallsThrough(t *testing.T) {
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState: gluetypes.JobRunStateSucceeded,
+			},
+		},
+	}
+	cwClient := &mockCWLogsClient{
+		filterErr: fmt.Errorf("access denied"),
+	}
+
+	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckSucceeded, result.State, "should fall through to SUCCEEDED when RCA check fails")
+}
+
+func TestCheckGlueStatus_NoCWLogsClientFallsThrough(t *testing.T) {
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState: gluetypes.JobRunStateSucceeded,
+			},
+		},
+	}
+
+	// No CW Logs client injected, and no AWS config available → graceful fallthrough
+	r := NewRunner(WithGlueClient(glueClient))
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckSucceeded, result.State)
+}
+
+func TestCheckGlueStatus_RCAUsesJobRunLogGroup(t *testing.T) {
+	customLogGroup := "/aws-glue/jobs/custom-group"
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState:  gluetypes.JobRunStateSucceeded,
+				LogGroupName: &customLogGroup,
+			},
+		},
+	}
+
+	var capturedLogGroup string
+	cwClient := &mockCWLogsClient{
+		filterOut: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
+	}
+	// Wrap to capture the log group parameter
+	captureClient := &capturingCWLogsClient{
+		delegate: cwClient,
+		onFilter: func(input *cloudwatchlogs.FilterLogEventsInput) {
+			capturedLogGroup = aws.ToString(input.LogGroupName)
+		},
+	}
+
+	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(captureClient))
+	_, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, customLogGroup, capturedLogGroup)
+}
+
+type capturingCWLogsClient struct {
+	delegate CloudWatchLogsAPI
+	onFilter func(*cloudwatchlogs.FilterLogEventsInput)
+}
+
+func (c *capturingCWLogsClient) FilterLogEvents(ctx context.Context, params *cloudwatchlogs.FilterLogEventsInput, optFns ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.FilterLogEventsOutput, error) {
+	if c.onFilter != nil {
+		c.onFilter(params)
+	}
+	return c.delegate.FilterLogEvents(ctx, params, optFns...)
+}
+
+func TestExtractGlueFailureReason(t *testing.T) {
+	tests := []struct {
+		name     string
+		msg      string
+		expected string
+	}{
+		{
+			name:     "standard RCA message",
+			msg:      `{"Event":"GlueExceptionAnalysisJobFailed","Failure Reason":"No space left on device","Job Result":"JobFailed"}`,
+			expected: "No space left on device",
+		},
+		{
+			name:     "no failure reason field",
+			msg:      `{"Event":"GlueExceptionAnalysisJobFailed"}`,
+			expected: "",
+		},
+		{
+			name:     "empty message",
+			msg:      "",
+			expected: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, extractGlueFailureReason(tt.msg))
+		})
+	}
 }

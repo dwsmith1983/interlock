@@ -496,11 +496,19 @@ resource "aws_iam_role_policy" "glue_trigger" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["glue:StartJobRun", "glue:GetJobRun"]
-      Resource = "*"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["glue:StartJobRun", "glue:GetJobRun"]
+        Resource = "*"
+      },
+      {
+        Sid      = "GlueRCALogVerification"
+        Effect   = "Allow"
+        Action   = ["logs:FilterLogEvents"]
+        Resource = "arn:aws:logs:*:*:log-group:/aws-glue/jobs/logs-v2:*"
+      }
+    ]
   })
 }
 

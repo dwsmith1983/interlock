@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/emr"
 	"github.com/aws/aws-sdk-go-v2/service/emrserverless"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
@@ -23,10 +24,11 @@ type Runner struct {
 	mu     sync.Mutex
 	awsCfg *aws.Config // shared AWS config, loaded lazily
 
-	glueClient  GlueAPI
-	emrClient   EMRAPI
-	emrSLClient EMRServerlessAPI
-	sfnClient   SFNAPI
+	glueClient    GlueAPI
+	cwLogsClient  CloudWatchLogsAPI
+	emrClient     EMRAPI
+	emrSLClient   EMRServerlessAPI
+	sfnClient     SFNAPI
 }
 
 // RunnerOption configures a Runner.
@@ -35,6 +37,11 @@ type RunnerOption func(*Runner)
 // WithGlueClient sets a custom Glue client (useful for testing).
 func WithGlueClient(c GlueAPI) RunnerOption {
 	return func(r *Runner) { r.glueClient = c }
+}
+
+// WithCloudWatchLogsClient sets a custom CloudWatch Logs client (useful for testing).
+func WithCloudWatchLogsClient(c CloudWatchLogsAPI) RunnerOption {
+	return func(r *Runner) { r.cwLogsClient = c }
 }
 
 // WithEMRClient sets a custom EMR client.
@@ -256,4 +263,18 @@ func (r *Runner) getSFNClient(region string) (SFNAPI, error) {
 	}
 	r.sfnClient = sfn.NewFromConfig(cfg)
 	return r.sfnClient, nil
+}
+
+func (r *Runner) getCWLogsClient(region string) (CloudWatchLogsAPI, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cwLogsClient != nil {
+		return r.cwLogsClient, nil
+	}
+	cfg, err := r.getAWSConfig(region)
+	if err != nil {
+		return nil, err
+	}
+	r.cwLogsClient = cloudwatchlogs.NewFromConfig(cfg)
+	return r.cwLogsClient, nil
 }

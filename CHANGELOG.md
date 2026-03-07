@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.3] - 2026-03-06
+## [0.5.3] - 2026-03-07
 
 ### Added
 
@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Glue false-success detection**: `checkGlueStatus` now cross-checks the CloudWatch RCA log stream when Glue reports `SUCCEEDED`. Glue can return `SUCCEEDED` via `GetJobRun` when the Spark driver catches a `SparkException` and exits cleanly (exit code 0). The RCA log stream (`{runId}-job-insights-rca-driver`) records `GlueExceptionAnalysisJobFailed` events with the actual failure reason. When detected, the job is reported as failed with the real error (e.g., "No space left on device"). Degrades gracefully if CloudWatch Logs is unavailable.
 - **SLA alert suppression for completed pipelines**: `handleSLAFireAlert` checks trigger status before publishing — suppresses warnings/breaches when the pipeline already completed or permanently failed. Watchdog `scheduleSLAAlerts` skips schedule creation for finished pipelines, preventing ghost schedules after `CancelSLASchedules` cleanup.
 - **Joblog fallback in SLA guards**: `handleSLAFireAlert` and `scheduleSLAAlerts` check the joblog for terminal events (`success`/`fail`/`timeout`) when the trigger row is nil or `RUNNING`. Covers cron pipelines (no trigger rows), TTL-expired triggers, and the race window before `CompleteTrigger` runs.
 - **Watchdog forward-only alerting**: `detectMissedSchedules` now skips cron schedules whose most recent expected fire time is before the Lambda's cold start. Prevents retroactive `SCHEDULE_MISSED` alerts after fresh deploys or redeployments. Uses a `lastCronFire` helper to compute expected fire times from hourly (`MM * * * *`) and daily (`MM HH * * *`) cron patterns.
