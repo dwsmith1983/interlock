@@ -24,11 +24,11 @@ type Runner struct {
 	mu     sync.Mutex
 	awsCfg *aws.Config // shared AWS config, loaded lazily
 
-	glueClient    GlueAPI
-	cwLogsClient  CloudWatchLogsAPI
-	emrClient     EMRAPI
-	emrSLClient   EMRServerlessAPI
-	sfnClient     SFNAPI
+	glueClient   GlueAPI
+	cwLogsClient CloudWatchLogsAPI
+	emrClient    EMRAPI
+	emrSLClient  EMRServerlessAPI
+	sfnClient    SFNAPI
 }
 
 // RunnerOption configures a Runner.
