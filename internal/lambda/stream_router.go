@@ -20,6 +20,27 @@ import (
 // triggerLockTTL is the default TTL for trigger dedup locks.
 const triggerLockTTL = 24 * time.Hour
 
+// getValidatedConfig loads a pipeline config and validates its retry/timeout
+// fields. Returns nil (with a warning log) if validation fails, signalling the
+// caller to skip processing for this pipeline.
+func getValidatedConfig(ctx context.Context, d *Deps, pipelineID string) (*types.PipelineConfig, error) {
+	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, nil
+	}
+	if errs := validation.ValidatePipelineConfig(cfg); len(errs) > 0 {
+		d.Logger.Warn("invalid pipeline config, skipping",
+			"pipelineId", pipelineID,
+			"errors", errs,
+		)
+		return nil, nil
+	}
+	return cfg, nil
+}
+
 // HandleStreamEvent processes a DynamoDB stream event, routing each record
 // to the appropriate handler based on the SK prefix. Errors are logged but
 // do not fail the batch (returns nil) to prevent infinite retries.
@@ -105,7 +126,7 @@ func parseJobSK(sk string) (schedule, date string, err error) {
 // handleJobFailure processes a job failure or timeout by either re-running
 // the pipeline (if under the retry limit) or marking it as permanently failed.
 func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, jobEvent string) error {
-	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
+	cfg, err := getValidatedConfig(ctx, d, pipelineID)
 	if err != nil {
 		return fmt.Errorf("load config for %q: %w", pipelineID, err)
 	}
@@ -190,7 +211,7 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		return err
 	}
 
-	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
+	cfg, err := getValidatedConfig(ctx, d, pipelineID)
 	if err != nil {
 		return fmt.Errorf("load config for %q: %w", pipelineID, err)
 	}
@@ -384,7 +405,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		return fmt.Errorf("unexpected PK format: %q", pk)
 	}
 
-	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
+	cfg, err := getValidatedConfig(ctx, d, pipelineID)
 	if err != nil {
 		return fmt.Errorf("load config for %q: %w", pipelineID, err)
 	}
