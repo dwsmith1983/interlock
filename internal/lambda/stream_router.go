@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,8 +18,20 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// triggerLockTTL is the default TTL for trigger dedup locks.
-const triggerLockTTL = 24 * time.Hour
+// ResolveTriggerLockTTL returns the trigger lock TTL based on the
+// SFN_TIMEOUT_SECONDS env var plus a 30-minute buffer. Defaults to
+// 4h30m if the env var is not set or invalid.
+func ResolveTriggerLockTTL() time.Duration {
+	s := os.Getenv("SFN_TIMEOUT_SECONDS")
+	if s == "" {
+		return 4*time.Hour + 30*time.Minute
+	}
+	sec, err := strconv.Atoi(s)
+	if err != nil || sec <= 0 {
+		return 4*time.Hour + 30*time.Minute
+	}
+	return time.Duration(sec)*time.Second + 30*time.Minute
+}
 
 // getValidatedConfig loads a pipeline config and validates its retry/timeout
 // fields. Returns nil (with a warning log) if validation fails, signalling the
@@ -185,7 +198,7 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 		return fmt.Errorf("release trigger lock for %q: %w", pipelineID, err)
 	}
 
-	if _, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, triggerLockTTL); err != nil {
+	if _, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL()); err != nil {
 		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
 	}
 
@@ -323,7 +336,7 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		return fmt.Errorf("release trigger lock for %q: %w", pipelineID, err)
 	}
 
-	if _, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, triggerLockTTL); err != nil {
+	if _, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL()); err != nil {
 		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
 	}
 
@@ -476,7 +489,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	date := ResolveExecutionDate(sensorData)
 
 	// Acquire trigger lock to prevent duplicate executions.
-	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, scheduleID, date, triggerLockTTL)
+	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, scheduleID, date, ResolveTriggerLockTTL())
 	if err != nil {
 		return fmt.Errorf("acquire trigger lock for %q: %w", pipelineID, err)
 	}

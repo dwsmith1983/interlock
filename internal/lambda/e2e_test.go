@@ -150,7 +150,7 @@ func runSFN(t *testing.T, ctx context.Context, d *lambda.Deps, mock *mockDDB, eb
 	}
 
 	// Acquire trigger lock (mirrors stream-router behaviour).
-	acquired, err := d.Store.AcquireTriggerLock(ctx, pid, sid, date, 24*time.Hour)
+	acquired, err := d.Store.AcquireTriggerLock(ctx, pid, sid, date, lambda.ResolveTriggerLockTTL())
 	require.NoError(t, err)
 	require.True(t, acquired)
 

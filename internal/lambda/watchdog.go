@@ -180,7 +180,7 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 				continue
 			}
 
-			acquired, err := d.Store.AcquireTriggerLock(ctx, id, scheduleID, date, triggerLockTTL)
+			acquired, err := d.Store.AcquireTriggerLock(ctx, id, scheduleID, date, ResolveTriggerLockTTL())
 			if err != nil {
 				d.Logger.Error("lock acquisition failed during reconciliation",
 					"pipelineId", id, "date", date, "error", err)

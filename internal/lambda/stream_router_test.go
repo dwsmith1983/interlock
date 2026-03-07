@@ -2818,3 +2818,25 @@ func TestStreamRouter_JobFail_EmptyCategoryUsesMaxRetries(t *testing.T) {
 	defer sfnMock.mu.Unlock()
 	assert.Len(t, sfnMock.executions, 1, "empty category should use MaxRetries (backward compat)")
 }
+
+// ---------------------------------------------------------------------------
+// ResolveTriggerLockTTL
+// ---------------------------------------------------------------------------
+
+func TestResolveTriggerLockTTL_Default(t *testing.T) {
+	t.Setenv("SFN_TIMEOUT_SECONDS", "")
+	got := lambda.ResolveTriggerLockTTL()
+	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
+}
+
+func TestResolveTriggerLockTTL_FromEnv(t *testing.T) {
+	t.Setenv("SFN_TIMEOUT_SECONDS", "14400")
+	got := lambda.ResolveTriggerLockTTL()
+	assert.Equal(t, 14400*time.Second+30*time.Minute, got)
+}
+
+func TestResolveTriggerLockTTL_InvalidEnv(t *testing.T) {
+	t.Setenv("SFN_TIMEOUT_SECONDS", "not-a-number")
+	got := lambda.ResolveTriggerLockTTL()
+	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
+}

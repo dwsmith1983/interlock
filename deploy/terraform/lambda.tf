@@ -136,11 +136,12 @@ resource "aws_lambda_function" "stream_router" {
 
   environment {
     variables = {
-      CONTROL_TABLE     = aws_dynamodb_table.control.name
-      JOBLOG_TABLE      = aws_dynamodb_table.joblog.name
-      RERUN_TABLE       = aws_dynamodb_table.rerun.name
-      STATE_MACHINE_ARN = aws_sfn_state_machine.pipeline.arn
-      EVENT_BUS_NAME    = aws_cloudwatch_event_bus.interlock.name
+      CONTROL_TABLE       = aws_dynamodb_table.control.name
+      JOBLOG_TABLE        = aws_dynamodb_table.joblog.name
+      RERUN_TABLE         = aws_dynamodb_table.rerun.name
+      STATE_MACHINE_ARN   = aws_sfn_state_machine.pipeline.arn
+      EVENT_BUS_NAME      = aws_cloudwatch_event_bus.interlock.name
+      SFN_TIMEOUT_SECONDS = tostring(var.sfn_timeout_seconds)
     }
   }
 
@@ -226,6 +227,7 @@ resource "aws_lambda_function" "watchdog" {
       SLA_MONITOR_ARN      = aws_lambda_function.sla_monitor.arn
       SCHEDULER_ROLE_ARN   = aws_iam_role.scheduler_sla.arn
       SCHEDULER_GROUP_NAME = aws_scheduler_schedule_group.sla.name
+      SFN_TIMEOUT_SECONDS  = tostring(var.sfn_timeout_seconds)
     }
   }
 
