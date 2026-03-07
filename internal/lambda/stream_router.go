@@ -495,6 +495,9 @@ type sfnConfig struct {
 	EvaluationIntervalSeconds int              `json:"evaluationIntervalSeconds"`
 	EvaluationWindowSeconds   int              `json:"evaluationWindowSeconds"`
 	JobCheckIntervalSeconds   int              `json:"jobCheckIntervalSeconds"`
+	PostRunIntervalSeconds    int              `json:"postRunIntervalSeconds,omitempty"`
+	PostRunWindowSeconds      int              `json:"postRunWindowSeconds,omitempty"`
+	HasPostRun                bool             `json:"hasPostRun"`
 	SLA                       *types.SLAConfig `json:"sla,omitempty"`
 }
 
@@ -519,6 +522,20 @@ func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
 			sla.Timezone = "UTC"
 		}
 		sc.SLA = &sla
+	}
+
+	if cfg.PostRun != nil && len(cfg.PostRun.Rules) > 0 {
+		sc.HasPostRun = true
+		sc.PostRunIntervalSeconds = 1800 // 30m default
+		sc.PostRunWindowSeconds = 7200   // 2h default
+		if cfg.PostRun.Evaluation != nil {
+			if d, err := time.ParseDuration(cfg.PostRun.Evaluation.Interval); err == nil && d > 0 {
+				sc.PostRunIntervalSeconds = int(d.Seconds())
+			}
+			if d, err := time.ParseDuration(cfg.PostRun.Evaluation.Window); err == nil && d > 0 {
+				sc.PostRunWindowSeconds = int(d.Seconds())
+			}
+		}
 	}
 
 	return sc
