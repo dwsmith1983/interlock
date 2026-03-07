@@ -1610,7 +1610,7 @@ func TestE2E_Watchdog(t *testing.T) {
 		cfg := e2ePipeline("pipe-g6")
 		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
 			pipeline: cfg,
-			sensors:  map[string]map[string]interface{}{"upstream-complete": {"status": "ready"}},
+			sensors:  map[string]map[string]interface{}{"upstream-complete": {"status": "ready", "date": "2026-03-07"}},
 		})
 		assert.Equal(t, sfnDone, r.terminal)
 		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-g6"))
