@@ -201,6 +201,29 @@ func (s *Store) GetAllSensors(ctx context.Context, pipelineID string) (map[strin
 	return result, nil
 }
 
+// WriteSensor writes (or overwrites) a sensor row in the control table.
+func (s *Store) WriteSensor(ctx context.Context, pipelineID, sensorKey string, data map[string]interface{}) error {
+	rec := types.ControlRecord{
+		PK:   types.PipelinePK(pipelineID),
+		SK:   types.SensorSK(sensorKey),
+		Data: data,
+	}
+
+	item, err := attributevalue.MarshalMap(rec)
+	if err != nil {
+		return fmt.Errorf("marshal sensor %q for %q: %w", sensorKey, pipelineID, err)
+	}
+
+	_, err = s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &s.ControlTable,
+		Item:      item,
+	})
+	if err != nil {
+		return fmt.Errorf("write sensor %q for %q: %w", sensorKey, pipelineID, err)
+	}
+	return nil
+}
+
 // AcquireTriggerLock attempts to acquire a trigger lock for a given pipeline,
 // schedule, and date. Returns true if the lock was acquired, false if it is
 // already held. The lock is set with a TTL for automatic expiration.

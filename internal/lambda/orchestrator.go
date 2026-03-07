@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -165,7 +166,8 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 	}
 }
 
-// handlePostRun evaluates post-run validation rules if configured.
+// handlePostRun evaluates post-run validation rules if configured and detects
+// data drift by comparing current audit sensor values against a saved baseline.
 func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
 	cfg, err := d.Store.GetConfig(ctx, input.PipelineID)
 	if err != nil {
@@ -186,6 +188,40 @@ func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 
 	remapPerPeriodSensors(sensors, input.Date)
 
+	// Check for data drift: compare audit counts against baseline.
+	baselineKey := "postrun-baseline"
+	baseline, hasBaseline := sensors[baselineKey]
+	auditResult, hasAudit := sensors["audit-result"]
+
+	if hasAudit && hasBaseline {
+		prevCount := extractFloat(baseline, "sensor_count")
+		currCount := extractFloat(auditResult, "sensor_count")
+		if prevCount > 0 && currCount > 0 && currCount != prevCount {
+			delta := currCount - prevCount
+			alertDetail := map[string]interface{}{
+				"previousCount": prevCount,
+				"currentCount":  currCount,
+				"delta":         delta,
+				"source":        "post-run monitor",
+				"actionHint":    fmt.Sprintf("%.0f new records detected — re-run triggered", delta),
+			}
+			_ = publishEvent(ctx, d, string(types.EventDataDrift), input.PipelineID, input.ScheduleID, input.Date,
+				fmt.Sprintf("data drift detected for %s: %.0f → %.0f records", input.PipelineID, prevCount, currCount), alertDetail)
+
+			return OrchestratorOutput{
+				Mode:   "post-run",
+				Status: "drift",
+			}, nil
+		}
+	}
+
+	// First iteration: save current audit result as baseline for future comparisons.
+	if hasAudit && !hasBaseline {
+		if writeErr := d.Store.WriteSensor(ctx, input.PipelineID, baselineKey, auditResult); writeErr != nil {
+			d.Logger.WarnContext(ctx, "failed to write post-run baseline", "pipelineId", input.PipelineID, "error", writeErr)
+		}
+	}
+
 	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, time.Now())
 
 	status := "not_ready"
@@ -198,6 +234,24 @@ func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 		Status:  status,
 		Results: result.Results,
 	}, nil
+}
+
+// extractFloat retrieves a numeric value from a sensor data map, handling both
+// float64 (native JSON) and string representations.
+func extractFloat(data map[string]interface{}, key string) float64 {
+	v, ok := data[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case string:
+		f, _ := strconv.ParseFloat(n, 64)
+		return f
+	default:
+		return 0
+	}
 }
 
 // handleValidationExhausted publishes a VALIDATION_EXHAUSTED event when

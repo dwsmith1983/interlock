@@ -830,6 +830,118 @@ func TestOrchestrator_PostRun_RulesPass(t *testing.T) {
 	}
 }
 
+func TestPostRun_PassedStatus(t *testing.T) {
+	pipelineID := "gold-orders"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		PostRun: &types.PostRunConfig{
+			Rules: []types.ValidationRule{
+				{Key: "audit-result", Check: types.CheckEquals, Field: "match", Value: true},
+			},
+		},
+	}
+
+	ddb := newMockDDB()
+	ddb.putRaw("control", configItem(pipelineID, cfg))
+	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
+		"match":        &ddbtypes.AttributeValueMemberBOOL{Value: true},
+		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
+	}))
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "post-run",
+		PipelineID: pipelineID,
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != "passed" {
+		t.Errorf("status = %q, want %q; results = %v", out.Status, "passed", out.Results)
+	}
+
+	// Verify baseline was written (first iteration, no prior baseline).
+	baselineKey := ddbItemKey("control", types.PipelinePK(pipelineID), types.SensorSK("postrun-baseline"))
+	if _, ok := ddb.items[baselineKey]; !ok {
+		t.Error("expected postrun-baseline sensor to be written on first iteration")
+	}
+}
+
+func TestPostRun_DriftDetected(t *testing.T) {
+	pipelineID := "gold-orders"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		PostRun: &types.PostRunConfig{
+			Rules: []types.ValidationRule{
+				{Key: "audit-result", Check: types.CheckEquals, Field: "match", Value: true},
+			},
+		},
+	}
+
+	ddb := newMockDDB()
+	ddb.putRaw("control", configItem(pipelineID, cfg))
+	// Current audit result has a different count than baseline.
+	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
+		"match":        &ddbtypes.AttributeValueMemberBOOL{Value: true},
+		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "120"},
+	}))
+	// Baseline saved from first iteration.
+	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
+		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
+	}))
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "post-run",
+		PipelineID: pipelineID,
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != "drift" {
+		t.Errorf("status = %q, want %q", out.Status, "drift")
+	}
+
+	// Verify DATA_DRIFT event was published.
+	eb := d.EventBridge.(*mockEventBridge)
+	if len(eb.events) != 1 {
+		t.Fatalf("expected 1 EventBridge event, got %d", len(eb.events))
+	}
+	entry := eb.events[0].Entries[0]
+	if *entry.DetailType != string(types.EventDataDrift) {
+		t.Errorf("event type = %q, want %q", *entry.DetailType, string(types.EventDataDrift))
+	}
+}
+
+func TestPostRun_NoRules(t *testing.T) {
+	pipelineID := "gold-orders"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		// No PostRun config at all.
+	}
+
+	ddb := newMockDDB()
+	ddb.putRaw("control", configItem(pipelineID, cfg))
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "post-run",
+		PipelineID: pipelineID,
+		ScheduleID: "daily",
+		Date:       "2026-03-01",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != "passed" {
+		t.Errorf("status = %q, want %q when no PostRun rules", out.Status, "passed")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Validation-exhausted tests
 // ---------------------------------------------------------------------------
