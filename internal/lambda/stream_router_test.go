@@ -903,3 +903,1483 @@ func TestStreamRouter_RerunRequest_InfraExhausted_Allowed(t *testing.T) {
 	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for manual rerun of infra-exhausted job")
 	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
 }
+
+// ---------------------------------------------------------------------------
+// handleRecord routing: unknown SK prefix
+// ---------------------------------------------------------------------------
+
+func TestStreamRouter_UnknownSKPrefix_Silent(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	// Record with an unrecognized SK prefix should be silently ignored.
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute("PIPELINE#gold-revenue"),
+				"SK": events.NewStringAttribute("UNKNOWN#something"),
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "unknown SK prefix should not trigger any SFN")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "unknown SK prefix should not publish any events")
+}
+
+func TestStreamRouter_MissingPKOrSK_LogsError(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	// Record with no keys at all — should log error but HandleStreamEvent returns nil.
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change:    events.DynamoDBStreamRecord{},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err, "HandleStreamEvent always returns nil; errors are logged")
+}
+
+// ---------------------------------------------------------------------------
+// checkLateDataArrival edge cases
+// ---------------------------------------------------------------------------
+
+func TestLateData_TriggerNil(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	date := time.Now().Format("2006-01-02")
+
+	// No trigger record exists — GetTrigger returns nil.
+	// Seed only the lock so AcquireTriggerLock fails (lock held), triggering checkLateDataArrival.
+	seedTriggerLock(mock, "gold-revenue", date)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No late data event — GetTrigger returned nil (trigger row doesn't match COMPLETED).
+	// Actually the seedTriggerLock uses RUNNING status, so it won't match COMPLETED branch.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "should not publish late data event when trigger is not COMPLETED")
+}
+
+// ---------------------------------------------------------------------------
+// handleSensorEvent branches
+// ---------------------------------------------------------------------------
+
+func TestSensor_NoTriggerCondition(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// Config with NO trigger condition.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "no SFN when config has no trigger condition")
+}
+
+func TestSensor_SensorKeyMismatch(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig() // trigger key is "upstream-complete"
+	seedConfig(mock, cfg)
+
+	// Sensor key "other-sensor" does not prefix-match "upstream-complete".
+	record := makeSensorRecord("gold-revenue", "other-sensor", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "non-matching sensor key should not start SFN")
+}
+
+func TestSensor_StartSFNError(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	// Make SFN client return an error.
+	sfnMock.err = fmt.Errorf("SFN throttled")
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	// HandleStreamEvent logs errors but always returns nil.
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err, "HandleStreamEvent swallows errors")
+
+	// SFN was called but failed.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "SFN error means no execution recorded")
+}
+
+func TestSensor_PerHour_DateOnly(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	// Sensor has "date" but no "hour" — should produce daily execution date.
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+		"date":   events.NewStringAttribute("2026-03-05"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	assert.Equal(t, "2026-03-05", input["date"], "date-only sensor should produce daily date")
+}
+
+func TestSensor_PerHour_NoDate(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	// Sensor missing "date" entirely — should fall back to today.
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	assert.Equal(t, time.Now().Format("2006-01-02"), input["date"], "missing date should fall back to today")
+}
+
+// ---------------------------------------------------------------------------
+// handleRerunRequest branches
+// ---------------------------------------------------------------------------
+
+func TestRerun_NoJobRecord_Allowed(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// No job events seeded — GetLatestJobEvent returns nil → allow (never ran).
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "no prior job → allow rerun")
+	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
+}
+
+func TestRerun_NoConfig_Skips(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// No config seeded for this pipeline.
+	record := makeRerunRequestRecord() // uses "gold-revenue"
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "no config → skip rerun request")
+}
+
+func TestRerun_ParseSKError(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	// Malformed RERUN_REQUEST SK with too few parts.
+	pk := types.PipelinePK("gold-revenue")
+	sk := "RERUN_REQUEST#malformed" // missing second # part
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	// Error is logged, HandleStreamEvent returns nil.
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+}
+
+func TestRerun_TimeoutJob_Allowed(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a timeout job event.
+	seedJobEvent(mock, "1709280000000", types.JobEventTimeout)
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "timeout job → allow rerun")
+	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
+}
+
+func TestRerun_UnknownJobEvent_Allowed(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a job event with an unknown event type.
+	seedJobEvent(mock, "1709280000000", "some-future-event")
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "unknown job event → allow rerun (safe default)")
+	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
+}
+
+func TestRerun_StartSFNError(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	seedJobEvent(mock, "1709280000000", types.JobEventFail)
+
+	// Make SFN client return an error.
+	sfnMock.err = fmt.Errorf("SFN service error")
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	// Error is logged, HandleStreamEvent still returns nil.
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "SFN error → no execution recorded")
+}
+
+// ---------------------------------------------------------------------------
+// checkSensorFreshness
+// ---------------------------------------------------------------------------
+
+func TestSensorFreshness_NoSensors(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a successful job event — no sensors exist.
+	seedJobEvent(mock, "1000000", types.JobEventSuccess)
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No sensors → can't prove unchanged → allow rerun.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "no sensors → allow rerun")
+}
+
+func TestSensorFreshness_NoUpdatedAtField(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a successful job event.
+	seedJobEvent(mock, "1000000", types.JobEventSuccess)
+
+	// Seed sensor WITHOUT updatedAt field.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+	})
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No updatedAt → can't prove unchanged → allow rerun.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "no updatedAt → allow rerun")
+}
+
+func TestSensorFreshness_FreshSensor_Float(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a successful job event with timestamp 1000000.
+	seedJobEvent(mock, "1000000", types.JobEventSuccess)
+
+	// Seed a sensor with updatedAt as float64 > jobTimestamp.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"updatedAt": float64(2000000),
+	})
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "fresh sensor (float) → allow rerun")
+}
+
+func TestSensorFreshness_StaleSensor_Float(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a successful job event with timestamp 2000000.
+	seedJobEvent(mock, "2000000", types.JobEventSuccess)
+
+	// Seed a sensor with updatedAt as float64 < jobTimestamp.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"updatedAt": float64(1000000),
+	})
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "stale sensor → reject rerun")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "should publish RERUN_REJECTED event")
+	assert.Equal(t, string(types.EventRerunRejected), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestSensorFreshness_FreshSensor_String(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a successful job event with timestamp 1000000.
+	seedJobEvent(mock, "1000000", types.JobEventSuccess)
+
+	// Seed a sensor with updatedAt as string > jobTimestamp.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"updatedAt": "2000000",
+	})
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "fresh sensor (string) → allow rerun")
+}
+
+func TestSensorFreshness_InvalidJobSK(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a successful job event with a short SK that has < 4 parts.
+	// The SK format should be JOB#schedule#date#timestamp, but we create a malformed one.
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: "JOB#stream#2026-03-01"},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+	})
+
+	// Seed a sensor with stale updatedAt.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"updatedAt": float64(1),
+	})
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Invalid job SK → can't parse timestamp → allow to be safe.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "invalid job SK → allow rerun (safe default)")
+}
+
+func TestSensorFreshness_InvalidTimestamp(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a successful job event with non-numeric timestamp.
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: "JOB#stream#2026-03-01#not-a-number"},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+	})
+
+	// Seed a sensor with stale updatedAt.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"updatedAt": float64(1),
+	})
+
+	record := makeRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Non-numeric timestamp → allow to be safe.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "non-numeric timestamp → allow rerun (safe default)")
+}
+
+// ---------------------------------------------------------------------------
+// handleJobLogEvent routing
+// ---------------------------------------------------------------------------
+
+func TestJobLog_InfraExhaustedEvent(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// The infra-trigger-exhausted event is not one of the known job events
+	// in handleJobLogEvent's switch — it falls to default (no action).
+	record := makeJobRecord("gold-revenue", types.JobEventInfraTriggerExhausted)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "infra-trigger-exhausted is not fail/timeout/success → no action")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "infra-trigger-exhausted → no EventBridge event")
+}
+
+func TestJobLog_OtherEvent(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// "rerun-accepted" is not handled by handleJobLogEvent's switch.
+	record := makeJobRecord("gold-revenue", types.JobEventRerunAccepted)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events)
+}
+
+func TestJobLog_ParseSKError(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	// Malformed JOB SK with too few parts.
+	pk := types.PipelinePK("gold-revenue")
+	sk := "JOB#malformed" // missing date and timestamp parts
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK":    events.NewStringAttribute(pk),
+				"SK":    events.NewStringAttribute(sk),
+				"event": events.NewStringAttribute(types.JobEventFail),
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	// Error is logged, HandleStreamEvent returns nil.
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+}
+
+func TestJobLog_MissingEventAttribute(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// JOB record without "event" attribute.
+	pk := types.PipelinePK("gold-revenue")
+	sk := types.JobSK("stream", "2026-03-01", "1709312400")
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+				// no "event" key
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Missing event attribute → logged as warning, no action.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events)
+}
+
+// ---------------------------------------------------------------------------
+// handleJobSuccess
+// ---------------------------------------------------------------------------
+
+func TestJobSuccess_PublishesJobCompleted(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	record := makeJobRecord("gold-revenue", types.JobEventSuccess)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1)
+	assert.Equal(t, string(types.EventJobCompleted), *ebMock.events[0].Entries[0].DetailType)
+
+	// Verify the event detail contains pipeline information.
+	var detail types.InterlockEvent
+	require.NoError(t, json.Unmarshal([]byte(*ebMock.events[0].Entries[0].Detail), &detail))
+	assert.Equal(t, "gold-revenue", detail.PipelineID)
+	assert.Equal(t, "stream", detail.ScheduleID)
+	assert.Equal(t, "2026-03-01", detail.Date)
+}
+
+// ---------------------------------------------------------------------------
+// handleJobFailure edge cases
+// ---------------------------------------------------------------------------
+
+func TestJobFailure_NoConfig(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	// No config for this pipeline.
+	record := makeJobRecord("unknown-pipeline", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events)
+}
+
+// ---------------------------------------------------------------------------
+// buildSFNConfig (tested indirectly through SFN input payload)
+// ---------------------------------------------------------------------------
+
+func TestBuildSFNConfig_WithPostRun(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	cfg.PostRun = &types.PostRunConfig{
+		Evaluation: &types.EvaluationWindow{
+			Interval: "10m",
+			Window:   "1h",
+		},
+		Rules: []types.ValidationRule{
+			{Key: "quality-check", Check: types.CheckExists},
+		},
+	}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	cfgMap := input["config"].(map[string]interface{})
+	assert.Equal(t, true, cfgMap["hasPostRun"])
+	assert.Equal(t, float64(600), cfgMap["postRunIntervalSeconds"]) // 10m = 600s
+	assert.Equal(t, float64(3600), cfgMap["postRunWindowSeconds"])  // 1h = 3600s
+}
+
+func TestBuildSFNConfig_WithoutPostRun(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig() // no PostRun
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	cfgMap := input["config"].(map[string]interface{})
+	assert.Equal(t, false, cfgMap["hasPostRun"])
+	// postRunIntervalSeconds and postRunWindowSeconds should be omitted (zero value).
+	_, hasPostInterval := cfgMap["postRunIntervalSeconds"]
+	assert.False(t, hasPostInterval, "postRunIntervalSeconds should be omitted when no PostRun")
+}
+
+func TestBuildSFNConfig_PostRunDefaults(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	cfg.PostRun = &types.PostRunConfig{
+		// No Evaluation block — should use defaults (30m interval, 2h window).
+		Rules: []types.ValidationRule{
+			{Key: "quality-check", Check: types.CheckExists},
+		},
+	}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	cfgMap := input["config"].(map[string]interface{})
+	assert.Equal(t, true, cfgMap["hasPostRun"])
+	assert.Equal(t, float64(1800), cfgMap["postRunIntervalSeconds"]) // 30m default
+	assert.Equal(t, float64(7200), cfgMap["postRunWindowSeconds"])   // 2h default
+}
+
+func TestBuildSFNConfig_CustomTimings(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	cfg.Schedule.Evaluation = types.EvaluationWindow{
+		Interval: "2m",
+		Window:   "30m",
+	}
+	cfg.PostRun = &types.PostRunConfig{
+		Evaluation: &types.EvaluationWindow{
+			Interval: "15m",
+			Window:   "3h",
+		},
+		Rules: []types.ValidationRule{
+			{Key: "quality-check", Check: types.CheckExists},
+		},
+	}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	cfgMap := input["config"].(map[string]interface{})
+
+	assert.Equal(t, float64(120), cfgMap["evaluationIntervalSeconds"]) // 2m = 120s
+	assert.Equal(t, float64(1800), cfgMap["evaluationWindowSeconds"])  // 30m = 1800s
+	assert.Equal(t, float64(900), cfgMap["postRunIntervalSeconds"])    // 15m = 900s
+	assert.Equal(t, float64(10800), cfgMap["postRunWindowSeconds"])    // 3h = 10800s
+}
+
+func TestBuildSFNConfig_WithSLA(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	cfg.SLA = &types.SLAConfig{
+		Deadline:         "08:00",
+		ExpectedDuration: "30m",
+		Critical:         true,
+	}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	cfgMap := input["config"].(map[string]interface{})
+
+	sla, ok := cfgMap["sla"].(map[string]interface{})
+	require.True(t, ok, "SLA config should be present")
+	assert.Equal(t, "08:00", sla["deadline"])
+	assert.Equal(t, "30m", sla["expectedDuration"])
+	assert.Equal(t, true, sla["critical"])
+	assert.Equal(t, "UTC", sla["timezone"], "SLA timezone defaults to UTC")
+}
+
+// ---------------------------------------------------------------------------
+// extractSensorData (tested indirectly through sensor trigger evaluation)
+// ---------------------------------------------------------------------------
+
+func TestExtractSensorData_DataMapUnwrap(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// Configure trigger to check for "status" = "ready" on "upstream-complete".
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	// Sensor record with a nested "data" map — extractSensorData should unwrap it.
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(types.PipelinePK("gold-revenue")),
+				"SK": events.NewStringAttribute(types.SensorSK("upstream-complete")),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(types.PipelinePK("gold-revenue")),
+				"SK": events.NewStringAttribute(types.SensorSK("upstream-complete")),
+				"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+					"status": events.NewStringAttribute("ready"),
+				}),
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Trigger should fire because "data" map was unwrapped, exposing "status" = "ready".
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "data map unwrap should expose fields for trigger evaluation")
+}
+
+func TestExtractSensorData_NoDataMap(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	// Sensor record without a "data" map — fields should be used directly.
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "flat sensor data (no data map) should work for trigger evaluation")
+}
+
+func TestExtractSensorData_SkipsPKSKTTL(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// Configure trigger to check for "status" = "ready".
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	// Create a sensor with PK, SK, ttl, and actual data fields.
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(types.PipelinePK("gold-revenue")),
+				"SK": events.NewStringAttribute(types.SensorSK("upstream-complete")),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK":     events.NewStringAttribute(types.PipelinePK("gold-revenue")),
+				"SK":     events.NewStringAttribute(types.SensorSK("upstream-complete")),
+				"ttl":    events.NewNumberAttribute("1709280000"),
+				"status": events.NewStringAttribute("ready"),
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// PK, SK, ttl should be stripped; "status" remains for trigger evaluation.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "PK/SK/ttl should be stripped but data fields preserved")
+}
+
+// ---------------------------------------------------------------------------
+// convertAttributeValue (tested indirectly through sensor data extraction)
+// ---------------------------------------------------------------------------
+
+func TestConvertAV_String(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig() // trigger checks status equals "ready"
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "string attribute should be correctly converted")
+}
+
+func TestConvertAV_Number(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// Trigger checks count >= 5.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckGTE,
+				Field: "count",
+				Value: float64(5),
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL", Rules: []types.ValidationRule{
+			{Key: "upstream-complete", Check: types.CheckExists},
+		}},
+		Job: types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"count": events.NewNumberAttribute("10"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "number attribute should be correctly converted to float64")
+}
+
+func TestConvertAV_Bool(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// Trigger checks "complete" equals true.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "complete",
+				Value: true,
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL", Rules: []types.ValidationRule{
+			{Key: "upstream-complete", Check: types.CheckExists},
+		}},
+		Job: types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"complete": events.NewBooleanAttribute(true),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "boolean attribute should be correctly converted")
+}
+
+func TestConvertAV_Map(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	// A sensor whose NewImage has a map containing "status" = "ready" inside "data".
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(types.PipelinePK("gold-revenue")),
+				"SK": events.NewStringAttribute(types.SensorSK("upstream-complete")),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(types.PipelinePK("gold-revenue")),
+				"SK": events.NewStringAttribute(types.SensorSK("upstream-complete")),
+				"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+					"status": events.NewStringAttribute("ready"),
+					"nested": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+						"inner": events.NewStringAttribute("value"),
+					}),
+				}),
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// The data map gets unwrapped; "status" should be accessible at top level.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "map attribute should be correctly converted and unwrapped")
+}
+
+func TestConvertAV_List(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// Use exists check so we don't need list comparison.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckExists,
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL", Rules: []types.ValidationRule{
+			{Key: "upstream-complete", Check: types.CheckExists},
+		}},
+		Job: types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"items": events.NewListAttribute([]events.DynamoDBAttributeValue{
+			events.NewStringAttribute("a"),
+			events.NewStringAttribute("b"),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "list attribute should be correctly converted")
+}
+
+func TestConvertAV_Null(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	// Use exists check so we can trigger even with a null attribute.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckExists,
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL", Rules: []types.ValidationRule{
+			{Key: "upstream-complete", Check: types.CheckExists},
+		}},
+		Job: types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"someField": events.NewNullAttribute(),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "null attribute should be handled without error")
+}
+
+// ---------------------------------------------------------------------------
+// normalizeDate (tested indirectly through ResolveExecutionDate)
+// ---------------------------------------------------------------------------
+
+func TestNormalizeDate_AlreadyNormalized(t *testing.T) {
+	data := map[string]interface{}{"date": "2026-03-03"}
+	got := lambda.ResolveExecutionDate(data)
+	assert.Equal(t, "2026-03-03", got)
+}
+
+func TestNormalizeDate_Compact(t *testing.T) {
+	data := map[string]interface{}{"date": "20260303"}
+	got := lambda.ResolveExecutionDate(data)
+	assert.Equal(t, "2026-03-03", got)
+}
+
+func TestNormalizeDate_CompactWithHour(t *testing.T) {
+	data := map[string]interface{}{"date": "20260303", "hour": "07"}
+	got := lambda.ResolveExecutionDate(data)
+	assert.Equal(t, "2026-03-03T07", got)
+}
+
+// ---------------------------------------------------------------------------
+// resolveScheduleID (tested indirectly through SFN input payload)
+// ---------------------------------------------------------------------------
+
+func TestResolveScheduleID_StreamTriggered(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig() // has trigger, no cron → scheduleID should be "stream"
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	assert.Equal(t, "stream", input["scheduleId"])
+}
+
+func TestResolveScheduleID_CronTriggered(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	cfg.Schedule.Cron = "0 8 * * *" // add cron → scheduleID should be "cron"
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1)
+
+	var input map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
+	assert.Equal(t, "cron", input["scheduleId"])
+}
+
+// ---------------------------------------------------------------------------
+// publishEvent
+// ---------------------------------------------------------------------------
+
+func TestPublishEvent_EventBridgeError(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Make EventBridge return an error.
+	ebMock.err = fmt.Errorf("EventBridge throttled")
+
+	// JobSuccess publishes an event — if EventBridge fails, handleJobSuccess returns error,
+	// but HandleStreamEvent logs it and returns nil.
+	record := makeJobRecord("gold-revenue", types.JobEventSuccess)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err, "HandleStreamEvent swallows errors")
+}
+
+func TestPublishEvent_NilEventBridge(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Set EventBridge to nil — publishEvent should be a no-op.
+	d.EventBridge = nil
+
+	record := makeJobRecord("gold-revenue", types.JobEventSuccess)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+}
+
+func TestPublishEvent_EmptyEventBusName(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Set EventBusName to empty — publishEvent should be a no-op.
+	d.EventBusName = ""
+
+	record := makeJobRecord("gold-revenue", types.JobEventSuccess)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// isExcluded edge cases
+// ---------------------------------------------------------------------------
+
+func TestIsExcluded_WeekendExclusion(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	cfg.Schedule.Exclude = &types.ExclusionConfig{
+		Weekends: true,
+	}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+
+	// Depending on the day of the week, this may or may not trigger.
+	now := time.Now()
+	if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
+		assert.Empty(t, sfnMock.executions, "should be excluded on weekends")
+	} else {
+		require.Len(t, sfnMock.executions, 1, "should not be excluded on weekdays")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multiple records in a single event
+// ---------------------------------------------------------------------------
+
+func TestStreamRouter_MultipleRecords(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	cfg2 := testJobConfig()
+	cfg2.Pipeline.ID = "silver-orders"
+	seedConfig(mock, cfg2)
+
+	// Two sensor records in one event batch.
+	record1 := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	// Unknown sensor for silver-orders — no trigger, no SFN.
+	record2 := makeSensorRecord("silver-orders", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record1, record2}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	// gold-revenue has trigger → 1 SFN; silver-orders has no trigger → 0 SFN.
+	require.Len(t, sfnMock.executions, 1, "only gold-revenue should trigger SFN")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "only gold-revenue should publish event")
+}
+
+// ---------------------------------------------------------------------------
+// handleJobLogEvent: unexpected PK format
+// ---------------------------------------------------------------------------
+
+func TestJobLog_UnexpectedPKFormat(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	// PK without "PIPELINE#" prefix.
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute("BADFORMAT#gold-revenue"),
+				"SK": events.NewStringAttribute(types.JobSK("stream", "2026-03-01", "1709312400")),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK":    events.NewStringAttribute("BADFORMAT#gold-revenue"),
+				"SK":    events.NewStringAttribute(types.JobSK("stream", "2026-03-01", "1709312400")),
+				"event": events.NewStringAttribute(types.JobEventFail),
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	// Error is logged, HandleStreamEvent returns nil.
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// handleRerunRequest: unexpected PK format
+// ---------------------------------------------------------------------------
+
+func TestRerun_UnexpectedPKFormat(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	// PK without "PIPELINE#" prefix.
+	sk := types.RerunRequestSK("stream", "2026-03-01")
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute("BADFORMAT#gold-revenue"),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute("BADFORMAT#gold-revenue"),
+				"SK": events.NewStringAttribute(sk),
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// handleSensorEvent: unexpected PK format
+// ---------------------------------------------------------------------------
+
+func TestSensor_UnexpectedPKFormat(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute("BADFORMAT#gold-revenue"),
+				"SK": events.NewStringAttribute(types.SensorSK("upstream-complete")),
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+}
