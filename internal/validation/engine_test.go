@@ -332,7 +332,7 @@ func TestEvaluateRule_LTE_Fail(t *testing.T) {
 	result := EvaluateRule(rule, sensor, time.Now())
 
 	assert.False(t, result.Passed)
-	assert.Contains(t, result.Reason, "0.1")
+	assert.Contains(t, result.Reason, "0.1 lte 0.05 is false")
 }
 
 func TestEvaluateRule_GT_Fail_LessThan(t *testing.T) {
@@ -346,7 +346,7 @@ func TestEvaluateRule_GT_Fail_LessThan(t *testing.T) {
 	result := EvaluateRule(rule, sensor, time.Now())
 
 	assert.False(t, result.Passed)
-	assert.Contains(t, result.Reason, "50")
+	assert.Contains(t, result.Reason, "50 gt 100 is false")
 }
 
 // --- evaluateAgeLT edge cases ---

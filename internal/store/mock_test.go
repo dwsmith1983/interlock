@@ -349,18 +349,6 @@ func newTestStore(mock *mockDDB) *Store {
 	}
 }
 
-// errAfterN returns an errFn that succeeds the first n calls, then returns err.
-func errAfterN(n int, err error) func(string) error {
-	count := 0
-	return func(_ string) error {
-		count++
-		if count > n {
-			return err
-		}
-		return nil
-	}
-}
-
 // errOnOp returns an errFn that fails on a specific operation name.
 func errOnOp(op string, err error) func(string) error {
 	return func(actual string) error {
@@ -371,6 +359,5 @@ func errOnOp(op string, err error) func(string) error {
 	}
 }
 
-// Blank assignments keep these helpers available for future test files in this package.
-var _ = errAfterN
+// Blank assignment keeps this helper available for future test files in this package.
 var _ = errOnOp
