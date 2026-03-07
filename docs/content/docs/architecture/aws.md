@@ -92,7 +92,9 @@ Processes DynamoDB Stream events from the control and joblog tables. Routes reco
 | `CONFIG` | Invalidate the config cache |
 | `JOB#` | On failure/timeout: check retry limit, write rerun record, restart SFN. On success: publish `JOB_COMPLETED` event |
 
-The stream-router maintains a config cache to avoid redundant DynamoDB reads. Trigger lock acquisition uses conditional writes with a 24-hour TTL to prevent duplicate executions for the same pipeline/schedule/date.
+The stream-router maintains a config cache to avoid redundant DynamoDB reads. Pipeline configs are validated at load time (`ValidatePipelineConfig`) -- invalid configs are logged and skipped.
+
+Trigger lock acquisition uses conditional writes to prevent duplicate executions for the same pipeline/schedule/date. Lock TTL is dynamically computed from the `SFN_TIMEOUT_SECONDS` environment variable plus a 30-minute buffer (default: 4h30m). Terminal trigger statuses (`COMPLETED`, `FAILED_FINAL`) have their TTL removed so records persist indefinitely.
 
 Event source mappings from both control and joblog streams use batch size 10, bisect-on-error, max 3 retries, and SQS dead-letter queues for poison records.
 
@@ -104,9 +106,11 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 |---|---|
 | `evaluate` | Load config and sensor data, evaluate validation rules, publish `VALIDATION_PASSED` if all pass |
 | `trigger` | Build trigger config from `job` section, execute trigger (Glue, EMR, HTTP, etc.), return run ID |
-| `check-job` | Query joblog table for latest event; return `success`, `fail`, `timeout`, or empty (still running) |
+| `check-job` | Query joblog table for latest event; return `success`, `fail`, `timeout`, or empty (still running). Propagates `FailureCategory` to the joblog when a failure is detected |
 | `post-run` | Evaluate post-run validation rules if configured |
 | `validation-exhausted` | Publish `VALIDATION_EXHAUSTED` event when the evaluation window closes |
+| `job-poll-exhausted` | Publish `JOB_POLL_EXHAUSTED` event, write timeout joblog entry, set trigger to `FAILED_FINAL` when the job poll window expires |
+| `complete-trigger` | Set trigger status to `COMPLETED` (on success) or `FAILED_FINAL` (on failure/timeout). Ensures trigger records reflect terminal state |
 
 Supported trigger types: `http`, `command`, `airflow`, `glue`, `emr`, `emr-serverless`, `step-function`, `databricks`.
 
@@ -144,19 +148,21 @@ Processes messages from the SQS alert queue. Formats pipeline events into Slack 
 
 ## Step Functions State Machine
 
-The state machine orchestrates the pipeline lifecycle as a sequential flow of 18 states. SLA monitoring is handled by EventBridge Scheduler rather than a parallel branch.
+The state machine orchestrates the pipeline lifecycle as a sequential flow. A global `TimeoutSeconds` (configurable via the `sfn_timeout_seconds` Terraform variable, default 4h) caps the entire execution time as a hard safety bound. SLA monitoring is handled by EventBridge Scheduler rather than a parallel branch.
 
 ### State Flow
 
 ```
 InitEvalLoop → Evaluate → IsReady
-  → (passed) Trigger → CheckSLAConfig → ScheduleSLAAlerts → HasTriggerResult
-      → WaitForJob → CheckJob → IsJobDone
-          → (terminal) CheckCancelSLA → CancelSLASchedules → Done
-          → (running) WaitForJob (loop)
+  → (passed) Trigger → HasTriggerResult
+      → InitJobPollLoop → WaitForJob → CheckJob → IsJobDone
+          → (terminal) CompleteTrigger → CheckCancelSLA → CancelSLASchedules → Done
+          → (running) IncrementJobPollElapsed → CheckJobPollExhausted
+              → (window remaining) WaitForJob (loop)
+              → (exhausted) JobPollExhausted → InjectTimeoutEvent → CompleteTrigger → ...
   → (not ready) WaitInterval → IncrementElapsed → CheckWindowExhausted
       → (window remaining) Evaluate (loop)
-      → (window exhausted) ValidationExhausted → CheckSLAConfig → ... → Done
+      → (window exhausted) ValidationExhausted → CheckCancelSLA → ... → Done
 ```
 
 ### Evaluation Loop (7 states)
@@ -169,15 +175,20 @@ InitEvalLoop → Evaluate → IsReady
 6. **CheckWindowExhausted** — if elapsed >= window, go to ValidationExhausted
 7. **ValidationExhausted** — publish `VALIDATION_EXHAUSTED` event
 
-### Trigger and Job Polling (7 states)
+### Trigger and Job Polling (12 states)
 
-1. **Trigger** — invoke orchestrator with `mode=trigger`. Infrastructure failures retry 4 times with exponential backoff (30s, 60s, 120s, 240s)
-2. **CheckSLAConfig** — if SLA configured, schedule alerts; otherwise skip
-3. **ScheduleSLAAlerts** — invoke sla-monitor to create one-time EventBridge Scheduler entries
-4. **HasTriggerResult** — if a job was triggered, poll for completion; otherwise finish
-5. **WaitForJob** — configurable delay between job status checks
-6. **CheckJob** — invoke orchestrator with `mode=check-job`
-7. **IsJobDone** — route on terminal events (success/fail/timeout) or keep polling
+1. **Trigger** — invoke orchestrator with `mode=trigger`. Infrastructure failures retry up to `trigger_max_attempts` times (default 3) with exponential backoff (30s, 60s, 120s, 240s)
+2. **HasTriggerResult** — if a job was triggered, poll for completion; otherwise finish
+3. **InitJobPollLoop** — initialize job poll elapsed counter
+4. **WaitForJob** — configurable delay between job status checks
+5. **CheckJob** — invoke orchestrator with `mode=check-job`
+6. **IsJobDone** — route on terminal events (success/fail/timeout) or keep polling
+7. **IncrementJobPollElapsed** — track total job polling time via `States.MathAdd`
+8. **CheckJobPollExhausted** — if elapsed >= `jobPollWindowSeconds`, go to JobPollExhausted
+9. **JobPollExhausted** — invoke orchestrator with `mode=job-poll-exhausted`
+10. **InjectTimeoutEvent** — inject `event: timeout` for CompleteTrigger routing
+11. **CompleteTrigger** — invoke orchestrator with `mode=complete-trigger` to set terminal trigger status
+12. **CheckHasPostRun** — if post-run evaluation is configured, enter post-run loop; otherwise finish
 
 ### SLA Cleanup (2 states)
 
@@ -194,15 +205,17 @@ InitEvalLoop → Evaluate → IsReady
 Every Task state includes Retry and Catch blocks:
 
 - **Default Retry**: `IntervalSeconds: 2`, `MaxAttempts: 3`, `BackoffRate: 2` for Lambda service errors
-- **Trigger Retry**: `IntervalSeconds: 30`, `MaxAttempts: 4`, `BackoffRate: 2` — infrastructure failures (e.g., Glue concurrency limits) get a longer retry budget
+- **Trigger Retry**: `IntervalSeconds: 30`, `MaxAttempts: trigger_max_attempts` (default 3), `BackoffRate: 2` — infrastructure failures (e.g., Glue concurrency limits) get a longer retry budget
 - **Catch**: unrecoverable errors route to `InfraFailure` (Fail state). Trigger exhaustion routes to `CheckCancelSLA` for graceful SLA cleanup before termination.
 
 ### ARN Substitution
 
-The ASL template at `deploy/statemachine.asl.json` uses two substitution variables, resolved by Terraform's `templatefile()`:
+The ASL template at `deploy/statemachine.asl.json` uses substitution variables resolved by Terraform's `templatefile()`:
 
-- `${orchestrator_arn}`
-- `${sla_monitor_arn}`
+- `${orchestrator_arn}` — orchestrator Lambda ARN
+- `${sla_monitor_arn}` — SLA monitor Lambda ARN
+- `${sfn_timeout_seconds}` — global execution timeout (default 14400 / 4h)
+- `${trigger_max_attempts}` — trigger infrastructure retry count (default 3)
 
 ## EventBridge
 
