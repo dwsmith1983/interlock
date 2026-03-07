@@ -1457,7 +1457,9 @@ func TestInjectDateArgs_HTTP_DailyDate(t *testing.T) {
 	}
 	lambda.InjectDateArgs(&tc, "2026-03-06")
 	var body map[string]string
-	json.Unmarshal([]byte(tc.HTTP.Body), &body)
+	if err := json.Unmarshal([]byte(tc.HTTP.Body), &body); err != nil {
+		t.Fatalf("invalid JSON body: %v", err)
+	}
 	if body["par_day"] != "20260306" {
 		t.Errorf("par_day = %q, want %q", body["par_day"], "20260306")
 	}
