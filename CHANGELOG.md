@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SFN global timeout**: Step Function definition includes `TimeoutSeconds` (default 4h, configurable via `sfn_timeout_seconds` Terraform variable). Prevents unbounded execution if the orchestrator loop stalls.
 - **Configurable trigger retry count**: Trigger state `MaxAttempts` is now driven by `trigger_max_attempts` Terraform variable (default 3, previously hardcoded 4). Reduces retry budget from 4 to 3 attempts.
 - **Trigger terminal status lifecycle**: new `CompleteTrigger` ASL state sets trigger row to `COMPLETED` on job success and `FAILED_FINAL` on fail/timeout. New orchestrator `complete-trigger` mode with `Event` input field. Previously `TriggerStatusCompleted` was defined but never written, leaving all triggers stuck at `RUNNING` after SFN completion.
+- **Bounded job poll window**: 5 new ASL states implement a time-bounded poll loop. Configurable via `jobPollWindowSeconds` in pipeline config (default: disabled). `handleJobPollExhausted` writes a timeout joblog entry, sets trigger to `FAILED_FINAL`, and publishes `JOB_POLL_EXHAUSTED` event. Prevents unbounded `check-job` polling when external jobs hang.
+- **Per-source rerun limits**: new `maxDriftReruns`, `maxManualReruns`, and `maxCodeRetries` fields on `JobConfig` with `*int` pointer semantics (nil = default, 0 = disabled). `CountRerunsBySource` filters rerun records by reason prefix, so drift/manual reruns no longer consume the job-failure retry budget.
+- **Pipeline config validation**: `ValidatePipelineConfig` enforces bounds on all retry/rerun fields. Stream-router uses `getValidatedConfig` wrapper at all 3 config-read callsites — invalid configs are logged and skipped (fail-open).
+- **Failure classification**: `FailureCategory` propagated from `StatusChecker` through `handleCheckJob` to joblog via variadic `WithFailureCategory` option. `handleJobFailure` reads the latest joblog category — `PERMANENT` failures use `maxCodeRetries` budget (default 1), `TRANSIENT`/empty use `maxRetries`. Separates infrastructure flakes from code bugs.
+- **Dynamic trigger lock TTL**: `ResolveTriggerLockTTL()` reads `SFN_TIMEOUT_SECONDS` env var and adds a 30-minute buffer (default 4h30m). All 4 `AcquireTriggerLock` callsites use it. Terraform wires the variable to stream-router and watchdog Lambda environments.
+
+### Removed
+
+- Dead `FailureEvaluatorCrash` constant (defined but never referenced)
 
 ### Fixed
 
