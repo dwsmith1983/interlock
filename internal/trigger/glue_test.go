@@ -312,6 +312,69 @@ func TestCheckGlueStatus_ErrorLogsDetectFalseSuccess(t *testing.T) {
 	assert.Equal(t, types.FailureTransient, result.FailureCategory)
 }
 
+func TestCheckGlueStatus_BenignStderrDoesNotCauseFailure(t *testing.T) {
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState: gluetypes.JobRunStateSucceeded,
+			},
+		},
+	}
+	// Simulate benign stderr: FilterPattern excludes "Preparing ..." so
+	// the error log group returns empty events despite the log existing.
+	cwClient := &funcCWLogsClient{
+		filterFn: func(_ context.Context, params *cloudwatchlogs.FilterLogEventsInput) (*cloudwatchlogs.FilterLogEventsOutput, error) {
+			return &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}}, nil
+		},
+	}
+
+	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckSucceeded, result.State)
+	assert.Equal(t, "SUCCEEDED", result.Message)
+}
+
+func TestCheckGlueStatus_ErrorLogFilterPatternPassed(t *testing.T) {
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState: gluetypes.JobRunStateSucceeded,
+			},
+		},
+	}
+
+	var capturedInputs []*cloudwatchlogs.FilterLogEventsInput
+	cwClient := &capturingCWLogsClient{
+		delegate: &mockCWLogsClient{
+			filterOut: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
+		},
+		onFilter: func(input *cloudwatchlogs.FilterLogEventsInput) {
+			capturedInputs = append(capturedInputs, input)
+		},
+	}
+
+	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
+	_, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	require.Len(t, capturedInputs, 2)
+
+	// Check 2 (error log group) must have a FilterPattern
+	errorLogInput := capturedInputs[1]
+	assert.Equal(t, "/aws-glue/jobs/error", aws.ToString(errorLogInput.LogGroupName))
+	require.NotNil(t, errorLogInput.FilterPattern, "Check 2 must pass FilterPattern")
+	fp := aws.ToString(errorLogInput.FilterPattern)
+	for _, term := range []string{"Exception", "Error", "FATAL", "Traceback"} {
+		assert.Contains(t, fp, term, "FilterPattern should include %s", term)
+	}
+}
+
 func TestExtractGlueFailureReason(t *testing.T) {
 	tests := []struct {
 		name     string

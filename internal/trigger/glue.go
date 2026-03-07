@@ -109,8 +109,8 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 // successes. It performs two checks:
 //  1. RCA log stream for GlueExceptionAnalysisJobFailed events (Spark exceptions
 //     where the driver exits 0).
-//  2. Error log group (/aws-glue/jobs/error) for any error entries (catches
-//     failures like disk-full errors that Glue's RCA may not detect).
+//  2. Error log group (/aws-glue/jobs/error) for entries matching error indicators
+//     (catches failures like disk-full errors that Glue's RCA may not detect).
 //
 // Returns (true, reason) if either check finds failure evidence. Returns
 // (false, "") on any error or if no failure is found.
@@ -141,11 +141,12 @@ func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *
 		return true, "RCA: JobFailed"
 	}
 
-	// Check 2: Error log group for any error entries for this run.
+	// Check 2: Error log group for entries matching error indicators for this run.
 	errorLogGroup := defaultGlueErrorLogGroup
 	errOut, err := client.FilterLogEvents(ctx, &cloudwatchlogs.FilterLogEventsInput{
 		LogGroupName:   &errorLogGroup,
 		LogStreamNames: []string{runID},
+		FilterPattern:  aws.String(`?Exception ?Error ?FATAL ?Traceback ?OutOfMemoryError ?StackOverflowError`),
 		Limit:          aws.Int32(1),
 	})
 	if err == nil && len(errOut.Events) > 0 {

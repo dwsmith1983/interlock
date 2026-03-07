@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-03-08
+
+### Fixed
+
+- **Glue RCA false-positive failure classification**: `verifyGlueRCA` Check 2 queried `/aws-glue/jobs/error` without a `FilterPattern`, causing benign stderr messages (e.g., `"Preparing ..."`) to be misclassified as failures. Added `FilterPattern` with error indicators (`?Exception ?Error ?FATAL ?Traceback ?OutOfMemoryError ?StackOverflowError`) so only genuine errors trigger failure classification. This prevented unnecessary re-runs that doubled Glue compute.
+- **Watchdog date-boundary test flake**: `TerminalTriggerRetainsRecord` E2E test used sensor data without a `date` field, causing `ResolveExecutionDate` to fall back to `time.Now()`. When the calendar date advanced past the hardcoded trigger date, reconciliation resolved to a different date and fired a spurious `TRIGGER_RECOVERED`. Sensor data now includes an explicit date.
+
 ## [0.6.0] - 2026-03-07
 
 ### Added
