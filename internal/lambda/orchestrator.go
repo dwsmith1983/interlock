@@ -208,6 +208,11 @@ func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 			_ = publishEvent(ctx, d, string(types.EventDataDrift), input.PipelineID, input.ScheduleID, input.Date,
 				fmt.Sprintf("data drift detected for %s: %.0f → %.0f records", input.PipelineID, prevCount, currCount), alertDetail)
 
+			// Trigger a re-run via the existing circuit breaker path.
+			if writeErr := d.Store.WriteRerunRequest(ctx, input.PipelineID, input.ScheduleID, input.Date, "data-drift"); writeErr != nil {
+				d.Logger.WarnContext(ctx, "failed to write rerun request on drift", "pipelineId", input.PipelineID, "error", writeErr)
+			}
+
 			return OrchestratorOutput{
 				Mode:   "post-run",
 				Status: "drift",

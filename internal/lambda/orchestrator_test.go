@@ -917,6 +917,64 @@ func TestPostRun_DriftDetected(t *testing.T) {
 	}
 }
 
+func TestPostRun_DriftWritesRerunRequest(t *testing.T) {
+	pipelineID := "gold-orders"
+	scheduleID := "daily"
+	date := "2026-03-01"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		PostRun: &types.PostRunConfig{
+			Rules: []types.ValidationRule{
+				{Key: "audit-result", Check: types.CheckEquals, Field: "match", Value: true},
+			},
+		},
+	}
+
+	ddb := newMockDDB()
+	ddb.putRaw("control", configItem(pipelineID, cfg))
+	// Current audit result with sensor_count=150.
+	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
+		"match":        &ddbtypes.AttributeValueMemberBOOL{Value: true},
+		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "150"},
+	}))
+	// Baseline with sensor_count=100 (different count → drift).
+	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
+		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
+	}))
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "post-run",
+		PipelineID: pipelineID,
+		ScheduleID: scheduleID,
+		Date:       date,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != "drift" {
+		t.Errorf("status = %q, want %q", out.Status, "drift")
+	}
+
+	// Verify RERUN_REQUEST was written to the control table.
+	wantPK := types.PipelinePK(pipelineID)
+	wantSK := types.RerunRequestSK(scheduleID, date)
+	key := ddbItemKey("control", wantPK, wantSK)
+
+	ddb.mu.Lock()
+	item, ok := ddb.items[key]
+	ddb.mu.Unlock()
+
+	if !ok {
+		t.Fatalf("expected RERUN_REQUEST item at PK=%q SK=%q, but not found", wantPK, wantSK)
+	}
+
+	reason, _ := item["reason"].(*ddbtypes.AttributeValueMemberS)
+	if reason == nil || reason.Value != "data-drift" {
+		t.Errorf("reason = %v, want %q", reason, "data-drift")
+	}
+}
+
 func TestPostRun_NoRules(t *testing.T) {
 	pipelineID := "gold-orders"
 	cfg := types.PipelineConfig{
