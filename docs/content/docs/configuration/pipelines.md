@@ -158,9 +158,9 @@ validation:
       value: 2h
 ```
 
-## Retry Policy
+## Retry and Rerun Policy
 
-Automatic retries on job failure are configured in the `job` block:
+Automatic retries on job failure and rerun limits are configured in the `job` block:
 
 ```yaml
 job:
@@ -168,13 +168,46 @@ job:
   config:
     jobName: gold-revenue-etl
   maxRetries: 2
+  maxCodeRetries: 1
+  maxDriftReruns: 2
+  maxManualReruns: 3
+  jobPollWindowSeconds: 3600
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `maxRetries` | int | 0 | Maximum retry attempts after job failure |
+### Retry Budgets
 
-Retries are managed by the Step Functions state machine, which re-invokes the orchestrator Lambda on failure up to `maxRetries` times.
+Interlock maintains separate retry budgets by failure source, preventing one category from consuming another's budget:
+
+| Field | Type | Default | Range | Description |
+|---|---|---|---|---|
+| `maxRetries` | int | `0` | 0--10 | Retry attempts for transient/unknown job failures |
+| `maxCodeRetries` | int* | `1` | 0--3 | Retry attempts for permanent (code/logic) failures. Only used when the trigger runner reports `FailureCategory: PERMANENT` |
+| `maxDriftReruns` | int* | `1` | 0--5 | Rerun budget for automatic drift and late-data reruns |
+| `maxManualReruns` | int* | `1` | 0--5 | Rerun budget for manual rerun requests |
+
+Fields marked `int*` use pointer semantics: omit to use the default, set to `0` to explicitly disable.
+
+**Failure classification**: when a job fails, the trigger runner may report a `FailureCategory` (`PERMANENT`, `TRANSIENT`, or `TIMEOUT`). Permanent failures (e.g., application code bugs, schema mismatches) use the `maxCodeRetries` budget. Transient failures (e.g., service throttling, temporary network issues) and unclassified failures use the `maxRetries` budget.
+
+### Job Poll Window
+
+| Field | Type | Default | Range | Description |
+|---|---|---|---|---|
+| `jobPollWindowSeconds` | int* | `3600` (1h) | 60--86400 | Maximum time to poll for job completion before timing out |
+
+When the poll window elapses without a terminal job status, the orchestrator publishes a `JOB_POLL_EXHAUSTED` event, writes a timeout entry to the joblog, and sets the trigger to `FAILED_FINAL`. This prevents unbounded polling when external jobs hang.
+
+### Configuration Validation
+
+The framework validates all retry and timeout fields at config load time. Invalid configs are logged and skipped (fail-open). Validation bounds:
+
+| Field | Valid Range |
+|---|---|
+| `maxRetries` | 0--10 |
+| `maxCodeRetries` | 0--3 |
+| `maxDriftReruns` | 0--5 |
+| `maxManualReruns` | 0--5 |
+| `jobPollWindowSeconds` | 60--86400 (0 = use default) |
 
 ## Pushing Sensor Data
 

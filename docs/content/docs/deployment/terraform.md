@@ -21,7 +21,7 @@ Interlock ships as a reusable Terraform module in `deploy/terraform/`. The modul
 ./deploy/build.sh
 ```
 
-This cross-compiles the 4 Lambda handlers (`stream-router`, `orchestrator`, `sla-monitor`, `watchdog`) for `linux/arm64` and outputs them to `deploy/dist/`.
+This cross-compiles the 6 Lambda handlers (`stream-router`, `orchestrator`, `sla-monitor`, `watchdog`, `event-sink`, `alert-dispatcher`) for `linux/arm64` and outputs them to `deploy/dist/`.
 
 ### 2. Write Pipeline Configs
 
@@ -62,9 +62,10 @@ job:
   config:
     jobName: gold-revenue-etl
   maxRetries: 2
+  jobPollWindowSeconds: 3600
 ```
 
-See [Pipeline Configuration](../../configuration/pipelines/) for the full YAML schema.
+See [Pipeline Configuration](../../configuration/pipelines/) for the full YAML schema, including per-source rerun limits and failure classification.
 
 ### 3. Use the Module
 
@@ -106,7 +107,8 @@ terraform apply
 | `lambda_memory_size` | number | `128` | Memory size for Lambda functions (MB) |
 | `log_retention_days` | number | `30` | CloudWatch log retention in days |
 | `watchdog_schedule` | string | `rate(5 minutes)` | EventBridge schedule expression for the watchdog Lambda |
-| `sfn_timeout_seconds` | number | `43200` | Step Functions execution timeout in seconds (default 12h) |
+| `sfn_timeout_seconds` | number | `14400` | Step Functions global execution timeout in seconds (default 4h). Set this to accommodate your longest pipeline's total window (evaluation + job poll + post-run) |
+| `trigger_max_attempts` | number | `3` | Max infrastructure retry attempts for the Trigger state (exponential backoff: 30s, 60s, 120s, 240s) |
 | `enable_glue_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Glue jobs |
 | `enable_emr_trigger` | bool | `false` | Grant orchestrator Lambda permission to submit EMR steps |
 | `enable_emr_serverless_trigger` | bool | `false` | Grant orchestrator Lambda permission to start EMR Serverless jobs |
@@ -116,13 +118,14 @@ terraform apply
 
 ### DynamoDB Tables
 
-The module creates 3 tables, all using on-demand billing:
+The module creates 4 tables, all using on-demand billing:
 
 | Table | Name Pattern | Purpose |
 |---|---|---|
 | Control | `{env}-interlock-control` | Pipeline configs, sensor data, locks, evaluation state |
 | Job Log | `{env}-interlock-joblog` | Job execution history and run status |
 | Rerun | `{env}-interlock-rerun` | Rerun requests and tracking |
+| Events | `{env}-interlock-events` | Centralized event log for dashboards and audit (GSI1: eventType → timestamp) |
 
 All tables have TTL enabled on the `ttl` attribute. The control and joblog tables have DynamoDB Streams enabled (`NEW_IMAGE`) to drive the stream-router Lambda.
 
@@ -134,6 +137,8 @@ All tables have TTL enabled on the `ttl` attribute. The control and joblog table
 | orchestrator | `{env}-interlock-orchestrator` | Evaluates validation rules, triggers jobs, polls job status |
 | sla-monitor | `{env}-interlock-sla-monitor` | Checks SLA deadlines, emits breach events |
 | watchdog | `{env}-interlock-watchdog` | Scans for missed schedules and stale triggers |
+| event-sink | `{env}-interlock-event-sink` | Captures all EventBridge events to the events table |
+| alert-dispatcher | `{env}-interlock-alert-dispatcher` | Formats and delivers Slack notifications from the alert queue |
 
 All Lambdas run on `provided.al2023` (custom runtime) with `arm64` architecture.
 
