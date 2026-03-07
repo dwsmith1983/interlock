@@ -209,7 +209,8 @@ func alertEmoji(detailType string) string {
 	case string(types.EventSLABreach), string(types.EventJobFailed),
 		string(types.EventValidationExhausted), string(types.EventRetryExhausted),
 		string(types.EventInfraFailure), string(types.EventSFNTimeout),
-		string(types.EventScheduleMissed), string(types.EventDataDrift):
+		string(types.EventScheduleMissed), string(types.EventDataDrift),
+		string(types.EventJobPollExhausted):
 		return "\xf0\x9f\x94\xb4" // red circle
 	case string(types.EventSLAWarning):
 		return "\xf0\x9f\x9f\xa1" // yellow circle

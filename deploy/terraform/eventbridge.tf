@@ -79,6 +79,7 @@ resource "aws_cloudwatch_event_rule" "alert_events" {
       "SFN_TIMEOUT",
       "SCHEDULE_MISSED",
       "DATA_DRIFT",
+      "JOB_POLL_EXHAUSTED",
     ]
   })
 }
