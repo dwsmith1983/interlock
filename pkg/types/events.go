@@ -21,6 +21,7 @@ const (
 	EventLateDataArrival     EventDetailType = "LATE_DATA_ARRIVAL"
 	EventRerunRejected       EventDetailType = "RERUN_REJECTED"
 	EventTriggerRecovered    EventDetailType = "TRIGGER_RECOVERED"
+	EventDataDrift           EventDetailType = "DATA_DRIFT"
 )
 
 // EventSource is the EventBridge source for all interlock events.

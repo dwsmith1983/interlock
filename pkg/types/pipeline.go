@@ -94,5 +94,6 @@ type JobConfig struct {
 
 // PostRunConfig defines optional post-completion validation.
 type PostRunConfig struct {
-	Rules []ValidationRule `yaml:"rules" json:"rules"`
+	Evaluation *EvaluationWindow `yaml:"evaluation,omitempty" json:"evaluation,omitempty"`
+	Rules      []ValidationRule  `yaml:"rules" json:"rules"`
 }
