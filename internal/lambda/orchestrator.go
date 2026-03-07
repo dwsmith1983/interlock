@@ -86,7 +86,7 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 	if err != nil {
 		return OrchestratorOutput{Mode: "trigger", Error: fmt.Sprintf("build trigger config: %v", err)}, nil
 	}
-	injectDateArgs(&triggerCfg, input.Date)
+	InjectDateArgs(&triggerCfg, input.Date)
 
 	metadata, err := d.TriggerRunner.Execute(ctx, &triggerCfg)
 	if err != nil {
@@ -436,22 +436,30 @@ func extractRunID(metadata map[string]interface{}) string {
 	return ""
 }
 
-// injectDateArgs parses the execution date and injects --par_day (and --par_hour
-// for hourly dates) into Glue trigger arguments. Only modifies Glue triggers.
-func injectDateArgs(tc *types.TriggerConfig, date string) {
-	if tc.Glue == nil {
-		return
-	}
-	if tc.Glue.Arguments == nil {
-		tc.Glue.Arguments = make(map[string]string)
+// InjectDateArgs parses the execution date and injects --par_day (and --par_hour
+// for hourly dates) into Glue trigger arguments. For HTTP triggers with no
+// explicit body, injects a JSON body with par_day and par_hour.
+func InjectDateArgs(tc *types.TriggerConfig, date string) {
+	datePart, hourPart := ParseExecutionDate(date)
+	parDay := strings.ReplaceAll(datePart, "-", "")
+
+	if tc.Glue != nil {
+		if tc.Glue.Arguments == nil {
+			tc.Glue.Arguments = make(map[string]string)
+		}
+		tc.Glue.Arguments["--par_day"] = parDay
+		if hourPart != "" {
+			tc.Glue.Arguments["--par_hour"] = hourPart
+		}
 	}
 
-	datePart, hourPart := ParseExecutionDate(date)
-	// Convert YYYY-MM-DD to YYYYMMDD for Glue.
-	parDay := strings.ReplaceAll(datePart, "-", "")
-	tc.Glue.Arguments["--par_day"] = parDay
-	if hourPart != "" {
-		tc.Glue.Arguments["--par_hour"] = hourPart
+	if tc.HTTP != nil && tc.HTTP.Body == "" {
+		payload := map[string]string{"par_day": parDay}
+		if hourPart != "" {
+			payload["par_hour"] = hourPart
+		}
+		b, _ := json.Marshal(payload)
+		tc.HTTP.Body = string(b)
 	}
 }
 

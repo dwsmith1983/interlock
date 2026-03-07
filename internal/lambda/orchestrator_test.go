@@ -1422,3 +1422,61 @@ func TestOrchestrator_UnknownMode(t *testing.T) {
 		t.Fatal("expected error for unknown mode")
 	}
 }
+
+func TestInjectDateArgs_HTTP_HourlyDate(t *testing.T) {
+	tc := types.TriggerConfig{
+		Type: types.TriggerHTTP,
+		HTTP: &types.HTTPTriggerConfig{
+			Method: "POST",
+			URL:    "https://example.com/audit",
+		},
+	}
+	lambda.InjectDateArgs(&tc, "2026-03-06T16")
+	if tc.HTTP.Body == "" {
+		t.Fatal("HTTP body not injected")
+	}
+	var body map[string]string
+	if err := json.Unmarshal([]byte(tc.HTTP.Body), &body); err != nil {
+		t.Fatalf("invalid JSON body: %v", err)
+	}
+	if body["par_day"] != "20260306" {
+		t.Errorf("par_day = %q, want %q", body["par_day"], "20260306")
+	}
+	if body["par_hour"] != "16" {
+		t.Errorf("par_hour = %q, want %q", body["par_hour"], "16")
+	}
+}
+
+func TestInjectDateArgs_HTTP_DailyDate(t *testing.T) {
+	tc := types.TriggerConfig{
+		Type: types.TriggerHTTP,
+		HTTP: &types.HTTPTriggerConfig{
+			Method: "POST",
+			URL:    "https://example.com/audit",
+		},
+	}
+	lambda.InjectDateArgs(&tc, "2026-03-06")
+	var body map[string]string
+	json.Unmarshal([]byte(tc.HTTP.Body), &body)
+	if body["par_day"] != "20260306" {
+		t.Errorf("par_day = %q, want %q", body["par_day"], "20260306")
+	}
+	if _, hasHour := body["par_hour"]; hasHour {
+		t.Error("par_hour should not be present for daily date")
+	}
+}
+
+func TestInjectDateArgs_HTTP_PreservesExistingBody(t *testing.T) {
+	tc := types.TriggerConfig{
+		Type: types.TriggerHTTP,
+		HTTP: &types.HTTPTriggerConfig{
+			Method: "POST",
+			URL:    "https://example.com/custom",
+			Body:   `{"custom": "payload"}`,
+		},
+	}
+	lambda.InjectDateArgs(&tc, "2026-03-06T16")
+	if tc.HTTP.Body != `{"custom": "payload"}` {
+		t.Errorf("existing body overwritten: %q", tc.HTTP.Body)
+	}
+}
