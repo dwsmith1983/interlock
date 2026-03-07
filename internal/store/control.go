@@ -224,6 +224,26 @@ func (s *Store) WriteSensor(ctx context.Context, pipelineID, sensorKey string, d
 	return nil
 }
 
+// WriteRerunRequest writes a RERUN_REQUEST row to the control table.
+// The stream-router picks this up via DynamoDB streams and validates
+// via the circuit breaker before starting a new SFN execution.
+func (s *Store) WriteRerunRequest(ctx context.Context, pipelineID, schedule, date, reason string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &s.ControlTable,
+		Item: map[string]ddbtypes.AttributeValue{
+			"PK":          &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK":          &ddbtypes.AttributeValueMemberS{Value: types.RerunRequestSK(schedule, date)},
+			"reason":      &ddbtypes.AttributeValueMemberS{Value: reason},
+			"requestedAt": &ddbtypes.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("write rerun request for %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return nil
+}
+
 // AcquireTriggerLock attempts to acquire a trigger lock for a given pipeline,
 // schedule, and date. Returns true if the lock was acquired, false if it is
 // already held. The lock is set with a TTL for automatic expiration.

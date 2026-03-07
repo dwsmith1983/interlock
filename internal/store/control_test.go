@@ -345,6 +345,50 @@ func TestAcquireTriggerLock_DynamoError(t *testing.T) {
 	}
 }
 
+func TestWriteRerunRequest(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	err := s.WriteRerunRequest(context.Background(), "bronze-cdr", "stream", "2026-03-06T16", "data-drift")
+	if err != nil {
+		t.Fatalf("WriteRerunRequest: %v", err)
+	}
+
+	// Read back the item from the mock.
+	key := itemKey("control", types.PipelinePK("bronze-cdr"), types.RerunRequestSK("stream", "2026-03-06T16"))
+	mock.mu.Lock()
+	item, ok := mock.items[key]
+	mock.mu.Unlock()
+
+	if !ok {
+		t.Fatal("expected rerun request row to exist in mock")
+	}
+
+	pk := item["PK"].(*ddbtypes.AttributeValueMemberS).Value
+	if pk != "PIPELINE#bronze-cdr" {
+		t.Errorf("PK = %q, want %q", pk, "PIPELINE#bronze-cdr")
+	}
+
+	sk := item["SK"].(*ddbtypes.AttributeValueMemberS).Value
+	if sk != "RERUN_REQUEST#stream#2026-03-06T16" {
+		t.Errorf("SK = %q, want %q", sk, "RERUN_REQUEST#stream#2026-03-06T16")
+	}
+
+	reason := item["reason"].(*ddbtypes.AttributeValueMemberS).Value
+	if reason != "data-drift" {
+		t.Errorf("reason = %q, want %q", reason, "data-drift")
+	}
+
+	requestedAtAttr, ok := item["requestedAt"]
+	if !ok {
+		t.Fatal("expected requestedAt attribute to be present")
+	}
+	requestedAt := requestedAtAttr.(*ddbtypes.AttributeValueMemberS).Value
+	if _, err := time.Parse(time.RFC3339, requestedAt); err != nil {
+		t.Errorf("requestedAt %q is not valid RFC3339: %v", requestedAt, err)
+	}
+}
+
 func TestGetConfig_InvalidJSON(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
