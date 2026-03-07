@@ -706,19 +706,22 @@ func isExcluded(cfg *types.PipelineConfig, now time.Time) bool {
 
 // publishEvent sends an event to EventBridge. It is safe to call when
 // EventBridge is nil or EventBusName is empty (returns nil with no action).
-func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule, date, message string) error {
+func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule, date, message string, detail ...map[string]interface{}) error {
 	if d.EventBridge == nil || d.EventBusName == "" {
 		return nil
 	}
 
-	detail := types.InterlockEvent{
+	evt := types.InterlockEvent{
 		PipelineID: pipelineID,
 		ScheduleID: schedule,
 		Date:       date,
 		Message:    message,
 		Timestamp:  time.Now(),
 	}
-	detailJSON, err := json.Marshal(detail)
+	if len(detail) > 0 && detail[0] != nil {
+		evt.Detail = detail[0]
+	}
+	detailJSON, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("marshal event detail: %w", err)
 	}
