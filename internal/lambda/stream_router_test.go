@@ -2840,3 +2840,15 @@ func TestResolveTriggerLockTTL_InvalidEnv(t *testing.T) {
 	got := lambda.ResolveTriggerLockTTL()
 	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
 }
+
+func TestResolveTriggerLockTTL_ZeroFallsBackToDefault(t *testing.T) {
+	t.Setenv("SFN_TIMEOUT_SECONDS", "0")
+	got := lambda.ResolveTriggerLockTTL()
+	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
+}
+
+func TestResolveTriggerLockTTL_NegativeFallsBackToDefault(t *testing.T) {
+	t.Setenv("SFN_TIMEOUT_SECONDS", "-100")
+	got := lambda.ResolveTriggerLockTTL()
+	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
+}

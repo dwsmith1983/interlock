@@ -197,8 +197,14 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 		return fmt.Errorf("release trigger lock for %q: %w", pipelineID, err)
 	}
 
-	if _, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL()); err != nil {
+	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL())
+	if err != nil {
 		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
+	}
+	if !acquired {
+		d.Logger.Warn("failed to re-acquire trigger lock, skipping rerun",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date)
+		return nil
 	}
 
 	// Use a unique execution name that includes the rerun attempt number.
@@ -335,8 +341,14 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		return fmt.Errorf("release trigger lock for %q: %w", pipelineID, err)
 	}
 
-	if _, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL()); err != nil {
+	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL())
+	if err != nil {
 		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
+	}
+	if !acquired {
+		d.Logger.Warn("failed to re-acquire trigger lock, skipping rerun",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date)
+		return nil
 	}
 
 	execName := fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, time.Now().Unix())
@@ -637,11 +649,27 @@ func startSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineI
 
 // startSFNWithName starts a Step Function execution with a custom execution name.
 func startSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, name string) error {
+	sc := buildSFNConfig(cfg)
+
+	// Warn if the sum of evaluation + poll + post-run windows exceeds the SFN timeout.
+	totalWindowSec := sc.EvaluationWindowSeconds + sc.JobPollWindowSeconds + sc.PostRunWindowSeconds
+	sfnTimeout := ResolveTriggerLockTTL() - 30*time.Minute // strip the buffer to get raw SFN timeout
+	if sfnTimeout > 0 && time.Duration(totalWindowSec)*time.Second > sfnTimeout {
+		d.Logger.Warn("combined pipeline windows exceed SFN timeout",
+			"pipelineId", pipelineID,
+			"evalWindowSec", sc.EvaluationWindowSeconds,
+			"jobPollWindowSec", sc.JobPollWindowSeconds,
+			"postRunWindowSec", sc.PostRunWindowSeconds,
+			"totalWindowSec", totalWindowSec,
+			"sfnTimeoutSec", int(sfnTimeout.Seconds()),
+		)
+	}
+
 	input := sfnInput{
 		PipelineID: pipelineID,
 		ScheduleID: scheduleID,
 		Date:       date,
-		Config:     buildSFNConfig(cfg),
+		Config:     sc,
 	}
 	payload, err := json.Marshal(input)
 	if err != nil {
