@@ -224,6 +224,21 @@ func (s *Store) WriteSensor(ctx context.Context, pipelineID, sensorKey string, d
 	return nil
 }
 
+// DeleteSensor removes a sensor row from the control table.
+func (s *Store) DeleteSensor(ctx context.Context, pipelineID, sensorKey string) error {
+	_, err := s.Client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: &s.ControlTable,
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK(sensorKey)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("delete sensor %q for %q: %w", sensorKey, pipelineID, err)
+	}
+	return nil
+}
+
 // WriteRerunRequest writes a RERUN_REQUEST row to the control table.
 // The stream-router picks this up via DynamoDB streams and validates
 // via the circuit breaker before starting a new SFN execution.

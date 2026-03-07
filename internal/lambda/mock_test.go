@@ -241,14 +241,26 @@ func (m *mockDDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func
 	defer m.mu.Unlock()
 
 	pkVal := input.ExpressionAttributeValues[":pk"].(*ddbtypes.AttributeValueMemberS).Value
+
+	// Prefer ":prefix" or ":skPrefix" for deterministic SK prefix matching.
 	prefixVal := ""
-	for k, v := range input.ExpressionAttributeValues {
-		if k == ":pk" {
-			continue
+	for _, candidate := range []string{":prefix", ":skPrefix"} {
+		if v, ok := input.ExpressionAttributeValues[candidate]; ok {
+			if s, ok := v.(*ddbtypes.AttributeValueMemberS); ok {
+				prefixVal = s.Value
+				break
+			}
 		}
-		if s, ok := v.(*ddbtypes.AttributeValueMemberS); ok {
-			prefixVal = s.Value
-			break
+	}
+	if prefixVal == "" {
+		for k, v := range input.ExpressionAttributeValues {
+			if k == ":pk" {
+				continue
+			}
+			if s, ok := v.(*ddbtypes.AttributeValueMemberS); ok {
+				prefixVal = s.Value
+				break
+			}
 		}
 	}
 
@@ -264,6 +276,10 @@ func (m *mockDDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func
 		if prefixVal != "" && !strings.HasPrefix(sk, prefixVal) {
 			continue
 		}
+		// Apply FilterExpression if present.
+		if input.FilterExpression != nil && !matchesQueryFilter(*input.FilterExpression, input.ExpressionAttributeValues, item) {
+			continue
+		}
 		items = append(items, ddbCopyItem(item))
 	}
 
@@ -274,6 +290,43 @@ func (m *mockDDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func
 	})
 
 	return &dynamodb.QueryOutput{Items: items, Count: int32(len(items))}, nil
+}
+
+// matchesQueryFilter evaluates a FilterExpression against an item.
+// Supports "reason IN (:s0, :s1, ...)" pattern used by CountRerunsBySource.
+func matchesQueryFilter(expr string, values map[string]ddbtypes.AttributeValue, item map[string]ddbtypes.AttributeValue) bool {
+	expr = strings.TrimSpace(expr)
+
+	// Parse "field IN (:v0, :v1, ...)" pattern.
+	if idx := strings.Index(expr, " IN ("); idx >= 0 {
+		field := strings.TrimSpace(expr[:idx])
+		inList := expr[idx+len(" IN ("):]
+		inList = strings.TrimSuffix(inList, ")")
+
+		actual, ok := item[field]
+		if !ok {
+			return false
+		}
+		actualStr, ok := actual.(*ddbtypes.AttributeValueMemberS)
+		if !ok {
+			return false
+		}
+
+		for _, ref := range strings.Split(inList, ",") {
+			ref = strings.TrimSpace(ref)
+			if v, ok := values[ref]; ok {
+				if s, ok := v.(*ddbtypes.AttributeValueMemberS); ok {
+					if s.Value == actualStr.Value {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	// Unknown filter pattern — pass through.
+	return true
 }
 
 func (m *mockDDB) Scan(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {

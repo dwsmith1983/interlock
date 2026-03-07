@@ -175,10 +175,11 @@ func handleJobSuccess(ctx context.Context, d *Deps, pipelineID, schedule, date s
 		fmt.Sprintf("job completed for %s", pipelineID))
 }
 
-// handleRerunRequest processes a RERUN_REQUEST# stream record. It implements
-// a circuit breaker that prevents unnecessary re-runs when the previous run
-// succeeded and no sensor data has changed since.
-func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, _ events.DynamoDBEventRecord) error {
+// handleRerunRequest processes a RERUN_REQUEST# stream record. It enforces
+// per-source rerun limits (drift vs manual) and implements a circuit breaker
+// that prevents unnecessary re-runs when the previous run succeeded and no
+// sensor data has changed since.
+func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record events.DynamoDBEventRecord) error {
 	pipelineID := strings.TrimPrefix(pk, "PIPELINE#")
 	if pipelineID == pk {
 		return fmt.Errorf("unexpected PK format: %q", pk)
@@ -198,59 +199,89 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, _ events.Dy
 		return nil
 	}
 
+	// Extract reason from stream record NewImage. Default to "manual".
+	reason := "manual"
+	if img := record.Change.NewImage; img != nil {
+		if r, ok := img["reason"]; ok && r.DataType() == events.DataTypeString {
+			if v := r.String(); v != "" {
+				reason = v
+			}
+		}
+	}
+
+	// --- Rerun limit check ---
+	var budget int
+	var sources []string
+	var limitLabel string
+	switch reason {
+	case "data-drift", "late-data":
+		budget = types.IntOrDefault(cfg.Job.MaxDriftReruns, 1)
+		sources = []string{"data-drift", "late-data"}
+		limitLabel = "drift rerun limit exceeded"
+	default:
+		budget = types.IntOrDefault(cfg.Job.MaxManualReruns, 1)
+		sources = []string{reason}
+		limitLabel = "manual rerun limit exceeded"
+	}
+
+	count, err := d.Store.CountRerunsBySource(ctx, pipelineID, schedule, date, sources)
+	if err != nil {
+		return fmt.Errorf("count reruns by source for %q: %w", pipelineID, err)
+	}
+
+	if count >= budget {
+		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+			types.JobEventRerunRejected, "", 0, limitLabel)
+		_ = publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
+			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, limitLabel))
+		d.Logger.Info("rerun request rejected (limit exceeded)",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date,
+			"reason", reason, "count", count, "budget", budget)
+		return nil
+	}
+
+	// --- Circuit breaker (sensor freshness) ---
 	job, err := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
 	if err != nil {
 		return fmt.Errorf("get latest job event for %q/%s/%s: %w", pipelineID, schedule, date, err)
 	}
 
-	// Decision logic:
-	// - No job record → allow (never ran)
-	// - Failed/timeout/infra-exhausted → allow (previous run was not successful)
-	// - Success → check sensor freshness (only re-run if data changed)
 	allowed := true
-	reason := ""
-
-	if job != nil {
-		switch job.Event {
-		case types.JobEventFail, types.JobEventTimeout, types.JobEventInfraTriggerExhausted:
-			// Terminal failure — always allow rerun.
-			allowed = true
-		case types.JobEventSuccess:
-			// Check if sensor data has changed since the successful job.
-			fresh, err := checkSensorFreshness(ctx, d, pipelineID, job.SK)
-			if err != nil {
-				return fmt.Errorf("check sensor freshness for %q: %w", pipelineID, err)
-			}
-			if !fresh {
-				allowed = false
-				reason = "previous run succeeded and no sensor data has changed"
-			}
-		default:
-			// Unknown event — allow to be safe.
-			allowed = true
+	rejectReason := ""
+	if job != nil && job.Event == types.JobEventSuccess {
+		fresh, err := checkSensorFreshness(ctx, d, pipelineID, job.SK)
+		if err != nil {
+			return fmt.Errorf("check sensor freshness for %q: %w", pipelineID, err)
+		}
+		if !fresh {
+			allowed = false
+			rejectReason = "previous run succeeded and no sensor data has changed"
 		}
 	}
 
 	if !allowed {
-		// Write rejection audit trail.
 		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
-			types.JobEventRerunRejected, "", 0, reason)
-
+			types.JobEventRerunRejected, "", 0, rejectReason)
 		_ = publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
-			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, reason))
-
+			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, rejectReason))
 		d.Logger.Info("rerun request rejected",
-			"pipelineId", pipelineID,
-			"schedule", schedule,
-			"date", date,
-			"reason", reason,
-		)
+			"pipelineId", pipelineID, "schedule", schedule, "date", date,
+			"reason", rejectReason)
 		return nil
 	}
 
-	// Write acceptance audit trail.
+	// --- Acceptance: write rerun record FIRST (before lock release) ---
+	if _, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, reason, ""); err != nil {
+		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
+	}
+
 	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 		types.JobEventRerunAccepted, "", 0, "")
+
+	// Delete postrun-baseline so re-run SFN builds fresh baseline.
+	if cfg.PostRun != nil {
+		_ = d.Store.DeleteSensor(ctx, pipelineID, "postrun-baseline")
+	}
 
 	// Release existing lock and re-acquire for the new execution.
 	if err := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); err != nil {
@@ -261,16 +292,13 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, _ events.Dy
 		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
 	}
 
-	execName := fmt.Sprintf("%s-%s-%s-manual-rerun-%d", pipelineID, schedule, date, time.Now().Unix())
+	execName := fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, time.Now().Unix())
 	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
-		return fmt.Errorf("start SFN manual rerun for %q: %w", pipelineID, err)
+		return fmt.Errorf("start SFN rerun for %q: %w", pipelineID, err)
 	}
 
-	d.Logger.Info("started manual rerun",
-		"pipelineId", pipelineID,
-		"schedule", schedule,
-		"date", date,
-	)
+	d.Logger.Info("started rerun",
+		"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason)
 	return nil
 }
 

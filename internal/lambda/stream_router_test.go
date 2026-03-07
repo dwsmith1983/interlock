@@ -2462,3 +2462,236 @@ func TestSensor_UnexpectedPKFormat(t *testing.T) {
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 }
+
+// ---------------------------------------------------------------------------
+// Rerun limit tests
+// ---------------------------------------------------------------------------
+
+// makeRerunRequestWithReason builds a DynamoDB stream event record for a
+// RERUN_REQUEST# write with a specific reason attribute in NewImage.
+func makeRerunRequestWithReason(reason string) events.DynamoDBEventRecord {
+	pk := types.PipelinePK("gold-revenue")
+	sk := types.RerunRequestSK("stream", "2026-03-01")
+	img := map[string]events.DynamoDBAttributeValue{
+		"PK": events.NewStringAttribute(pk),
+		"SK": events.NewStringAttribute(sk),
+	}
+	if reason != "" {
+		img["reason"] = events.NewStringAttribute(reason)
+	}
+	return events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: img,
+		},
+	}
+}
+
+// seedRerunWithReason inserts a RERUN# row with a specific reason into the
+// mock rerun table.
+func seedRerunWithReason(mock *mockDDB, pipelineID, schedule, date string, attempt int, reason string) {
+	mock.putRaw("rerun", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.RerunSK(schedule, date, attempt)},
+		"reason": &ddbtypes.AttributeValueMemberS{Value: reason},
+	})
+}
+
+// testRerunLimitConfig returns a PipelineConfig with rerun limits set.
+func testRerunLimitConfig(maxDrift, maxManual int) types.PipelineConfig {
+	cfg := testJobConfig()
+	cfg.Job.MaxDriftReruns = &maxDrift
+	cfg.Job.MaxManualReruns = &maxManual
+	return cfg
+}
+
+func TestRerun_DriftLimitExceeded(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testRerunLimitConfig(1, 3)
+	seedConfig(mock, cfg)
+
+	// Seed 1 existing drift rerun — at limit.
+	seedRerunWithReason(mock, "gold-revenue", "stream", "2026-03-01", 0, "data-drift")
+
+	record := makeRerunRequestWithReason("data-drift")
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No SFN — drift limit exceeded.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN execution when drift limit exceeded")
+
+	// Should have published RERUN_REJECTED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "expected one EventBridge event for drift limit rejection")
+	assert.Equal(t, string(types.EventRerunRejected), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestRerun_ManualLimitExceeded(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testRerunLimitConfig(3, 1)
+	seedConfig(mock, cfg)
+
+	// Seed 1 existing manual rerun — at limit.
+	seedRerunWithReason(mock, "gold-revenue", "stream", "2026-03-01", 0, "manual")
+
+	record := makeRerunRequestWithReason("manual")
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No SFN — manual limit exceeded.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN execution when manual limit exceeded")
+
+	// Should have published RERUN_REJECTED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "expected one EventBridge event for manual limit rejection")
+	assert.Equal(t, string(types.EventRerunRejected), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestRerun_DriftUnderLimit(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testRerunLimitConfig(2, 1)
+	seedConfig(mock, cfg)
+
+	// No existing drift reruns — under limit.
+	// Seed a failed job so circuit breaker allows the rerun.
+	seedJobEvent(mock, "1709280000000", types.JobEventFail)
+
+	record := makeRerunRequestWithReason("data-drift")
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// SFN should have started — under drift limit.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution when under drift limit")
+	assert.Contains(t, *sfnMock.executions[0].Name, "data-drift-rerun")
+}
+
+func TestRerun_LateDataCountsAsDrift(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testRerunLimitConfig(1, 3)
+	seedConfig(mock, cfg)
+
+	// Seed 1 existing late-data rerun — shares drift budget.
+	seedRerunWithReason(mock, "gold-revenue", "stream", "2026-03-01", 0, "late-data")
+
+	// Submit a data-drift request — should be rejected because late-data
+	// and data-drift share the same budget.
+	record := makeRerunRequestWithReason("data-drift")
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "expected no SFN when shared drift budget exceeded")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1, "expected RERUN_REJECTED event")
+	assert.Equal(t, string(types.EventRerunRejected), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestRerun_WritesRerunBeforeLockRelease(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testRerunLimitConfig(3, 3)
+	seedConfig(mock, cfg)
+
+	// Seed a failed job so circuit breaker allows the rerun.
+	seedJobEvent(mock, "1709280000000", types.JobEventFail)
+
+	record := makeRerunRequestWithReason("manual")
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// SFN should have started.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected SFN execution")
+
+	// Verify the rerun record was written to the rerun table.
+	pk := types.PipelinePK("gold-revenue")
+	rerunSK := types.RerunSK("stream", "2026-03-01", 0)
+	key := ddbItemKey("rerun", pk, rerunSK)
+
+	mock.mu.Lock()
+	item, ok := mock.items[key]
+	mock.mu.Unlock()
+
+	require.True(t, ok, "expected rerun record in rerun table")
+	assert.Equal(t, "manual", item["reason"].(*ddbtypes.AttributeValueMemberS).Value)
+}
+
+func TestRerun_DeletesPostrunBaseline(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testRerunLimitConfig(3, 3)
+	cfg.PostRun = &types.PostRunConfig{
+		Rules: []types.ValidationRule{
+			{Key: "quality-check", Check: types.CheckExists},
+		},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed a failed job so circuit breaker allows the rerun.
+	seedJobEvent(mock, "1709280000000", types.JobEventFail)
+
+	// Seed a postrun-baseline sensor that should be deleted on rerun acceptance.
+	seedSensor(mock, "gold-revenue", "postrun-baseline", map[string]interface{}{
+		"status": "captured",
+	})
+
+	// Verify the sensor exists before the rerun.
+	sensorKey := ddbItemKey(testControlTable, types.PipelinePK("gold-revenue"), types.SensorSK("postrun-baseline"))
+	mock.mu.Lock()
+	_, sensorExists := mock.items[sensorKey]
+	mock.mu.Unlock()
+	require.True(t, sensorExists, "postrun-baseline sensor should exist before rerun")
+
+	record := makeRerunRequestWithReason("manual")
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// SFN should have started.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected SFN execution")
+
+	// Verify the postrun-baseline sensor was deleted.
+	mock.mu.Lock()
+	_, sensorExists = mock.items[sensorKey]
+	mock.mu.Unlock()
+	assert.False(t, sensorExists, "postrun-baseline sensor should be deleted after rerun acceptance")
+}
