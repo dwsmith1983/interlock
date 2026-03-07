@@ -289,3 +289,244 @@ func TestEvaluateRules_EmptyRules(t *testing.T) {
 	assert.True(t, result.Passed) // no rules = vacuously true
 	assert.Empty(t, result.Results)
 }
+
+// --- evaluateNumeric edge cases ---
+
+func TestEvaluateRule_Numeric_NonNumericField(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#data",
+		Check: types.CheckGTE,
+		Field: "count",
+		Value: float64(100),
+	}
+	sensor := map[string]interface{}{"count": "not-a-number"}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.False(t, result.Passed)
+	assert.Contains(t, result.Reason, "is not numeric")
+}
+
+func TestEvaluateRule_Numeric_NonNumericRuleValue(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#data",
+		Check: types.CheckGTE,
+		Field: "count",
+		Value: "not-a-number",
+	}
+	sensor := map[string]interface{}{"count": float64(100)}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.False(t, result.Passed)
+	assert.Contains(t, result.Reason, "rule value")
+	assert.Contains(t, result.Reason, "is not numeric")
+}
+
+func TestEvaluateRule_LTE_Fail(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#error-rate",
+		Check: types.CheckLTE,
+		Field: "rate",
+		Value: float64(0.05),
+	}
+	sensor := map[string]interface{}{"rate": float64(0.10)}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.False(t, result.Passed)
+	assert.Contains(t, result.Reason, "0.1")
+}
+
+func TestEvaluateRule_GT_Fail_LessThan(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#row-count",
+		Check: types.CheckGT,
+		Field: "count",
+		Value: float64(100),
+	}
+	sensor := map[string]interface{}{"count": float64(50)}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.False(t, result.Passed)
+	assert.Contains(t, result.Reason, "50")
+}
+
+// --- evaluateAgeLT edge cases ---
+
+func TestEvaluateRule_AgeLT_NonStringField(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#freshness",
+		Check: types.CheckAgeLT,
+		Field: "updatedAt",
+		Value: "1h",
+	}
+	sensor := map[string]interface{}{"updatedAt": 12345} // not a string
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.False(t, result.Passed)
+	assert.Contains(t, result.Reason, "not a string timestamp")
+}
+
+func TestEvaluateRule_AgeLT_InvalidTimestamp(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#freshness",
+		Check: types.CheckAgeLT,
+		Field: "updatedAt",
+		Value: "1h",
+	}
+	sensor := map[string]interface{}{"updatedAt": "not-a-timestamp"}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.False(t, result.Passed)
+	assert.Contains(t, result.Reason, "not a valid RFC3339 timestamp")
+}
+
+func TestEvaluateRule_AgeLT_NonStringDuration(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	rule := types.ValidationRule{
+		Key:   "SENSOR#freshness",
+		Check: types.CheckAgeLT,
+		Field: "updatedAt",
+		Value: 3600, // not a string
+	}
+	sensor := map[string]interface{}{
+		"updatedAt": now.Add(-30 * time.Minute).Format(time.RFC3339),
+	}
+	result := EvaluateRule(rule, sensor, now)
+
+	assert.False(t, result.Passed)
+	assert.Contains(t, result.Reason, "not a duration string")
+}
+
+func TestEvaluateRule_AgeLT_InvalidDuration(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	rule := types.ValidationRule{
+		Key:   "SENSOR#freshness",
+		Check: types.CheckAgeLT,
+		Field: "updatedAt",
+		Value: "not-a-duration",
+	}
+	sensor := map[string]interface{}{
+		"updatedAt": now.Add(-30 * time.Minute).Format(time.RFC3339),
+	}
+	result := EvaluateRule(rule, sensor, now)
+
+	assert.False(t, result.Passed)
+	assert.Contains(t, result.Reason, "not a valid Go duration")
+}
+
+// --- toFloat64 type coverage ---
+
+func TestToFloat64_IntTypes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input interface{}
+		want  float64
+	}{
+		{"int", int(42), 42.0},
+		{"int32", int32(42), 42.0},
+		{"int64", int64(42), 42.0},
+		{"float32", float32(3.14), float64(float32(3.14))},
+		{"float64", float64(3.14), 3.14},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := toFloat64(tt.input)
+			assert.True(t, ok)
+			assert.InDelta(t, tt.want, got, 0.001)
+		})
+	}
+}
+
+func TestToFloat64_Unsupported(t *testing.T) {
+	_, ok := toFloat64("not-a-number")
+	assert.False(t, ok)
+
+	_, ok = toFloat64(true)
+	assert.False(t, ok)
+
+	_, ok = toFloat64(nil)
+	assert.False(t, ok)
+}
+
+// --- EvaluateRules default mode (not "ALL" or "ANY") ---
+
+func TestEvaluateRules_DefaultMode_FallsToALL(t *testing.T) {
+	rules := []types.ValidationRule{
+		{Key: "SENSOR#a", Check: types.CheckEquals, Field: "status", Value: "OK"},
+		{Key: "SENSOR#b", Check: types.CheckEquals, Field: "status", Value: "OK"},
+	}
+
+	t.Run("all_pass", func(t *testing.T) {
+		sensors := map[string]map[string]interface{}{
+			"SENSOR#a": {"status": "OK"},
+			"SENSOR#b": {"status": "OK"},
+		}
+		result := EvaluateRules("UNKNOWN_MODE", rules, sensors, time.Now())
+		assert.True(t, result.Passed, "default mode should behave like ALL — all passing")
+	})
+
+	t.Run("one_fails", func(t *testing.T) {
+		sensors := map[string]map[string]interface{}{
+			"SENSOR#a": {"status": "OK"},
+			"SENSOR#b": {"status": "BAD"},
+		}
+		result := EvaluateRules("", rules, sensors, time.Now())
+		assert.False(t, result.Passed, "default mode should behave like ALL — one failing")
+	})
+}
+
+// --- EvaluateRule equals with non-string types (Sprintf coercion) ---
+
+func TestEvaluateRule_Equals_Boolean(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#flag",
+		Check: types.CheckEquals,
+		Field: "complete",
+		Value: true,
+	}
+	sensor := map[string]interface{}{"complete": true}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.True(t, result.Passed)
+}
+
+func TestEvaluateRule_Equals_Numeric(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#count",
+		Check: types.CheckEquals,
+		Field: "count",
+		Value: 42,
+	}
+	sensor := map[string]interface{}{"count": 42}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.True(t, result.Passed)
+}
+
+// --- Numeric operators with integer field values (toFloat64 int paths) ---
+
+func TestEvaluateRule_GTE_IntField(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#data",
+		Check: types.CheckGTE,
+		Field: "count",
+		Value: float64(100),
+	}
+	sensor := map[string]interface{}{"count": int(150)}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.True(t, result.Passed)
+}
+
+func TestEvaluateRule_LT_Int64Field(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#data",
+		Check: types.CheckLT,
+		Field: "latency",
+		Value: float64(500),
+	}
+	sensor := map[string]interface{}{"latency": int64(200)}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.True(t, result.Passed)
+}

@@ -139,3 +139,27 @@ func TestCountReruns_DynamoError(t *testing.T) {
 		t.Errorf("expected context in error message, got: %v", err)
 	}
 }
+
+func TestWriteRerun_CountReruns_QueryError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	// Fail on Query (used by CountReruns) but not PutItem.
+	injected := errors.New("query failed")
+	mock.errFn = errOnOp("Query", injected)
+
+	_, err := s.WriteRerun(context.Background(), "pipe-1", "daily", "2026-03-01", "test", "")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped query error, got: %v", err)
+	}
+	// WriteRerun wraps CountReruns error with its own context.
+	if !strings.Contains(err.Error(), "write rerun") {
+		t.Errorf("expected 'write rerun' context in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "count reruns") {
+		t.Errorf("expected 'count reruns' (inner) context in error, got: %v", err)
+	}
+}

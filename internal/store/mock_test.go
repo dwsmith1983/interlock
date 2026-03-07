@@ -164,11 +164,21 @@ func (m *mockDDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func
 		return nil, err
 	}
 
-	// Extract :pk and :prefix from ExpressionAttributeValues.
+	// Extract :pk and the SK prefix from ExpressionAttributeValues.
+	// The prefix variable name is parsed from the KeyConditionExpression
+	// (e.g. "begins_with(SK, :prefix)" or "begins_with(SK, :skPrefix)").
 	pkVal := input.ExpressionAttributeValues[":pk"].(*ddbtypes.AttributeValueMemberS).Value
 	prefixVal := ""
-	if p, ok := input.ExpressionAttributeValues[":prefix"]; ok {
-		prefixVal = p.(*ddbtypes.AttributeValueMemberS).Value
+	if input.KeyConditionExpression != nil {
+		if idx := strings.Index(*input.KeyConditionExpression, "begins_with(SK, "); idx >= 0 {
+			rest := (*input.KeyConditionExpression)[idx+len("begins_with(SK, "):]
+			if end := strings.Index(rest, ")"); end >= 0 {
+				varName := rest[:end]
+				if p, ok := input.ExpressionAttributeValues[varName]; ok {
+					prefixVal = p.(*ddbtypes.AttributeValueMemberS).Value
+				}
+			}
+		}
 	}
 
 	table := *input.TableName

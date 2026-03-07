@@ -408,3 +408,474 @@ func TestGetConfig_InvalidJSON(t *testing.T) {
 		t.Errorf("expected 'unmarshal config' in error, got: %v", err)
 	}
 }
+
+// --- GetConfig error-path tests ---
+
+func TestGetConfig_MissingConfigAttribute(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	// Seed a row without the "config" attribute.
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("no-config")},
+		"SK": &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
+	})
+
+	_, err := s.GetConfig(context.Background(), "no-config")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "config attribute missing") {
+		t.Errorf("expected 'config attribute missing' in error, got: %v", err)
+	}
+}
+
+func TestGetConfig_NonStringConfigAttribute(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	// Seed a row where "config" is a number instead of a string.
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("bad-type")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
+		"config": &ddbtypes.AttributeValueMemberN{Value: "42"},
+	})
+
+	_, err := s.GetConfig(context.Background(), "bad-type")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "config attribute is not a string") {
+		t.Errorf("expected 'config attribute is not a string' in error, got: %v", err)
+	}
+}
+
+// --- PutConfig error-path tests ---
+
+func TestPutConfig_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("throttled")
+	mock.errFn = errOnOp("PutItem", injected)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "test-pipe"},
+	}
+	err := s.PutConfig(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "put config") {
+		t.Errorf("expected 'put config' in error, got: %v", err)
+	}
+}
+
+// --- GetSensorData error-path tests ---
+
+func TestGetSensorData_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("throttled")
+	mock.errFn = errOnOp("GetItem", injected)
+
+	_, err := s.GetSensorData(context.Background(), "pipe-1", "upstream")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "get sensor") {
+		t.Errorf("expected 'get sensor' in error, got: %v", err)
+	}
+}
+
+// --- GetAllSensors error-path and edge-case tests ---
+
+func TestGetAllSensors_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("service unavailable")
+	mock.errFn = errOnOp("Query", injected)
+
+	_, err := s.GetAllSensors(context.Background(), "pipe-1")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "query sensors") {
+		t.Errorf("expected 'query sensors' in error, got: %v", err)
+	}
+}
+
+func TestGetAllSensors_Empty(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	sensors, err := s.GetAllSensors(context.Background(), "pipe-no-sensors")
+	if err != nil {
+		t.Fatalf("GetAllSensors: %v", err)
+	}
+	if len(sensors) != 0 {
+		t.Errorf("len(sensors) = %d, want 0", len(sensors))
+	}
+}
+
+// --- WriteSensor tests ---
+
+func TestWriteSensor_Success(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	data := map[string]interface{}{
+		"status":    "COMPLETE",
+		"rowCount":  float64(1500),
+		"timestamp": "2026-03-07T10:00:00Z",
+	}
+
+	err := s.WriteSensor(context.Background(), "pipe-1", "upstream-complete", data)
+	if err != nil {
+		t.Fatalf("WriteSensor: %v", err)
+	}
+
+	// Verify the sensor was written by reading it back.
+	got, err := s.GetSensorData(context.Background(), "pipe-1", "upstream-complete")
+	if err != nil {
+		t.Fatalf("GetSensorData after WriteSensor: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil sensor data")
+	}
+	if got["status"] != "COMPLETE" {
+		t.Errorf("status = %v, want %q", got["status"], "COMPLETE")
+	}
+}
+
+func TestWriteSensor_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("throttled")
+	mock.errFn = errOnOp("PutItem", injected)
+
+	err := s.WriteSensor(context.Background(), "pipe-1", "sensor-key", map[string]interface{}{"k": "v"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "write sensor") {
+		t.Errorf("expected 'write sensor' in error, got: %v", err)
+	}
+}
+
+// --- ScanRunningTriggers tests ---
+
+func TestScanRunningTriggers_Success(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	pk := types.PipelinePK("pipe-1")
+
+	// Seed a RUNNING trigger.
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+	})
+
+	// Seed a COMPLETED trigger (should be excluded).
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-02")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+	})
+
+	// Seed a CONFIG row (should be excluded — SK doesn't begin with TRIGGER#).
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
+		"config": &ddbtypes.AttributeValueMemberS{Value: `{}`},
+	})
+
+	records, err := s.ScanRunningTriggers(context.Background())
+	if err != nil {
+		t.Fatalf("ScanRunningTriggers: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("len(records) = %d, want 1", len(records))
+	}
+	if records[0].SK != types.TriggerSK("daily", "2026-03-01") {
+		t.Errorf("SK = %q, want %q", records[0].SK, types.TriggerSK("daily", "2026-03-01"))
+	}
+	if records[0].Status != types.TriggerStatusRunning {
+		t.Errorf("Status = %q, want %q", records[0].Status, types.TriggerStatusRunning)
+	}
+}
+
+func TestScanRunningTriggers_Empty(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	records, err := s.ScanRunningTriggers(context.Background())
+	if err != nil {
+		t.Fatalf("ScanRunningTriggers: %v", err)
+	}
+	if len(records) != 0 {
+		t.Errorf("len(records) = %d, want 0", len(records))
+	}
+}
+
+func TestScanRunningTriggers_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("service unavailable")
+	mock.errFn = errOnOp("Scan", injected)
+
+	_, err := s.ScanRunningTriggers(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "scan running triggers") {
+		t.Errorf("expected 'scan running triggers' in error, got: %v", err)
+	}
+}
+
+// --- GetTrigger tests ---
+
+func TestGetTrigger_Found(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	pk := types.PipelinePK("pipe-1")
+	sk := types.TriggerSK("daily", "2026-03-01")
+
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: sk},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+	})
+
+	rec, err := s.GetTrigger(context.Background(), "pipe-1", "daily", "2026-03-01")
+	if err != nil {
+		t.Fatalf("GetTrigger: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("expected non-nil record")
+	}
+	if rec.PK != pk {
+		t.Errorf("PK = %q, want %q", rec.PK, pk)
+	}
+	if rec.SK != sk {
+		t.Errorf("SK = %q, want %q", rec.SK, sk)
+	}
+	if rec.Status != types.TriggerStatusRunning {
+		t.Errorf("Status = %q, want %q", rec.Status, types.TriggerStatusRunning)
+	}
+}
+
+func TestGetTrigger_NotFound(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	rec, err := s.GetTrigger(context.Background(), "pipe-1", "daily", "2026-03-01")
+	if err != nil {
+		t.Fatalf("GetTrigger: %v", err)
+	}
+	if rec != nil {
+		t.Errorf("expected nil record, got %+v", rec)
+	}
+}
+
+func TestGetTrigger_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("throttled")
+	mock.errFn = errOnOp("GetItem", injected)
+
+	_, err := s.GetTrigger(context.Background(), "pipe-1", "daily", "2026-03-01")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "get trigger") {
+		t.Errorf("expected 'get trigger' in error, got: %v", err)
+	}
+}
+
+// --- HasTriggerForDate tests ---
+
+func TestHasTriggerForDate_True(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	pk := types.PipelinePK("pipe-1")
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	found, err := s.HasTriggerForDate(context.Background(), "pipe-1", "daily", "2026-03-01")
+	if err != nil {
+		t.Fatalf("HasTriggerForDate: %v", err)
+	}
+	if !found {
+		t.Error("expected true, got false")
+	}
+}
+
+func TestHasTriggerForDate_False(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	found, err := s.HasTriggerForDate(context.Background(), "pipe-1", "daily", "2026-03-01")
+	if err != nil {
+		t.Fatalf("HasTriggerForDate: %v", err)
+	}
+	if found {
+		t.Error("expected false, got true")
+	}
+}
+
+func TestHasTriggerForDate_HourlyPrefix(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	pk := types.PipelinePK("pipe-1")
+
+	// Seed a per-hour trigger: TRIGGER#hourly#2026-03-01T10
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("hourly", "2026-03-01T10")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	// Query with date prefix "2026-03-01T" should match.
+	found, err := s.HasTriggerForDate(context.Background(), "pipe-1", "hourly", "2026-03-01T")
+	if err != nil {
+		t.Fatalf("HasTriggerForDate: %v", err)
+	}
+	if !found {
+		t.Error("expected true for hourly prefix match, got false")
+	}
+
+	// Query with exact hour should also match.
+	found, err = s.HasTriggerForDate(context.Background(), "pipe-1", "hourly", "2026-03-01T10")
+	if err != nil {
+		t.Fatalf("HasTriggerForDate exact: %v", err)
+	}
+	if !found {
+		t.Error("expected true for exact hour match, got false")
+	}
+
+	// Query with different date should NOT match.
+	found, err = s.HasTriggerForDate(context.Background(), "pipe-1", "hourly", "2026-03-02T")
+	if err != nil {
+		t.Fatalf("HasTriggerForDate different date: %v", err)
+	}
+	if found {
+		t.Error("expected false for different date, got true")
+	}
+}
+
+func TestHasTriggerForDate_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("throttled")
+	mock.errFn = errOnOp("Query", injected)
+
+	_, err := s.HasTriggerForDate(context.Background(), "pipe-1", "daily", "2026-03-01")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "query triggers") {
+		t.Errorf("expected 'query triggers' in error, got: %v", err)
+	}
+}
+
+// --- ReleaseTriggerLock error-path tests ---
+
+func TestReleaseTriggerLock_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("service unavailable")
+	mock.errFn = errOnOp("DeleteItem", injected)
+
+	err := s.ReleaseTriggerLock(context.Background(), "pipe-1", "daily", "2026-03-01")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "release trigger lock") {
+		t.Errorf("expected 'release trigger lock' in error, got: %v", err)
+	}
+}
+
+// --- SetTriggerStatus error-path tests ---
+
+func TestSetTriggerStatus_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("throttled")
+	mock.errFn = errOnOp("UpdateItem", injected)
+
+	err := s.SetTriggerStatus(context.Background(), "pipe-1", "daily", "2026-03-01", types.TriggerStatusCompleted)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "set trigger status") {
+		t.Errorf("expected 'set trigger status' in error, got: %v", err)
+	}
+}
+
+// --- WriteRerunRequest error-path tests ---
+
+func TestWriteRerunRequest_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("service unavailable")
+	mock.errFn = errOnOp("PutItem", injected)
+
+	err := s.WriteRerunRequest(context.Background(), "pipe-1", "daily", "2026-03-01", "test reason")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "write rerun request") {
+		t.Errorf("expected 'write rerun request' in error, got: %v", err)
+	}
+}
