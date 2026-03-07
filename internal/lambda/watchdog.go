@@ -54,8 +54,15 @@ func detectStaleTriggers(ctx context.Context, d *Deps) error {
 			continue
 		}
 
+		alertDetail := map[string]interface{}{
+			"source":     "watchdog",
+			"actionHint": "step function exceeded TTL — check SFN execution history",
+		}
+		if tr.TTL > 0 {
+			alertDetail["ttlExpired"] = time.Unix(tr.TTL, 0).UTC().Format(time.RFC3339)
+		}
 		_ = publishEvent(ctx, d, string(types.EventSFNTimeout), pipelineID, schedule, date,
-			fmt.Sprintf("step function timed out for %s/%s/%s", pipelineID, schedule, date))
+			fmt.Sprintf("step function timed out for %s/%s/%s", pipelineID, schedule, date), alertDetail)
 
 		if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, types.TriggerStatusFailedFinal); err != nil {
 			d.Logger.Error("failed to set trigger status to FAILED_FINAL",
@@ -182,8 +189,12 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 				continue
 			}
 
+			alertDetail := map[string]interface{}{
+				"source":     "reconciliation",
+				"actionHint": "watchdog recovered missed sensor trigger",
+			}
 			_ = publishEvent(ctx, d, string(types.EventTriggerRecovered), id, scheduleID, date,
-				fmt.Sprintf("trigger recovered for %s/%s/%s", id, scheduleID, date))
+				fmt.Sprintf("trigger recovered for %s/%s/%s", id, scheduleID, date), alertDetail)
 
 			d.Logger.Info("recovered missed trigger",
 				"pipelineId", id,
@@ -300,8 +311,16 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 			}
 		}
 
+		alertDetail := map[string]interface{}{
+			"source":     "watchdog",
+			"cron":       cfg.Schedule.Cron,
+			"actionHint": fmt.Sprintf("cron %s expected to fire — no trigger found", cfg.Schedule.Cron),
+		}
+		if cfg.Schedule.Time != "" {
+			alertDetail["expectedTime"] = cfg.Schedule.Time
+		}
 		_ = publishEvent(ctx, d, string(types.EventScheduleMissed), id, scheduleID, today,
-			fmt.Sprintf("missed schedule for %s on %s", id, today))
+			fmt.Sprintf("missed schedule for %s on %s", id, today), alertDetail)
 
 		d.Logger.Info("detected missed schedule",
 			"pipelineId", id,
