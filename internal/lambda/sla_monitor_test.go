@@ -1514,11 +1514,11 @@ func TestSLAMonitor_FireAlert_JoblogRerunAccepted_NotSuppressed(t *testing.T) {
 	assert.Len(t, ebMock.events, 1, "rerun-accepted is not terminal — alert should fire")
 }
 
-func TestSLAMonitor_FireAlert_JoblogValidationExhausted_NotSuppressed(t *testing.T) {
+func TestSLAMonitor_FireAlert_JoblogValidationExhausted_Suppressed(t *testing.T) {
 	mock := newMockDDB()
 	d, _, ebMock := testDeps(mock)
 
-	// Only validation-exhausted in joblog — NOT terminal.
+	// validation-exhausted is terminal — SLA alert should be suppressed.
 	mock.putRaw("joblog", jobItem("gold-orders", "daily", "2026-03-01", types.JobEventValidationExhausted))
 
 	_, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
@@ -1532,7 +1532,7 @@ func TestSLAMonitor_FireAlert_JoblogValidationExhausted_NotSuppressed(t *testing
 
 	ebMock.mu.Lock()
 	defer ebMock.mu.Unlock()
-	assert.Len(t, ebMock.events, 1, "validation-exhausted is not terminal — alert should fire")
+	assert.Empty(t, ebMock.events, "validation-exhausted is terminal — alert should be suppressed")
 }
 
 // ---------------------------------------------------------------------------

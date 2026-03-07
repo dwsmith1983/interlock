@@ -1345,7 +1345,7 @@ func TestWatchdog_Reconcile_ProceedsOnNonTerminalJoblog(t *testing.T) {
 	})
 
 	// Non-terminal joblog event should NOT prevent recovery.
-	seedJoblogEntry(mock, "gold-revenue", types.JobEventInfraTriggerExhausted)
+	seedJoblogEntry(mock, "gold-revenue", types.JobEventInfraTriggerFailure)
 
 	err := lambda.HandleWatchdog(context.Background(), d)
 	require.NoError(t, err)

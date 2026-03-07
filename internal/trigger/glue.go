@@ -106,7 +106,7 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 // Returns (true, reason) if the RCA indicates the job actually failed despite
 // the API reporting SUCCEEDED. Returns (false, "") on any error or if no
 // failure is found — callers should trust the Glue API in that case.
-func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *string) (bool, string) {
+func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *string) (failed bool, reason string) {
 	client, err := r.getCWLogsClient("")
 	if err != nil {
 		return false, ""
