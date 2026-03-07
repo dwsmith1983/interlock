@@ -174,6 +174,68 @@ func TestWriteJobEvent_DynamoError(t *testing.T) {
 	}
 }
 
+func TestWriteJobEvent_WithCategory(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	err := s.WriteJobEvent(context.Background(), "pipe-1", "daily", "2026-03-01", types.JobEventFail, "run-1", 0, "OOM killed",
+		WithFailureCategory(types.FailurePermanent))
+	if err != nil {
+		t.Fatalf("WriteJobEvent: %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+
+	var found map[string]ddbtypes.AttributeValue
+	for k, item := range mock.items {
+		if strings.HasPrefix(k, "joblog#"+types.PipelinePK("pipe-1")+"#JOB#daily#2026-03-01#") {
+			found = item
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected job event item in mock store")
+	}
+
+	catAttr, ok := found["category"]
+	if !ok {
+		t.Fatal("expected category attribute to be present")
+	}
+	catVal := catAttr.(*ddbtypes.AttributeValueMemberS).Value
+	if catVal != "PERMANENT" {
+		t.Errorf("category = %q, want %q", catVal, "PERMANENT")
+	}
+}
+
+func TestWriteJobEvent_WithoutCategory(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	err := s.WriteJobEvent(context.Background(), "pipe-1", "daily", "2026-03-01", types.JobEventFail, "", 0, "some error")
+	if err != nil {
+		t.Fatalf("WriteJobEvent: %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+
+	var found map[string]ddbtypes.AttributeValue
+	for k, item := range mock.items {
+		if strings.HasPrefix(k, "joblog#"+types.PipelinePK("pipe-1")+"#JOB#daily#2026-03-01#") {
+			found = item
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected job event item in mock store")
+	}
+
+	if _, ok := found["category"]; ok {
+		t.Error("expected category attribute to be absent when no option provided")
+	}
+}
+
 func TestGetLatestJobEvent_DynamoError(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)

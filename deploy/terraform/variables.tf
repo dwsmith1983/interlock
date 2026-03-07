@@ -44,9 +44,15 @@ variable "watchdog_schedule" {
 }
 
 variable "sfn_timeout_seconds" {
-  description = "Step Functions execution timeout in seconds (default 12h)"
+  description = "Step Functions execution timeout in seconds (default 4h)"
   type        = number
-  default     = 43200
+  default     = 14400
+}
+
+variable "trigger_max_attempts" {
+  description = "Max retry attempts for the Trigger state"
+  type        = number
+  default     = 3
 }
 
 variable "events_table_ttl_days" {

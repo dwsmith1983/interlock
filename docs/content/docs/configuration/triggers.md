@@ -209,7 +209,7 @@ After a job executes, the orchestrator Lambda polls for completion using the ret
 
 | Type | SDK Call | Status Mapping |
 |---|---|---|
-| `glue` | `GetJobRun` | RUNNING -> running, SUCCEEDED -> succeeded, FAILED/STOPPED -> failed |
+| `glue` | `GetJobRun` + CloudWatch RCA verification | RUNNING -> running, SUCCEEDED -> succeeded (verified), FAILED/STOPPED -> failed |
 | `emr` | `DescribeStep` | RUNNING/PENDING -> running, COMPLETED -> succeeded, FAILED/CANCELLED -> failed |
 | `emr-serverless` | `GetJobRun` | RUNNING/SUBMITTED -> running, SUCCESS -> succeeded, FAILED/CANCELLED -> failed |
 | `step-function` | `DescribeExecution` | RUNNING -> running, SUCCEEDED -> succeeded, FAILED/TIMED_OUT/ABORTED -> failed |
@@ -218,13 +218,19 @@ After a job executes, the orchestrator Lambda polls for completion using the ret
 
 The `http` and `command` types are fire-and-forget -- they do not support status polling.
 
+### Glue RCA Verification
+
+AWS Glue can report `SUCCEEDED` via the `GetJobRun` API even when the Spark job failed internally (the driver process catches the exception and exits cleanly). When a Glue job reports `SUCCEEDED`, the orchestrator cross-checks the CloudWatch RCA (root cause analysis) log stream for `GlueExceptionAnalysisJobFailed` events. If the RCA log confirms a failure, the job is marked as failed with the actual failure reason.
+
+This check requires `logs:FilterLogEvents` permission on the Glue log group (granted automatically when `enable_glue_trigger = true`). If the permission is missing or the RCA log stream does not exist, the check degrades gracefully and trusts the Glue API response.
+
 ## IAM Permissions
 
 The Terraform module provides opt-in variables to grant the orchestrator Lambda permission to invoke each AWS job type:
 
 | Variable | Default | Grants |
 |---|---|---|
-| `enable_glue_trigger` | `false` | `glue:StartJobRun`, `glue:GetJobRun` |
+| `enable_glue_trigger` | `false` | `glue:StartJobRun`, `glue:GetJobRun`, `logs:FilterLogEvents` (scoped to `/aws-glue/jobs/logs-v2`) |
 | `enable_emr_trigger` | `false` | `elasticmapreduce:AddJobFlowSteps`, `elasticmapreduce:DescribeStep` |
 | `enable_emr_serverless_trigger` | `false` | `emr-serverless:StartJobRun`, `emr-serverless:GetJobRun` |
 | `enable_sfn_trigger` | `false` | `states:StartExecution`, `states:DescribeExecution` |

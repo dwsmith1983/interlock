@@ -32,8 +32,9 @@ func (a *statusCheckerAdapter) CheckStatus(ctx context.Context, triggerType type
 		return ilambda.StatusResult{}, err
 	}
 	return ilambda.StatusResult{
-		State:   string(result.State),
-		Message: result.Message,
+		State:           string(result.State),
+		Message:         result.Message,
+		FailureCategory: result.FailureCategory,
 	}, nil
 }
 

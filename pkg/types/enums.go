@@ -20,8 +20,7 @@ const (
 type FailureCategory string
 
 const (
-	FailureTransient      FailureCategory = "TRANSIENT"
-	FailurePermanent      FailureCategory = "PERMANENT"
-	FailureTimeout        FailureCategory = "TIMEOUT"
-	FailureEvaluatorCrash FailureCategory = "EVALUATOR_CRASH"
+	FailureTransient FailureCategory = "TRANSIENT"
+	FailurePermanent FailureCategory = "PERMANENT"
+	FailureTimeout   FailureCategory = "TIMEOUT"
 )

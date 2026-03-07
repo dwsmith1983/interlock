@@ -201,6 +201,64 @@ func (s *Store) GetAllSensors(ctx context.Context, pipelineID string) (map[strin
 	return result, nil
 }
 
+// WriteSensor writes (or overwrites) a sensor row in the control table.
+func (s *Store) WriteSensor(ctx context.Context, pipelineID, sensorKey string, data map[string]interface{}) error {
+	rec := types.ControlRecord{
+		PK:   types.PipelinePK(pipelineID),
+		SK:   types.SensorSK(sensorKey),
+		Data: data,
+	}
+
+	item, err := attributevalue.MarshalMap(rec)
+	if err != nil {
+		return fmt.Errorf("marshal sensor %q for %q: %w", sensorKey, pipelineID, err)
+	}
+
+	_, err = s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &s.ControlTable,
+		Item:      item,
+	})
+	if err != nil {
+		return fmt.Errorf("write sensor %q for %q: %w", sensorKey, pipelineID, err)
+	}
+	return nil
+}
+
+// DeleteSensor removes a sensor row from the control table.
+func (s *Store) DeleteSensor(ctx context.Context, pipelineID, sensorKey string) error {
+	_, err := s.Client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: &s.ControlTable,
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK(sensorKey)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("delete sensor %q for %q: %w", sensorKey, pipelineID, err)
+	}
+	return nil
+}
+
+// WriteRerunRequest writes a RERUN_REQUEST row to the control table.
+// The stream-router picks this up via DynamoDB streams and validates
+// via the circuit breaker before starting a new SFN execution.
+func (s *Store) WriteRerunRequest(ctx context.Context, pipelineID, schedule, date, reason string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &s.ControlTable,
+		Item: map[string]ddbtypes.AttributeValue{
+			"PK":          &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK":          &ddbtypes.AttributeValueMemberS{Value: types.RerunRequestSK(schedule, date)},
+			"reason":      &ddbtypes.AttributeValueMemberS{Value: reason},
+			"requestedAt": &ddbtypes.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("write rerun request for %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return nil
+}
+
 // AcquireTriggerLock attempts to acquire a trigger lock for a given pipeline,
 // schedule, and date. Returns true if the lock was acquired, false if it is
 // already held. The lock is set with a TTL for automatic expiration.
@@ -331,16 +389,27 @@ func (s *Store) HasTriggerForDate(ctx context.Context, pipelineID, schedule, dat
 // SetTriggerStatus updates only the status attribute of an existing trigger row,
 // preserving TTL and other attributes.
 func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date, status string) error {
+	expr := "SET #status = :s"
+	names := map[string]string{
+		"#status": "status",
+	}
+
+	// Terminal statuses remove the TTL so DynamoDB doesn't auto-delete the
+	// trigger record. Without this, TTL expiry removes the record and the
+	// watchdog reconcile loop re-triggers completed pipelines.
+	if status == types.TriggerStatusCompleted || status == types.TriggerStatusFailedFinal {
+		expr = "SET #status = :s REMOVE #ttl"
+		names["#ttl"] = "ttl"
+	}
+
 	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.ControlTable,
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
 			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
 		},
-		UpdateExpression: aws.String("SET #status = :s"),
-		ExpressionAttributeNames: map[string]string{
-			"#status": "status",
-		},
+		UpdateExpression:         aws.String(expr),
+		ExpressionAttributeNames: names,
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":s": &ddbtypes.AttributeValueMemberS{Value: status},
 		},

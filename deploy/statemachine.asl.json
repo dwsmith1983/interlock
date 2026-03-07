@@ -1,6 +1,7 @@
 {
   "Comment": "Interlock v2 pipeline lifecycle: evaluation, trigger, job polling, SLA monitoring via EventBridge Scheduler",
   "StartAt": "InitEvalLoop",
+  "TimeoutSeconds": ${sfn_timeout_seconds},
   "States": {
     "InitEvalLoop": {
       "Type": "Pass",
@@ -136,7 +137,7 @@
             "States.TaskFailed"
           ],
           "IntervalSeconds": 30,
-          "MaxAttempts": 4,
+          "MaxAttempts": ${trigger_max_attempts},
           "BackoffRate": 2
         }
       ],
@@ -189,7 +190,7 @@
         {
           "Variable": "$.triggerResult",
           "IsPresent": true,
-          "Next": "WaitForJob"
+          "Next": "InitJobPollLoop"
         }
       ],
       "Default": "FailValidationExhausted"
@@ -198,6 +199,13 @@
       "Type": "Fail",
       "Error": "ValidationExhausted",
       "Cause": "Evaluation window closed without all validation rules passing"
+    },
+    "InitJobPollLoop": {
+      "Type": "Pass",
+      "Comment": "Initialize elapsed-seconds counter for job poll window",
+      "Result": { "elapsedSeconds": 0 },
+      "ResultPath": "$.jobPollLoop",
+      "Next": "WaitForJob"
     },
     "WaitForJob": {
       "Type": "Wait",
@@ -249,12 +257,12 @@
             "Variable": "$.checkJobResult.event",
             "IsPresent": true
           },
-          "Next": "WaitForJob"
+          "Next": "IncrementJobPollElapsed"
         },
         {
           "Variable": "$.checkJobResult.event",
           "StringEquals": "success",
-          "Next": "CompleteTrigger"
+          "Next": "CheckHasPostRun"
         },
         {
           "Variable": "$.checkJobResult.event",
@@ -267,7 +275,153 @@
           "Next": "CompleteTrigger"
         }
       ],
+      "Default": "IncrementJobPollElapsed"
+    },
+    "IncrementJobPollElapsed": {
+      "Type": "Pass",
+      "Comment": "Track total elapsed seconds in job poll window",
+      "Parameters": {
+        "elapsedSeconds.$": "States.MathAdd($.jobPollLoop.elapsedSeconds, $.config.jobCheckIntervalSeconds)"
+      },
+      "ResultPath": "$.jobPollLoop",
+      "Next": "CheckJobPollExhausted"
+    },
+    "CheckJobPollExhausted": {
+      "Type": "Choice",
+      "Comment": "Has the job poll window been exceeded?",
+      "Choices": [
+        {
+          "Variable": "$.jobPollLoop.elapsedSeconds",
+          "NumericGreaterThanEqualsPath": "$.config.jobPollWindowSeconds",
+          "Next": "JobPollExhausted"
+        }
+      ],
       "Default": "WaitForJob"
+    },
+    "JobPollExhausted": {
+      "Type": "Task",
+      "Comment": "Publish JOB_POLL_EXHAUSTED event and write timeout joblog",
+      "Resource": "${orchestrator_arn}",
+      "Parameters": {
+        "mode": "job-poll-exhausted",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date",
+        "runId.$": "$.triggerResult.runId"
+      },
+      "ResultPath": "$.jobPollExhaustedResult",
+      "Next": "InjectTimeoutEvent",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "InjectTimeoutEvent"
+        }
+      ]
+    },
+    "InjectTimeoutEvent": {
+      "Type": "Pass",
+      "Comment": "Inject timeout event so CompleteTrigger reads event=timeout",
+      "Result": { "event": "timeout" },
+      "ResultPath": "$.checkJobResult",
+      "Next": "CompleteTrigger"
+    },
+    "CheckHasPostRun": {
+      "Type": "Choice",
+      "Comment": "Route to post-run monitoring if postRun rules are configured",
+      "Choices": [
+        {
+          "Variable": "$.config.hasPostRun",
+          "BooleanEquals": true,
+          "Next": "InitPostRunLoop"
+        }
+      ],
+      "Default": "CompleteTrigger"
+    },
+    "InitPostRunLoop": {
+      "Type": "Pass",
+      "Comment": "Initialize elapsed-seconds counter for post-run monitoring window",
+      "Result": { "elapsedSeconds": 0 },
+      "ResultPath": "$.postRunLoop",
+      "Next": "PostRunEvaluate"
+    },
+    "PostRunEvaluate": {
+      "Type": "Task",
+      "Comment": "Evaluate post-run validation rules (audit check)",
+      "Resource": "${orchestrator_arn}",
+      "Parameters": {
+        "mode": "post-run",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date"
+      },
+      "ResultPath": "$.postRunResult",
+      "Next": "IsPostRunDone",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.errorInfo",
+          "Next": "CompleteTrigger"
+        }
+      ]
+    },
+    "IsPostRunDone": {
+      "Type": "Choice",
+      "Comment": "Check if post-run detected drift or window expired",
+      "Choices": [
+        {
+          "Variable": "$.postRunResult.status",
+          "StringEquals": "drift",
+          "Next": "CompleteTrigger"
+        },
+        {
+          "Variable": "$.postRunLoop.elapsedSeconds",
+          "NumericGreaterThanEqualsPath": "$.config.postRunWindowSeconds",
+          "Next": "CompleteTrigger"
+        }
+      ],
+      "Default": "WaitForPostRun"
+    },
+    "WaitForPostRun": {
+      "Type": "Wait",
+      "Comment": "Wait before next post-run check",
+      "SecondsPath": "$.config.postRunIntervalSeconds",
+      "Next": "IncrementPostRunElapsed"
+    },
+    "IncrementPostRunElapsed": {
+      "Type": "Pass",
+      "Comment": "Track total elapsed seconds in post-run window",
+      "Parameters": {
+        "elapsedSeconds.$": "States.MathAdd($.postRunLoop.elapsedSeconds, $.config.postRunIntervalSeconds)"
+      },
+      "ResultPath": "$.postRunLoop",
+      "Next": "PostRunEvaluate"
     },
     "CompleteTrigger": {
       "Type": "Task",

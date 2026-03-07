@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/internal/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -29,6 +31,8 @@ func HandleOrchestrator(ctx context.Context, d *Deps, input OrchestratorInput) (
 		return handleTriggerExhausted(ctx, d, input)
 	case "complete-trigger":
 		return handleCompleteTrigger(ctx, d, input)
+	case "job-poll-exhausted":
+		return handleJobPollExhausted(ctx, d, input)
 	default:
 		return OrchestratorOutput{}, fmt.Errorf("unknown orchestrator mode: %q", input.Mode)
 	}
@@ -85,7 +89,7 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 	if err != nil {
 		return OrchestratorOutput{Mode: "trigger", Error: fmt.Sprintf("build trigger config: %v", err)}, nil
 	}
-	injectDateArgs(&triggerCfg, input.Date)
+	InjectDateArgs(&triggerCfg, input.Date)
 
 	metadata, err := d.TriggerRunner.Execute(ctx, &triggerCfg)
 	if err != nil {
@@ -156,7 +160,11 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		_ = publishEvent(ctx, d, string(types.EventJobCompleted), input.PipelineID, input.ScheduleID, input.Date, "job succeeded")
 		return OrchestratorOutput{Mode: "check-job", Event: "success"}, nil
 	case "failed":
-		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventFail, input.RunID, 0, result.Message)
+		var writeOpts []store.JobEventOption
+		if result.FailureCategory != "" {
+			writeOpts = append(writeOpts, store.WithFailureCategory(result.FailureCategory))
+		}
+		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventFail, input.RunID, 0, result.Message, writeOpts...)
 		_ = publishEvent(ctx, d, string(types.EventJobFailed), input.PipelineID, input.ScheduleID, input.Date, "job failed: "+result.Message)
 		return OrchestratorOutput{Mode: "check-job", Event: "fail"}, nil
 	default:
@@ -165,7 +173,8 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 	}
 }
 
-// handlePostRun evaluates post-run validation rules if configured.
+// handlePostRun evaluates post-run validation rules if configured and detects
+// data drift by comparing current audit sensor values against a saved baseline.
 func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
 	cfg, err := d.Store.GetConfig(ctx, input.PipelineID)
 	if err != nil {
@@ -186,6 +195,45 @@ func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 
 	remapPerPeriodSensors(sensors, input.Date)
 
+	// Check for data drift: compare audit counts against baseline.
+	baselineKey := "postrun-baseline"
+	baseline, hasBaseline := sensors[baselineKey]
+	auditResult, hasAudit := sensors["audit-result"]
+
+	if hasAudit && hasBaseline {
+		prevCount := extractFloat(baseline, "sensor_count")
+		currCount := extractFloat(auditResult, "sensor_count")
+		if prevCount > 0 && currCount > 0 && currCount != prevCount {
+			delta := currCount - prevCount
+			alertDetail := map[string]interface{}{
+				"previousCount": prevCount,
+				"currentCount":  currCount,
+				"delta":         delta,
+				"source":        "post-run monitor",
+				"actionHint":    fmt.Sprintf("%.0f new records detected — re-run triggered", delta),
+			}
+			_ = publishEvent(ctx, d, string(types.EventDataDrift), input.PipelineID, input.ScheduleID, input.Date,
+				fmt.Sprintf("data drift detected for %s: %.0f → %.0f records", input.PipelineID, prevCount, currCount), alertDetail)
+
+			// Trigger a re-run via the existing circuit breaker path.
+			if writeErr := d.Store.WriteRerunRequest(ctx, input.PipelineID, input.ScheduleID, input.Date, "data-drift"); writeErr != nil {
+				d.Logger.WarnContext(ctx, "failed to write rerun request on drift", "pipelineId", input.PipelineID, "error", writeErr)
+			}
+
+			return OrchestratorOutput{
+				Mode:   "post-run",
+				Status: "drift",
+			}, nil
+		}
+	}
+
+	// First iteration: save current audit result as baseline for future comparisons.
+	if hasAudit && !hasBaseline {
+		if writeErr := d.Store.WriteSensor(ctx, input.PipelineID, baselineKey, auditResult); writeErr != nil {
+			d.Logger.WarnContext(ctx, "failed to write post-run baseline", "pipelineId", input.PipelineID, "error", writeErr)
+		}
+	}
+
 	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, time.Now())
 
 	status := "not_ready"
@@ -200,6 +248,24 @@ func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 	}, nil
 }
 
+// extractFloat retrieves a numeric value from a sensor data map, handling both
+// float64 (native JSON) and string representations.
+func extractFloat(data map[string]interface{}, key string) float64 {
+	v, ok := data[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case string:
+		f, _ := strconv.ParseFloat(n, 64)
+		return f
+	default:
+		return 0
+	}
+}
+
 // handleValidationExhausted publishes a VALIDATION_EXHAUSTED event when
 // the evaluation window closes without all rules passing.
 func handleValidationExhausted(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
@@ -211,6 +277,23 @@ func handleValidationExhausted(ctx context.Context, d *Deps, input OrchestratorI
 
 	return OrchestratorOutput{
 		Mode:   "validation-exhausted",
+		Status: "exhausted",
+	}, nil
+}
+
+// handleJobPollExhausted publishes a JOB_POLL_EXHAUSTED event when the
+// job poll window closes without the job reaching a terminal state.
+func handleJobPollExhausted(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
+	if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
+		types.JobEventJobPollExhausted, input.RunID, 0, "job poll window exhausted"); err != nil {
+		return OrchestratorOutput{}, fmt.Errorf("write job-poll-exhausted joblog: %w", err)
+	}
+
+	_ = publishEvent(ctx, d, string(types.EventJobPollExhausted), input.PipelineID, input.ScheduleID, input.Date,
+		"job poll window exhausted")
+
+	return OrchestratorOutput{
+		Mode:   "job-poll-exhausted",
 		Status: "exhausted",
 	}, nil
 }
@@ -377,22 +460,30 @@ func extractRunID(metadata map[string]interface{}) string {
 	return ""
 }
 
-// injectDateArgs parses the execution date and injects --par_day (and --par_hour
-// for hourly dates) into Glue trigger arguments. Only modifies Glue triggers.
-func injectDateArgs(tc *types.TriggerConfig, date string) {
-	if tc.Glue == nil {
-		return
-	}
-	if tc.Glue.Arguments == nil {
-		tc.Glue.Arguments = make(map[string]string)
+// InjectDateArgs parses the execution date and injects --par_day (and --par_hour
+// for hourly dates) into Glue trigger arguments. For HTTP triggers with no
+// explicit body, injects a JSON body with par_day and par_hour.
+func InjectDateArgs(tc *types.TriggerConfig, date string) {
+	datePart, hourPart := ParseExecutionDate(date)
+	parDay := strings.ReplaceAll(datePart, "-", "")
+
+	if tc.Glue != nil {
+		if tc.Glue.Arguments == nil {
+			tc.Glue.Arguments = make(map[string]string)
+		}
+		tc.Glue.Arguments["--par_day"] = parDay
+		if hourPart != "" {
+			tc.Glue.Arguments["--par_hour"] = hourPart
+		}
 	}
 
-	datePart, hourPart := ParseExecutionDate(date)
-	// Convert YYYY-MM-DD to YYYYMMDD for Glue.
-	parDay := strings.ReplaceAll(datePart, "-", "")
-	tc.Glue.Arguments["--par_day"] = parDay
-	if hourPart != "" {
-		tc.Glue.Arguments["--par_hour"] = hourPart
+	if tc.HTTP != nil && tc.HTTP.Body == "" {
+		payload := map[string]string{"par_day": parDay}
+		if hourPart != "" {
+			payload["par_hour"] = hourPart
+		}
+		b, _ := json.Marshal(payload)
+		tc.HTTP.Body = string(b)
 	}
 }
 

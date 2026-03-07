@@ -14,6 +14,10 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+// WatchdogNowFunc returns the current time. Tests override this variable
+// to make watchdog behavior deterministic.
+var WatchdogNowFunc = time.Now
+
 // HandleWatchdog runs periodic health checks. It detects stale trigger
 // executions (Step Function timeouts) and missed cron schedules. Errors from
 // each check are logged but do not prevent the other check from running.
@@ -42,7 +46,7 @@ func detectStaleTriggers(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("scan running triggers: %w", err)
 	}
 
-	now := time.Now()
+	now := WatchdogNowFunc()
 	for _, tr := range triggers {
 		if !isStaleTrigger(tr, now) {
 			continue
@@ -54,8 +58,15 @@ func detectStaleTriggers(ctx context.Context, d *Deps) error {
 			continue
 		}
 
+		alertDetail := map[string]interface{}{
+			"source":     "watchdog",
+			"actionHint": "step function exceeded TTL — check SFN execution history",
+		}
+		if tr.TTL > 0 {
+			alertDetail["ttlExpired"] = time.Unix(tr.TTL, 0).UTC().Format(time.RFC3339)
+		}
 		_ = publishEvent(ctx, d, string(types.EventSFNTimeout), pipelineID, schedule, date,
-			fmt.Sprintf("step function timed out for %s/%s/%s", pipelineID, schedule, date))
+			fmt.Sprintf("step function timed out for %s/%s/%s", pipelineID, schedule, date), alertDetail)
 
 		if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, types.TriggerStatusFailedFinal); err != nil {
 			d.Logger.Error("failed to set trigger status to FAILED_FINAL",
@@ -117,7 +128,7 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := time.Now()
+	now := WatchdogNowFunc()
 
 	for id, cfg := range configs {
 		trigger := cfg.Schedule.Trigger
@@ -166,7 +177,14 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 				continue
 			}
 
-			acquired, err := d.Store.AcquireTriggerLock(ctx, id, scheduleID, date, triggerLockTTL)
+			// Guard against re-triggering completed pipelines whose trigger
+			// record was deleted by DynamoDB TTL. Check the joblog for a
+			// terminal event before acquiring a new lock.
+			if isJobTerminal(ctx, d, id, scheduleID, date) {
+				continue
+			}
+
+			acquired, err := d.Store.AcquireTriggerLock(ctx, id, scheduleID, date, ResolveTriggerLockTTL())
 			if err != nil {
 				d.Logger.Error("lock acquisition failed during reconciliation",
 					"pipelineId", id, "date", date, "error", err)
@@ -182,8 +200,12 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 				continue
 			}
 
+			alertDetail := map[string]interface{}{
+				"source":     "reconciliation",
+				"actionHint": "watchdog recovered missed sensor trigger",
+			}
 			_ = publishEvent(ctx, d, string(types.EventTriggerRecovered), id, scheduleID, date,
-				fmt.Sprintf("trigger recovered for %s/%s/%s", id, scheduleID, date))
+				fmt.Sprintf("trigger recovered for %s/%s/%s", id, scheduleID, date), alertDetail)
 
 			d.Logger.Info("recovered missed trigger",
 				"pipelineId", id,
@@ -241,7 +263,7 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := time.Now()
+	now := WatchdogNowFunc()
 	today := now.Format("2006-01-02")
 
 	for id, cfg := range configs {
@@ -300,8 +322,16 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 			}
 		}
 
+		alertDetail := map[string]interface{}{
+			"source":     "watchdog",
+			"cron":       cfg.Schedule.Cron,
+			"actionHint": fmt.Sprintf("cron %s expected to fire — no trigger found", cfg.Schedule.Cron),
+		}
+		if cfg.Schedule.Time != "" {
+			alertDetail["expectedTime"] = cfg.Schedule.Time
+		}
 		_ = publishEvent(ctx, d, string(types.EventScheduleMissed), id, scheduleID, today,
-			fmt.Sprintf("missed schedule for %s on %s", id, today))
+			fmt.Sprintf("missed schedule for %s on %s", id, today), alertDetail)
 
 		d.Logger.Info("detected missed schedule",
 			"pipelineId", id,
@@ -326,7 +356,7 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := time.Now()
+	now := WatchdogNowFunc()
 
 	for id, cfg := range configs {
 		if cfg.SLA == nil {

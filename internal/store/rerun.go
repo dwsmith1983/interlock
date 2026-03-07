@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -84,5 +85,51 @@ func (s *Store) CountReruns(ctx context.Context, pipelineID, schedule, date stri
 		startKey = out.LastEvaluatedKey
 	}
 
+	return total, nil
+}
+
+// CountRerunsBySource counts rerun records whose reason matches one of the
+// given sources. Returns 0 immediately if sources is empty (avoids invalid
+// DynamoDB FilterExpression).
+func (s *Store) CountRerunsBySource(ctx context.Context, pipelineID, schedule, date string, sources []string) (int, error) {
+	if len(sources) == 0 {
+		return 0, nil
+	}
+
+	prefix := fmt.Sprintf("RERUN#%s#%s#", schedule, date)
+
+	// Build FilterExpression: reason IN (:s0, :s1, ...)
+	var placeholders []string
+	filterValues := map[string]ddbtypes.AttributeValue{
+		":pk":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		":prefix": &ddbtypes.AttributeValueMemberS{Value: prefix},
+	}
+	for i, src := range sources {
+		key := fmt.Sprintf(":s%d", i)
+		placeholders = append(placeholders, key)
+		filterValues[key] = &ddbtypes.AttributeValueMemberS{Value: src}
+	}
+	filterExpr := fmt.Sprintf("reason IN (%s)", strings.Join(placeholders, ", "))
+
+	total := 0
+	var startKey map[string]ddbtypes.AttributeValue
+	for {
+		out, err := s.Client.Query(ctx, &dynamodb.QueryInput{
+			TableName:                 &s.RerunTable,
+			Select:                    ddbtypes.SelectCount,
+			KeyConditionExpression:    aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+			FilterExpression:          aws.String(filterExpr),
+			ExpressionAttributeValues: filterValues,
+			ExclusiveStartKey:         startKey,
+		})
+		if err != nil {
+			return 0, fmt.Errorf("count reruns by source %q/%s/%s: %w", pipelineID, schedule, date, err)
+		}
+		total += int(out.Count)
+		if out.LastEvaluatedKey == nil {
+			break
+		}
+		startKey = out.LastEvaluatedKey
+	}
 	return total, nil
 }

@@ -115,10 +115,22 @@ func (m *mockDDB) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput,
 		}
 	}
 
-	// Parse "SET #name = :val" assignments from UpdateExpression and apply them.
+	// Parse UpdateExpression: supports SET and REMOVE clauses.
 	if input.UpdateExpression != nil {
-		expr := strings.TrimPrefix(*input.UpdateExpression, "SET ")
-		for _, assignment := range strings.Split(expr, ",") {
+		expr := *input.UpdateExpression
+
+		// Split into SET and REMOVE sections.
+		setExpr, removeExpr := "", ""
+		if idx := strings.Index(expr, " REMOVE "); idx >= 0 {
+			setExpr = expr[:idx]
+			removeExpr = expr[idx+len(" REMOVE "):]
+		} else {
+			setExpr = expr
+		}
+
+		// Apply SET assignments.
+		setExpr = strings.TrimPrefix(setExpr, "SET ")
+		for _, assignment := range strings.Split(setExpr, ",") {
 			parts := strings.SplitN(strings.TrimSpace(assignment), "=", 2)
 			if len(parts) != 2 {
 				continue
@@ -132,6 +144,17 @@ func (m *mockDDB) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput,
 			}
 			if val, ok := input.ExpressionAttributeValues[valRef]; ok {
 				item[attrName] = val
+			}
+		}
+
+		// Apply REMOVE deletions.
+		if removeExpr != "" {
+			for _, attr := range strings.Split(removeExpr, ",") {
+				attr = strings.TrimSpace(attr)
+				if resolved, ok := input.ExpressionAttributeNames[attr]; ok {
+					attr = resolved
+				}
+				delete(item, attr)
 			}
 		}
 	}
@@ -164,11 +187,21 @@ func (m *mockDDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func
 		return nil, err
 	}
 
-	// Extract :pk and :prefix from ExpressionAttributeValues.
+	// Extract :pk and the SK prefix from ExpressionAttributeValues.
+	// The prefix variable name is parsed from the KeyConditionExpression
+	// (e.g. "begins_with(SK, :prefix)" or "begins_with(SK, :skPrefix)").
 	pkVal := input.ExpressionAttributeValues[":pk"].(*ddbtypes.AttributeValueMemberS).Value
 	prefixVal := ""
-	if p, ok := input.ExpressionAttributeValues[":prefix"]; ok {
-		prefixVal = p.(*ddbtypes.AttributeValueMemberS).Value
+	if input.KeyConditionExpression != nil {
+		if idx := strings.Index(*input.KeyConditionExpression, "begins_with(SK, "); idx >= 0 {
+			rest := (*input.KeyConditionExpression)[idx+len("begins_with(SK, "):]
+			if end := strings.Index(rest, ")"); end >= 0 {
+				varName := rest[:end]
+				if p, ok := input.ExpressionAttributeValues[varName]; ok {
+					prefixVal = p.(*ddbtypes.AttributeValueMemberS).Value
+				}
+			}
+		}
 	}
 
 	table := *input.TableName
@@ -184,6 +217,31 @@ func (m *mockDDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func
 			continue
 		}
 		items = append(items, copyItem(item))
+	}
+
+	// Apply FilterExpression (basic "reason IN (:s0, :s1, ...)" support).
+	if input.FilterExpression != nil {
+		expr := *input.FilterExpression
+		if strings.HasPrefix(expr, "reason IN (") {
+			// Extract placeholder names from the expression.
+			inner := expr[len("reason IN (") : len(expr)-1]
+			parts := strings.Split(inner, ", ")
+			allowed := make(map[string]bool)
+			for _, p := range parts {
+				if v, ok := input.ExpressionAttributeValues[strings.TrimSpace(p)]; ok {
+					allowed[v.(*ddbtypes.AttributeValueMemberS).Value] = true
+				}
+			}
+			var filtered []map[string]ddbtypes.AttributeValue
+			for _, item := range items {
+				if r, ok := item["reason"]; ok {
+					if allowed[r.(*ddbtypes.AttributeValueMemberS).Value] {
+						filtered = append(filtered, item)
+					}
+				}
+			}
+			items = filtered
+		}
 	}
 
 	// Sort by SK ascending (default) or descending when ScanIndexForward is false.
@@ -339,18 +397,6 @@ func newTestStore(mock *mockDDB) *Store {
 	}
 }
 
-// errAfterN returns an errFn that succeeds the first n calls, then returns err.
-func errAfterN(n int, err error) func(string) error {
-	count := 0
-	return func(_ string) error {
-		count++
-		if count > n {
-			return err
-		}
-		return nil
-	}
-}
-
 // errOnOp returns an errFn that fails on a specific operation name.
 func errOnOp(op string, err error) func(string) error {
 	return func(actual string) error {
@@ -361,6 +407,5 @@ func errOnOp(op string, err error) func(string) error {
 	}
 }
 
-// Blank assignments keep these helpers available for future test files in this package.
-var _ = errAfterN
+// Blank assignment keeps this helper available for future test files in this package.
 var _ = errOnOp

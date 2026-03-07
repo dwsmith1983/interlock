@@ -12,6 +12,7 @@ const (
 	EventValidationExhausted EventDetailType = "VALIDATION_EXHAUSTED"
 	EventRetryExhausted      EventDetailType = "RETRY_EXHAUSTED"
 	EventSFNTimeout          EventDetailType = "SFN_TIMEOUT"
+	EventJobPollExhausted    EventDetailType = "JOB_POLL_EXHAUSTED"
 	EventScheduleMissed      EventDetailType = "SCHEDULE_MISSED"
 	EventJobTriggered        EventDetailType = "JOB_TRIGGERED"
 	EventJobCompleted        EventDetailType = "JOB_COMPLETED"
@@ -21,6 +22,7 @@ const (
 	EventLateDataArrival     EventDetailType = "LATE_DATA_ARRIVAL"
 	EventRerunRejected       EventDetailType = "RERUN_REJECTED"
 	EventTriggerRecovered    EventDetailType = "TRIGGER_RECOVERED"
+	EventDataDrift           EventDetailType = "DATA_DRIFT"
 )
 
 // EventSource is the EventBridge source for all interlock events.

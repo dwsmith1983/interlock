@@ -3,6 +3,7 @@ package deploy_test
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,9 +13,10 @@ import (
 // --- ASL structural types ---
 
 type aslDefinition struct {
-	Comment string                     `json:"Comment"`
-	StartAt string                     `json:"StartAt"`
-	States  map[string]json.RawMessage `json:"States"`
+	Comment        string                     `json:"Comment"`
+	StartAt        string                     `json:"StartAt"`
+	TimeoutSeconds int                        `json:"TimeoutSeconds"`
+	States         map[string]json.RawMessage `json:"States"`
 }
 
 type stateBase struct {
@@ -51,13 +53,26 @@ type taskState struct {
 
 // --- helpers ---
 
+// renderASLTemplate replaces Terraform template variables with default values
+// so the raw ASL template can be parsed as valid JSON.
+// NOTE: numeric defaults must stay in sync with deploy/terraform/variables.tf.
+func renderASLTemplate(data []byte) []byte {
+	s := string(data)
+	s = strings.ReplaceAll(s, "${sfn_timeout_seconds}", "14400")
+	s = strings.ReplaceAll(s, "${trigger_max_attempts}", "3")
+	s = strings.ReplaceAll(s, "${orchestrator_arn}", "arn:aws:lambda:us-east-1:123456789012:function:orchestrator")
+	s = strings.ReplaceAll(s, "${sla_monitor_arn}", "arn:aws:lambda:us-east-1:123456789012:function:sla-monitor")
+	return []byte(s)
+}
+
 func loadASL(t *testing.T) aslDefinition {
 	t.Helper()
 	data, err := os.ReadFile("statemachine.asl.json")
 	require.NoError(t, err, "reading ASL file")
 
+	rendered := renderASLTemplate(data)
 	var asl aslDefinition
-	require.NoError(t, json.Unmarshal(data, &asl), "parsing ASL JSON")
+	require.NoError(t, json.Unmarshal(rendered, &asl), "parsing ASL JSON")
 	return asl
 }
 
@@ -102,8 +117,14 @@ func TestASL_ValidJSON(t *testing.T) {
 	data, err := os.ReadFile("statemachine.asl.json")
 	require.NoError(t, err)
 
+	rendered := renderASLTemplate(data)
 	var raw map[string]interface{}
-	require.NoError(t, json.Unmarshal(data, &raw), "ASL file must be valid JSON")
+	require.NoError(t, json.Unmarshal(rendered, &raw), "ASL template must produce valid JSON")
+}
+
+func TestASL_HasGlobalTimeout(t *testing.T) {
+	asl := loadASL(t)
+	assert.Greater(t, asl.TimeoutSeconds, 0, "ASL must have a positive global TimeoutSeconds")
 }
 
 func TestASL_HasRequiredFields(t *testing.T) {
@@ -131,11 +152,24 @@ func TestASL_TopLevelStatesExist(t *testing.T) {
 		"ValidationExhausted",
 		"Trigger",
 		"HasTriggerResult",
+		"InitJobPollLoop",
 		"WaitForJob",
 		"CheckJob",
 		"IsJobDone",
+		"IncrementJobPollElapsed",
+		"CheckJobPollExhausted",
+		"JobPollExhausted",
+		"InjectTimeoutEvent",
+		"CheckHasPostRun",
+		"InitPostRunLoop",
+		"PostRunEvaluate",
+		"IsPostRunDone",
+		"WaitForPostRun",
+		"IncrementPostRunElapsed",
+		"CompleteTrigger",
 		"CheckCancelSLA",
 		"TriggerRetryExhausted",
+		"FailValidationExhausted",
 		"CancelSLASchedules",
 		"InfraFailure",
 		"Done",
@@ -273,11 +307,16 @@ func TestASL_HasTriggerResultRouting(t *testing.T) {
 	require.NoError(t, json.Unmarshal(asl.States["HasTriggerResult"], &hasTrigger))
 	assert.Equal(t, "FailValidationExhausted", hasTrigger.Default, "no trigger result should fail as validation exhausted")
 	require.NotEmpty(t, hasTrigger.Choices)
-	assert.Equal(t, "WaitForJob", hasTrigger.Choices[0].Next, "with trigger result should poll job")
+	assert.Equal(t, "InitJobPollLoop", hasTrigger.Choices[0].Next, "with trigger result should init job poll loop")
 }
 
 func TestASL_JobPollingFlow(t *testing.T) {
 	asl := loadASL(t)
+
+	// InitJobPollLoop → WaitForJob
+	var initLoop stateBase
+	require.NoError(t, json.Unmarshal(asl.States["InitJobPollLoop"], &initLoop))
+	assert.Equal(t, "WaitForJob", initLoop.Next)
 
 	// WaitForJob → CheckJob
 	var wait stateBase
@@ -289,18 +328,30 @@ func TestASL_JobPollingFlow(t *testing.T) {
 	require.NoError(t, json.Unmarshal(asl.States["CheckJob"], &check))
 	assert.Equal(t, "IsJobDone", check.Next)
 
-	// IsJobDone: terminal events → CompleteTrigger, default → WaitForJob
+	// IsJobDone: success → CheckHasPostRun, fail/timeout → CompleteTrigger, default → IncrementJobPollElapsed
 	var done choiceState
 	require.NoError(t, json.Unmarshal(asl.States["IsJobDone"], &done))
-	assert.Equal(t, "WaitForJob", done.Default)
-	// Check that terminal events route to CompleteTrigger
+	assert.Equal(t, "IncrementJobPollElapsed", done.Default)
+	// Check that success routes to CheckHasPostRun
+	foundPostRunRoute := false
 	foundComplete := false
 	for _, c := range done.Choices {
+		if c.Next == "CheckHasPostRun" {
+			foundPostRunRoute = true
+		}
 		if c.Next == "CompleteTrigger" {
 			foundComplete = true
 		}
 	}
-	assert.True(t, foundComplete, "IsJobDone should route terminal events to CompleteTrigger")
+	assert.True(t, foundPostRunRoute, "IsJobDone should route success to CheckHasPostRun")
+	assert.True(t, foundComplete, "IsJobDone should route fail/timeout to CompleteTrigger")
+
+	// CheckHasPostRun: hasPostRun=true → InitPostRunLoop, default → CompleteTrigger
+	var postRunCheck choiceState
+	require.NoError(t, json.Unmarshal(asl.States["CheckHasPostRun"], &postRunCheck))
+	assert.Equal(t, "CompleteTrigger", postRunCheck.Default)
+	require.NotEmpty(t, postRunCheck.Choices)
+	assert.Equal(t, "InitPostRunLoop", postRunCheck.Choices[0].Next)
 
 	// CompleteTrigger → CheckCancelSLA
 	var complete taskState
@@ -378,4 +429,34 @@ func TestASL_CancelSLACatchDoesNotBlock(t *testing.T) {
 	require.NotEmpty(t, cancel.Catch)
 	assert.Equal(t, "Done", cancel.Catch[0].Next,
 		"CancelSLASchedules catch should continue to Done, not block pipeline")
+}
+
+func TestASL_JobPollExhaustionFlow(t *testing.T) {
+	asl := loadASL(t)
+
+	// IncrementJobPollElapsed → CheckJobPollExhausted
+	var inc stateBase
+	require.NoError(t, json.Unmarshal(asl.States["IncrementJobPollElapsed"], &inc))
+	assert.Equal(t, "CheckJobPollExhausted", inc.Next)
+
+	// CheckJobPollExhausted: exhausted → JobPollExhausted, default → WaitForJob
+	var check choiceState
+	require.NoError(t, json.Unmarshal(asl.States["CheckJobPollExhausted"], &check))
+	assert.Equal(t, "WaitForJob", check.Default)
+	require.NotEmpty(t, check.Choices)
+	assert.Equal(t, "JobPollExhausted", check.Choices[0].Next)
+
+	// JobPollExhausted → InjectTimeoutEvent
+	var exhausted taskState
+	require.NoError(t, json.Unmarshal(asl.States["JobPollExhausted"], &exhausted))
+	assert.Equal(t, "InjectTimeoutEvent", exhausted.Next)
+
+	// InjectTimeoutEvent → CompleteTrigger
+	var inject stateBase
+	require.NoError(t, json.Unmarshal(asl.States["InjectTimeoutEvent"], &inject))
+	assert.Equal(t, "CompleteTrigger", inject.Next)
+
+	// JobPollExhausted Catch falls through to InjectTimeoutEvent (best-effort)
+	require.NotEmpty(t, exhausted.Catch)
+	assert.Equal(t, "InjectTimeoutEvent", exhausted.Catch[0].Next)
 }

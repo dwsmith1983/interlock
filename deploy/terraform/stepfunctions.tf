@@ -3,8 +3,10 @@ resource "aws_sfn_state_machine" "pipeline" {
   role_arn = aws_iam_role.sfn.arn
 
   definition = templatefile("${path.module}/../statemachine.asl.json", {
-    orchestrator_arn = aws_lambda_function.orchestrator.arn
-    sla_monitor_arn  = aws_lambda_function.sla_monitor.arn
+    orchestrator_arn     = aws_lambda_function.orchestrator.arn
+    sla_monitor_arn      = aws_lambda_function.sla_monitor.arn
+    sfn_timeout_seconds  = var.sfn_timeout_seconds
+    trigger_max_attempts = var.trigger_max_attempts
   })
 
   tags = var.tags

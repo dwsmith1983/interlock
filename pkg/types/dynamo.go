@@ -56,6 +56,7 @@ const (
 	JobEventRerunAccepted         = "rerun-accepted"
 	JobEventRerunRejected         = "rerun-rejected"
 	JobEventValidationExhausted   = "validation-exhausted"
+	JobEventJobPollExhausted      = "job-poll-exhausted"
 )
 
 // ---------------------------------------------------------------------------
@@ -81,6 +82,7 @@ type JobLogRecord struct {
 	Duration int64  `dynamodbav:"duration,omitempty"`
 	RunID    string `dynamodbav:"runId,omitempty"`
 	TTL      int64  `dynamodbav:"ttl,omitempty"`
+	Category string `dynamodbav:"category,omitempty"`
 }
 
 // RerunRecord represents a row in the re-run table (append-only).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,8 +18,41 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// triggerLockTTL is the default TTL for trigger dedup locks.
-const triggerLockTTL = 24 * time.Hour
+// ResolveTriggerLockTTL returns the trigger lock TTL based on the
+// SFN_TIMEOUT_SECONDS env var plus a 30-minute buffer. Defaults to
+// 4h30m if the env var is not set or invalid.
+func ResolveTriggerLockTTL() time.Duration {
+	s := os.Getenv("SFN_TIMEOUT_SECONDS")
+	if s == "" {
+		return 4*time.Hour + 30*time.Minute
+	}
+	sec, err := strconv.Atoi(s)
+	if err != nil || sec <= 0 {
+		return 4*time.Hour + 30*time.Minute
+	}
+	return time.Duration(sec)*time.Second + 30*time.Minute
+}
+
+// getValidatedConfig loads a pipeline config and validates its retry/timeout
+// fields. Returns nil (with a warning log) if validation fails, signalling the
+// caller to skip processing for this pipeline.
+func getValidatedConfig(ctx context.Context, d *Deps, pipelineID string) (*types.PipelineConfig, error) {
+	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, nil
+	}
+	if errs := validation.ValidatePipelineConfig(cfg); len(errs) > 0 {
+		d.Logger.Warn("invalid pipeline config, skipping",
+			"pipelineId", pipelineID,
+			"errors", errs,
+		)
+		return nil, nil
+	}
+	return cfg, nil
+}
 
 // HandleStreamEvent processes a DynamoDB stream event, routing each record
 // to the appropriate handler based on the SK prefix. Errors are logged but
@@ -105,7 +139,7 @@ func parseJobSK(sk string) (schedule, date string, err error) {
 // handleJobFailure processes a job failure or timeout by either re-running
 // the pipeline (if under the retry limit) or marking it as permanently failed.
 func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, jobEvent string) error {
-	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
+	cfg, err := getValidatedConfig(ctx, d, pipelineID)
 	if err != nil {
 		return fmt.Errorf("load config for %q: %w", pipelineID, err)
 	}
@@ -116,7 +150,20 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 
 	maxRetries := cfg.Job.MaxRetries
 
-	rerunCount, err := d.Store.CountReruns(ctx, pipelineID, schedule, date)
+	// Check if the latest failure has a category for budget selection.
+	latestJob, jobErr := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
+	if jobErr != nil {
+		d.Logger.Warn("could not read latest job event for failure category",
+			"pipelineId", pipelineID, "error", jobErr)
+	}
+	if latestJob != nil {
+		if types.FailureCategory(latestJob.Category) == types.FailurePermanent {
+			maxRetries = types.IntOrDefault(cfg.Job.MaxCodeRetries, 1)
+		}
+		// TRANSIENT, TIMEOUT, or empty → use cfg.Job.MaxRetries (already set).
+	}
+
+	rerunCount, err := d.Store.CountRerunsBySource(ctx, pipelineID, schedule, date, []string{"job-fail-retry"})
 	if err != nil {
 		return fmt.Errorf("count reruns for %q/%s/%s: %w", pipelineID, schedule, date, err)
 	}
@@ -141,7 +188,7 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 	}
 
 	// Under retry limit — write rerun record and restart the pipeline.
-	attempt, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, jobEvent, jobEvent)
+	attempt, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, "job-fail-retry", jobEvent)
 	if err != nil {
 		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
 	}
@@ -150,8 +197,14 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 		return fmt.Errorf("release trigger lock for %q: %w", pipelineID, err)
 	}
 
-	if _, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, triggerLockTTL); err != nil {
+	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL())
+	if err != nil {
 		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
+	}
+	if !acquired {
+		d.Logger.Warn("failed to re-acquire trigger lock, skipping rerun",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date)
+		return nil
 	}
 
 	// Use a unique execution name that includes the rerun attempt number.
@@ -175,10 +228,11 @@ func handleJobSuccess(ctx context.Context, d *Deps, pipelineID, schedule, date s
 		fmt.Sprintf("job completed for %s", pipelineID))
 }
 
-// handleRerunRequest processes a RERUN_REQUEST# stream record. It implements
-// a circuit breaker that prevents unnecessary re-runs when the previous run
-// succeeded and no sensor data has changed since.
-func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, _ events.DynamoDBEventRecord) error {
+// handleRerunRequest processes a RERUN_REQUEST# stream record. It enforces
+// per-source rerun limits (drift vs manual) and implements a circuit breaker
+// that prevents unnecessary re-runs when the previous run succeeded and no
+// sensor data has changed since.
+func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record events.DynamoDBEventRecord) error {
 	pipelineID := strings.TrimPrefix(pk, "PIPELINE#")
 	if pipelineID == pk {
 		return fmt.Errorf("unexpected PK format: %q", pk)
@@ -189,7 +243,7 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, _ events.Dy
 		return err
 	}
 
-	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
+	cfg, err := getValidatedConfig(ctx, d, pipelineID)
 	if err != nil {
 		return fmt.Errorf("load config for %q: %w", pipelineID, err)
 	}
@@ -198,79 +252,112 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, _ events.Dy
 		return nil
 	}
 
+	// Extract reason from stream record NewImage. Default to "manual".
+	reason := "manual"
+	if img := record.Change.NewImage; img != nil {
+		if r, ok := img["reason"]; ok && r.DataType() == events.DataTypeString {
+			if v := r.String(); v != "" {
+				reason = v
+			}
+		}
+	}
+
+	// --- Rerun limit check ---
+	var budget int
+	var sources []string
+	var limitLabel string
+	switch reason {
+	case "data-drift", "late-data":
+		budget = types.IntOrDefault(cfg.Job.MaxDriftReruns, 1)
+		sources = []string{"data-drift", "late-data"}
+		limitLabel = "drift rerun limit exceeded"
+	default:
+		budget = types.IntOrDefault(cfg.Job.MaxManualReruns, 1)
+		sources = []string{reason}
+		limitLabel = "manual rerun limit exceeded"
+	}
+
+	count, err := d.Store.CountRerunsBySource(ctx, pipelineID, schedule, date, sources)
+	if err != nil {
+		return fmt.Errorf("count reruns by source for %q: %w", pipelineID, err)
+	}
+
+	if count >= budget {
+		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+			types.JobEventRerunRejected, "", 0, limitLabel)
+		_ = publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
+			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, limitLabel))
+		d.Logger.Info("rerun request rejected (limit exceeded)",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date,
+			"reason", reason, "count", count, "budget", budget)
+		return nil
+	}
+
+	// --- Circuit breaker (sensor freshness) ---
 	job, err := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
 	if err != nil {
 		return fmt.Errorf("get latest job event for %q/%s/%s: %w", pipelineID, schedule, date, err)
 	}
 
-	// Decision logic:
-	// - No job record → allow (never ran)
-	// - Failed/timeout/infra-exhausted → allow (previous run was not successful)
-	// - Success → check sensor freshness (only re-run if data changed)
 	allowed := true
-	reason := ""
-
-	if job != nil {
-		switch job.Event {
-		case types.JobEventFail, types.JobEventTimeout, types.JobEventInfraTriggerExhausted:
-			// Terminal failure — always allow rerun.
-			allowed = true
-		case types.JobEventSuccess:
-			// Check if sensor data has changed since the successful job.
-			fresh, err := checkSensorFreshness(ctx, d, pipelineID, job.SK)
-			if err != nil {
-				return fmt.Errorf("check sensor freshness for %q: %w", pipelineID, err)
-			}
-			if !fresh {
-				allowed = false
-				reason = "previous run succeeded and no sensor data has changed"
-			}
-		default:
-			// Unknown event — allow to be safe.
-			allowed = true
+	rejectReason := ""
+	if job != nil && job.Event == types.JobEventSuccess {
+		fresh, err := checkSensorFreshness(ctx, d, pipelineID, job.SK)
+		if err != nil {
+			return fmt.Errorf("check sensor freshness for %q: %w", pipelineID, err)
+		}
+		if !fresh {
+			allowed = false
+			rejectReason = "previous run succeeded and no sensor data has changed"
 		}
 	}
 
 	if !allowed {
-		// Write rejection audit trail.
 		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
-			types.JobEventRerunRejected, "", 0, reason)
-
+			types.JobEventRerunRejected, "", 0, rejectReason)
 		_ = publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
-			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, reason))
-
+			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, rejectReason))
 		d.Logger.Info("rerun request rejected",
-			"pipelineId", pipelineID,
-			"schedule", schedule,
-			"date", date,
-			"reason", reason,
-		)
+			"pipelineId", pipelineID, "schedule", schedule, "date", date,
+			"reason", rejectReason)
 		return nil
 	}
 
-	// Write acceptance audit trail.
+	// --- Acceptance: write rerun record FIRST (before lock release) ---
+	if _, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, reason, ""); err != nil {
+		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
+	}
+
 	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 		types.JobEventRerunAccepted, "", 0, "")
+
+	// Delete postrun-baseline so re-run SFN builds fresh baseline.
+	if cfg.PostRun != nil {
+		_ = d.Store.DeleteSensor(ctx, pipelineID, "postrun-baseline")
+	}
 
 	// Release existing lock and re-acquire for the new execution.
 	if err := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); err != nil {
 		return fmt.Errorf("release trigger lock for %q: %w", pipelineID, err)
 	}
 
-	if _, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, triggerLockTTL); err != nil {
+	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL())
+	if err != nil {
 		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
 	}
-
-	execName := fmt.Sprintf("%s-%s-%s-manual-rerun-%d", pipelineID, schedule, date, time.Now().Unix())
-	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
-		return fmt.Errorf("start SFN manual rerun for %q: %w", pipelineID, err)
+	if !acquired {
+		d.Logger.Warn("failed to re-acquire trigger lock, skipping rerun",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date)
+		return nil
 	}
 
-	d.Logger.Info("started manual rerun",
-		"pipelineId", pipelineID,
-		"schedule", schedule,
-		"date", date,
-	)
+	execName := fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, time.Now().Unix())
+	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
+		return fmt.Errorf("start SFN rerun for %q: %w", pipelineID, err)
+	}
+
+	d.Logger.Info("started rerun",
+		"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason)
 	return nil
 }
 
@@ -356,7 +443,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		return fmt.Errorf("unexpected PK format: %q", pk)
 	}
 
-	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
+	cfg, err := getValidatedConfig(ctx, d, pipelineID)
 	if err != nil {
 		return fmt.Errorf("load config for %q: %w", pipelineID, err)
 	}
@@ -413,7 +500,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	date := ResolveExecutionDate(sensorData)
 
 	// Acquire trigger lock to prevent duplicate executions.
-	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, scheduleID, date, triggerLockTTL)
+	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, scheduleID, date, ResolveTriggerLockTTL())
 	if err != nil {
 		return fmt.Errorf("acquire trigger lock for %q: %w", pipelineID, err)
 	}
@@ -478,6 +565,11 @@ func checkLateDataArrival(ctx context.Context, d *Deps, pipelineID, schedule, da
 	_ = publishEvent(ctx, d, string(types.EventLateDataArrival), pipelineID, schedule, date,
 		fmt.Sprintf("late data arrival for %s: sensor updated after job completion", pipelineID))
 
+	// Trigger a re-run — circuit breaker in handleRerunRequest will validate sensor freshness.
+	if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, schedule, date, "late-data"); writeErr != nil {
+		d.Logger.WarnContext(ctx, "failed to write rerun request on late data", "pipelineId", pipelineID, "error", writeErr)
+	}
+
 	return nil
 }
 
@@ -495,6 +587,10 @@ type sfnConfig struct {
 	EvaluationIntervalSeconds int              `json:"evaluationIntervalSeconds"`
 	EvaluationWindowSeconds   int              `json:"evaluationWindowSeconds"`
 	JobCheckIntervalSeconds   int              `json:"jobCheckIntervalSeconds"`
+	JobPollWindowSeconds      int              `json:"jobPollWindowSeconds"`
+	PostRunIntervalSeconds    int              `json:"postRunIntervalSeconds,omitempty"`
+	PostRunWindowSeconds      int              `json:"postRunWindowSeconds,omitempty"`
+	HasPostRun                bool             `json:"hasPostRun"`
 	SLA                       *types.SLAConfig `json:"sla,omitempty"`
 }
 
@@ -504,6 +600,7 @@ func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
 		EvaluationIntervalSeconds: 300,  // 5m default
 		EvaluationWindowSeconds:   3600, // 1h default
 		JobCheckIntervalSeconds:   60,   // 1m default
+		JobPollWindowSeconds:      3600, // 1h default
 	}
 
 	if d, err := time.ParseDuration(cfg.Schedule.Evaluation.Interval); err == nil && d > 0 {
@@ -513,12 +610,30 @@ func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
 		sc.EvaluationWindowSeconds = int(d.Seconds())
 	}
 
+	if cfg.Job.JobPollWindowSeconds != nil && *cfg.Job.JobPollWindowSeconds > 0 {
+		sc.JobPollWindowSeconds = *cfg.Job.JobPollWindowSeconds
+	}
+
 	if cfg.SLA != nil {
 		sla := *cfg.SLA
 		if sla.Timezone == "" {
 			sla.Timezone = "UTC"
 		}
 		sc.SLA = &sla
+	}
+
+	if cfg.PostRun != nil && len(cfg.PostRun.Rules) > 0 {
+		sc.HasPostRun = true
+		sc.PostRunIntervalSeconds = 1800 // 30m default
+		sc.PostRunWindowSeconds = 7200   // 2h default
+		if cfg.PostRun.Evaluation != nil {
+			if d, err := time.ParseDuration(cfg.PostRun.Evaluation.Interval); err == nil && d > 0 {
+				sc.PostRunIntervalSeconds = int(d.Seconds())
+			}
+			if d, err := time.ParseDuration(cfg.PostRun.Evaluation.Window); err == nil && d > 0 {
+				sc.PostRunWindowSeconds = int(d.Seconds())
+			}
+		}
 	}
 
 	return sc
@@ -534,11 +649,27 @@ func startSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineI
 
 // startSFNWithName starts a Step Function execution with a custom execution name.
 func startSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, name string) error {
+	sc := buildSFNConfig(cfg)
+
+	// Warn if the sum of evaluation + poll + post-run windows exceeds the SFN timeout.
+	totalWindowSec := sc.EvaluationWindowSeconds + sc.JobPollWindowSeconds + sc.PostRunWindowSeconds
+	sfnTimeout := ResolveTriggerLockTTL() - 30*time.Minute // strip the buffer to get raw SFN timeout
+	if sfnTimeout > 0 && time.Duration(totalWindowSec)*time.Second > sfnTimeout {
+		d.Logger.Warn("combined pipeline windows exceed SFN timeout",
+			"pipelineId", pipelineID,
+			"evalWindowSec", sc.EvaluationWindowSeconds,
+			"jobPollWindowSec", sc.JobPollWindowSeconds,
+			"postRunWindowSec", sc.PostRunWindowSeconds,
+			"totalWindowSec", totalWindowSec,
+			"sfnTimeoutSec", int(sfnTimeout.Seconds()),
+		)
+	}
+
 	input := sfnInput{
 		PipelineID: pipelineID,
 		ScheduleID: scheduleID,
 		Date:       date,
-		Config:     buildSFNConfig(cfg),
+		Config:     sc,
 	}
 	payload, err := json.Marshal(input)
 	if err != nil {
@@ -706,19 +837,22 @@ func isExcluded(cfg *types.PipelineConfig, now time.Time) bool {
 
 // publishEvent sends an event to EventBridge. It is safe to call when
 // EventBridge is nil or EventBusName is empty (returns nil with no action).
-func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule, date, message string) error {
+func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule, date, message string, detail ...map[string]interface{}) error {
 	if d.EventBridge == nil || d.EventBusName == "" {
 		return nil
 	}
 
-	detail := types.InterlockEvent{
+	evt := types.InterlockEvent{
 		PipelineID: pipelineID,
 		ScheduleID: schedule,
 		Date:       date,
 		Message:    message,
 		Timestamp:  time.Now(),
 	}
-	detailJSON, err := json.Marshal(detail)
+	if len(detail) > 0 && detail[0] != nil {
+		evt.Detail = detail[0]
+	}
+	detailJSON, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("marshal event detail: %w", err)
 	}

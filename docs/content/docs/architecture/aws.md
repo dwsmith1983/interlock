@@ -266,7 +266,7 @@ deploy/
 | `lambda_memory_size` | Memory allocation for all Lambdas | `128` |
 | `log_retention_days` | CloudWatch log retention | `14` |
 | `watchdog_schedule` | EventBridge schedule expression | `rate(5 minutes)` |
-| `enable_glue_trigger` | Add Glue permissions to orchestrator | `false` |
+| `enable_glue_trigger` | Add Glue + CloudWatch Logs RCA permissions to orchestrator | `false` |
 | `enable_emr_trigger` | Add EMR permissions to orchestrator | `false` |
 | `enable_emr_serverless_trigger` | Add EMR Serverless permissions | `false` |
 | `enable_sfn_trigger` | Add Step Functions permissions | `false` |
