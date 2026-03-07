@@ -91,6 +91,17 @@ type JobConfig struct {
 	Config               map[string]interface{} `yaml:"config" json:"config"`
 	MaxRetries           int                    `yaml:"maxRetries,omitempty" json:"maxRetries,omitempty"`
 	JobPollWindowSeconds *int                   `yaml:"jobPollWindowSeconds,omitempty" json:"jobPollWindowSeconds,omitempty"`
+	MaxDriftReruns       *int                   `yaml:"maxDriftReruns,omitempty" json:"maxDriftReruns,omitempty"`
+	MaxManualReruns      *int                   `yaml:"maxManualReruns,omitempty" json:"maxManualReruns,omitempty"`
+	MaxCodeRetries       *int                   `yaml:"maxCodeRetries,omitempty" json:"maxCodeRetries,omitempty"`
+}
+
+// IntOrDefault returns *p if non-nil, otherwise def.
+func IntOrDefault(p *int, def int) int {
+	if p != nil {
+		return *p
+	}
+	return def
 }
 
 // PostRunConfig defines optional post-completion validation.
