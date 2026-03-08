@@ -915,6 +915,88 @@ func TestSetTriggerStatus_DynamoError(t *testing.T) {
 	}
 }
 
+// --- ResetTriggerLock tests ---
+
+func TestResetTriggerLock_Success(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	// Seed a trigger row with status=RUNNING and an existing TTL.
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+	})
+
+	ok, err := s.ResetTriggerLock(context.Background(), "pipe-1", "daily", "2026-03-01", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("ResetTriggerLock: %v", err)
+	}
+	if !ok {
+		t.Error("expected true (row existed), got false")
+	}
+
+	// Verify status remains RUNNING and TTL was updated.
+	key := itemKey("control", types.PipelinePK("pipe-1"), types.TriggerSK("daily", "2026-03-01"))
+	mock.mu.Lock()
+	item, exists := mock.items[key]
+	mock.mu.Unlock()
+
+	if !exists {
+		t.Fatal("expected trigger row to still exist after reset")
+	}
+	status := item["status"].(*ddbtypes.AttributeValueMemberS).Value
+	if status != types.TriggerStatusRunning {
+		t.Errorf("status = %q, want %q", status, types.TriggerStatusRunning)
+	}
+	ttlAttr, hasTTL := item["ttl"]
+	if !hasTTL {
+		t.Fatal("expected ttl attribute to be present after reset")
+	}
+	// New TTL must differ from the original seed value (it was updated).
+	newTTL := ttlAttr.(*ddbtypes.AttributeValueMemberN).Value
+	if newTTL == "1740000000" {
+		t.Errorf("ttl was not updated: still %q (original seed value)", newTTL)
+	}
+}
+
+func TestResetTriggerLock_NonExistent(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	// No trigger row seeded — condition attribute_exists(PK) should fail.
+	ok, err := s.ResetTriggerLock(context.Background(), "pipe-1", "daily", "2026-03-01", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("expected nil error for non-existent row, got: %v", err)
+	}
+	if ok {
+		t.Error("expected false (row does not exist), got true")
+	}
+}
+
+func TestResetTriggerLock_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("service unavailable")
+	mock.errFn = errOnOp("UpdateItem", injected)
+
+	ok, err := s.ResetTriggerLock(context.Background(), "pipe-1", "daily", "2026-03-01", 24*time.Hour)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if ok {
+		t.Error("expected ok=false on DynamoDB error")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "reset trigger lock") {
+		t.Errorf("expected 'reset trigger lock' in error, got: %v", err)
+	}
+}
+
 // --- WriteRerunRequest error-path tests ---
 
 func TestWriteRerunRequest_DynamoError(t *testing.T) {

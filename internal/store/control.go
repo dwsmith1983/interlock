@@ -386,6 +386,39 @@ func (s *Store) HasTriggerForDate(ctx context.Context, pipelineID, schedule, dat
 	return out.Count > 0, nil
 }
 
+// ResetTriggerLock refreshes the TTL on an existing trigger lock without
+// releasing it. This extends the lock window for long-running jobs that need
+// more time than the original TTL allowed. Returns (true, nil) if the row
+// existed and was updated, (false, nil) if the row does not exist.
+func (s *Store) ResetTriggerLock(ctx context.Context, pipelineID, schedule, date string, ttl time.Duration) (bool, error) {
+	ttlEpoch := fmt.Sprintf("%d", time.Now().Add(ttl).Unix())
+	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.ControlTable,
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
+		},
+		ConditionExpression: aws.String("attribute_exists(PK)"),
+		UpdateExpression:    aws.String("SET #status = :running, #ttl = :ttl"),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+			"#ttl":    "ttl",
+		},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":running": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+			":ttl":     &ddbtypes.AttributeValueMemberN{Value: ttlEpoch},
+		},
+	})
+	if err != nil {
+		var ccfe *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &ccfe) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reset trigger lock %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return true, nil
+}
+
 // SetTriggerStatus updates only the status attribute of an existing trigger row,
 // preserving TTL and other attributes.
 func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date, status string) error {

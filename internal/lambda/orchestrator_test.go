@@ -1383,6 +1383,114 @@ func TestCompleteTrigger_DateScopedBaseline(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// CompleteTrigger — baseline capture failure event tests
+// ---------------------------------------------------------------------------
+
+// TestCompleteTrigger_BaselineCaptureFailed_PublishesEvent verifies that when
+// capturePostRunBaseline fails (sensor query error), a BASELINE_CAPTURE_FAILED
+// event is published to EventBridge and the trigger is still marked COMPLETED.
+func TestCompleteTrigger_BaselineCaptureFailed_PublishesEvent(t *testing.T) {
+	pipelineID := "pipe-baseline-fail"
+	date := "2026-03-08T06"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		PostRun: &types.PostRunConfig{
+			Rules: []types.ValidationRule{
+				{Key: "audit-result", Check: types.CheckGTE, Field: "sensor_count", Value: float64(100)},
+			},
+		},
+	}
+
+	callCount := 0
+	ddb := &mockDynamo{
+		// First GetItem call → config. Second GetItem call (from capturePostRunBaseline) → also config.
+		getItemFn: func(_ context.Context, input *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		// Query for sensors fails — this causes capturePostRunBaseline to return an error.
+		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			callCount++
+			return nil, fmt.Errorf("dynamodb: provisioned throughput exceeded")
+		},
+	}
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "complete-trigger",
+		PipelineID: pipelineID,
+		ScheduleID: "stream",
+		Date:       date,
+		Event:      "success",
+	})
+	if err != nil {
+		t.Fatalf("unexpected Lambda error: baseline capture failure should not fail the handler: %v", err)
+	}
+
+	// Trigger must still be marked COMPLETED — baseline failure is non-fatal.
+	if out.Status != types.TriggerStatusCompleted {
+		t.Errorf("status = %q, want %q — baseline failure must not affect trigger completion", out.Status, types.TriggerStatusCompleted)
+	}
+
+	// BASELINE_CAPTURE_FAILED event must be published to EventBridge.
+	eb := d.EventBridge.(*mockEventBridge)
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	found := false
+	for _, evt := range eb.events {
+		if evt.Entries[0].DetailType != nil && *evt.Entries[0].DetailType == string(types.EventBaselineCaptureFailed) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected BASELINE_CAPTURE_FAILED event to be published; got %d events: %v", len(eb.events), eb.events)
+	}
+}
+
+// TestCompleteTrigger_BaselineCaptureFailed_NoEvent_WhenNoPostRunConfig verifies
+// that no BASELINE_CAPTURE_FAILED event is published when the pipeline has no
+// PostRun config (capturePostRunBaseline returns nil early).
+func TestCompleteTrigger_BaselineCaptureFailed_NoEvent_WhenNoPostRunConfig(t *testing.T) {
+	pipelineID := "pipe-no-postrun-fail"
+	date := "2026-03-08"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		// No PostRun config — capturePostRunBaseline returns nil immediately.
+	}
+
+	ddb := &mockDynamo{
+		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
+		},
+		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+			return nil, fmt.Errorf("dynamodb: should not be called")
+		},
+	}
+
+	d := newTestDeps(ddb)
+	_, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "complete-trigger",
+		PipelineID: pipelineID,
+		ScheduleID: "stream",
+		Date:       date,
+		Event:      "success",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No BASELINE_CAPTURE_FAILED event — capturePostRunBaseline returned nil (no PostRun).
+	eb := d.EventBridge.(*mockEventBridge)
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	for _, evt := range eb.events {
+		if evt.Entries[0].DetailType != nil && *evt.Entries[0].DetailType == string(types.EventBaselineCaptureFailed) {
+			t.Error("BASELINE_CAPTURE_FAILED must NOT be published when pipeline has no PostRun config")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Unknown mode test
 // ---------------------------------------------------------------------------
 
