@@ -135,3 +135,9 @@ variable "enable_lambda_trigger" {
   type        = bool
   default     = false
 }
+
+variable "lambda_trigger_arns" {
+  description = "ARNs of Lambda functions the orchestrator may invoke as pipeline triggers"
+  type        = list(string)
+  default     = ["*"]
+}

@@ -110,13 +110,15 @@ resource "aws_lambda_function" "alert_dispatcher" {
   reserved_concurrent_executions = var.lambda_concurrency.alert_dispatcher
 
   environment {
-    variables = {
-      SLACK_BOT_TOKEN  = var.slack_bot_token
-      SLACK_CHANNEL_ID = var.slack_channel_id
-      SLACK_SECRET_ARN = var.slack_secret_arn
-      EVENTS_TABLE     = aws_dynamodb_table.events.name
-      EVENTS_TTL_DAYS  = var.events_table_ttl_days
-    }
+    variables = merge(
+      var.slack_secret_arn == "" ? { SLACK_BOT_TOKEN = var.slack_bot_token } : {},
+      {
+        SLACK_CHANNEL_ID = var.slack_channel_id
+        SLACK_SECRET_ARN = var.slack_secret_arn
+        EVENTS_TABLE     = aws_dynamodb_table.events.name
+        EVENTS_TTL_DAYS  = var.events_table_ttl_days
+      }
+    )
   }
 
   depends_on = [aws_cloudwatch_log_group.lambda["alert-dispatcher"]]
@@ -407,19 +409,20 @@ resource "aws_iam_role_policy" "alert_dispatcher_dynamodb" {
 # Secrets Manager read — alert-dispatcher (Slack bot token, opt-in)
 # -----------------------------------------------------------------------------
 
-data "aws_iam_policy_document" "secrets_alert_dispatcher" {
-  statement {
-    sid       = "ReadSlackSecret"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [var.slack_secret_arn]
-  }
-}
-
 resource "aws_iam_role_policy" "secrets_alert_dispatcher" {
-  count  = var.slack_secret_arn != "" ? 1 : 0
-  name   = "secrets-read"
-  role   = aws_iam_role.lambda["alert-dispatcher"].id
-  policy = data.aws_iam_policy_document.secrets_alert_dispatcher.json
+  count = var.slack_secret_arn != "" ? 1 : 0
+  name  = "secrets-read"
+  role  = aws_iam_role.lambda["alert-dispatcher"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "ReadSlackSecret"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = var.slack_secret_arn
+    }]
+  })
 }
 
 # -----------------------------------------------------------------------------
@@ -633,7 +636,7 @@ resource "aws_iam_role_policy" "lambda_trigger" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["lambda:InvokeFunction"]
-      Resource = "*"
+      Resource = var.lambda_trigger_arns
     }]
   })
 }
