@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-03-08
+
+### Added
+
+- **Event-driven post-run monitoring**: Post-run drift detection moves from SFN poll loop to DynamoDB Stream processing. When a sensor arrives after job completion, stream-router compares the current sensor value against a date-scoped baseline captured at trigger completion. Drift above a configurable threshold triggers a rerun via the existing circuit breaker. Sensors arriving while a job is still running produce informational drift events only.
+- **Configurable drift threshold**: `PostRunConfig.DriftThreshold` (`*float64`) sets the minimum sensor count change to trigger a drift rerun. Defaults to 0 (any change).
+- **Watchdog post-run sensor absence detection**: Watchdog detects pipelines that completed without receiving post-run sensor data after a configurable `SensorTimeout` grace period. Publishes `POST_RUN_SENSOR_MISSING` event.
+- **Typed trigger errors**: `TriggerError` with `Category` (PERMANENT/TRANSIENT) and `Unwrap()` support. `ClassifyFailure` uses `errors.As` for structured error handling. HTTP triggers return 4xx as PERMANENT, 5xx as TRANSIENT.
+- **ConfigCache deep copy**: `GetAll()` returns a deep copy of cached configs, preventing callers from mutating shared cache state.
+- **Validation engine string parsing**: `toFloat64` now handles string-typed numeric fields via `strconv.ParseFloat`, enabling `gte`/`lte` rules on sensor data stored as strings.
+- **E2E test coverage**: 8 new end-to-end test groups covering rerun budget separation, post-run inflight drift, calendar exclusion skip, hour boundary rollover, concurrent drift dedup, pre-baseline sensor arrival, rerun after TTL expiry, and SLA hourly deadlines.
+
+### Changed
+
+- **Post-run removed from SFN**: 6 ASL states removed (`CheckHasPostRun`, `InitPostRunLoop`, `PostRunEvaluate`, `IsPostRunDone`, `WaitForPostRun`, `IncrementPostRunElapsed`). Job success routes directly to `CompleteTrigger`. State count: 30 → 24.
+- **Post-run removed from orchestrator**: `handlePostRun` function and `"post-run"` dispatch case removed. Post-run logic is now entirely stream-based.
+- **Watchdog uses dependency-injected time**: `WatchdogNowFunc` package variable replaced with `Deps.NowFunc` for consistent testability across all handlers.
+- **Trigger runner context threading**: All AWS SDK client constructors (`getGlueClient`, `getEMRClient`, etc.) accept `context.Context` and pass it through to `aws.LoadDefaultConfig`.
+- **SFN execution name truncation**: Execution names are truncated to 80 characters (AWS limit) at all 3 construction sites.
+- **Environment variable scoping**: `os.ExpandEnv` in trigger config restricted to `INTERLOCK_` prefixed variables only.
+
+### Fixed
+
+- **publishEvent error logging**: All 17 `publishEvent` call sites across stream-router and orchestrator now log errors at WARN level instead of silently discarding them.
+- **SLA monitor error wrapping**: `createOneTimeSchedule` wraps errors with schedule name context via `fmt.Errorf`.
+- **HTTP response body sanitization**: Error response bodies truncated to 512 bytes with control characters stripped.
+- **DynamoDB table protection**: All 4 tables (control, joblog, events, rerun) now have `deletion_protection_enabled` and point-in-time recovery enabled.
+
 ## [0.6.2] - 2026-03-08
 
 ### Added
@@ -274,6 +302,9 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.7.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.0
+[0.6.2]: https://github.com/dwsmith1983/interlock/releases/tag/v0.6.2
+[0.6.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.6.1
 [0.6.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.6.0
 [0.5.2]: https://github.com/dwsmith1983/interlock/releases/tag/v0.5.2
 [0.5.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.5.1
