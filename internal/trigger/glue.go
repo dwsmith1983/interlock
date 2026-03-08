@@ -27,9 +27,6 @@ type CloudWatchLogsAPI interface {
 // defaultGlueLogGroup is the standard CloudWatch log group for Glue v2 jobs.
 const defaultGlueLogGroup = "/aws-glue/jobs/logs-v2"
 
-// defaultGlueErrorLogGroup is the CloudWatch log group for Glue job errors.
-const defaultGlueErrorLogGroup = "/aws-glue/jobs/error"
-
 // ExecuteGlue starts an AWS Glue job run.
 func ExecuteGlue(ctx context.Context, cfg *types.GlueTriggerConfig, client GlueAPI) (map[string]interface{}, error) {
 	if cfg.JobName == "" {
@@ -105,22 +102,19 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 	}
 }
 
-// verifyGlueRCA checks CloudWatch logs for a Glue job run to detect false
-// successes. It performs two checks:
-//  1. RCA log stream for GlueExceptionAnalysisJobFailed events (Spark exceptions
-//     where the driver exits 0).
-//  2. Error log group (/aws-glue/jobs/error) for entries matching error indicators
-//     (catches failures like disk-full errors that Glue's RCA may not detect).
+// verifyGlueRCA checks the RCA (root cause analysis) log stream for a Glue
+// job run to detect false successes. Glue can report SUCCEEDED when the Spark
+// job actually failed (driver exits 0 despite SparkException). The RCA stream
+// contains GlueExceptionAnalysisJobFailed events for these cases.
 //
-// Returns (true, reason) if either check finds failure evidence. Returns
-// (false, "") on any error or if no failure is found.
+// Returns (true, reason) if failure evidence is found. Returns (false, "") on
+// any error or if no failure is found.
 func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *string) (failed bool, reason string) {
 	client, err := r.getCWLogsClient(ctx, "")
 	if err != nil {
 		return false, ""
 	}
 
-	// Check 1: RCA log stream for GlueExceptionAnalysisJobFailed.
 	logGroup := defaultGlueLogGroup
 	if logGroupName != nil && *logGroupName != "" {
 		logGroup = *logGroupName
@@ -139,22 +133,6 @@ func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *
 			return true, "RCA: " + r
 		}
 		return true, "RCA: JobFailed"
-	}
-
-	// Check 2: Error log group for entries matching error indicators for this run.
-	errorLogGroup := defaultGlueErrorLogGroup
-	errOut, err := client.FilterLogEvents(ctx, &cloudwatchlogs.FilterLogEventsInput{
-		LogGroupName:   &errorLogGroup,
-		LogStreamNames: []string{runID},
-		FilterPattern:  aws.String(`?Exception ?Error ?FATAL ?Traceback ?OutOfMemoryError ?StackOverflowError`),
-		Limit:          aws.Int32(1),
-	})
-	if err == nil && len(errOut.Events) > 0 {
-		msg := aws.ToString(errOut.Events[0].Message)
-		if len(msg) > 200 {
-			msg = msg[:200]
-		}
-		return true, "error-log: " + msg
 	}
 
 	return false, ""

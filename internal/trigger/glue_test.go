@@ -238,7 +238,6 @@ func TestCheckGlueStatus_RCAUsesJobRunLogGroup(t *testing.T) {
 	cwClient := &mockCWLogsClient{
 		filterOut: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
 	}
-	// Wrap to capture the log group parameter for each call
 	captureClient := &capturingCWLogsClient{
 		delegate: cwClient,
 		onFilter: func(input *cloudwatchlogs.FilterLogEventsInput) {
@@ -252,9 +251,8 @@ func TestCheckGlueStatus_RCAUsesJobRunLogGroup(t *testing.T) {
 		"glue_job_run_id": "jr_abc123",
 	})
 	require.NoError(t, err)
-	require.Len(t, capturedLogGroups, 2)
+	require.Len(t, capturedLogGroups, 1)
 	assert.Equal(t, customLogGroup, capturedLogGroups[0], "RCA check should use custom log group")
-	assert.Equal(t, "/aws-glue/jobs/error", capturedLogGroups[1], "error log check should use standard error group")
 }
 
 type capturingCWLogsClient struct {
@@ -269,76 +267,11 @@ func (c *capturingCWLogsClient) FilterLogEvents(ctx context.Context, params *clo
 	return c.delegate.FilterLogEvents(ctx, params, optFns...)
 }
 
-// funcCWLogsClient allows routing FilterLogEvents responses based on input.
-type funcCWLogsClient struct {
-	filterFn func(context.Context, *cloudwatchlogs.FilterLogEventsInput) (*cloudwatchlogs.FilterLogEventsOutput, error)
-}
-
-func (f *funcCWLogsClient) FilterLogEvents(ctx context.Context, params *cloudwatchlogs.FilterLogEventsInput, _ ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.FilterLogEventsOutput, error) {
-	return f.filterFn(ctx, params)
-}
-
-func TestCheckGlueStatus_ErrorLogsDetectFalseSuccess(t *testing.T) {
-	glueClient := &mockGlueClient{
-		getOut: &glue.GetJobRunOutput{
-			JobRun: &gluetypes.JobRun{
-				JobRunState: gluetypes.JobRunStateSucceeded,
-			},
-		},
-	}
-	cwClient := &funcCWLogsClient{
-		filterFn: func(_ context.Context, params *cloudwatchlogs.FilterLogEventsInput) (*cloudwatchlogs.FilterLogEventsOutput, error) {
-			if aws.ToString(params.LogGroupName) == "/aws-glue/jobs/error" {
-				return &cloudwatchlogs.FilterLogEventsOutput{
-					Events: []cwltypes.FilteredLogEvent{
-						{Message: aws.String("java.io.IOException: No space left on device")},
-					},
-				}, nil
-			}
-			// RCA check — return empty (no GlueExceptionAnalysisJobFailed)
-			return &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}}, nil
-		},
-	}
-
-	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
-	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
-		"glue_job_name":   "my-job",
-		"glue_job_run_id": "jr_abc123",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, RunCheckFailed, result.State)
-	assert.Contains(t, result.Message, "error-log")
-	assert.Contains(t, result.Message, "No space left on device")
-	assert.Equal(t, types.FailureTransient, result.FailureCategory)
-}
-
-func TestCheckGlueStatus_BenignStderrDoesNotCauseFailure(t *testing.T) {
-	glueClient := &mockGlueClient{
-		getOut: &glue.GetJobRunOutput{
-			JobRun: &gluetypes.JobRun{
-				JobRunState: gluetypes.JobRunStateSucceeded,
-			},
-		},
-	}
-	// Simulate benign stderr: FilterPattern excludes "Preparing ..." so
-	// the error log group returns empty events despite the log existing.
-	cwClient := &funcCWLogsClient{
-		filterFn: func(_ context.Context, params *cloudwatchlogs.FilterLogEventsInput) (*cloudwatchlogs.FilterLogEventsOutput, error) {
-			return &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}}, nil
-		},
-	}
-
-	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
-	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
-		"glue_job_name":   "my-job",
-		"glue_job_run_id": "jr_abc123",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, RunCheckSucceeded, result.State)
-	assert.Equal(t, "SUCCEEDED", result.Message)
-}
-
-func TestCheckGlueStatus_ErrorLogFilterPatternPassed(t *testing.T) {
+func TestCheckGlueStatus_RCAOnlyCheck(t *testing.T) {
+	// Verify that only the RCA check is performed (no error log group check).
+	// The error log group check was removed because Glue's stderr always
+	// contains benign JVM startup output with "Error" in class names,
+	// causing 100% false positive rate.
 	glueClient := &mockGlueClient{
 		getOut: &glue.GetJobRunOutput{
 			JobRun: &gluetypes.JobRun{
@@ -358,21 +291,17 @@ func TestCheckGlueStatus_ErrorLogFilterPatternPassed(t *testing.T) {
 	}
 
 	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
-	_, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
 		"glue_job_name":   "my-job",
 		"glue_job_run_id": "jr_abc123",
 	})
 	require.NoError(t, err)
-	require.Len(t, capturedInputs, 2)
+	assert.Equal(t, RunCheckSucceeded, result.State)
 
-	// Check 2 (error log group) must have a FilterPattern
-	errorLogInput := capturedInputs[1]
-	assert.Equal(t, "/aws-glue/jobs/error", aws.ToString(errorLogInput.LogGroupName))
-	require.NotNil(t, errorLogInput.FilterPattern, "Check 2 must pass FilterPattern")
-	fp := aws.ToString(errorLogInput.FilterPattern)
-	for _, term := range []string{"Exception", "Error", "FATAL", "Traceback"} {
-		assert.Contains(t, fp, term, "FilterPattern should include %s", term)
-	}
+	// Only one FilterLogEvents call (RCA check), no error log group check.
+	require.Len(t, capturedInputs, 1)
+	assert.Equal(t, "/aws-glue/jobs/logs-v2", aws.ToString(capturedInputs[0].LogGroupName))
+	assert.Contains(t, aws.ToString(capturedInputs[0].FilterPattern), "GlueExceptionAnalysisJobFailed")
 }
 
 func TestExtractGlueFailureReason(t *testing.T) {
