@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -393,6 +394,8 @@ func TestStreamRouter_JobFail_UnderRetryLimit_Reruns(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	// Seed trigger lock — required for ResetTriggerLock to succeed.
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// No existing reruns — first failure should trigger a rerun.
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
@@ -475,6 +478,7 @@ func TestStreamRouter_JobTimeout_TreatedAsFailure(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Timeout event should be treated like a failure — triggers rerun.
 	record := makeJobRecord("gold-revenue", types.JobEventTimeout)
@@ -495,6 +499,7 @@ func TestStreamRouter_JobFail_DriftRerunsIgnored(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a drift rerun (should NOT count toward failure budget).
 	mock.putRaw("rerun", map[string]ddbtypes.AttributeValue{
@@ -804,23 +809,12 @@ func TestResolveExecutionDate_NonNumericHour(t *testing.T) {
 // Rerun request helpers and tests
 // ---------------------------------------------------------------------------
 
-// makeRerunRequestRecord builds a DynamoDB stream event record for a RERUN_REQUEST# write.
-func makeRerunRequestRecord() events.DynamoDBEventRecord {
-	pk := types.PipelinePK("gold-revenue")
-	sk := types.RerunRequestSK("stream", "2026-03-01")
-	return events.DynamoDBEventRecord{
-		EventName: "INSERT",
-		Change: events.DynamoDBStreamRecord{
-			Keys: map[string]events.DynamoDBAttributeValue{
-				"PK": events.NewStringAttribute(pk),
-				"SK": events.NewStringAttribute(sk),
-			},
-			NewImage: map[string]events.DynamoDBAttributeValue{
-				"PK": events.NewStringAttribute(pk),
-				"SK": events.NewStringAttribute(sk),
-			},
-		},
-	}
+// makeDefaultRerunRequestRecord is a convenience alias used by tests written
+// before Phase 3 introduced the parameterized makeRerunRequestRecordFull helper.
+// It uses the fixed defaults: pipelineID="gold-revenue", schedule="stream",
+// date="2026-03-01", reason="" (no explicit reason).
+func makeDefaultRerunRequestRecord() events.DynamoDBEventRecord {
+	return makeRerunRequestRecordFull("gold-revenue", "stream", "2026-03-01", "")
 }
 
 // seedJobEvent inserts a job log record into the mock joblog table.
@@ -861,11 +855,12 @@ func TestStreamRouter_RerunRequest_FailedJob_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a failed job event.
 	seedJobEvent(mock, "1709280000000", types.JobEventFail)
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -884,6 +879,7 @@ func TestStreamRouter_RerunRequest_SuccessDataChanged_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a successful job event with timestamp 1000000.
 	seedJobEvent(mock, "1000000", types.JobEventSuccess)
@@ -894,7 +890,7 @@ func TestStreamRouter_RerunRequest_SuccessDataChanged_Allowed(t *testing.T) {
 		"status":    "ready",
 	})
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -923,7 +919,7 @@ func TestStreamRouter_RerunRequest_SuccessDataUnchanged_Rejected(t *testing.T) {
 		"status":    "ready",
 	})
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -947,11 +943,12 @@ func TestStreamRouter_RerunRequest_InfraExhausted_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed an infra-trigger-exhausted job event.
 	seedJobEvent(mock, "1709280000000", types.JobEventInfraTriggerExhausted)
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1182,9 +1179,10 @@ func TestRerun_NoJobRecord_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// No job events seeded — GetLatestJobEvent returns nil → allow (never ran).
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1201,7 +1199,7 @@ func TestRerun_NoConfig_Skips(t *testing.T) {
 	d, sfnMock, _ := testDeps(mock)
 
 	// No config seeded for this pipeline.
-	record := makeRerunRequestRecord() // uses "gold-revenue"
+	record := makeDefaultRerunRequestRecord() // uses "gold-revenue"
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1245,11 +1243,12 @@ func TestRerun_TimeoutJob_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a timeout job event.
 	seedJobEvent(mock, "1709280000000", types.JobEventTimeout)
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1267,11 +1266,12 @@ func TestRerun_UnknownJobEvent_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a job event with an unknown event type.
 	seedJobEvent(mock, "1709280000000", "some-future-event")
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1295,7 +1295,7 @@ func TestRerun_StartSFNError(t *testing.T) {
 	// Make SFN client return an error.
 	sfnMock.err = fmt.Errorf("SFN service error")
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	// Error is logged, HandleStreamEvent still returns nil.
@@ -1317,11 +1317,12 @@ func TestSensorFreshness_NoSensors(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a successful job event — no sensors exist.
 	seedJobEvent(mock, "1000000", types.JobEventSuccess)
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1339,6 +1340,7 @@ func TestSensorFreshness_NoUpdatedAtField(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a successful job event.
 	seedJobEvent(mock, "1000000", types.JobEventSuccess)
@@ -1348,7 +1350,7 @@ func TestSensorFreshness_NoUpdatedAtField(t *testing.T) {
 		"status": "ready",
 	})
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1366,6 +1368,7 @@ func TestSensorFreshness_FreshSensor_Float(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a successful job event with timestamp 1000000.
 	seedJobEvent(mock, "1000000", types.JobEventSuccess)
@@ -1375,7 +1378,7 @@ func TestSensorFreshness_FreshSensor_Float(t *testing.T) {
 		"updatedAt": float64(2000000),
 	})
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1401,7 +1404,7 @@ func TestSensorFreshness_StaleSensor_Float(t *testing.T) {
 		"updatedAt": float64(1000000),
 	})
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1423,6 +1426,7 @@ func TestSensorFreshness_FreshSensor_String(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a successful job event with timestamp 1000000.
 	seedJobEvent(mock, "1000000", types.JobEventSuccess)
@@ -1432,7 +1436,7 @@ func TestSensorFreshness_FreshSensor_String(t *testing.T) {
 		"updatedAt": "2000000",
 	})
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1449,6 +1453,7 @@ func TestSensorFreshness_InvalidJobSK(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a successful job event with a short SK that has < 4 parts.
 	// The SK format should be JOB#schedule#date#timestamp, but we create a malformed one.
@@ -1463,7 +1468,7 @@ func TestSensorFreshness_InvalidJobSK(t *testing.T) {
 		"updatedAt": float64(1),
 	})
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -1481,6 +1486,7 @@ func TestSensorFreshness_InvalidTimestamp(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a successful job event with non-numeric timestamp.
 	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
@@ -1494,7 +1500,7 @@ func TestSensorFreshness_InvalidTimestamp(t *testing.T) {
 		"updatedAt": float64(1),
 	})
 
-	record := makeRerunRequestRecord()
+	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
@@ -2561,6 +2567,7 @@ func TestRerun_DriftUnderLimit(t *testing.T) {
 
 	cfg := testRerunLimitConfig(2, 1)
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// No existing drift reruns — under limit.
 	// Seed a failed job so circuit breaker allows the rerun.
@@ -2613,6 +2620,7 @@ func TestRerun_WritesRerunBeforeLockRelease(t *testing.T) {
 
 	cfg := testRerunLimitConfig(3, 3)
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a failed job so circuit breaker allows the rerun.
 	seedJobEvent(mock, "1709280000000", types.JobEventFail)
@@ -2652,6 +2660,7 @@ func TestRerun_DeletesPostrunBaseline(t *testing.T) {
 		},
 	}
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a failed job so circuit breaker allows the rerun.
 	seedJobEvent(mock, "1709280000000", types.JobEventFail)
@@ -2727,6 +2736,7 @@ func TestStreamRouter_JobFail_TransientUsesMaxRetries(t *testing.T) {
 	cfg.Job.MaxRetries = 3
 	cfg.Job.MaxCodeRetries = intPtr(0) // would block if category was checked wrong
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a joblog entry with TRANSIENT category.
 	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
@@ -2756,6 +2766,7 @@ func TestStreamRouter_JobFail_EmptyCategoryUsesMaxRetries(t *testing.T) {
 	cfg.Job.MaxRetries = 3
 	cfg.Job.MaxCodeRetries = intPtr(0)
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
 	// Seed a joblog entry WITHOUT category (backward compat).
 	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
@@ -3053,4 +3064,658 @@ func TestPostRunSensor_NoPostRunConfig_GoesToTrigger(t *testing.T) {
 	err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 	// No error, just silently ignored.
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Atomic lock reset tests (ResetTriggerLock replaces delete+create)
+// ---------------------------------------------------------------------------
+
+// seedTriggerLockWithSchedule inserts a trigger lock for a given schedule (not
+// just "stream"). Used by Phase 3 tests where the schedule name matters.
+func seedTriggerLockWithSchedule(mock *mockDDB, pipelineID, schedule, date string) {
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "9999999999"},
+	})
+}
+
+// makeJobRecordWithScheduleDate builds a JOB# stream record with an explicit
+// schedule and date encoded in the SK.
+func makeJobRecordWithScheduleDate(pipelineID, jobEvent, schedule, date string) events.DynamoDBEventRecord {
+	const timestamp = "1709312400"
+	pk := types.PipelinePK(pipelineID)
+	sk := types.JobSK(schedule, date, timestamp)
+
+	return events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK":    events.NewStringAttribute(pk),
+				"SK":    events.NewStringAttribute(sk),
+				"event": events.NewStringAttribute(jobEvent),
+			},
+		},
+	}
+}
+
+// makeRerunRequestRecordFull builds a RERUN_REQUEST# stream record with
+// explicit pipeline, schedule, date, and reason parameters. Unlike the
+// zero-argument makeRerunRequestRecord helper, this version is parameterized
+// for Phase 3 tests.
+func makeRerunRequestRecordFull(pipelineID, schedule, date, reason string) events.DynamoDBEventRecord {
+	pk := types.PipelinePK(pipelineID)
+	sk := types.RerunRequestSK(schedule, date)
+
+	newImage := map[string]events.DynamoDBAttributeValue{
+		"PK": events.NewStringAttribute(pk),
+		"SK": events.NewStringAttribute(sk),
+	}
+	if reason != "" {
+		newImage["reason"] = events.NewStringAttribute(reason)
+	}
+
+	return events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: newImage,
+		},
+	}
+}
+
+// seedSensorForCircuitBreaker inserts a sensor row with an updatedAt older than
+// the job completion timestamp so the circuit breaker rejects the rerun.
+func seedSensorForCircuitBreaker(mock *mockDDB, pipelineID string) {
+	// Sensor updatedAt = 0 (epoch), job SK timestamp = 1709312400 — older, rejects.
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK("upstream-complete")},
+		"data": &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
+			"updatedAt": &ddbtypes.AttributeValueMemberN{Value: "0"},
+		}},
+	})
+}
+
+// seedJobSuccess inserts a successful JOB entry into the joblog table so the
+// circuit breaker path activates.
+func seedJobSuccess(mock *mockDDB, pipelineID, schedule, date string) {
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(schedule, date, "1709312400")},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+	})
+}
+
+// triggerLockExists returns true if the trigger lock row is present in the mock.
+func triggerLockExists(mock *mockDDB, pipelineID, schedule, date string) bool {
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	key := ddbItemKey(testControlTable, types.PipelinePK(pipelineID), types.TriggerSK(schedule, date))
+	_, ok := mock.items[key]
+	return ok
+}
+
+// TestJobFailure_AtomicLockReset_Success verifies that a job failure under the
+// retry limit uses ResetTriggerLock (atomic UpdateItem) instead of the
+// delete+create pattern. The trigger row must still exist after the operation
+// (it was updated in place, not deleted and re-created).
+func TestJobFailure_AtomicLockReset_Success(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	const (
+		pipeline = "gold-revenue"
+		schedule = "stream"
+		date     = "2026-03-01"
+	)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed existing trigger lock — ResetTriggerLock requires it to exist.
+	seedTriggerLockWithSchedule(mock, pipeline, schedule, date)
+
+	record := makeJobRecordWithScheduleDate(pipeline, types.JobEventFail, schedule, date)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// SFN must have started for the rerun.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for rerun")
+	assert.Contains(t, *sfnMock.executions[0].Name, "rerun-0")
+
+	// The trigger lock row must still exist — ResetTriggerLock updates in place.
+	assert.True(t, triggerLockExists(mock, pipeline, schedule, date),
+		"trigger lock row must persist after atomic reset (not deleted)")
+}
+
+// TestJobFailure_LockResetFails_NoSFN verifies that when there is no trigger
+// row for the pipeline/schedule/date (lock was never held or expired via TTL),
+// ResetTriggerLock returns false and no SFN execution is started.
+func TestJobFailure_LockResetFails_NoSFN(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	const (
+		pipeline = "gold-revenue"
+		schedule = "stream"
+		date     = "2026-03-01"
+	)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// No trigger lock seeded — ResetTriggerLock should return (false, nil).
+	record := makeJobRecordWithScheduleDate(pipeline, types.JobEventFail, schedule, date)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "no SFN when trigger lock does not exist")
+}
+
+// TestRerunRequest_AtomicLockReset verifies that a manual rerun request uses
+// ResetTriggerLock instead of delete+create.
+func TestRerunRequest_AtomicLockReset(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	const (
+		pipeline = "gold-revenue"
+		schedule = "stream"
+		date     = "2026-03-01"
+	)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed trigger lock so ResetTriggerLock can find it.
+	seedTriggerLockWithSchedule(mock, pipeline, schedule, date)
+
+	record := makeRerunRequestRecordFull(pipeline, schedule, date, "manual")
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// SFN must have started.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for rerun")
+
+	// Trigger lock row must still exist after reset.
+	assert.True(t, triggerLockExists(mock, pipeline, schedule, date),
+		"trigger lock row must persist after atomic reset")
+}
+
+// TestRerunRequest_LockResetFails_PublishesInfraFailure verifies that when the
+// trigger lock row does not exist, ResetTriggerLock returns false and an
+// INFRA_FAILURE event is published instead of starting a new SFN execution.
+func TestRerunRequest_LockResetFails_PublishesInfraFailure(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	const (
+		pipeline = "gold-revenue"
+		schedule = "stream"
+		date     = "2026-03-01"
+	)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// No trigger lock seeded — ResetTriggerLock returns (false, nil).
+	record := makeRerunRequestRecordFull(pipeline, schedule, date, "manual")
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No SFN execution.
+	sfnMock.mu.Lock()
+	sfnExecs := len(sfnMock.executions)
+	sfnMock.mu.Unlock()
+	assert.Equal(t, 0, sfnExecs, "no SFN when lock reset fails")
+
+	// Must publish RERUN_ACCEPTED then INFRA_FAILURE events.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 2, "expected RERUN_ACCEPTED + INFRA_FAILURE events")
+	assert.Equal(t, string(types.EventRerunAccepted), *ebMock.events[0].Entries[0].DetailType)
+	assert.Equal(t, string(types.EventInfraFailure), *ebMock.events[1].Entries[0].DetailType)
+}
+
+// TestJobFailure_SFNStartFails_ReleasesLock verifies that when the SFN
+// StartExecution call fails after ResetTriggerLock succeeds, the trigger lock
+// is released so the pipeline is not permanently stuck.
+func TestJobFailure_SFNStartFails_ReleasesLock(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	const (
+		pipeline = "gold-revenue"
+		schedule = "stream"
+		date     = "2026-03-01"
+	)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	// Seed trigger lock.
+	seedTriggerLockWithSchedule(mock, pipeline, schedule, date)
+
+	// Make SFN fail.
+	sfnMock.err = fmt.Errorf("SFN unavailable")
+
+	record := makeJobRecordWithScheduleDate(pipeline, types.JobEventFail, schedule, date)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	// HandleStreamEvent swallows per-record errors — the handler returns nil.
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Trigger lock must be released after SFN failure (so next attempt can acquire it).
+	assert.False(t, triggerLockExists(mock, pipeline, schedule, date),
+		"trigger lock must be released after SFN start failure")
+}
+
+// TestRerunRequest_SFNStartFails_ReleasesLock mirrors the above test for the
+// rerun-request path.
+func TestRerunRequest_SFNStartFails_ReleasesLock(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	const (
+		pipeline = "gold-revenue"
+		schedule = "stream"
+		date     = "2026-03-01"
+	)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+
+	seedTriggerLockWithSchedule(mock, pipeline, schedule, date)
+
+	sfnMock.err = fmt.Errorf("SFN unavailable")
+
+	record := makeRerunRequestRecordFull(pipeline, schedule, date, "manual")
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	assert.False(t, triggerLockExists(mock, pipeline, schedule, date),
+		"trigger lock must be released after SFN start failure")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: isExcludedDate unit tests (Task A / C1)
+// ---------------------------------------------------------------------------
+
+func TestIsExcludedDate_NoExclusions(t *testing.T) {
+	cfg := &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Exclude: nil},
+	}
+	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-07"), "nil exclusion must not exclude")
+	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-08"), "nil exclusion must not exclude")
+}
+
+func TestIsExcludedDate_WeekendSaturday(t *testing.T) {
+	cfg := &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{
+			Exclude: &types.ExclusionConfig{Weekends: true},
+		},
+	}
+	// 2026-03-07 is a Saturday.
+	assert.True(t, lambda.IsExcludedDate(cfg, "2026-03-07"), "Saturday must be excluded when Weekends=true")
+}
+
+func TestIsExcludedDate_WeekendSunday(t *testing.T) {
+	cfg := &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{
+			Exclude: &types.ExclusionConfig{Weekends: true},
+		},
+	}
+	// 2026-03-08 is a Sunday.
+	assert.True(t, lambda.IsExcludedDate(cfg, "2026-03-08"), "Sunday must be excluded when Weekends=true")
+}
+
+func TestIsExcludedDate_WeekdayFriday(t *testing.T) {
+	cfg := &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{
+			Exclude: &types.ExclusionConfig{Weekends: true},
+		},
+	}
+	// 2026-03-06 is a Friday.
+	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-06"), "Friday must NOT be excluded when Weekends=true")
+}
+
+func TestIsExcludedDate_SpecificDate(t *testing.T) {
+	cfg := &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{
+			Exclude: &types.ExclusionConfig{Dates: []string{"2026-12-25", "2026-01-01"}},
+		},
+	}
+	assert.True(t, lambda.IsExcludedDate(cfg, "2026-12-25"), "Christmas must be excluded")
+	assert.True(t, lambda.IsExcludedDate(cfg, "2026-01-01"), "New Year's Day must be excluded")
+	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-06"), "regular day must not be excluded")
+}
+
+func TestIsExcludedDate_CompositePerHourDate(t *testing.T) {
+	cfg := &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{
+			Exclude: &types.ExclusionConfig{Dates: []string{"2026-03-07"}},
+		},
+	}
+	// Per-hour composite date "2026-03-07T10" — date portion is 2026-03-07.
+	assert.True(t, lambda.IsExcludedDate(cfg, "2026-03-07T10"), "composite date must match date portion")
+	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-06T10"), "non-excluded composite date must not be excluded")
+}
+
+func TestIsExcludedDate_InvalidDate(t *testing.T) {
+	cfg := &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{
+			Exclude: &types.ExclusionConfig{Weekends: true, Dates: []string{"2026-03-07"}},
+		},
+	}
+	// Unparseable date — safe default is false (do not exclude).
+	assert.False(t, lambda.IsExcludedDate(cfg, "not-a-date"), "invalid date must return false (safe default)")
+}
+
+func TestIsExcludedDate_EmptyDate(t *testing.T) {
+	cfg := &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{
+			Exclude: &types.ExclusionConfig{Weekends: true},
+		},
+	}
+	// Empty string is too short to parse — safe default is false.
+	assert.False(t, lambda.IsExcludedDate(cfg, ""), "empty date must return false (safe default)")
+}
+
+func TestIsExcludedDate_ShortDate(t *testing.T) {
+	cfg := &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{
+			Exclude: &types.ExclusionConfig{Weekends: true},
+		},
+	}
+	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03"), "short date string must return false (safe default)")
+}
+
+func TestIsExcludedDate_Timezone(t *testing.T) {
+	cfg := &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{
+			Timezone: "America/Los_Angeles",
+			Exclude:  &types.ExclusionConfig{Weekends: true},
+		},
+	}
+	// 2026-03-07 is Saturday regardless of timezone.
+	assert.True(t, lambda.IsExcludedDate(cfg, "2026-03-07"), "Saturday is excluded in any timezone")
+	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-06"), "Friday is not excluded")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Integration tests for handler calendar exclusion (Task B / C2)
+// ---------------------------------------------------------------------------
+
+func TestRerunRequest_CalendarExclusion(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-01"}}
+	seedConfig(mock, cfg)
+
+	record := makeDefaultRerunRequestRecord() // schedule=stream, date=2026-03-01
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "rerun must not start SFN for excluded execution date")
+	sfnMock.mu.Unlock()
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.NotEmpty(t, ebMock.events, "expected PIPELINE_EXCLUDED event")
+	assert.Equal(t, string(types.EventPipelineExcluded), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestRerunRequest_CalendarExclusion_WritesJobEvent(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-01"}}
+	seedConfig(mock, cfg)
+
+	record := makeDefaultRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	found := false
+	for key := range mock.items {
+		if strings.Contains(key, "joblog") && strings.Contains(key, "JOB#") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected a JOB# entry in the joblog table for calendar exclusion rejection")
+}
+
+func TestRerunRequest_WeekendExclusion(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	cfg.Schedule.Exclude = &types.ExclusionConfig{Weekends: true}
+	seedConfig(mock, cfg)
+
+	// 2026-03-07 is a Saturday.
+	pk := types.PipelinePK("gold-revenue")
+	sk := types.RerunRequestSK("stream", "2026-03-07")
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(pk),
+				"SK": events.NewStringAttribute(sk),
+			},
+		},
+	}
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "rerun on Saturday must be blocked by weekend exclusion")
+	sfnMock.mu.Unlock()
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.NotEmpty(t, ebMock.events)
+	assert.Equal(t, string(types.EventPipelineExcluded), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestJobFailure_CalendarExclusion(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-01"}}
+	seedConfig(mock, cfg)
+
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "job failure rerun must not start SFN for excluded execution date")
+	sfnMock.mu.Unlock()
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.NotEmpty(t, ebMock.events, "expected PIPELINE_EXCLUDED event")
+	assert.Equal(t, string(types.EventPipelineExcluded), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestJobFailure_CalendarExclusion_RetryLimitBeatsExclusion(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testJobConfig()
+	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-01"}}
+	seedConfig(mock, cfg)
+
+	seedRerun(mock, "gold-revenue", "stream", "2026-03-01", 0)
+	seedRerun(mock, "gold-revenue", "stream", "2026-03-01", 1)
+
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "no SFN when retries exhausted")
+	sfnMock.mu.Unlock()
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.NotEmpty(t, ebMock.events)
+	assert.Equal(t, string(types.EventRetryExhausted), *ebMock.events[0].Entries[0].DetailType,
+		"retry-limit check must run before calendar exclusion in handleJobFailure")
+}
+
+func TestPostRunDrift_CalendarExclusion(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := postRunConfig()
+	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-01"}}
+	seedConfig(mock, cfg)
+	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusCompleted)
+
+	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+		"sensor_count": float64(100),
+	})
+
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("150"),
+			"date":         events.NewStringAttribute("2026-03-01"),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	found := false
+	for _, evt := range ebMock.events {
+		if *evt.Entries[0].DetailType == string(types.EventPostRunDrift) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "POST_RUN_DRIFT event must be published even when execution date is excluded")
+
+	rerunKey := ddbItemKey(testControlTable, types.PipelinePK("gold-revenue"), types.RerunRequestSK("stream", "2026-03-01"))
+	mock.mu.Lock()
+	_, rerunExists := mock.items[rerunKey]
+	mock.mu.Unlock()
+	assert.False(t, rerunExists, "rerun request must NOT be written when execution date is excluded")
+}
+
+func TestPostRunDrift_NotExcluded_WritesRerun(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	cfg := postRunConfig()
+	seedConfig(mock, cfg)
+	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusCompleted)
+
+	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+		"sensor_count": float64(100),
+	})
+
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("150"),
+			"date":         events.NewStringAttribute("2026-03-01"),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	rerunKey := ddbItemKey(testControlTable, types.PipelinePK("gold-revenue"), types.RerunRequestSK("stream", "2026-03-01"))
+	mock.mu.Lock()
+	_, rerunExists := mock.items[rerunKey]
+	mock.mu.Unlock()
+	assert.True(t, rerunExists, "rerun request MUST be written for non-excluded dates with drift")
+}
+
+func TestSensorEvent_CalendarExclusion_PublishesEvent(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testStreamConfig()
+	today := time.Now().Format("2006-01-02")
+	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{today}}
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "no SFN when calendar-excluded")
+	sfnMock.mu.Unlock()
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.NotEmpty(t, ebMock.events, "PIPELINE_EXCLUDED event must be published on sensor exclusion")
+	assert.Equal(t, string(types.EventPipelineExcluded), *ebMock.events[0].Entries[0].DetailType)
 }

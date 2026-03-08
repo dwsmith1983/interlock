@@ -167,6 +167,9 @@ func TestASL_TopLevelStatesExist(t *testing.T) {
 		"CancelSLASchedules",
 		"InfraFailure",
 		"Done",
+		"CheckSLAForCompleteTriggerFailure",
+		"CancelSLAOnCompleteTriggerFailure",
+		"CompleteTriggerFailed",
 	}
 	for _, name := range expected {
 		_, ok := asl.States[name]
@@ -335,10 +338,15 @@ func TestASL_JobPollingFlow(t *testing.T) {
 	}
 	assert.True(t, foundComplete, "IsJobDone should route to CompleteTrigger")
 
-	// CompleteTrigger → CheckCancelSLA
+	// CompleteTrigger → CheckCancelSLA (happy path)
 	var complete taskState
 	require.NoError(t, json.Unmarshal(asl.States["CompleteTrigger"], &complete))
 	assert.Equal(t, "CheckCancelSLA", complete.Next)
+
+	// CompleteTrigger Catch routes to CheckSLAForCompleteTriggerFailure (not Done)
+	require.NotEmpty(t, complete.Catch)
+	assert.Equal(t, "CheckSLAForCompleteTriggerFailure", complete.Catch[0].Next,
+		"CompleteTrigger catch must route to CheckSLAForCompleteTriggerFailure, not Done")
 }
 
 func TestASL_CancelSLAFlow(t *testing.T) {
@@ -441,4 +449,45 @@ func TestASL_JobPollExhaustionFlow(t *testing.T) {
 	// JobPollExhausted Catch falls through to InjectTimeoutEvent (best-effort)
 	require.NotEmpty(t, exhausted.Catch)
 	assert.Equal(t, "InjectTimeoutEvent", exhausted.Catch[0].Next)
+}
+
+func TestASL_CompleteTriggerFailurePath(t *testing.T) {
+	asl := loadASL(t)
+
+	// CompleteTrigger Catch routes to CheckSLAForCompleteTriggerFailure
+	var complete taskState
+	require.NoError(t, json.Unmarshal(asl.States["CompleteTrigger"], &complete))
+	require.NotEmpty(t, complete.Catch)
+	assert.Equal(t, "CheckSLAForCompleteTriggerFailure", complete.Catch[0].Next,
+		"CompleteTrigger catch must route to CheckSLAForCompleteTriggerFailure")
+
+	// CheckSLAForCompleteTriggerFailure is a Choice state
+	raw, ok := asl.States["CheckSLAForCompleteTriggerFailure"]
+	require.True(t, ok, "CheckSLAForCompleteTriggerFailure state must exist")
+	var slaCheck choiceState
+	require.NoError(t, json.Unmarshal(raw, &slaCheck))
+	assert.Equal(t, "Choice", slaCheck.Type)
+	// SLA present → CancelSLAOnCompleteTriggerFailure
+	require.NotEmpty(t, slaCheck.Choices)
+	assert.Equal(t, "CancelSLAOnCompleteTriggerFailure", slaCheck.Choices[0].Next)
+	// No SLA → CompleteTriggerFailed directly
+	assert.Equal(t, "CompleteTriggerFailed", slaCheck.Default)
+
+	// CancelSLAOnCompleteTriggerFailure is a Task state that routes to CompleteTriggerFailed
+	raw, ok = asl.States["CancelSLAOnCompleteTriggerFailure"]
+	require.True(t, ok, "CancelSLAOnCompleteTriggerFailure state must exist")
+	var cancelTask taskState
+	require.NoError(t, json.Unmarshal(raw, &cancelTask))
+	assert.Equal(t, "Task", cancelTask.Type)
+	assert.Equal(t, "CompleteTriggerFailed", cancelTask.Next)
+	// Catch swallows errors and still routes to CompleteTriggerFailed
+	require.NotEmpty(t, cancelTask.Catch)
+	assert.Equal(t, "CompleteTriggerFailed", cancelTask.Catch[0].Next)
+
+	// CompleteTriggerFailed is a Fail terminal state
+	raw, ok = asl.States["CompleteTriggerFailed"]
+	require.True(t, ok, "CompleteTriggerFailed state must exist")
+	var failed stateBase
+	require.NoError(t, json.Unmarshal(raw, &failed))
+	assert.Equal(t, "Fail", failed.Type)
 }

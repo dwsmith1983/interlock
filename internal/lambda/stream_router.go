@@ -190,22 +190,27 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 		return nil
 	}
 
+	// Calendar exclusion check: skip retry if the execution date is excluded.
+	if isExcludedDate(cfg, date) {
+		if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, schedule, date,
+			fmt.Sprintf("job failure retry skipped for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
+		}
+		return nil
+	}
+
 	// Under retry limit — write rerun record and restart the pipeline.
 	attempt, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, "job-fail-retry", jobEvent)
 	if err != nil {
 		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
 	}
 
-	if err := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); err != nil {
-		return fmt.Errorf("release trigger lock for %q: %w", pipelineID, err)
-	}
-
-	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL())
+	acquired, err := d.Store.ResetTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL())
 	if err != nil {
-		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
+		return fmt.Errorf("reset trigger lock for %q: %w", pipelineID, err)
 	}
 	if !acquired {
-		d.Logger.Warn("failed to re-acquire trigger lock, skipping rerun",
+		d.Logger.Warn("failed to reset trigger lock, skipping rerun",
 			"pipelineId", pipelineID, "schedule", schedule, "date", date)
 		return nil
 	}
@@ -213,6 +218,9 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 	// Use a unique execution name that includes the rerun attempt number.
 	execName := truncateExecName(fmt.Sprintf("%s-%s-%s-rerun-%d", pipelineID, schedule, date, attempt))
 	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
+		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); relErr != nil {
+			d.Logger.Warn("failed to release lock after SFN start failure", "error", relErr)
+		}
 		return fmt.Errorf("start SFN rerun for %q: %w", pipelineID, err)
 	}
 
@@ -252,6 +260,16 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 	}
 	if cfg == nil {
 		d.Logger.Warn("no config found for pipeline, skipping rerun request", "pipelineId", pipelineID)
+		return nil
+	}
+
+	// --- Calendar exclusion check (execution date) ---
+	if isExcludedDate(cfg, date) {
+		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventRerunRejected, "", 0, "excluded by calendar")
+		if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, schedule, date,
+			fmt.Sprintf("rerun blocked for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
+		}
 		return nil
 	}
 
@@ -338,28 +356,36 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 		types.JobEventRerunAccepted, "", 0, "")
 
+	if pubErr := publishEvent(ctx, d, string(types.EventRerunAccepted), pipelineID, schedule, date,
+		fmt.Sprintf("rerun accepted for %s (reason: %s)", pipelineID, reason)); pubErr != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunAccepted, "error", pubErr)
+	}
+
 	// Delete date-scoped postrun-baseline so re-run captures fresh baseline.
 	if cfg.PostRun != nil {
 		_ = d.Store.DeleteSensor(ctx, pipelineID, "postrun-baseline#"+date)
 	}
 
-	// Release existing lock and re-acquire for the new execution.
-	if err := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); err != nil {
-		return fmt.Errorf("release trigger lock for %q: %w", pipelineID, err)
-	}
-
-	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL())
+	// Atomically reset the trigger lock for the new execution.
+	acquired, err := d.Store.ResetTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL())
 	if err != nil {
-		return fmt.Errorf("re-acquire trigger lock for %q: %w", pipelineID, err)
+		return fmt.Errorf("reset trigger lock for %q: %w", pipelineID, err)
 	}
 	if !acquired {
-		d.Logger.Warn("failed to re-acquire trigger lock, skipping rerun",
+		if pubErr := publishEvent(ctx, d, string(types.EventInfraFailure), pipelineID, schedule, date,
+			fmt.Sprintf("lock reset failed for rerun of %s, orphaned rerun record", pipelineID)); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "error", pubErr)
+		}
+		d.Logger.Warn("failed to reset trigger lock, orphaned rerun record",
 			"pipelineId", pipelineID, "schedule", schedule, "date", date)
 		return nil
 	}
 
 	execName := truncateExecName(fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, time.Now().Unix()))
 	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
+		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); relErr != nil {
+			d.Logger.Warn("failed to release lock after SFN start failure", "error", relErr)
+		}
 		return fmt.Errorf("start SFN rerun for %q: %w", pipelineID, err)
 	}
 
@@ -497,13 +523,19 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		return nil
 	}
 
-	// Check calendar exclusions.
+	// Check calendar exclusions (wall-clock date).
 	now := time.Now()
 	if isExcluded(cfg, now) {
 		d.Logger.Info("pipeline excluded by calendar",
 			"pipelineId", pipelineID,
 			"date", now.Format("2006-01-02"),
 		)
+		scheduleIDForEvent := resolveScheduleID(cfg)
+		dateForEvent := ResolveExecutionDate(sensorData)
+		if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleIDForEvent, dateForEvent,
+			fmt.Sprintf("sensor trigger suppressed for %s: wall-clock date excluded by calendar", pipelineID)); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
+		}
 		return nil
 	}
 
@@ -700,10 +732,16 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 				d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDrift, "error", err)
 			}
 
-			// Trigger rerun via the existing circuit breaker path.
-			if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, scheduleID, date, "data-drift"); writeErr != nil {
-				d.Logger.WarnContext(ctx, "failed to write rerun request on post-run drift",
-					"pipelineId", pipelineID, "error", writeErr)
+			// Trigger rerun via the existing circuit breaker path only if the
+			// execution date is not excluded by the pipeline's calendar config.
+			if isExcludedDate(cfg, date) {
+				d.Logger.InfoContext(ctx, "post-run drift rerun skipped: execution date excluded by calendar",
+					"pipelineId", pipelineID, "date", date)
+			} else {
+				if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, scheduleID, date, "data-drift"); writeErr != nil {
+					d.Logger.WarnContext(ctx, "failed to write rerun request on post-run drift",
+						"pipelineId", pipelineID, "error", writeErr)
+				}
 			}
 			return nil
 		}
@@ -961,6 +999,48 @@ func resolveScheduleID(cfg *types.PipelineConfig) string {
 		return "cron"
 	}
 	return "stream"
+}
+
+// isExcludedDate checks calendar exclusions against a job's execution date
+// (not wall-clock time). dateStr supports "YYYY-MM-DD" and "YYYY-MM-DDTHH".
+func isExcludedDate(cfg *types.PipelineConfig, dateStr string) bool {
+	excl := cfg.Schedule.Exclude
+	if excl == nil {
+		return false
+	}
+	if len(dateStr) < 10 {
+		return false // unparseable, safe default
+	}
+	datePortion := dateStr[:10]
+
+	// Resolve the location to interpret the execution date in.
+	loc := time.UTC
+	if cfg.Schedule.Timezone != "" {
+		if l, err := time.LoadLocation(cfg.Schedule.Timezone); err == nil {
+			loc = l
+		}
+	}
+
+	// Parse the date as midnight in the configured timezone so that weekday
+	// and date-string comparisons reflect the local calendar date.
+	t, err := time.ParseInLocation("2006-01-02", datePortion, loc)
+	if err != nil {
+		return false // safe default
+	}
+
+	if excl.Weekends {
+		day := t.Weekday()
+		if day == time.Saturday || day == time.Sunday {
+			return true
+		}
+	}
+	dateStr2 := t.Format("2006-01-02")
+	for _, d := range excl.Dates {
+		if d == dateStr2 {
+			return true
+		}
+	}
+	return false
 }
 
 // isExcluded checks whether the pipeline should be excluded from running

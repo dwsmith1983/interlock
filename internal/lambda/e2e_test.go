@@ -2128,7 +2128,10 @@ func TestE2E_CalendarExclusionFullSkip(t *testing.T) {
 
 		assert.Equal(t, 0, countSFNExecutions(sfnM))
 		assertNoTriggerLock(t, mock, "pipe-cal1", "stream", today)
-		assert.Empty(t, collectEventTypes(eb))
+		// Phase 2: PIPELINE_EXCLUDED event is published when the sensor trigger
+		// is suppressed by a calendar exclusion.
+		evts := collectEventTypes(eb)
+		assert.Equal(t, []string{string(types.EventPipelineExcluded)}, evts)
 	})
 }
 
@@ -2289,7 +2292,10 @@ func TestE2E_PostRunBeforeBaseline(t *testing.T) {
 func TestE2E_RerunAfterTriggerTTLExpiry(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("TriggerDeleted_ManualRerunSucceeds", func(t *testing.T) {
+	// When the trigger lock row has been deleted by DynamoDB TTL, ResetTriggerLock
+	// returns (false, nil) and an INFRA_FAILURE event is published. No SFN is
+	// started because the lock cannot be atomically reset.
+	t.Run("TriggerDeleted_PublishesInfraFailure", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{}
@@ -2314,7 +2320,52 @@ func TestE2E_RerunAfterTriggerTTLExpiry(t *testing.T) {
 
 		sfnBefore := countSFNExecutions(sfnM)
 		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-ttl1", "manual")))
-		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "rerun should start SFN even without existing trigger")
+		assert.Equal(t, sfnBefore, countSFNExecutions(sfnM), "no SFN when trigger lock row was deleted by TTL")
+
+		// Should have published an INFRA_FAILURE event.
+		eb.mu.Lock()
+		defer eb.mu.Unlock()
+		require.NotEmpty(t, eb.events, "expected INFRA_FAILURE event when trigger lock is missing")
+		found := false
+		for _, ev := range eb.events {
+			for _, entry := range ev.Entries {
+				if entry.DetailType != nil && *entry.DetailType == string(types.EventInfraFailure) {
+					found = true
+				}
+			}
+		}
+		assert.True(t, found, "INFRA_FAILURE event should be published when lock reset fails")
+	})
+
+	// Happy path: trigger lock exists, rerun proceeds atomically via ResetTriggerLock.
+	t.Run("TriggerExists_ManualRerunSucceeds", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-ttl2")
+		cfg.Job.MaxManualReruns = intPtr(2)
+		seedConfig(mock, cfg)
+
+		// Seed trigger lock — required for ResetTriggerLock to succeed.
+		mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+			"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-ttl2")},
+			"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-07")},
+			"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		})
+
+		// Seed a failed job event so circuit breaker allows the rerun.
+		oldTS := fmt.Sprintf("%d", time.Now().Add(-1*time.Hour).UnixMilli())
+		mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+			"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-ttl2")},
+			"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", "2026-03-07", oldTS)},
+			"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventFail},
+		})
+
+		sfnBefore := countSFNExecutions(sfnM)
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-ttl2", "manual")))
+		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "rerun should start SFN when trigger lock exists")
 		assertAlertFormats(t, eb)
 	})
 }

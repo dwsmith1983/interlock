@@ -369,9 +369,61 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.errorInfo",
-          "Next": "CheckCancelSLA"
+          "Next": "CheckSLAForCompleteTriggerFailure"
         }
       ]
+    },
+    "CheckSLAForCompleteTriggerFailure": {
+      "Type": "Choice",
+      "Comment": "Cancel SLA before failing if SLA was configured; otherwise fail immediately",
+      "Choices": [
+        {
+          "Variable": "$.config.sla",
+          "IsPresent": true,
+          "Next": "CancelSLAOnCompleteTriggerFailure"
+        }
+      ],
+      "Default": "CompleteTriggerFailed"
+    },
+    "CancelSLAOnCompleteTriggerFailure": {
+      "Type": "Task",
+      "Comment": "Best-effort SLA cancellation before marking CompleteTrigger as failed",
+      "Resource": "${sla_monitor_arn}",
+      "Parameters": {
+        "mode": "cancel",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date",
+        "deadline.$": "$.config.sla.deadline",
+        "expectedDuration.$": "$.config.sla.expectedDuration"
+      },
+      "ResultPath": "$.slaResult",
+      "Next": "CompleteTriggerFailed",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.TooManyRequestsException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.slaErrorInfo",
+          "Next": "CompleteTriggerFailed"
+        }
+      ]
+    },
+    "CompleteTriggerFailed": {
+      "Type": "Fail",
+      "Error": "CompleteTriggerFailed",
+      "Cause": "Failed to set trigger to terminal status after retries"
     },
     "CheckCancelSLA": {
       "Type": "Choice",

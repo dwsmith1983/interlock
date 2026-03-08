@@ -167,6 +167,16 @@ func (m *mockDDB) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput,
 	key := ddbItemKey(*input.TableName, pk, sk)
 
 	item, ok := m.items[key]
+
+	// Support attribute_exists(PK) condition: reject update if item doesn't exist.
+	if input.ConditionExpression != nil && *input.ConditionExpression == "attribute_exists(PK)" {
+		if !ok {
+			return nil, &ddbtypes.ConditionalCheckFailedException{
+				Message: strPtr("The conditional request failed"),
+			}
+		}
+	}
+
 	if !ok {
 		item = map[string]ddbtypes.AttributeValue{
 			"PK": &ddbtypes.AttributeValueMemberS{Value: pk},

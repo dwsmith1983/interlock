@@ -320,6 +320,10 @@ func handleCompleteTrigger(ctx context.Context, d *Deps, input OrchestratorInput
 		if err := capturePostRunBaseline(ctx, d, input.PipelineID, input.ScheduleID, input.Date); err != nil {
 			d.Logger.WarnContext(ctx, "failed to capture post-run baseline",
 				"pipeline", input.PipelineID, "error", err)
+			if pubErr := publishEvent(ctx, d, string(types.EventBaselineCaptureFailed), input.PipelineID, input.ScheduleID, input.Date,
+				fmt.Sprintf("baseline capture failed for %s: %v", input.PipelineID, err)); pubErr != nil {
+				d.Logger.WarnContext(ctx, "failed to publish baseline capture failure event", "error", pubErr)
+			}
 		}
 	}
 
