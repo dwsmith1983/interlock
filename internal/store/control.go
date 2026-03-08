@@ -20,9 +20,8 @@ import (
 func (s *Store) ScanConfigs(ctx context.Context) (map[string]*types.PipelineConfig, error) {
 	configs := make(map[string]*types.PipelineConfig)
 
-	var startKey map[string]ddbtypes.AttributeValue
-	for {
-		input := &dynamodb.ScanInput{
+	err := ScanAll(ctx, s.Client, func(startKey map[string]ddbtypes.AttributeValue) *dynamodb.ScanInput {
+		return &dynamodb.ScanInput{
 			TableName:        &s.ControlTable,
 			FilterExpression: aws.String("SK = :sk"),
 			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
@@ -30,50 +29,43 @@ func (s *Store) ScanConfigs(ctx context.Context) (map[string]*types.PipelineConf
 			},
 			ExclusiveStartKey: startKey,
 		}
-
-		out, err := s.Client.Scan(ctx, input)
-		if err != nil {
-			return nil, fmt.Errorf("scan configs: %w", err)
-		}
-
-		for _, item := range out.Items {
+	}, func(items []map[string]ddbtypes.AttributeValue) error {
+		for _, item := range items {
 			pkAttr, ok := item["PK"]
 			if !ok {
-				return nil, fmt.Errorf("scan configs: row missing PK attribute")
+				return fmt.Errorf("scan configs: row missing PK attribute")
 			}
 			pkStr, ok := pkAttr.(*ddbtypes.AttributeValueMemberS)
 			if !ok {
-				return nil, fmt.Errorf("scan configs: PK is not a string")
+				return fmt.Errorf("scan configs: PK is not a string")
 			}
 
 			const prefix = "PIPELINE#"
 			if len(pkStr.Value) <= len(prefix) {
-				return nil, fmt.Errorf("scan configs: invalid PK %q", pkStr.Value)
+				return fmt.Errorf("scan configs: invalid PK %q", pkStr.Value)
 			}
 			pipelineID := pkStr.Value[len(prefix):]
 
 			configAttr, ok := item["config"]
 			if !ok {
-				return nil, fmt.Errorf("scan configs: config attribute missing for %q", pipelineID)
+				return fmt.Errorf("scan configs: config attribute missing for %q", pipelineID)
 			}
 			configStr, ok := configAttr.(*ddbtypes.AttributeValueMemberS)
 			if !ok {
-				return nil, fmt.Errorf("scan configs: config is not a string for %q", pipelineID)
+				return fmt.Errorf("scan configs: config is not a string for %q", pipelineID)
 			}
 
 			var cfg types.PipelineConfig
 			if err := json.Unmarshal([]byte(configStr.Value), &cfg); err != nil {
-				return nil, fmt.Errorf("scan configs: unmarshal config for %q: %w", pipelineID, err)
+				return fmt.Errorf("scan configs: unmarshal config for %q: %w", pipelineID, err)
 			}
 			configs[pipelineID] = &cfg
 		}
-
-		if out.LastEvaluatedKey == nil {
-			break
-		}
-		startKey = out.LastEvaluatedKey
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan configs: %w", err)
 	}
-
 	return configs, nil
 }
 
@@ -162,9 +154,8 @@ func (s *Store) GetSensorData(ctx context.Context, pipelineID, sensorKey string)
 func (s *Store) GetAllSensors(ctx context.Context, pipelineID string) (map[string]map[string]interface{}, error) {
 	result := make(map[string]map[string]interface{})
 
-	var startKey map[string]ddbtypes.AttributeValue
-	for {
-		input := &dynamodb.QueryInput{
+	err := QueryAll(ctx, s.Client, func(startKey map[string]ddbtypes.AttributeValue) *dynamodb.QueryInput {
+		return &dynamodb.QueryInput{
 			TableName:              &s.ControlTable,
 			ConsistentRead:         aws.Bool(true),
 			KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
@@ -174,29 +165,22 @@ func (s *Store) GetAllSensors(ctx context.Context, pipelineID string) (map[strin
 			},
 			ExclusiveStartKey: startKey,
 		}
-
-		out, err := s.Client.Query(ctx, input)
-		if err != nil {
-			return nil, fmt.Errorf("query sensors for %q: %w", pipelineID, err)
-		}
-
-		for _, item := range out.Items {
+	}, func(items []map[string]ddbtypes.AttributeValue) error {
+		for _, item := range items {
 			var rec types.ControlRecord
 			if err := attributevalue.UnmarshalMap(item, &rec); err != nil {
-				return nil, fmt.Errorf("unmarshal sensor row: %w", err)
+				return fmt.Errorf("unmarshal sensor row: %w", err)
 			}
-			// Extract the sensor key from the SK: "SENSOR#<key>"
 			const prefix = "SENSOR#"
 			if len(rec.SK) > len(prefix) {
 				key := rec.SK[len(prefix):]
 				result[key] = rec.Data
 			}
 		}
-
-		if out.LastEvaluatedKey == nil {
-			break
-		}
-		startKey = out.LastEvaluatedKey
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query sensors for %q: %w", pipelineID, err)
 	}
 	return result, nil
 }
@@ -304,9 +288,8 @@ func (s *Store) ReleaseTriggerLock(ctx context.Context, pipelineID, schedule, da
 func (s *Store) ScanRunningTriggers(ctx context.Context) ([]types.ControlRecord, error) {
 	var records []types.ControlRecord
 
-	var startKey map[string]ddbtypes.AttributeValue
-	for {
-		input := &dynamodb.ScanInput{
+	err := ScanAll(ctx, s.Client, func(startKey map[string]ddbtypes.AttributeValue) *dynamodb.ScanInput {
+		return &dynamodb.ScanInput{
 			TableName:        &s.ControlTable,
 			FilterExpression: aws.String("begins_with(SK, :prefix) AND #status = :running"),
 			ExpressionAttributeNames: map[string]string{
@@ -318,24 +301,18 @@ func (s *Store) ScanRunningTriggers(ctx context.Context) ([]types.ControlRecord,
 			},
 			ExclusiveStartKey: startKey,
 		}
-
-		out, err := s.Client.Scan(ctx, input)
-		if err != nil {
-			return nil, fmt.Errorf("scan running triggers: %w", err)
-		}
-
-		for _, item := range out.Items {
+	}, func(items []map[string]ddbtypes.AttributeValue) error {
+		for _, item := range items {
 			var rec types.ControlRecord
 			if err := attributevalue.UnmarshalMap(item, &rec); err != nil {
-				return nil, fmt.Errorf("unmarshal trigger row: %w", err)
+				return fmt.Errorf("unmarshal trigger row: %w", err)
 			}
 			records = append(records, rec)
 		}
-
-		if out.LastEvaluatedKey == nil {
-			break
-		}
-		startKey = out.LastEvaluatedKey
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan running triggers: %w", err)
 	}
 	return records, nil
 }
