@@ -421,3 +421,71 @@ func TestConfigCache_GetAll_ReturnsDeepCopy(t *testing.T) {
 		t.Errorf("owner = %q, want %q (cache was mutated)", configs2["pipe-1"].Pipeline.Owner, "original-owner")
 	}
 }
+
+func TestConfigCache_GetAll_ReturnsDeepCopyNested(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	seedConfig(mock, types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "nested-pipe", Owner: "team-x"},
+		Job: types.JobConfig{
+			Type:   "glue",
+			Config: map[string]interface{}{"key": "value"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         "14:00",
+			ExpectedDuration: "30m",
+			Critical:         false,
+		},
+	})
+
+	cache := NewConfigCache(s, 5*time.Minute)
+
+	// First call: retrieve configs.
+	configs1, err := cache.GetAll(context.Background())
+	if err != nil {
+		t.Fatalf("first GetAll: %v", err)
+	}
+
+	cfg1 := configs1["nested-pipe"]
+	if cfg1 == nil {
+		t.Fatal("expected nested-pipe config, got nil")
+	}
+
+	// Mutate nested map (simulates what InjectDateArgs does).
+	cfg1.Job.Config["injected"] = "corrupted"
+
+	// Mutate nested pointer field.
+	cfg1.SLA.Critical = true
+	cfg1.SLA.Deadline = "23:59"
+
+	// Second call: cache must be unaffected.
+	configs2, err := cache.GetAll(context.Background())
+	if err != nil {
+		t.Fatalf("second GetAll: %v", err)
+	}
+
+	cfg2 := configs2["nested-pipe"]
+	if cfg2 == nil {
+		t.Fatal("expected nested-pipe config on second call, got nil")
+	}
+
+	// Verify Job.Config map was not corrupted.
+	if _, ok := cfg2.Job.Config["injected"]; ok {
+		t.Error("Job.Config mutation leaked into cache: 'injected' key should not exist")
+	}
+	if cfg2.Job.Config["key"] != "value" {
+		t.Errorf("Job.Config[\"key\"] = %v, want %q", cfg2.Job.Config["key"], "value")
+	}
+
+	// Verify SLA pointer field was not corrupted.
+	if cfg2.SLA == nil {
+		t.Fatal("SLA should not be nil")
+	}
+	if cfg2.SLA.Critical != false {
+		t.Error("SLA.Critical mutation leaked into cache: want false")
+	}
+	if cfg2.SLA.Deadline != "14:00" {
+		t.Errorf("SLA.Deadline = %q, want %q (cache was mutated)", cfg2.SLA.Deadline, "14:00")
+	}
+}
