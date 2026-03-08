@@ -209,6 +209,37 @@ The framework validates all retry and timeout fields at config load time. Invali
 | `maxManualReruns` | 0--5 |
 | `jobPollWindowSeconds` | 60--86400 (0 = use default) |
 
+## Post-Run Monitoring
+
+Optional post-run rules are evaluated reactively when sensor data arrives after job completion. Unlike pre-trigger validation (which runs in the Step Function), post-run monitoring is entirely event-driven via DynamoDB Streams.
+
+```yaml
+postRun:
+  rules:
+    - key: output-row-count
+      check: gte
+      field: count
+      value: 1000
+  driftThreshold: 10
+  sensorTimeout: "2h"
+```
+
+### Post-Run Fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `rules` | list | -- (required) | Validation rules using the same syntax as pre-trigger rules. Uses `ALL` mode. |
+| `driftThreshold` | float* | `0` | Minimum sensor count change to trigger a drift rerun. Set to `0` for any change. |
+| `sensorTimeout` | string | `"2h"` | Grace period after job completion before the watchdog alerts on missing sensors. |
+
+### How It Works
+
+1. When a job completes successfully, the orchestrator captures a date-scoped baseline of all sensor values.
+2. When a sensor matching a `postRun.rules[].key` arrives via DynamoDB Stream:
+   - **Trigger RUNNING**: drift is logged as `POST_RUN_DRIFT_INFLIGHT` (informational, no rerun)
+   - **Trigger COMPLETED**: sensor count is compared against the baseline. Drift above `driftThreshold` triggers a rerun via the circuit breaker
+3. If no post-run sensor arrives within `sensorTimeout`, the watchdog publishes `POST_RUN_SENSOR_MISSING`.
+
 ## Pushing Sensor Data
 
 The framework reads sensor data from DynamoDB but does not write it. External processes are responsible for pushing sensor values. Write a sensor record to the control table:
