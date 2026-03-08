@@ -191,7 +191,11 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 	}
 
 	// Calendar exclusion check: skip retry if the execution date is excluded.
+	// Mark trigger as terminal so the lock doesn't silently expire via TTL.
 	if isExcludedDate(cfg, date) {
+		if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, types.TriggerStatusFailedFinal); err != nil {
+			d.Logger.WarnContext(ctx, "failed to set trigger status after calendar exclusion", "error", err)
+		}
 		if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, schedule, date,
 			fmt.Sprintf("job failure retry skipped for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
@@ -348,17 +352,9 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		return nil
 	}
 
-	// --- Acceptance: write rerun record FIRST (before lock release) ---
+	// --- Acceptance: write rerun record FIRST (before lock reset) ---
 	if _, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, reason, ""); err != nil {
 		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
-	}
-
-	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
-		types.JobEventRerunAccepted, "", 0, "")
-
-	if pubErr := publishEvent(ctx, d, string(types.EventRerunAccepted), pipelineID, schedule, date,
-		fmt.Sprintf("rerun accepted for %s (reason: %s)", pipelineID, reason)); pubErr != nil {
-		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunAccepted, "error", pubErr)
 	}
 
 	// Delete date-scoped postrun-baseline so re-run captures fresh baseline.
@@ -379,6 +375,15 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		d.Logger.Warn("failed to reset trigger lock, orphaned rerun record",
 			"pipelineId", pipelineID, "schedule", schedule, "date", date)
 		return nil
+	}
+
+	// Publish acceptance event only after lock atomicity is confirmed.
+	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+		types.JobEventRerunAccepted, "", 0, "")
+
+	if pubErr := publishEvent(ctx, d, string(types.EventRerunAccepted), pipelineID, schedule, date,
+		fmt.Sprintf("rerun accepted for %s (reason: %s)", pipelineID, reason)); pubErr != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunAccepted, "error", pubErr)
 	}
 
 	execName := truncateExecName(fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, time.Now().Unix()))
@@ -735,6 +740,10 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 			// Trigger rerun via the existing circuit breaker path only if the
 			// execution date is not excluded by the pipeline's calendar config.
 			if isExcludedDate(cfg, date) {
+				if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleID, date,
+					fmt.Sprintf("post-run drift rerun skipped for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
+					d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
+				}
 				d.Logger.InfoContext(ctx, "post-run drift rerun skipped: execution date excluded by calendar",
 					"pipelineId", pipelineID, "date", date)
 			} else {

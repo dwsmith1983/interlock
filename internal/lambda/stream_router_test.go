@@ -3292,12 +3292,12 @@ func TestRerunRequest_LockResetFails_PublishesInfraFailure(t *testing.T) {
 	sfnMock.mu.Unlock()
 	assert.Equal(t, 0, sfnExecs, "no SFN when lock reset fails")
 
-	// Must publish RERUN_ACCEPTED then INFRA_FAILURE events.
+	// Only INFRA_FAILURE — RERUN_ACCEPTED is emitted after lock reset, which
+	// did not succeed here.
 	ebMock.mu.Lock()
 	defer ebMock.mu.Unlock()
-	require.Len(t, ebMock.events, 2, "expected RERUN_ACCEPTED + INFRA_FAILURE events")
-	assert.Equal(t, string(types.EventRerunAccepted), *ebMock.events[0].Entries[0].DetailType)
-	assert.Equal(t, string(types.EventInfraFailure), *ebMock.events[1].Entries[0].DetailType)
+	require.Len(t, ebMock.events, 1, "expected one INFRA_FAILURE event")
+	assert.Equal(t, string(types.EventInfraFailure), *ebMock.events[0].Entries[0].DetailType)
 }
 
 // TestJobFailure_SFNStartFails_ReleasesLock verifies that when the SFN
@@ -3656,6 +3656,16 @@ func TestPostRunDrift_CalendarExclusion(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "POST_RUN_DRIFT event must be published even when execution date is excluded")
+
+	// PIPELINE_EXCLUDED event must be published when drift rerun is skipped.
+	excludedFound := false
+	for _, evt := range ebMock.events {
+		if *evt.Entries[0].DetailType == string(types.EventPipelineExcluded) {
+			excludedFound = true
+			break
+		}
+	}
+	assert.True(t, excludedFound, "PIPELINE_EXCLUDED event must be published when drift rerun is skipped by calendar")
 
 	rerunKey := ddbItemKey(testControlTable, types.PipelinePK("gold-revenue"), types.RerunRequestSK("stream", "2026-03-01"))
 	mock.mu.Lock()
