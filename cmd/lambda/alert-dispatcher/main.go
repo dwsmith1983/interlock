@@ -75,6 +75,11 @@ func main() {
 		deps.SlackBotToken = token
 	}
 
+	if deps.SlackBotToken == "" {
+		logger.Error("no Slack token configured: set SLACK_BOT_TOKEN or SLACK_SECRET_ARN")
+		os.Exit(1)
+	}
+
 	lambda.Start(func(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
 		return ilambda.HandleAlertDispatcher(ctx, deps, sqsEvent)
 	})
