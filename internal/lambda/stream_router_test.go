@@ -1655,16 +1655,13 @@ func TestJobFailure_NoConfig(t *testing.T) {
 // buildSFNConfig (tested indirectly through SFN input payload)
 // ---------------------------------------------------------------------------
 
-func TestBuildSFNConfig_WithPostRun(t *testing.T) {
+func TestBuildSFNConfig_NoPostRunFields(t *testing.T) {
+	// SFN config should not contain post-run fields (post-run is now stream-driven).
 	mock := newMockDDB()
 	d, sfnMock, _ := testDeps(mock)
 
 	cfg := testStreamConfig()
 	cfg.PostRun = &types.PostRunConfig{
-		Evaluation: &types.EvaluationWindow{
-			Interval: "10m",
-			Window:   "1h",
-		},
 		Rules: []types.ValidationRule{
 			{Key: "quality-check", Check: types.CheckExists},
 		},
@@ -1686,70 +1683,14 @@ func TestBuildSFNConfig_WithPostRun(t *testing.T) {
 	var input map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
 	cfgMap := input["config"].(map[string]interface{})
-	assert.Equal(t, true, cfgMap["hasPostRun"])
-	assert.Equal(t, float64(600), cfgMap["postRunIntervalSeconds"]) // 10m = 600s
-	assert.Equal(t, float64(3600), cfgMap["postRunWindowSeconds"])  // 1h = 3600s
-}
 
-func TestBuildSFNConfig_WithoutPostRun(t *testing.T) {
-	mock := newMockDDB()
-	d, sfnMock, _ := testDeps(mock)
-
-	cfg := testStreamConfig() // no PostRun
-	seedConfig(mock, cfg)
-
-	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
-		"status": events.NewStringAttribute("ready"),
-	})
-	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
-
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
-	require.NoError(t, err)
-
-	sfnMock.mu.Lock()
-	defer sfnMock.mu.Unlock()
-	require.Len(t, sfnMock.executions, 1)
-
-	var input map[string]interface{}
-	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
-	cfgMap := input["config"].(map[string]interface{})
-	assert.Equal(t, false, cfgMap["hasPostRun"])
-	// postRunIntervalSeconds and postRunWindowSeconds should be omitted (zero value).
+	// Post-run fields should NOT be in SFN config.
+	_, hasPostRun := cfgMap["hasPostRun"]
+	assert.False(t, hasPostRun, "hasPostRun should not be in SFN config")
 	_, hasPostInterval := cfgMap["postRunIntervalSeconds"]
-	assert.False(t, hasPostInterval, "postRunIntervalSeconds should be omitted when no PostRun")
-}
-
-func TestBuildSFNConfig_PostRunDefaults(t *testing.T) {
-	mock := newMockDDB()
-	d, sfnMock, _ := testDeps(mock)
-
-	cfg := testStreamConfig()
-	cfg.PostRun = &types.PostRunConfig{
-		// No Evaluation block — should use defaults (30m interval, 2h window).
-		Rules: []types.ValidationRule{
-			{Key: "quality-check", Check: types.CheckExists},
-		},
-	}
-	seedConfig(mock, cfg)
-
-	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
-		"status": events.NewStringAttribute("ready"),
-	})
-	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
-
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
-	require.NoError(t, err)
-
-	sfnMock.mu.Lock()
-	defer sfnMock.mu.Unlock()
-	require.Len(t, sfnMock.executions, 1)
-
-	var input map[string]interface{}
-	require.NoError(t, json.Unmarshal([]byte(*sfnMock.executions[0].Input), &input))
-	cfgMap := input["config"].(map[string]interface{})
-	assert.Equal(t, true, cfgMap["hasPostRun"])
-	assert.Equal(t, float64(1800), cfgMap["postRunIntervalSeconds"]) // 30m default
-	assert.Equal(t, float64(7200), cfgMap["postRunWindowSeconds"])   // 2h default
+	assert.False(t, hasPostInterval, "postRunIntervalSeconds should not be in SFN config")
+	_, hasPostWindow := cfgMap["postRunWindowSeconds"]
+	assert.False(t, hasPostWindow, "postRunWindowSeconds should not be in SFN config")
 }
 
 func TestBuildSFNConfig_CustomTimings(t *testing.T) {
@@ -1760,15 +1701,6 @@ func TestBuildSFNConfig_CustomTimings(t *testing.T) {
 	cfg.Schedule.Evaluation = types.EvaluationWindow{
 		Interval: "2m",
 		Window:   "30m",
-	}
-	cfg.PostRun = &types.PostRunConfig{
-		Evaluation: &types.EvaluationWindow{
-			Interval: "15m",
-			Window:   "3h",
-		},
-		Rules: []types.ValidationRule{
-			{Key: "quality-check", Check: types.CheckExists},
-		},
 	}
 	seedConfig(mock, cfg)
 
@@ -1790,8 +1722,6 @@ func TestBuildSFNConfig_CustomTimings(t *testing.T) {
 
 	assert.Equal(t, float64(120), cfgMap["evaluationIntervalSeconds"]) // 2m = 120s
 	assert.Equal(t, float64(1800), cfgMap["evaluationWindowSeconds"])  // 30m = 1800s
-	assert.Equal(t, float64(900), cfgMap["postRunIntervalSeconds"])    // 15m = 900s
-	assert.Equal(t, float64(10800), cfgMap["postRunWindowSeconds"])    // 3h = 10800s
 }
 
 func TestBuildSFNConfig_WithSLA(t *testing.T) {
@@ -2699,13 +2629,13 @@ func TestRerun_DeletesPostrunBaseline(t *testing.T) {
 	// Seed a failed job so circuit breaker allows the rerun.
 	seedJobEvent(mock, "1709280000000", types.JobEventFail)
 
-	// Seed a postrun-baseline sensor that should be deleted on rerun acceptance.
-	seedSensor(mock, "gold-revenue", "postrun-baseline", map[string]interface{}{
+	// Seed a date-scoped postrun-baseline sensor that should be deleted on rerun acceptance.
+	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
 		"status": "captured",
 	})
 
 	// Verify the sensor exists before the rerun.
-	sensorKey := ddbItemKey(testControlTable, types.PipelinePK("gold-revenue"), types.SensorSK("postrun-baseline"))
+	sensorKey := ddbItemKey(testControlTable, types.PipelinePK("gold-revenue"), types.SensorSK("postrun-baseline#2026-03-01"))
 	mock.mu.Lock()
 	_, sensorExists := mock.items[sensorKey]
 	mock.mu.Unlock()
@@ -2851,4 +2781,249 @@ func TestResolveTriggerLockTTL_NegativeFallsBackToDefault(t *testing.T) {
 	t.Setenv("SFN_TIMEOUT_SECONDS", "-100")
 	got := lambda.ResolveTriggerLockTTL()
 	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
+}
+
+// ---------------------------------------------------------------------------
+// Stream-based post-run evaluation tests
+// ---------------------------------------------------------------------------
+
+// seedTriggerWithStatus inserts a trigger row with a specific status.
+func seedTriggerWithStatus(mock *mockDDB, pipelineID, schedule, date, status string) {
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: status},
+	})
+}
+
+// postRunConfig returns a PipelineConfig with stream trigger + post-run rules.
+func postRunConfig() types.PipelineConfig {
+	return types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{
+				Window:   "1h",
+				Interval: "5m",
+			},
+		},
+		Validation: types.ValidationConfig{
+			Trigger: "ALL",
+			Rules:   []types.ValidationRule{{Key: "upstream-complete", Check: types.CheckExists}},
+		},
+		Job: types.JobConfig{
+			Type:   "command",
+			Config: map[string]interface{}{"command": "echo hello"},
+		},
+		PostRun: &types.PostRunConfig{
+			Rules: []types.ValidationRule{
+				{Key: "audit-result", Check: types.CheckGTE, Field: "sensor_count", Value: float64(100)},
+			},
+		},
+	}
+}
+
+func TestPostRunSensor_Completed_DriftDetected(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := postRunConfig()
+	seedConfig(mock, cfg)
+	seedTriggerWithStatus(mock, "gold-revenue", "stream", "2026-03-01", types.TriggerStatusCompleted)
+
+	// Seed baseline captured at completion time.
+	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+		"sensor_count": float64(100),
+	})
+
+	// Sensor arrives with different count → drift.
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("150"),
+			"date":         events.NewStringAttribute("2026-03-01"),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should publish POST_RUN_DRIFT event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	found := false
+	for _, evt := range ebMock.events {
+		if *evt.Entries[0].DetailType == string(types.EventPostRunDrift) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected POST_RUN_DRIFT event")
+
+	// Should write rerun request.
+	rerunKey := ddbItemKey(testControlTable, types.PipelinePK("gold-revenue"), types.RerunRequestSK("stream", "2026-03-01"))
+	mock.mu.Lock()
+	_, rerunExists := mock.items[rerunKey]
+	mock.mu.Unlock()
+	assert.True(t, rerunExists, "expected rerun request to be written on drift")
+}
+
+func TestPostRunSensor_Completed_NoDrift_RulesPass(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := postRunConfig()
+	seedConfig(mock, cfg)
+	seedTriggerWithStatus(mock, "gold-revenue", "stream", "2026-03-01", types.TriggerStatusCompleted)
+
+	// Baseline with same count as incoming sensor.
+	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+		"sensor_count": float64(150),
+	})
+	// Seed the actual sensor so EvaluateRules can find it.
+	seedSensor(mock, "gold-revenue", "audit-result", map[string]interface{}{
+		"sensor_count": float64(150),
+	})
+
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("150"),
+			"date":         events.NewStringAttribute("2026-03-01"),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should publish POST_RUN_PASSED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	found := false
+	for _, evt := range ebMock.events {
+		if *evt.Entries[0].DetailType == string(types.EventPostRunPassed) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected POST_RUN_PASSED event")
+}
+
+func TestPostRunSensor_Running_InflightDrift(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := postRunConfig()
+	seedConfig(mock, cfg)
+	seedTriggerWithStatus(mock, "gold-revenue", "stream", "2026-03-01", types.TriggerStatusRunning)
+
+	// Baseline from a previous run.
+	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+		"sensor_count": float64(100),
+	})
+
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("200"),
+			"date":         events.NewStringAttribute("2026-03-01"),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Should publish informational POST_RUN_DRIFT_INFLIGHT event (no rerun).
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	found := false
+	for _, evt := range ebMock.events {
+		if *evt.Entries[0].DetailType == string(types.EventPostRunDriftInflight) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected POST_RUN_DRIFT_INFLIGHT event")
+
+	// Should NOT write rerun request when trigger is still running.
+	rerunKey := ddbItemKey(testControlTable, types.PipelinePK("gold-revenue"), types.RerunRequestSK("stream", "2026-03-01"))
+	mock.mu.Lock()
+	_, rerunExists := mock.items[rerunKey]
+	mock.mu.Unlock()
+	assert.False(t, rerunExists, "should NOT write rerun request when trigger is running")
+}
+
+func TestPostRunSensor_FailedFinal_Skipped(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := postRunConfig()
+	seedConfig(mock, cfg)
+	seedTriggerWithStatus(mock, "gold-revenue", "stream", "2026-03-01", types.TriggerStatusFailedFinal)
+
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("200"),
+			"date":         events.NewStringAttribute("2026-03-01"),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No post-run events should be published for FAILED_FINAL trigger.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, evt := range ebMock.events {
+		dt := *evt.Entries[0].DetailType
+		if dt == string(types.EventPostRunDrift) || dt == string(types.EventPostRunPassed) || dt == string(types.EventPostRunFailed) {
+			t.Errorf("unexpected post-run event %q for FAILED_FINAL trigger", dt)
+		}
+	}
+}
+
+func TestPostRunSensor_NoTrigger_Skipped(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	cfg := postRunConfig()
+	seedConfig(mock, cfg)
+	// No trigger seeded for this date.
+
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("200"),
+			"date":         events.NewStringAttribute("2026-03-01"),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No events published when no trigger exists.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	assert.Empty(t, ebMock.events, "no events expected when trigger doesn't exist")
+}
+
+func TestPostRunSensor_NoPostRunConfig_GoesToTrigger(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	// Config WITHOUT post-run rules — non-matching sensor key should be silently ignored.
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("200"),
+			"date":         events.NewStringAttribute("2026-03-01"),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	// No error, just silently ignored.
 }

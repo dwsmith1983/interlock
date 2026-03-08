@@ -22,7 +22,13 @@ const (
 	EventLateDataArrival     EventDetailType = "LATE_DATA_ARRIVAL"
 	EventRerunRejected       EventDetailType = "RERUN_REJECTED"
 	EventTriggerRecovered    EventDetailType = "TRIGGER_RECOVERED"
-	EventDataDrift           EventDetailType = "DATA_DRIFT"
+	EventDataDrift               EventDetailType = "DATA_DRIFT"
+	EventPostRunBaselineCaptured EventDetailType = "POST_RUN_BASELINE_CAPTURED"
+	EventPostRunPassed           EventDetailType = "POST_RUN_PASSED"
+	EventPostRunFailed           EventDetailType = "POST_RUN_FAILED"
+	EventPostRunDrift            EventDetailType = "POST_RUN_DRIFT"
+	EventPostRunDriftInflight    EventDetailType = "POST_RUN_DRIFT_INFLIGHT"
+	EventPostRunSensorMissing    EventDetailType = "POST_RUN_SENSOR_MISSING"
 )
 
 // EventSource is the EventBridge source for all interlock events.

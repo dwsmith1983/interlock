@@ -158,11 +158,6 @@ func runSFN(t *testing.T, ctx context.Context, d *lambda.Deps, mock *mockDDB, eb
 	evalWindow := parseDurationSec(sc.pipeline.Schedule.Evaluation.Window, 3600)
 
 	hasPostRun := sc.pipeline.PostRun != nil && len(sc.pipeline.PostRun.Rules) > 0
-	postRunInterval, postRunWindow := 1800, 7200
-	if hasPostRun && sc.pipeline.PostRun.Evaluation != nil {
-		postRunInterval = parseDurationSec(sc.pipeline.PostRun.Evaluation.Interval, 1800)
-		postRunWindow = parseDurationSec(sc.pipeline.PostRun.Evaluation.Window, 7200)
-	}
 
 	var (
 		result   e2eResult
@@ -266,36 +261,25 @@ func runSFN(t *testing.T, ctx context.Context, d *lambda.Deps, mock *mockDDB, eb
 				}
 			}
 
-			// ── Phase 4: Post-Run ─────────────────────────────────
-			if jobEvent == "success" && hasPostRun {
-				postElapsed := 0
-				for i := 0; ; i++ {
-					if i < len(sc.postRunSensorUpdates) {
-						for key, data := range sc.postRunSensorUpdates[i] {
-							require.NoError(t, d.Store.WriteSensor(ctx, pid, key, data))
-						}
-					}
-					postOut, err := lambda.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
-						Mode: "post-run", PipelineID: pid, ScheduleID: sid, Date: date,
-					})
-					if err != nil {
-						break
-					}
-					if postOut.Status == "drift" || postOut.Status == "passed" {
-						break
-					}
-					if postElapsed >= postRunWindow {
-						break
-					}
-					postElapsed += postRunInterval
-				}
-			}
-
-			// ── Phase 5: CompleteTrigger ──────────────────────────
+			// ── Phase 4: CompleteTrigger (captures baseline if PostRun configured) ──
 			_, _ = lambda.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
 				Mode: "complete-trigger", PipelineID: pid, ScheduleID: sid, Date: date,
 				Event: jobEvent,
 			})
+
+			// ── Phase 5: Stream-based post-run ───────────────────
+			// Simulate sensor updates arriving after completion via DynamoDB Stream.
+			if jobEvent == "success" && hasPostRun && len(sc.postRunSensorUpdates) > 0 {
+				for _, updates := range sc.postRunSensorUpdates {
+					for key, data := range updates {
+						require.NoError(t, d.Store.WriteSensor(ctx, pid, key, data))
+						// Simulate stream event for each sensor update.
+						sensorRecord := makeSensorRecord(pid, key, toStreamAttributes(data))
+						streamEvt := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{sensorRecord}}
+						_ = lambda.HandleStreamEvent(ctx, d, streamEvt)
+					}
+				}
+			}
 		}
 	}
 
@@ -392,6 +376,25 @@ func e2eTriggerStatus(mock *mockDDB, pipelineID string) string {
 		return s.Value
 	}
 	return ""
+}
+
+// toStreamAttributes wraps a data map in the canonical "data" envelope
+// used by extractSensorData for stream-based post-run evaluation.
+func toStreamAttributes(data map[string]interface{}) map[string]events.DynamoDBAttributeValue {
+	inner := make(map[string]events.DynamoDBAttributeValue, len(data))
+	for k, v := range data {
+		switch val := v.(type) {
+		case string:
+			inner[k] = events.NewStringAttribute(val)
+		case float64:
+			inner[k] = events.NewNumberAttribute(fmt.Sprintf("%g", val))
+		case bool:
+			inner[k] = events.NewBooleanAttribute(val)
+		}
+	}
+	return map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(inner),
+	}
 }
 
 func hasRerunRequest(mock *mockDDB, pipelineID string) bool {
@@ -752,7 +755,7 @@ func TestE2E_PostRunMonitoring(t *testing.T) {
 
 		assert.Equal(t, sfnDone, r.terminal)
 		assert.Contains(t, r.events, "JOB_COMPLETED")
-		assert.NotContains(t, r.events, "DATA_DRIFT")
+		assert.NotContains(t, r.events, "POST_RUN_DRIFT")
 		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b1"))
 		assertAlertFormats(t, eb)
 	})
@@ -766,7 +769,7 @@ func TestE2E_PostRunMonitoring(t *testing.T) {
 		cfg := e2ePipeline("pipe-b2")
 		cfg.PostRun = &types.PostRunConfig{
 			Evaluation: &types.EvaluationWindow{Window: "10m", Interval: "5m"},
-			Rules:      []types.ValidationRule{{Key: "quality-check", Check: types.CheckExists}},
+			Rules:      []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
 		}
 
 		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
@@ -777,12 +780,12 @@ func TestE2E_PostRunMonitoring(t *testing.T) {
 			},
 			postRunSensorUpdates: []map[string]map[string]interface{}{
 				{}, // iteration 0: no updates; baseline saved
-				{"audit-result": {"sensor_count": float64(120)}}, // iteration 1: count changed
+				{"audit-result": {"sensor_count": float64(120), "date": "2026-03-07"}}, // iteration 1: count changed
 			},
 		})
 
 		assert.Equal(t, sfnDone, r.terminal)
-		assert.Contains(t, r.events, "DATA_DRIFT")
+		assert.Contains(t, r.events, "POST_RUN_DRIFT")
 		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b2"))
 		assert.True(t, hasRerunRequest(mock, "pipe-b2"), "drift should write RERUN_REQUEST")
 		assertAlertFormats(t, eb)
@@ -806,7 +809,7 @@ func TestE2E_PostRunMonitoring(t *testing.T) {
 		})
 
 		assert.Equal(t, sfnDone, r.terminal)
-		assert.NotContains(t, r.events, "DATA_DRIFT")
+		assert.NotContains(t, r.events, "POST_RUN_DRIFT")
 		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b3"))
 		assertAlertFormats(t, eb)
 	})
@@ -1220,7 +1223,7 @@ func TestE2E_DriftRetrigger(t *testing.T) {
 		cfg := e2ePipeline("pipe-f1")
 		cfg.PostRun = &types.PostRunConfig{
 			Evaluation: &types.EvaluationWindow{Window: "10m", Interval: "5m"},
-			Rules:      []types.ValidationRule{{Key: "quality-check", Check: types.CheckExists}},
+			Rules:      []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
 		}
 
 		// Phase 1: SFN with drift detection
@@ -1232,11 +1235,11 @@ func TestE2E_DriftRetrigger(t *testing.T) {
 			},
 			postRunSensorUpdates: []map[string]map[string]interface{}{
 				{},
-				{"audit-result": {"sensor_count": float64(120)}},
+				{"audit-result": {"sensor_count": float64(120), "date": "2026-03-07"}},
 			},
 		})
 		assert.Equal(t, sfnDone, r.terminal)
-		assert.Contains(t, r.events, "DATA_DRIFT")
+		assert.Contains(t, r.events, "POST_RUN_DRIFT")
 		assert.True(t, hasRerunRequest(mock, "pipe-f1"))
 
 		// Phase 2: Stream-router processes RERUN_REQUEST
@@ -1260,7 +1263,7 @@ func TestE2E_DriftRetrigger(t *testing.T) {
 		cfg := e2ePipeline("pipe-f2")
 		cfg.PostRun = &types.PostRunConfig{
 			Evaluation: &types.EvaluationWindow{Window: "10m", Interval: "5m"},
-			Rules:      []types.ValidationRule{{Key: "quality-check", Check: types.CheckExists}},
+			Rules:      []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
 		}
 
 		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
@@ -1271,11 +1274,11 @@ func TestE2E_DriftRetrigger(t *testing.T) {
 			},
 			postRunSensorUpdates: []map[string]map[string]interface{}{
 				{},
-				{"audit-result": {"sensor_count": float64(80)}},
+				{"audit-result": {"sensor_count": float64(80), "date": "2026-03-07"}},
 			},
 		})
 		assert.Equal(t, sfnDone, r.terminal)
-		assert.Contains(t, r.events, "DATA_DRIFT")
+		assert.Contains(t, r.events, "POST_RUN_DRIFT")
 
 		sfnCountBefore := len(sfnM.executions)
 		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f2"))
@@ -1296,7 +1299,7 @@ func TestE2E_DriftRetrigger(t *testing.T) {
 		cfg := e2ePipeline("pipe-f3")
 		cfg.PostRun = &types.PostRunConfig{
 			Evaluation: &types.EvaluationWindow{Window: "10m", Interval: "5m"},
-			Rules:      []types.ValidationRule{{Key: "quality-check", Check: types.CheckExists}},
+			Rules:      []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
 		}
 
 		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
@@ -1307,11 +1310,11 @@ func TestE2E_DriftRetrigger(t *testing.T) {
 			},
 			postRunSensorUpdates: []map[string]map[string]interface{}{
 				{},
-				{"audit-result": {"sensor_count": float64(250)}},
+				{"audit-result": {"sensor_count": float64(250), "date": "2026-03-07"}},
 			},
 		})
 		assert.Equal(t, sfnDone, r.terminal)
-		assert.Contains(t, r.events, "DATA_DRIFT")
+		assert.Contains(t, r.events, "POST_RUN_DRIFT")
 
 		// Phase 2: verify the RERUN_REQUEST was written, allowing re-trigger
 		sfnCountBefore := len(sfnM.executions)

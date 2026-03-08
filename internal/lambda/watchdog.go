@@ -34,6 +34,9 @@ func HandleWatchdog(ctx context.Context, d *Deps) error {
 	if err := scheduleSLAAlerts(ctx, d); err != nil {
 		d.Logger.Error("proactive SLA scheduling failed", "error", err)
 	}
+	if err := detectMissingPostRunSensors(ctx, d); err != nil {
+		d.Logger.Error("post-run sensor absence detection failed", "error", err)
+	}
 	return nil
 }
 
@@ -461,4 +464,202 @@ func resolveWatchdogSLADate(cfg *types.PipelineConfig, now time.Time) string {
 		return prev.Format("2006-01-02") + "T" + fmt.Sprintf("%02d", prev.Hour())
 	}
 	return now.Format("2006-01-02")
+}
+
+// defaultSensorTimeout is the default grace period for post-run sensors to
+// arrive after a pipeline completes. If no SensorTimeout is configured in
+// PostRunConfig, this value is used.
+const defaultSensorTimeout = 2 * time.Hour
+
+// detectMissingPostRunSensors checks pipelines with PostRun config for missing
+// post-run sensor data. If a pipeline completed (COMPLETED trigger + baseline
+// exists) but no post-run sensor matching a rule key has been updated since
+// completion, and the SensorTimeout grace period has elapsed, a
+// POST_RUN_SENSOR_MISSING event is published.
+func detectMissingPostRunSensors(ctx context.Context, d *Deps) error {
+	configs, err := d.ConfigCache.GetAll(ctx)
+	if err != nil {
+		return fmt.Errorf("load configs: %w", err)
+	}
+
+	now := WatchdogNowFunc()
+	today := now.Format("2006-01-02")
+
+	for id, cfg := range configs {
+		if cfg.PostRun == nil || len(cfg.PostRun.Rules) == 0 {
+			continue
+		}
+
+		scheduleID := resolveScheduleID(cfg)
+
+		// Only check pipelines with a COMPLETED trigger for today.
+		tr, err := d.Store.GetTrigger(ctx, id, scheduleID, today)
+		if err != nil {
+			d.Logger.Error("trigger lookup failed in post-run sensor check",
+				"pipelineId", id, "error", err)
+			continue
+		}
+		if tr == nil || tr.Status != types.TriggerStatusCompleted {
+			continue
+		}
+
+		// Baseline must exist — it signals that capturePostRunBaseline ran
+		// at completion time.
+		baselineKey := "postrun-baseline#" + today
+		baseline, err := d.Store.GetSensorData(ctx, id, baselineKey)
+		if err != nil {
+			d.Logger.Error("baseline lookup failed in post-run sensor check",
+				"pipelineId", id, "error", err)
+			continue
+		}
+		if baseline == nil {
+			continue
+		}
+
+		// Dedup: skip if we already published an alert for this date.
+		dedupKey := "postrun-check#" + today
+		dedupData, err := d.Store.GetSensorData(ctx, id, dedupKey)
+		if err != nil {
+			d.Logger.Error("dedup marker lookup failed in post-run sensor check",
+				"pipelineId", id, "error", err)
+			continue
+		}
+		if dedupData != nil {
+			continue
+		}
+
+		// Determine the completion timestamp from the latest success job event.
+		completionTime, err := resolveCompletionTime(ctx, d, id, scheduleID, today)
+		if err != nil {
+			d.Logger.Error("completion time resolution failed",
+				"pipelineId", id, "error", err)
+			continue
+		}
+		if completionTime.IsZero() {
+			continue
+		}
+
+		// Parse SensorTimeout from config (default 2h).
+		timeout := parseSensorTimeout(cfg.PostRun.SensorTimeout)
+
+		// Check if the timeout has elapsed since completion.
+		if now.Before(completionTime.Add(timeout)) {
+			continue
+		}
+
+		// Check if any post-run rule sensor has been updated since completion.
+		sensors, err := d.Store.GetAllSensors(ctx, id)
+		if err != nil {
+			d.Logger.Error("sensor lookup failed in post-run sensor check",
+				"pipelineId", id, "error", err)
+			continue
+		}
+
+		if hasPostRunSensorUpdate(cfg.PostRun.Rules, sensors, completionTime) {
+			continue
+		}
+
+		// No post-run sensor has arrived within the grace period — publish event.
+		ruleKeys := make([]string, 0, len(cfg.PostRun.Rules))
+		for _, r := range cfg.PostRun.Rules {
+			ruleKeys = append(ruleKeys, r.Key)
+		}
+
+		alertDetail := map[string]interface{}{
+			"source":        "watchdog",
+			"sensorTimeout": cfg.PostRun.SensorTimeout,
+			"ruleKeys":      strings.Join(ruleKeys, ", "),
+			"actionHint":    "post-run sensor data has not arrived within the expected timeout",
+		}
+		_ = publishEvent(ctx, d, string(types.EventPostRunSensorMissing), id, scheduleID, today,
+			fmt.Sprintf("post-run sensor missing for %s on %s", id, today), alertDetail)
+
+		// Write dedup marker to avoid re-alerting on subsequent watchdog runs.
+		_ = d.Store.WriteSensor(ctx, id, dedupKey, map[string]interface{}{
+			"alerted": "true",
+		})
+
+		d.Logger.Info("detected missing post-run sensor",
+			"pipelineId", id,
+			"schedule", scheduleID,
+			"date", today,
+		)
+	}
+	return nil
+}
+
+// resolveCompletionTime extracts the completion timestamp from the latest
+// success job event for the given pipeline/schedule/date. The job event SK
+// has the format JOB#<schedule>#<date>#<timestamp> where timestamp is
+// milliseconds since epoch.
+func resolveCompletionTime(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) (time.Time, error) {
+	rec, err := d.Store.GetLatestJobEvent(ctx, pipelineID, scheduleID, date)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("get latest job event: %w", err)
+	}
+	if rec == nil {
+		return time.Time{}, nil
+	}
+	if rec.Event != types.JobEventSuccess {
+		return time.Time{}, nil
+	}
+
+	// Extract timestamp from SK: JOB#<schedule>#<date>#<timestamp>
+	parts := strings.Split(rec.SK, "#")
+	if len(parts) < 4 {
+		return time.Time{}, fmt.Errorf("unexpected job SK format: %q", rec.SK)
+	}
+	tsMillis, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse job timestamp %q: %w", parts[len(parts)-1], err)
+	}
+	return time.UnixMilli(tsMillis), nil
+}
+
+// parseSensorTimeout parses a duration string from PostRunConfig.SensorTimeout.
+// Returns defaultSensorTimeout (2h) if the string is empty or unparseable.
+func parseSensorTimeout(s string) time.Duration {
+	if s == "" {
+		return defaultSensorTimeout
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return defaultSensorTimeout
+	}
+	return d
+}
+
+// hasPostRunSensorUpdate checks whether any sensor matching a PostRun rule key
+// has an updatedAt timestamp newer than the given completion time.
+func hasPostRunSensorUpdate(rules []types.ValidationRule, sensors map[string]map[string]interface{}, completionTime time.Time) bool {
+	completionMillis := completionTime.UnixMilli()
+
+	for _, rule := range rules {
+		data, ok := sensors[rule.Key]
+		if !ok {
+			continue
+		}
+
+		updatedAt, ok := data["updatedAt"]
+		if !ok {
+			continue
+		}
+
+		var ts int64
+		switch v := updatedAt.(type) {
+		case float64:
+			ts = int64(v)
+		case int64:
+			ts = v
+		case string:
+			ts, _ = strconv.ParseInt(v, 10, 64)
+		default:
+			continue
+		}
+
+		if ts > completionMillis {
+			return true
+		}
+	}
+	return false
 }

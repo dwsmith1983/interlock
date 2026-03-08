@@ -331,9 +331,9 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 		types.JobEventRerunAccepted, "", 0, "")
 
-	// Delete postrun-baseline so re-run SFN builds fresh baseline.
+	// Delete date-scoped postrun-baseline so re-run captures fresh baseline.
 	if cfg.PostRun != nil {
-		_ = d.Store.DeleteSensor(ctx, pipelineID, "postrun-baseline")
+		_ = d.Store.DeleteSensor(ctx, pipelineID, "postrun-baseline#"+date)
 	}
 
 	// Release existing lock and re-acquire for the new execution.
@@ -462,6 +462,11 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	// allows per-period sensor keys like "hourly-status#2026-03-03T18").
 	sensorKey := strings.TrimPrefix(sk, "SENSOR#")
 	if !strings.HasPrefix(sensorKey, trigger.Key) {
+		// Trigger key doesn't match — check if this sensor matches a post-run rule.
+		if cfg.PostRun != nil && matchesPostRunRule(sensorKey, cfg.PostRun.Rules) {
+			sensorData := extractSensorData(record.Change.NewImage)
+			return handlePostRunSensorEvent(ctx, d, cfg, pipelineID, sensorKey, sensorData)
+		}
 		return nil
 	}
 
@@ -573,6 +578,132 @@ func checkLateDataArrival(ctx context.Context, d *Deps, pipelineID, schedule, da
 	return nil
 }
 
+// matchesPostRunRule returns true if the sensor key matches any post-run rule key
+// (prefix match to support per-period sensor keys).
+func matchesPostRunRule(sensorKey string, rules []types.ValidationRule) bool {
+	for _, rule := range rules {
+		if strings.HasPrefix(sensorKey, rule.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+// handlePostRunSensorEvent evaluates post-run rules reactively when a sensor
+// arrives via DynamoDB Stream. Compares current sensor values against the
+// date-scoped baseline captured at trigger completion.
+func handlePostRunSensorEvent(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, sensorKey string, sensorData map[string]interface{}) error {
+	scheduleID := resolveScheduleID(cfg)
+	date := ResolveExecutionDate(sensorData)
+
+	// Consistent read to handle race where sensor stream event arrives
+	// before SFN sets trigger to COMPLETED.
+	trigger, err := d.Store.GetTrigger(ctx, pipelineID, scheduleID, date)
+	if err != nil {
+		return fmt.Errorf("get trigger for post-run: %w", err)
+	}
+	if trigger == nil {
+		return nil // No trigger for this date — not a post-run event.
+	}
+
+	switch trigger.Status {
+	case types.TriggerStatusRunning:
+		// Job still running — evaluate rules for informational drift detection.
+		return handlePostRunInflight(ctx, d, cfg, pipelineID, scheduleID, date, sensorKey, sensorData)
+
+	case types.TriggerStatusCompleted:
+		// Job completed — full post-run evaluation with baseline comparison.
+		return handlePostRunCompleted(ctx, d, cfg, pipelineID, scheduleID, date, sensorData)
+
+	default:
+		// FAILED_FINAL or unknown — skip.
+		return nil
+	}
+}
+
+// handlePostRunInflight evaluates post-run rules while the job is still running.
+// If drift is detected, publishes an informational event but does NOT trigger a rerun.
+func handlePostRunInflight(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, sensorKey string, sensorData map[string]interface{}) error {
+	// Read baseline for comparison.
+	baselineKey := "postrun-baseline#" + date
+	baseline, err := d.Store.GetSensorData(ctx, pipelineID, baselineKey)
+	if err != nil {
+		return fmt.Errorf("get baseline for inflight check: %w", err)
+	}
+	if baseline == nil {
+		return nil // No baseline yet — job hasn't completed once.
+	}
+
+	prevCount := ExtractFloat(baseline, "sensor_count")
+	currCount := ExtractFloat(sensorData, "sensor_count")
+	if prevCount > 0 && currCount > 0 && currCount != prevCount {
+		_ = publishEvent(ctx, d, string(types.EventPostRunDriftInflight), pipelineID, scheduleID, date,
+			fmt.Sprintf("inflight drift detected for %s: %.0f → %.0f (informational)", pipelineID, prevCount, currCount),
+			map[string]interface{}{
+				"previousCount": prevCount,
+				"currentCount":  currCount,
+				"sensorKey":     sensorKey,
+				"source":        "post-run-stream",
+			})
+	}
+	return nil
+}
+
+// handlePostRunCompleted evaluates post-run rules after the job has completed.
+// Compares sensor values against the date-scoped baseline and triggers a rerun
+// if drift is detected.
+func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string, sensorData map[string]interface{}) error {
+	// Read baseline captured at trigger completion.
+	baselineKey := "postrun-baseline#" + date
+	baseline, err := d.Store.GetSensorData(ctx, pipelineID, baselineKey)
+	if err != nil {
+		return fmt.Errorf("get baseline for post-run: %w", err)
+	}
+
+	// Check for data drift if baseline exists.
+	if baseline != nil {
+		prevCount := ExtractFloat(baseline, "sensor_count")
+		currCount := ExtractFloat(sensorData, "sensor_count")
+		if prevCount > 0 && currCount > 0 && currCount != prevCount {
+			delta := currCount - prevCount
+			_ = publishEvent(ctx, d, string(types.EventPostRunDrift), pipelineID, scheduleID, date,
+				fmt.Sprintf("post-run drift detected for %s: %.0f → %.0f records", pipelineID, prevCount, currCount),
+				map[string]interface{}{
+					"previousCount": prevCount,
+					"currentCount":  currCount,
+					"delta":         delta,
+					"source":        "post-run-stream",
+				})
+
+			// Trigger rerun via the existing circuit breaker path.
+			if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, scheduleID, date, "data-drift"); writeErr != nil {
+				d.Logger.WarnContext(ctx, "failed to write rerun request on post-run drift",
+					"pipelineId", pipelineID, "error", writeErr)
+			}
+			return nil
+		}
+	}
+
+	// Evaluate post-run validation rules.
+	sensors, err := d.Store.GetAllSensors(ctx, pipelineID)
+	if err != nil {
+		return fmt.Errorf("get sensors for post-run rules: %w", err)
+	}
+	RemapPerPeriodSensors(sensors, date)
+
+	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, time.Now())
+
+	if result.Passed {
+		_ = publishEvent(ctx, d, string(types.EventPostRunPassed), pipelineID, scheduleID, date,
+			fmt.Sprintf("post-run validation passed for %s", pipelineID))
+	} else {
+		_ = publishEvent(ctx, d, string(types.EventPostRunFailed), pipelineID, scheduleID, date,
+			fmt.Sprintf("post-run validation failed for %s", pipelineID))
+	}
+
+	return nil
+}
+
 // sfnInput is the top-level input for the Step Function state machine.
 // It includes pipeline identity fields and a config block used by Wait states.
 type sfnInput struct {
@@ -588,9 +719,6 @@ type sfnConfig struct {
 	EvaluationWindowSeconds   int              `json:"evaluationWindowSeconds"`
 	JobCheckIntervalSeconds   int              `json:"jobCheckIntervalSeconds"`
 	JobPollWindowSeconds      int              `json:"jobPollWindowSeconds"`
-	PostRunIntervalSeconds    int              `json:"postRunIntervalSeconds,omitempty"`
-	PostRunWindowSeconds      int              `json:"postRunWindowSeconds,omitempty"`
-	HasPostRun                bool             `json:"hasPostRun"`
 	SLA                       *types.SLAConfig `json:"sla,omitempty"`
 }
 
@@ -622,20 +750,6 @@ func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
 		sc.SLA = &sla
 	}
 
-	if cfg.PostRun != nil && len(cfg.PostRun.Rules) > 0 {
-		sc.HasPostRun = true
-		sc.PostRunIntervalSeconds = 1800 // 30m default
-		sc.PostRunWindowSeconds = 7200   // 2h default
-		if cfg.PostRun.Evaluation != nil {
-			if d, err := time.ParseDuration(cfg.PostRun.Evaluation.Interval); err == nil && d > 0 {
-				sc.PostRunIntervalSeconds = int(d.Seconds())
-			}
-			if d, err := time.ParseDuration(cfg.PostRun.Evaluation.Window); err == nil && d > 0 {
-				sc.PostRunWindowSeconds = int(d.Seconds())
-			}
-		}
-	}
-
 	return sc
 }
 
@@ -651,15 +765,14 @@ func startSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineI
 func startSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, name string) error {
 	sc := buildSFNConfig(cfg)
 
-	// Warn if the sum of evaluation + poll + post-run windows exceeds the SFN timeout.
-	totalWindowSec := sc.EvaluationWindowSeconds + sc.JobPollWindowSeconds + sc.PostRunWindowSeconds
+	// Warn if the sum of evaluation + poll windows exceeds the SFN timeout.
+	totalWindowSec := sc.EvaluationWindowSeconds + sc.JobPollWindowSeconds
 	sfnTimeout := ResolveTriggerLockTTL() - 30*time.Minute // strip the buffer to get raw SFN timeout
 	if sfnTimeout > 0 && time.Duration(totalWindowSec)*time.Second > sfnTimeout {
 		d.Logger.Warn("combined pipeline windows exceed SFN timeout",
 			"pipelineId", pipelineID,
 			"evalWindowSec", sc.EvaluationWindowSeconds,
 			"jobPollWindowSec", sc.JobPollWindowSeconds,
-			"postRunWindowSec", sc.PostRunWindowSeconds,
 			"totalWindowSec", totalWindowSec,
 			"sfnTimeoutSec", int(sfnTimeout.Seconds()),
 		)
