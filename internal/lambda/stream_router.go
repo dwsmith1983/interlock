@@ -182,7 +182,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		Field: trigger.Field,
 		Value: trigger.Value,
 	}
-	result := validation.EvaluateRule(rule, sensorData, time.Now())
+	result := validation.EvaluateRule(rule, sensorData, d.now())
 	if !result.Passed {
 		d.Logger.Info("trigger condition not met",
 			"pipelineId", pipelineID,
@@ -193,14 +193,14 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	}
 
 	// Check calendar exclusions (wall-clock date).
-	now := time.Now()
+	now := d.now()
 	if isExcluded(cfg, now) {
 		d.Logger.Info("pipeline excluded by calendar",
 			"pipelineId", pipelineID,
 			"date", now.Format("2006-01-02"),
 		)
 		scheduleIDForEvent := resolveScheduleID(cfg)
-		dateForEvent := ResolveExecutionDate(sensorData)
+		dateForEvent := ResolveExecutionDate(sensorData, d.now())
 		if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleIDForEvent, dateForEvent,
 			fmt.Sprintf("sensor trigger suppressed for %s: wall-clock date excluded by calendar", pipelineID)); pubErr != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
@@ -210,7 +210,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 
 	// Resolve schedule ID and date.
 	scheduleID := resolveScheduleID(cfg)
-	date := ResolveExecutionDate(sensorData)
+	date := ResolveExecutionDate(sensorData, d.now())
 
 	// Acquire trigger lock to prevent duplicate executions.
 	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, scheduleID, date, ResolveTriggerLockTTL())
@@ -232,6 +232,9 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 
 	// Start Step Function execution.
 	if err := startSFN(ctx, d, cfg, pipelineID, scheduleID, date); err != nil {
+		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, scheduleID, date); relErr != nil {
+			d.Logger.Warn("failed to release lock after SFN start failure", "error", relErr)
+		}
 		return fmt.Errorf("start SFN for %q: %w", pipelineID, err)
 	}
 
