@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-03-08
+
+### Added
+
+- **Lambda trigger type**: New `TriggerLambda` type for direct AWS Lambda SDK invocation (`RequestResponse`). Includes `LambdaTriggerConfig` with `functionName` and optional `payload` (supports env-var expansion). Non-polling `CheckStatus`. Useful when the orchestrator can invoke Lambda directly instead of going through function URLs.
+- **Non-polling trigger synchronous completion**: `handleTrigger` now writes a success joblog entry immediately for non-polling triggers (http, command, lambda) and returns a sentinel `runId` so the Step Functions `CheckJob` JSONPath resolves. Previously, non-polling triggers that succeeded would crash the SFN because `$.triggerResult.runId` was omitted via `omitempty`.
+
 ## [0.6.1] - 2026-03-08
 
 ### Fixed
