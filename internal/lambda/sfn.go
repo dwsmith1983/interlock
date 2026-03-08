@@ -73,7 +73,7 @@ func truncateExecName(name string) string {
 // The name includes a Unix timestamp suffix to avoid ExecutionAlreadyExists
 // errors when a previous execution for the same pipeline/schedule/date failed.
 func startSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string) error {
-	name := truncateExecName(fmt.Sprintf("%s-%s-%s-%d", pipelineID, scheduleID, date, time.Now().Unix()))
+	name := truncateExecName(fmt.Sprintf("%s-%s-%s-%d", pipelineID, scheduleID, date, d.now().Unix()))
 	return startSFNWithName(ctx, d, cfg, pipelineID, scheduleID, date, name)
 }
 
