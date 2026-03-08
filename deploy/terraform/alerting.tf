@@ -33,7 +33,10 @@ resource "aws_sqs_queue_policy" "alert" {
       Resource  = aws_sqs_queue.alert.arn
       Condition = {
         ArnEquals = {
-          "aws:SourceArn" = aws_cloudwatch_event_rule.alert_events.arn
+          "aws:SourceArn" = [
+            aws_cloudwatch_event_rule.alert_events.arn,
+            aws_cloudwatch_event_rule.cw_alarm_alert.arn,
+          ]
         }
       }
     }]
