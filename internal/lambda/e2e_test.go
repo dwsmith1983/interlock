@@ -1948,7 +1948,7 @@ func resetEventBridge(eb *mockEventBridge) {
 // successful job event, and fresh sensor data (for circuit breaker freshness check).
 func seedCompletedPipelineE2E(t *testing.T, ctx context.Context, d *lambda.Deps, mock *mockDDB, pipelineID, date string) {
 	t.Helper()
-	seedTriggerWithStatus(mock, pipelineID, "stream", date, types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, pipelineID, date, types.TriggerStatusCompleted)
 	oldTS := fmt.Sprintf("%d", time.Now().Add(-1*time.Hour).UnixMilli())
 	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
 		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
@@ -2055,7 +2055,7 @@ func TestE2E_PostRunInflight(t *testing.T) {
 			Rules: []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
 		}
 		seedConfig(mock, cfg)
-		seedTriggerWithStatus(mock, "pipe-inf1", "stream", "2026-03-07", types.TriggerStatusRunning)
+		seedTriggerWithStatus(mock, "pipe-inf1", "2026-03-07", types.TriggerStatusRunning)
 
 		// Baseline from a previous run.
 		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-inf1", "postrun-baseline#2026-03-07",
@@ -2085,7 +2085,7 @@ func TestE2E_PostRunInflight(t *testing.T) {
 			Rules: []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
 		}
 		seedConfig(mock, cfg)
-		seedTriggerWithStatus(mock, "pipe-inf2", "stream", "2026-03-07", types.TriggerStatusRunning)
+		seedTriggerWithStatus(mock, "pipe-inf2", "2026-03-07", types.TriggerStatusRunning)
 
 		// Baseline matches incoming sensor — no drift.
 		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-inf2", "postrun-baseline#2026-03-07",
@@ -2267,7 +2267,7 @@ func TestE2E_PostRunBeforeBaseline(t *testing.T) {
 			Rules: []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
 		}
 		seedConfig(mock, cfg)
-		seedTriggerWithStatus(mock, "pipe-nb1", "stream", "2026-03-07", types.TriggerStatusRunning)
+		seedTriggerWithStatus(mock, "pipe-nb1", "2026-03-07", types.TriggerStatusRunning)
 		// No baseline — job hasn't completed yet.
 
 		record := makeSensorRecord("pipe-nb1", "audit-result", toStreamAttributes(map[string]interface{}{

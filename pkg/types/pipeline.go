@@ -108,6 +108,6 @@ func IntOrDefault(p *int, def int) int {
 type PostRunConfig struct {
 	Evaluation     *EvaluationWindow `yaml:"evaluation,omitempty" json:"evaluation,omitempty"`
 	Rules          []ValidationRule  `yaml:"rules" json:"rules"`
-	SensorTimeout  string            `yaml:"sensorTimeout,omitempty" json:"sensorTimeout,omitempty"`  // e.g. "2h"; default 2h
+	SensorTimeout  string            `yaml:"sensorTimeout,omitempty" json:"sensorTimeout,omitempty"`   // e.g. "2h"; default 2h
 	DriftThreshold *float64          `yaml:"driftThreshold,omitempty" json:"driftThreshold,omitempty"` // minimum absolute delta to trigger drift; default 0 (any change)
 }
