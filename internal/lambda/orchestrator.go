@@ -437,6 +437,12 @@ func buildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 			return tc, fmt.Errorf("unmarshal databricks config: %w", err)
 		}
 		tc.Databricks = &c
+	case types.TriggerLambda:
+		var c types.LambdaTriggerConfig
+		if err := json.Unmarshal(data, &c); err != nil {
+			return tc, fmt.Errorf("unmarshal lambda config: %w", err)
+		}
+		tc.Lambda = &c
 	default:
 		return tc, fmt.Errorf("unsupported trigger type: %s", job.Type)
 	}

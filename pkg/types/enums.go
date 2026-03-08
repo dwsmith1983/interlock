@@ -14,6 +14,7 @@ const (
 	TriggerEMRServerless TriggerType = "emr-serverless"
 	TriggerDatabricks    TriggerType = "databricks"
 	TriggerStepFunction  TriggerType = "step-function"
+	TriggerLambda        TriggerType = "lambda"
 )
 
 // FailureCategory classifies why a trait evaluation or trigger failed.

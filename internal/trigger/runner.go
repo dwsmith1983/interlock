@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/emr"
 	"github.com/aws/aws-sdk-go-v2/service/emrserverless"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -29,6 +30,7 @@ type Runner struct {
 	emrClient    EMRAPI
 	emrSLClient  EMRServerlessAPI
 	sfnClient    SFNAPI
+	lambdaClient LambdaAPI
 }
 
 // RunnerOption configures a Runner.
@@ -57,6 +59,11 @@ func WithEMRServerlessClient(c EMRServerlessAPI) RunnerOption {
 // WithSFNClient sets a custom Step Functions client.
 func WithSFNClient(c SFNAPI) RunnerOption {
 	return func(r *Runner) { r.sfnClient = c }
+}
+
+// WithLambdaClient sets a custom Lambda client (useful for testing).
+func WithLambdaClient(c LambdaAPI) RunnerOption {
+	return func(r *Runner) { r.lambdaClient = c }
 }
 
 // WithHTTPClient sets a custom HTTP client for HTTP-based triggers.
@@ -138,6 +145,15 @@ func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[str
 			return nil, fmt.Errorf("databricks trigger config is nil")
 		}
 		return ExecuteDatabricks(ctx, cfg.Databricks, r.httpClient)
+	case types.TriggerLambda:
+		if cfg.Lambda == nil {
+			return nil, fmt.Errorf("lambda trigger config is nil")
+		}
+		client, err := r.getLambdaClient("")
+		if err != nil {
+			return nil, err
+		}
+		return nil, ExecuteLambda(ctx, cfg.Lambda, client)
 	default:
 		return nil, fmt.Errorf("unknown trigger type: %s", cfg.Type)
 	}
@@ -159,7 +175,7 @@ func (r *Runner) CheckStatus(ctx context.Context, triggerType types.TriggerType,
 		return r.checkSFNStatus(ctx, metadata)
 	case types.TriggerDatabricks:
 		return r.checkDatabricksStatus(ctx, metadata, headers)
-	case types.TriggerCommand, types.TriggerHTTP:
+	case types.TriggerCommand, types.TriggerHTTP, types.TriggerLambda:
 		// Non-polling types — if they're RUNNING they stay that way until callback
 		return StatusResult{State: RunCheckRunning, Message: "non-polling trigger type"}, nil
 	default:
@@ -277,4 +293,18 @@ func (r *Runner) getCWLogsClient(region string) (CloudWatchLogsAPI, error) {
 	}
 	r.cwLogsClient = cloudwatchlogs.NewFromConfig(cfg)
 	return r.cwLogsClient, nil
+}
+
+func (r *Runner) getLambdaClient(region string) (LambdaAPI, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lambdaClient != nil {
+		return r.lambdaClient, nil
+	}
+	cfg, err := r.getAWSConfig(region)
+	if err != nil {
+		return nil, err
+	}
+	r.lambdaClient = lambda.NewFromConfig(cfg)
+	return r.lambdaClient, nil
 }
