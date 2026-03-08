@@ -226,11 +226,16 @@ func isExcludedDate(cfg *types.PipelineConfig, dateStr string) bool {
 
 // isExcluded checks whether the pipeline should be excluded from running
 // based on calendar exclusions (weekends and specific dates).
+// When no timezone is configured, now is used as-is (preserving its
+// original location, which is UTC in AWS Lambda).
 func isExcluded(cfg *types.PipelineConfig, now time.Time) bool {
 	excl := cfg.Schedule.Exclude
 	if excl == nil {
 		return false
 	}
-	loc := resolveTimezone(cfg.Schedule.Timezone)
-	return isExcludedTime(excl, now.In(loc))
+	t := now
+	if cfg.Schedule.Timezone != "" {
+		t = now.In(resolveTimezone(cfg.Schedule.Timezone))
+	}
+	return isExcludedTime(excl, t)
 }

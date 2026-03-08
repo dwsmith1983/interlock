@@ -33,31 +33,31 @@ func (s *Store) ScanConfigs(ctx context.Context) (map[string]*types.PipelineConf
 		for _, item := range items {
 			pkAttr, ok := item["PK"]
 			if !ok {
-				return fmt.Errorf("scan configs: row missing PK attribute")
+				return fmt.Errorf("row missing PK attribute")
 			}
 			pkStr, ok := pkAttr.(*ddbtypes.AttributeValueMemberS)
 			if !ok {
-				return fmt.Errorf("scan configs: PK is not a string")
+				return fmt.Errorf("PK is not a string")
 			}
 
 			const prefix = "PIPELINE#"
 			if len(pkStr.Value) <= len(prefix) {
-				return fmt.Errorf("scan configs: invalid PK %q", pkStr.Value)
+				return fmt.Errorf("invalid PK %q", pkStr.Value)
 			}
 			pipelineID := pkStr.Value[len(prefix):]
 
 			configAttr, ok := item["config"]
 			if !ok {
-				return fmt.Errorf("scan configs: config attribute missing for %q", pipelineID)
+				return fmt.Errorf("config attribute missing for %q", pipelineID)
 			}
 			configStr, ok := configAttr.(*ddbtypes.AttributeValueMemberS)
 			if !ok {
-				return fmt.Errorf("scan configs: config is not a string for %q", pipelineID)
+				return fmt.Errorf("config is not a string for %q", pipelineID)
 			}
 
 			var cfg types.PipelineConfig
 			if err := json.Unmarshal([]byte(configStr.Value), &cfg); err != nil {
-				return fmt.Errorf("scan configs: unmarshal config for %q: %w", pipelineID, err)
+				return fmt.Errorf("unmarshal config for %q: %w", pipelineID, err)
 			}
 			configs[pipelineID] = &cfg
 		}

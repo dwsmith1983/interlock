@@ -14,7 +14,7 @@ var requiredEnvVars = map[string][]string{
 	"watchdog":         {"CONTROL_TABLE", "JOBLOG_TABLE", "RERUN_TABLE", "EVENT_BUS_NAME"},
 	"sla-monitor":      {"CONTROL_TABLE", "JOBLOG_TABLE", "RERUN_TABLE", "EVENT_BUS_NAME", "SLA_MONITOR_ARN", "SCHEDULER_ROLE_ARN", "SCHEDULER_GROUP_NAME"},
 	"event-sink":       {"EVENTS_TABLE"},
-	"alert-dispatcher": {"SLACK_CHANNEL_ID"},
+	"alert-dispatcher": {"SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"},
 }
 
 // ValidateEnv checks that all required environment variables for the named
