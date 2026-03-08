@@ -125,3 +125,57 @@ func TestCheckEMRStatus_MissingMetadata(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, RunCheckRunning, result.State)
 }
+
+func TestCheckEMRStatus_APIError(t *testing.T) {
+	client := &mockEMRClient{describeErr: assert.AnError}
+	r := NewRunner(WithEMRClient(client))
+	_, err := r.checkEMRStatus(context.Background(), map[string]interface{}{
+		"emr_cluster_id": "j-1",
+		"emr_step_id":    "s-1",
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "DescribeStep failed")
+}
+
+func TestCheckEMRStatus_NilStep(t *testing.T) {
+	client := &mockEMRClient{
+		describeOut: &emr.DescribeStepOutput{Step: nil},
+	}
+	r := NewRunner(WithEMRClient(client))
+	_, err := r.checkEMRStatus(context.Background(), map[string]interface{}{
+		"emr_cluster_id": "j-1",
+		"emr_step_id":    "s-1",
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "returned nil Step")
+}
+
+func TestCheckEMRStatus_NilStepStatus(t *testing.T) {
+	client := &mockEMRClient{
+		describeOut: &emr.DescribeStepOutput{
+			Step: &emrtypes.Step{Status: nil},
+		},
+	}
+	r := NewRunner(WithEMRClient(client))
+	_, err := r.checkEMRStatus(context.Background(), map[string]interface{}{
+		"emr_cluster_id": "j-1",
+		"emr_step_id":    "s-1",
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "returned nil Step.Status")
+}
+
+func TestExecuteEMR_WithArguments(t *testing.T) {
+	client := &mockEMRClient{
+		addOut: &emr.AddJobFlowStepsOutput{StepIds: []string{"s-XYZ"}},
+	}
+	cfg := &types.EMRTriggerConfig{
+		ClusterID: "j-1",
+		StepName:  "step-with-args",
+		Command:   "s3://bucket/jar.jar",
+		Arguments: map[string]string{"--input": "s3://data"},
+	}
+	meta, err := ExecuteEMR(context.Background(), cfg, client)
+	require.NoError(t, err)
+	assert.Equal(t, "s-XYZ", meta["emr_step_id"])
+}
