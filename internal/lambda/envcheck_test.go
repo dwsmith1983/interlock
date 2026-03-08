@@ -33,6 +33,25 @@ func TestValidateEnv_PartialMissing(t *testing.T) {
 	assert.Contains(t, err.Error(), "EVENTS_TABLE")
 }
 
+func TestValidateEnv_AlertDispatcherAllPresent(t *testing.T) {
+	for _, v := range requiredEnvVars["alert-dispatcher"] {
+		t.Setenv(v, "test-value")
+	}
+	err := ValidateEnv("alert-dispatcher")
+	require.NoError(t, err)
+}
+
+func TestValidateEnv_AlertDispatcherMissingEventsVars(t *testing.T) {
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
+	t.Setenv("SLACK_CHANNEL_ID", "C12345")
+	t.Setenv("EVENTS_TABLE", "")
+	t.Setenv("EVENTS_TTL_DAYS", "")
+	err := ValidateEnv("alert-dispatcher")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "EVENTS_TABLE")
+	assert.Contains(t, err.Error(), "EVENTS_TTL_DAYS")
+}
+
 func TestValidateEnv_UnknownHandler(t *testing.T) {
 	err := ValidateEnv("unknown-handler")
 	require.NoError(t, err)
