@@ -261,3 +261,9 @@ func TestExecuteHTTP_Returns_TriggerError_On5xx(t *testing.T) {
 	assert.Equal(t, types.FailureTransient, te.Category)
 	assert.Contains(t, te.Message, "status 503")
 }
+
+func TestExecuteCommand_EmptyCommand(t *testing.T) {
+	err := ExecuteCommand(context.Background(), "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "command is empty")
+}

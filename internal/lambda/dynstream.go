@@ -176,46 +176,52 @@ func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule,
 	return nil
 }
 
-// isExcludedDate checks calendar exclusions against a job's execution date
-// (not wall-clock time). dateStr supports "YYYY-MM-DD" and "YYYY-MM-DDTHH".
-func isExcludedDate(cfg *types.PipelineConfig, dateStr string) bool {
-	excl := cfg.Schedule.Exclude
+// resolveTimezone loads the time.Location for the given timezone name.
+// Returns time.UTC if tz is empty or cannot be loaded.
+func resolveTimezone(tz string) *time.Location {
+	if tz == "" {
+		return time.UTC
+	}
+	if loc, err := time.LoadLocation(tz); err == nil {
+		return loc
+	}
+	return time.UTC
+}
+
+// isExcludedTime is the core calendar exclusion check. It evaluates
+// whether the given time falls on a weekend or a specifically excluded date.
+func isExcludedTime(excl *types.ExclusionConfig, t time.Time) bool {
 	if excl == nil {
 		return false
 	}
-	if len(dateStr) < 10 {
-		return false // unparseable, safe default
-	}
-	datePortion := dateStr[:10]
-
-	// Resolve the location to interpret the execution date in.
-	loc := time.UTC
-	if cfg.Schedule.Timezone != "" {
-		if l, err := time.LoadLocation(cfg.Schedule.Timezone); err == nil {
-			loc = l
-		}
-	}
-
-	// Parse the date as midnight in the configured timezone so that weekday
-	// and date-string comparisons reflect the local calendar date.
-	t, err := time.ParseInLocation("2006-01-02", datePortion, loc)
-	if err != nil {
-		return false // safe default
-	}
-
 	if excl.Weekends {
 		day := t.Weekday()
 		if day == time.Saturday || day == time.Sunday {
 			return true
 		}
 	}
-	dateStr2 := t.Format("2006-01-02")
+	dateStr := t.Format("2006-01-02")
 	for _, d := range excl.Dates {
-		if d == dateStr2 {
+		if d == dateStr {
 			return true
 		}
 	}
 	return false
+}
+
+// isExcludedDate checks calendar exclusions against a job's execution date
+// (not wall-clock time). dateStr supports "YYYY-MM-DD" and "YYYY-MM-DDTHH".
+func isExcludedDate(cfg *types.PipelineConfig, dateStr string) bool {
+	excl := cfg.Schedule.Exclude
+	if excl == nil || len(dateStr) < 10 {
+		return false
+	}
+	loc := resolveTimezone(cfg.Schedule.Timezone)
+	t, err := time.ParseInLocation("2006-01-02", dateStr[:10], loc)
+	if err != nil {
+		return false
+	}
+	return isExcludedTime(excl, t)
 }
 
 // isExcluded checks whether the pipeline should be excluded from running
@@ -225,30 +231,6 @@ func isExcluded(cfg *types.PipelineConfig, now time.Time) bool {
 	if excl == nil {
 		return false
 	}
-
-	// Resolve timezone if configured.
-	t := now
-	if cfg.Schedule.Timezone != "" {
-		if loc, err := time.LoadLocation(cfg.Schedule.Timezone); err == nil {
-			t = now.In(loc)
-		}
-	}
-
-	// Check weekends.
-	if excl.Weekends {
-		day := t.Weekday()
-		if day == time.Saturday || day == time.Sunday {
-			return true
-		}
-	}
-
-	// Check specific dates.
-	dateStr := t.Format("2006-01-02")
-	for _, d := range excl.Dates {
-		if d == dateStr {
-			return true
-		}
-	}
-
-	return false
+	loc := resolveTimezone(cfg.Schedule.Timezone)
+	return isExcludedTime(excl, now.In(loc))
 }

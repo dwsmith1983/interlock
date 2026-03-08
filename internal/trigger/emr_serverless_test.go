@@ -115,3 +115,37 @@ func TestCheckEMRServerlessStatus_MissingMetadata(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, RunCheckRunning, result.State)
 }
+
+func TestCheckEMRServerlessStatus_APIError(t *testing.T) {
+	client := &mockEMRServerlessClient{getErr: assert.AnError}
+	r := NewRunner(WithEMRServerlessClient(client))
+	_, err := r.checkEMRServerlessStatus(context.Background(), map[string]interface{}{
+		"emr_sl_application_id": "app-1",
+		"emr_sl_job_run_id":     "run-1",
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "GetJobRun failed")
+}
+
+func TestCheckEMRServerlessStatus_NilJobRun(t *testing.T) {
+	client := &mockEMRServerlessClient{
+		getOut: &emrserverless.GetJobRunOutput{JobRun: nil},
+	}
+	r := NewRunner(WithEMRServerlessClient(client))
+	_, err := r.checkEMRServerlessStatus(context.Background(), map[string]interface{}{
+		"emr_sl_application_id": "app-1",
+		"emr_sl_job_run_id":     "run-1",
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "returned nil JobRun")
+}
+
+func TestCheckEMRServerlessStatus_MissingAppID(t *testing.T) {
+	r := NewRunner()
+	result, err := r.checkEMRServerlessStatus(context.Background(), map[string]interface{}{
+		"emr_sl_job_run_id": "run-1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckRunning, result.State)
+	assert.Equal(t, "missing emr-serverless metadata", result.Message)
+}
