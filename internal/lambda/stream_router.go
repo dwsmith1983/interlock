@@ -175,6 +175,10 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	// Extract sensor data from the stream record's NewImage.
 	sensorData := extractSensorData(record.Change.NewImage)
 
+	// Capture current time once for consistent use across rule evaluation,
+	// calendar checks, and execution date resolution.
+	now := d.now()
+
 	// Build a validation rule from the trigger condition and evaluate it.
 	rule := types.ValidationRule{
 		Key:   trigger.Key,
@@ -182,7 +186,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		Field: trigger.Field,
 		Value: trigger.Value,
 	}
-	result := validation.EvaluateRule(rule, sensorData, d.now())
+	result := validation.EvaluateRule(rule, sensorData, now)
 	if !result.Passed {
 		d.Logger.Info("trigger condition not met",
 			"pipelineId", pipelineID,
@@ -193,7 +197,6 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	}
 
 	// Check calendar exclusions (wall-clock date).
-	now := d.now()
 	if isExcluded(cfg, now) {
 		d.Logger.Info("pipeline excluded by calendar",
 			"pipelineId", pipelineID,
