@@ -106,6 +106,16 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 
 	_ = publishEvent(ctx, d, string(types.EventJobTriggered), input.PipelineID, input.ScheduleID, input.Date, fmt.Sprintf("triggered %s job", cfg.Job.Type))
 
+	// Non-polling triggers (http, command, lambda) complete synchronously
+	// during Execute. Write success to joblog immediately and set a sentinel
+	// runId so the Step Functions CheckJob JSONPath resolves.
+	if metadata == nil {
+		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
+			types.JobEventSuccess, "sync", 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type))
+		runID = "sync"
+		metadata = map[string]interface{}{"completedSync": true}
+	}
+
 	return OrchestratorOutput{
 		Mode:     "trigger",
 		RunID:    runID,

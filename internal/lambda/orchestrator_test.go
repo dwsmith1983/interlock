@@ -2770,8 +2770,10 @@ func TestExtractRunID_NilMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.RunID != "" {
-		t.Errorf("runID = %q, want empty when metadata is nil", out.RunID)
+	// Non-polling triggers (nil metadata) now get sentinel runId="sync"
+	// so the SFN CheckJob JSONPath resolves.
+	if out.RunID != "sync" {
+		t.Errorf("runID = %q, want \"sync\" for non-polling trigger", out.RunID)
 	}
 }
 
