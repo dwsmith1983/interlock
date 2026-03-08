@@ -68,8 +68,40 @@ variable "slack_bot_token" {
   sensitive   = true
 }
 
+variable "slack_secret_arn" {
+  description = "ARN of Secrets Manager secret containing Slack bot token (overrides slack_bot_token env var)"
+  type        = string
+  default     = ""
+}
+
 variable "slack_channel_id" {
   description = "Slack channel ID for alert notifications"
+  type        = string
+  default     = ""
+}
+
+variable "lambda_concurrency" {
+  description = "Reserved concurrent executions per Lambda function"
+  type = object({
+    stream_router    = number
+    orchestrator     = number
+    sla_monitor      = number
+    watchdog         = number
+    event_sink       = number
+    alert_dispatcher = number
+  })
+  default = {
+    stream_router    = 10
+    orchestrator     = 10
+    sla_monitor      = 5
+    watchdog         = 2
+    event_sink       = 5
+    alert_dispatcher = 3
+  }
+}
+
+variable "sns_alarm_topic_arn" {
+  description = "SNS topic ARN for CloudWatch alarm notifications (empty = alarms fire but no notifications)"
   type        = string
   default     = ""
 }
@@ -94,6 +126,12 @@ variable "enable_emr_serverless_trigger" {
 
 variable "enable_sfn_trigger" {
   description = "Enable IAM permissions for nested Step Functions execution"
+  type        = bool
+  default     = false
+}
+
+variable "enable_lambda_trigger" {
+  description = "Enable IAM permissions for Lambda-invoked job triggering"
   type        = bool
   default     = false
 }
