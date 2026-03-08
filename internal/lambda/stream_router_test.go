@@ -763,10 +763,11 @@ func TestResolveExecutionDate_DateOnly(t *testing.T) {
 
 func TestResolveExecutionDate_NoFields(t *testing.T) {
 	data := map[string]interface{}{"complete": true}
-	got := lambda.ResolveExecutionDate(data, time.Now())
-	today := time.Now().Format("2006-01-02")
-	if got != today {
-		t.Errorf("got %q, want %q", got, today)
+	now := time.Now()
+	got := lambda.ResolveExecutionDate(data, now)
+	want := now.Format("2006-01-02")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
@@ -780,11 +781,12 @@ func TestResolveExecutionDate_HourWithLeadingZero(t *testing.T) {
 
 func TestResolveExecutionDate_InvalidDate(t *testing.T) {
 	data := map[string]interface{}{"date": "not-a-date"}
-	got := lambda.ResolveExecutionDate(data, time.Now())
+	now := time.Now()
+	got := lambda.ResolveExecutionDate(data, now)
 	// Should fall back to today's date.
-	today := time.Now().Format("2006-01-02")
-	if got != today {
-		t.Errorf("got %q, want today %q", got, today)
+	want := now.Format("2006-01-02")
+	if got != want {
+		t.Errorf("got %q, want today %q", got, want)
 	}
 }
 

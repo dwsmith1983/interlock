@@ -200,7 +200,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 			"date", now.Format("2006-01-02"),
 		)
 		scheduleIDForEvent := resolveScheduleID(cfg)
-		dateForEvent := ResolveExecutionDate(sensorData, d.now())
+		dateForEvent := ResolveExecutionDate(sensorData, now)
 		if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleIDForEvent, dateForEvent,
 			fmt.Sprintf("sensor trigger suppressed for %s: wall-clock date excluded by calendar", pipelineID)); pubErr != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
@@ -210,7 +210,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 
 	// Resolve schedule ID and date.
 	scheduleID := resolveScheduleID(cfg)
-	date := ResolveExecutionDate(sensorData, d.now())
+	date := ResolveExecutionDate(sensorData, now)
 
 	// Acquire trigger lock to prevent duplicate executions.
 	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, scheduleID, date, ResolveTriggerLockTTL())
