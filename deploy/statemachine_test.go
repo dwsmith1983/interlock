@@ -160,12 +160,6 @@ func TestASL_TopLevelStatesExist(t *testing.T) {
 		"CheckJobPollExhausted",
 		"JobPollExhausted",
 		"InjectTimeoutEvent",
-		"CheckHasPostRun",
-		"InitPostRunLoop",
-		"PostRunEvaluate",
-		"IsPostRunDone",
-		"WaitForPostRun",
-		"IncrementPostRunElapsed",
 		"CompleteTrigger",
 		"CheckCancelSLA",
 		"TriggerRetryExhausted",
@@ -328,30 +322,18 @@ func TestASL_JobPollingFlow(t *testing.T) {
 	require.NoError(t, json.Unmarshal(asl.States["CheckJob"], &check))
 	assert.Equal(t, "IsJobDone", check.Next)
 
-	// IsJobDone: success → CheckHasPostRun, fail/timeout → CompleteTrigger, default → IncrementJobPollElapsed
+	// IsJobDone: success → CompleteTrigger, fail/timeout → CompleteTrigger, default → IncrementJobPollElapsed
 	var done choiceState
 	require.NoError(t, json.Unmarshal(asl.States["IsJobDone"], &done))
 	assert.Equal(t, "IncrementJobPollElapsed", done.Default)
-	// Check that success routes to CheckHasPostRun
-	foundPostRunRoute := false
+	// Success now routes directly to CompleteTrigger (post-run moved to stream-based).
 	foundComplete := false
 	for _, c := range done.Choices {
-		if c.Next == "CheckHasPostRun" {
-			foundPostRunRoute = true
-		}
 		if c.Next == "CompleteTrigger" {
 			foundComplete = true
 		}
 	}
-	assert.True(t, foundPostRunRoute, "IsJobDone should route success to CheckHasPostRun")
-	assert.True(t, foundComplete, "IsJobDone should route fail/timeout to CompleteTrigger")
-
-	// CheckHasPostRun: hasPostRun=true → InitPostRunLoop, default → CompleteTrigger
-	var postRunCheck choiceState
-	require.NoError(t, json.Unmarshal(asl.States["CheckHasPostRun"], &postRunCheck))
-	assert.Equal(t, "CompleteTrigger", postRunCheck.Default)
-	require.NotEmpty(t, postRunCheck.Choices)
-	assert.Equal(t, "InitPostRunLoop", postRunCheck.Choices[0].Next)
+	assert.True(t, foundComplete, "IsJobDone should route to CompleteTrigger")
 
 	// CompleteTrigger → CheckCancelSLA
 	var complete taskState

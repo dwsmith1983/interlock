@@ -136,7 +136,7 @@ CheckCancelSLA → CancelSLASchedules
 
 ### State Summary
 
-The Step Functions state machine uses 18 sequential states:
+The Step Functions state machine uses 24 sequential states:
 
 1. **Evaluation loop** — evaluates validation rules at a configurable interval. When all rules pass, triggers the job. If the evaluation window expires, publishes `VALIDATION_EXHAUSTED`.
 
@@ -163,6 +163,12 @@ All lifecycle events are published to a custom EventBridge event bus. This repla
 | `RETRY_EXHAUSTED` | All retry attempts consumed |
 | `SFN_TIMEOUT` | Step Function execution timed out (watchdog) |
 | `SCHEDULE_MISSED` | Cron schedule passed without a trigger (watchdog) |
+| `POST_RUN_PASSED` | Post-run rules pass after job completion |
+| `POST_RUN_FAILED` | Post-run rules fail (no drift detected) |
+| `POST_RUN_DRIFT` | Sensor count drifted from baseline after completion → rerun requested |
+| `POST_RUN_DRIFT_INFLIGHT` | Sensor count drifted while job is still running (informational) |
+| `POST_RUN_BASELINE_CAPTURED` | Baseline sensor snapshot captured on job success |
+| `POST_RUN_SENSOR_MISSING` | Post-run sensor not received within timeout (watchdog) |
 | `INFRA_FAILURE` | Unrecoverable infrastructure error |
 
 ### Event Payload
@@ -199,9 +205,9 @@ Re-run executions use a unique name (`{pipeline}-{schedule}-{date}-rerun-{attemp
 
 When the trigger execution itself fails (e.g., Glue `ConcurrentRunsExceededException`), the orchestrator logs the failure to the joblog table and returns a Lambda error. Step Functions retries the trigger 4 times with exponential backoff (30s, 60s, 120s, 240s). This retry budget is separate from `maxRetries`. If all attempts fail, the execution routes to SLA cleanup and terminates gracefully.
 
-## Post-Run Validation
+## Post-Run Monitoring
 
-Pipelines can define optional post-run validation rules that are evaluated after the triggered job completes. These use the same declarative rule syntax as pre-trigger validation:
+Pipelines can define optional post-run rules that are evaluated reactively when sensor data arrives after job completion. Unlike pre-trigger validation (which runs in the Step Function), post-run monitoring is entirely event-driven via DynamoDB Streams.
 
 ```yaml
 postRun:
@@ -210,6 +216,16 @@ postRun:
       check: gte
       field: count
       value: 1000
+  driftThreshold: 10     # minimum sensor count change to trigger rerun (default: 0)
+  sensorTimeout: "2h"    # watchdog alerts if sensor hasn't arrived after this long
 ```
+
+### How It Works
+
+1. **Baseline capture**: When a job completes successfully, the orchestrator reads all sensors and writes a date-scoped baseline (`postrun-baseline#<date>`) to the control table.
+2. **Stream-based evaluation**: When a sensor matching a post-run rule arrives via DynamoDB Stream, the stream-router evaluates it:
+   - If the trigger is **RUNNING**, drift is logged as an informational `POST_RUN_DRIFT_INFLIGHT` event (no rerun).
+   - If the trigger is **COMPLETED**, the sensor count is compared against the baseline. Drift above `driftThreshold` triggers a rerun via the circuit breaker.
+3. **Watchdog safety net**: If no post-run sensor arrives within `sensorTimeout` after job completion, the watchdog publishes a `POST_RUN_SENSOR_MISSING` event.
 
 Post-run rules always use `ALL` mode (every rule must pass).

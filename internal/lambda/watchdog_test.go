@@ -1446,9 +1446,7 @@ func TestWatchdog_ScheduleSLAAlerts_HourlyPipeline_UsesCompositeDate(t *testing.
 	// Fix time at 14:10 UTC so the :30 deadline (14:30) is still in the future
 	// and the cron "5 * * * *" last fired at 14:05 (after StartedAt).
 	fixedNow := time.Date(2026, 3, 7, 14, 10, 0, 0, time.UTC)
-	origNow := lambda.WatchdogNowFunc
-	lambda.WatchdogNowFunc = func() time.Time { return fixedNow }
-	t.Cleanup(func() { lambda.WatchdogNowFunc = origNow })
+	d.NowFunc = func() time.Time { return fixedNow }
 	d.StartedAt = fixedNow.Add(-5 * time.Minute)
 
 	// Hourly pipeline with relative deadline — resolveWatchdogSLADate should
@@ -1555,4 +1553,182 @@ func TestWatchdog_ScheduleSLAAlerts_SensorTriggered_Skips(t *testing.T) {
 	schedMock.mu.Lock()
 	defer schedMock.mu.Unlock()
 	assert.Empty(t, schedMock.created, "sensor-triggered pipeline should not get proactive SLA scheduling")
+}
+
+// ---------------------------------------------------------------------------
+// Post-run sensor absence detection tests
+// ---------------------------------------------------------------------------
+
+// postRunWatchdogConfig returns a pipeline config with PostRun rules for
+// watchdog absence detection tests.
+func postRunWatchdogConfig(sensorTimeout string) types.PipelineConfig {
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-revenue"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		PostRun: &types.PostRunConfig{
+			Rules: []types.ValidationRule{
+				{Key: "quality-check", Check: types.CheckEquals, Field: "status", Value: "passed"},
+			},
+		},
+	}
+	if sensorTimeout != "" {
+		cfg.PostRun.SensorTimeout = sensorTimeout
+	}
+	return cfg
+}
+
+// seedJobEventForPipeline inserts a job log record with a custom pipeline, schedule, and date.
+func seedJobEventForPipeline(mock *mockDDB, pipelineID, schedule, date, timestamp, event string) {
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(schedule, date, timestamp)},
+		"event": &ddbtypes.AttributeValueMemberS{Value: event},
+	})
+}
+
+func TestWatchdog_PostRunSensorMissing(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Fix the clock so today is deterministic.
+	fixedNow := time.Date(2026, 3, 8, 14, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	today := fixedNow.Format("2006-01-02")
+
+	// Seed pipeline config with PostRun (1h timeout to trigger easily).
+	cfg := postRunWatchdogConfig("1h")
+	seedConfig(mock, cfg)
+
+	// Seed COMPLETED trigger for today.
+	seedTriggerWithStatus(mock, "gold-revenue", today, types.TriggerStatusCompleted)
+
+	// Seed baseline (written at completion time).
+	seedSensor(mock, "gold-revenue", "postrun-baseline#"+today, map[string]interface{}{
+		"sensor_count": float64(100),
+	})
+
+	// Seed a success job event with timestamp 3h before now (well past the 1h timeout).
+	completionMillis := fmt.Sprintf("%d", fixedNow.Add(-3*time.Hour).UnixMilli())
+	seedJobEventForPipeline(mock, "gold-revenue", "stream", today, completionMillis, types.JobEventSuccess)
+
+	// No post-run sensor "quality-check" exists → should detect absence.
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Verify POST_RUN_SENSOR_MISSING event was published.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var missingCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType == string(types.EventPostRunSensorMissing) {
+			missingCount++
+		}
+	}
+	assert.Equal(t, 1, missingCount, "expected one POST_RUN_SENSOR_MISSING event")
+
+	// Verify dedup marker was written.
+	dedupKey := ddbItemKey(testControlTable, types.PipelinePK("gold-revenue"), types.SensorSK("postrun-check#"+today))
+	mock.mu.Lock()
+	_, dedupExists := mock.items[dedupKey]
+	mock.mu.Unlock()
+	assert.True(t, dedupExists, "expected postrun-check dedup marker to be written")
+}
+
+func TestWatchdog_PostRunSensorPresent(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Fix the clock so today is deterministic.
+	fixedNow := time.Date(2026, 3, 8, 14, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	today := fixedNow.Format("2006-01-02")
+
+	// Seed pipeline config with PostRun (1h timeout).
+	cfg := postRunWatchdogConfig("1h")
+	seedConfig(mock, cfg)
+
+	// Seed COMPLETED trigger for today.
+	seedTriggerWithStatus(mock, "gold-revenue", today, types.TriggerStatusCompleted)
+
+	// Seed baseline.
+	seedSensor(mock, "gold-revenue", "postrun-baseline#"+today, map[string]interface{}{
+		"sensor_count": float64(100),
+	})
+
+	// Seed a success job event 3h before now.
+	completionMillis := fmt.Sprintf("%d", fixedNow.Add(-3*time.Hour).UnixMilli())
+	seedJobEventForPipeline(mock, "gold-revenue", "stream", today, completionMillis, types.JobEventSuccess)
+
+	// Seed post-run sensor with updatedAt AFTER completion → sensor arrived.
+	postRunSensorTS := fixedNow.Add(-2 * time.Hour).UnixMilli()
+	seedSensor(mock, "gold-revenue", "quality-check", map[string]interface{}{
+		"status":    "passed",
+		"updatedAt": float64(postRunSensorTS),
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No POST_RUN_SENSOR_MISSING event should be published.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventPostRunSensorMissing), *ev.Entries[0].DetailType,
+			"should not publish POST_RUN_SENSOR_MISSING when sensor has recent updatedAt")
+	}
+}
+
+func TestWatchdog_PostRunNoConfig(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Fix the clock.
+	fixedNow := time.Date(2026, 3, 8, 14, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	today := fixedNow.Format("2006-01-02")
+
+	// Seed pipeline config WITHOUT PostRun.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "bronze-ingest"},
+		Schedule: types.ScheduleConfig{
+			Cron:       "0 6 * * *",
+			Timezone:   "UTC",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed COMPLETED trigger for today (even though no PostRun config).
+	seedTriggerRow(mock, "bronze-ingest", today, 0)
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("bronze-ingest")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("cron", today)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No POST_RUN_SENSOR_MISSING event should be published.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventPostRunSensorMissing), *ev.Entries[0].DetailType,
+			"should not publish POST_RUN_SENSOR_MISSING for pipeline without PostRun config")
+	}
 }

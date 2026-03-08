@@ -1,13 +1,14 @@
 ---
 title: Watchdog
 weight: 3
-description: Detects stale trigger executions and missed cron schedules.
+description: Detects stale trigger executions, missed cron schedules, and missing post-run sensors.
 ---
 
-The watchdog is one of four Lambda functions in the Interlock framework. It runs independently on an EventBridge schedule (default: every 5 minutes) and detects two classes of silent failures:
+The watchdog is one of four Lambda functions in the Interlock framework. It runs independently on an EventBridge schedule (default: every 5 minutes) and detects three classes of silent failures:
 
 1. **Stale triggers** -- a Step Function execution started but never completed (timeout, infrastructure failure)
 2. **Missed schedules** -- a cron-scheduled pipeline's expected start time passed with no trigger record
+3. **Missing post-run sensors** -- a pipeline completed but the expected post-run sensor never arrived
 
 In STAMP terms, these are safety constraint violations caused by _what didn't happen_ rather than what went wrong.
 
@@ -104,6 +105,59 @@ If no `schedule.time` is configured, the watchdog alerts as soon as it detects a
     "date": "2026-03-01",
     "message": "missed schedule for gold-revenue on 2026-03-01",
     "timestamp": "2026-03-01T09:10:00Z"
+  }
+}
+```
+
+## Missing Post-Run Sensor Detection
+
+For pipelines with `postRun` config, the watchdog checks whether post-run sensors have arrived within a configurable grace period after job completion.
+
+### Algorithm
+
+```
+Load all pipeline configs (via config cache)
+
+For each pipeline with postRun config:
+  Find TRIGGER# record for today with status=COMPLETED
+  If no completed trigger → skip
+
+  Calculate elapsed time since trigger completion
+  If elapsed < sensorTimeout → skip (still within grace period)
+
+  For each postRun rule key:
+    Check if SENSOR#{key} exists with data newer than trigger completion
+    If sensor exists → skip
+
+  Publish POST_RUN_SENSOR_MISSING event to EventBridge
+```
+
+### Configuration
+
+The `sensorTimeout` field on `postRun` controls the grace period. Defaults to `"2h"` (2 hours).
+
+```yaml
+postRun:
+  sensorTimeout: "2h"
+  rules:
+    - key: output-row-count
+      check: gte
+      field: count
+      value: 1000
+```
+
+### Event Format
+
+```json
+{
+  "source": "interlock",
+  "detail-type": "POST_RUN_SENSOR_MISSING",
+  "detail": {
+    "pipelineId": "silver-orders",
+    "scheduleId": "stream",
+    "date": "2026-03-01",
+    "message": "post-run sensor not received within 2h of completion",
+    "timestamp": "2026-03-01T14:30:00Z"
   }
 }
 ```

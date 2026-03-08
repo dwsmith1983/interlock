@@ -59,7 +59,7 @@ func (r *Runner) checkSFNStatus(ctx context.Context, metadata map[string]interfa
 		return StatusResult{State: RunCheckRunning, Message: "missing sfn metadata"}, nil
 	}
 
-	client, err := r.getSFNClient("")
+	client, err := r.getSFNClient(ctx, "")
 	if err != nil {
 		return StatusResult{}, fmt.Errorf("sfn status: getting client: %w", err)
 	}

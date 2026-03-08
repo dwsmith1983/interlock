@@ -91,6 +91,7 @@ Processes DynamoDB Stream events from the control and joblog tables. Routes reco
 | `SENSOR#` | Evaluate trigger condition; if matched and not excluded, acquire trigger lock and start Step Function execution |
 | `CONFIG` | Invalidate the config cache |
 | `JOB#` | On failure/timeout: check retry limit, write rerun record, restart SFN. On success: publish `JOB_COMPLETED` event |
+| `SENSOR#` (post-run) | If sensor matches a `postRun.rules[].key` and trigger is COMPLETED: compare against baseline, publish drift/pass/fail events, request rerun on drift. If trigger is RUNNING: publish informational `POST_RUN_DRIFT_INFLIGHT` event |
 
 The stream-router maintains a config cache to avoid redundant DynamoDB reads. Pipeline configs are validated at load time (`ValidatePipelineConfig`) -- invalid configs are logged and skipped.
 
@@ -107,7 +108,6 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 | `evaluate` | Load config and sensor data, evaluate validation rules, publish `VALIDATION_PASSED` if all pass |
 | `trigger` | Build trigger config from `job` section, execute trigger (Glue, EMR, HTTP, etc.), return run ID |
 | `check-job` | Query joblog table for latest event; return `success`, `fail`, `timeout`, or empty (still running). Propagates `FailureCategory` to the joblog when a failure is detected |
-| `post-run` | Evaluate post-run validation rules if configured |
 | `validation-exhausted` | Publish `VALIDATION_EXHAUSTED` event when the evaluation window closes |
 | `job-poll-exhausted` | Publish `JOB_POLL_EXHAUSTED` event, write timeout joblog entry, set trigger to `FAILED_FINAL` when the job poll window expires |
 | `complete-trigger` | Set trigger status to `COMPLETED` (on success) or `FAILED_FINAL` (on failure/timeout). Ensures trigger records reflect terminal state |
@@ -127,10 +127,11 @@ When a Scheduler entry fires, it invokes this Lambda to publish the correspondin
 
 ### watchdog
 
-Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs two independent scans:
+Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs three independent scans:
 
 1. **Stale triggers** -- scans for `TRIGGER#` records with `RUNNING` status whose TTL has expired. Publishes `SFN_TIMEOUT` events and sets status to `FAILED_FINAL`.
 2. **Missed schedules** -- loads all cron-scheduled pipeline configs, checks for missing `TRIGGER#` records for today's date. Publishes `SCHEDULE_MISSED` events for pipelines past their expected start time.
+3. **Missing post-run sensors** -- for pipelines with `postRun` config and a completed trigger, checks whether post-run sensors have arrived within the `sensorTimeout` grace period. Publishes `POST_RUN_SENSOR_MISSING` events.
 
 See [Watchdog](../watchdog) for the full algorithm.
 
@@ -175,7 +176,7 @@ InitEvalLoop → Evaluate → IsReady
 6. **CheckWindowExhausted** — if elapsed >= window, go to ValidationExhausted
 7. **ValidationExhausted** — publish `VALIDATION_EXHAUSTED` event
 
-### Trigger and Job Polling (12 states)
+### Trigger and Job Polling (11 states)
 
 1. **Trigger** — invoke orchestrator with `mode=trigger`. Infrastructure failures retry up to `trigger_max_attempts` times (default 3) with exponential backoff (30s, 60s, 120s, 240s)
 2. **HasTriggerResult** — if a job was triggered, poll for completion; otherwise finish
@@ -188,7 +189,6 @@ InitEvalLoop → Evaluate → IsReady
 9. **JobPollExhausted** — invoke orchestrator with `mode=job-poll-exhausted`
 10. **InjectTimeoutEvent** — inject `event: timeout` for CompleteTrigger routing
 11. **CompleteTrigger** — invoke orchestrator with `mode=complete-trigger` to set terminal trigger status
-12. **CheckHasPostRun** — if post-run evaluation is configured, enter post-run loop; otherwise finish
 
 ### SLA Cleanup (2 states)
 

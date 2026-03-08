@@ -63,7 +63,7 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
 └───────────────────┘                                 │
                                           ┌───────────▼──────────────┐
                                           │     Step Functions       │
-                                          │  18 sequential states:   │
+                                          │  24 sequential states:   │
                                           │  Evaluate → Trigger →    │
                                           │  Poll → SLA → Done       │
                                           └──────────┬───────────────┘
@@ -72,19 +72,18 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
                                     ▼                ▼                ▼
                               orchestrator     sla-monitor       watchdog
                               (evaluate,       (schedule SLA     (stale runs,
-                               trigger,         via EventBridge   missed cron)
-                               check-job,       Scheduler)
-                               post-run)
+                               trigger,         via EventBridge   missed cron,
+                               check-job)       Scheduler)       post-run gaps)
 ```
 
 ### Lambda Functions
 
 | Function | Purpose |
 |----------|---------|
-| `stream-router` | Routes DynamoDB Stream events, starts Step Function executions |
-| `orchestrator` | Multi-mode handler: evaluate rules, trigger jobs, check status, post-run validation |
+| `stream-router` | Routes DynamoDB Stream events, starts Step Function executions, evaluates post-run drift |
+| `orchestrator` | Multi-mode handler: evaluate rules, trigger jobs, check status, complete triggers |
 | `sla-monitor` | Schedules SLA alerts via EventBridge Scheduler; cancels on job completion |
-| `watchdog` | Detects stale trigger executions and missed cron schedules |
+| `watchdog` | Detects stale triggers, missed cron schedules, and missing post-run sensors |
 | `event-sink` | Writes all EventBridge events to the events table for centralized logging |
 | `alert-dispatcher` | Delivers Slack notifications from SQS alert queue with message threading |
 

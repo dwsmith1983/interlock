@@ -4,6 +4,8 @@ resource "aws_dynamodb_table" "control" {
   hash_key     = "PK"
   range_key    = "SK"
 
+  deletion_protection_enabled = true
+
   attribute {
     name = "PK"
     type = "S"
@@ -17,6 +19,10 @@ resource "aws_dynamodb_table" "control" {
   ttl {
     attribute_name = "ttl"
     enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   stream_enabled   = true
@@ -31,6 +37,8 @@ resource "aws_dynamodb_table" "joblog" {
   hash_key     = "PK"
   range_key    = "SK"
 
+  deletion_protection_enabled = true
+
   attribute {
     name = "PK"
     type = "S"
@@ -46,6 +54,10 @@ resource "aws_dynamodb_table" "joblog" {
     enabled        = true
   }
 
+  point_in_time_recovery {
+    enabled = true
+  }
+
   stream_enabled   = true
   stream_view_type = "NEW_IMAGE"
 
@@ -57,6 +69,8 @@ resource "aws_dynamodb_table" "events" {
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "PK"
   range_key    = "SK"
+
+  deletion_protection_enabled = true
 
   attribute {
     name = "PK"
@@ -90,6 +104,10 @@ resource "aws_dynamodb_table" "events" {
     enabled        = true
   }
 
+  point_in_time_recovery {
+    enabled = true
+  }
+
   tags = var.tags
 }
 
@@ -98,6 +116,8 @@ resource "aws_dynamodb_table" "rerun" {
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "PK"
   range_key    = "SK"
+
+  deletion_protection_enabled = true
 
   attribute {
     name = "PK"
@@ -112,6 +132,10 @@ resource "aws_dynamodb_table" "rerun" {
   ttl {
     attribute_name = "ttl"
     enabled        = true
+  }
+
+  point_in_time_recovery {
+    enabled = true
   }
 
   tags = var.tags

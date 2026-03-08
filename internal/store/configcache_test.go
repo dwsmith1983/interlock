@@ -385,3 +385,39 @@ func TestConfigCache_ScanError(t *testing.T) {
 		t.Errorf("expected wrapped injected error, got: %v", err)
 	}
 }
+
+func TestConfigCache_GetAll_ReturnsDeepCopy(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	seedConfig(mock, types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "pipe-1", Owner: "original-owner"},
+	})
+
+	cache := NewConfigCache(s, 5*time.Minute)
+
+	// First call: get the configs and mutate the returned map.
+	configs1, err := cache.GetAll(context.Background())
+	if err != nil {
+		t.Fatalf("first GetAll: %v", err)
+	}
+
+	// Mutate the returned map: change a value and add a new key.
+	configs1["pipe-1"].Pipeline.Owner = "mutated"
+	configs1["injected"] = &types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "injected"},
+	}
+
+	// Second call: the cache must be unaffected by the mutations above.
+	configs2, err := cache.GetAll(context.Background())
+	if err != nil {
+		t.Fatalf("second GetAll: %v", err)
+	}
+
+	if _, ok := configs2["injected"]; ok {
+		t.Error("injected key should not appear in cached result")
+	}
+	if configs2["pipe-1"].Pipeline.Owner != "original-owner" {
+		t.Errorf("owner = %q, want %q (cache was mutated)", configs2["pipe-1"].Pipeline.Owner, "original-owner")
+	}
+}

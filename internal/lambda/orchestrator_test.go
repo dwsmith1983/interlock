@@ -762,244 +762,6 @@ func TestOrchestrator_CheckJob_SkipsInfraFailureEvent(t *testing.T) {
 // Post-run tests
 // ---------------------------------------------------------------------------
 
-func TestOrchestrator_PostRun_NoConfig(t *testing.T) {
-	pipelineID := "gold-orders"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-	}
-
-	ddb := &mockDynamo{
-		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
-		},
-	}
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode:       "post-run",
-		PipelineID: pipelineID,
-		ScheduleID: "daily",
-		Date:       "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out.Status != "passed" {
-		t.Errorf("status = %q, want %q when no PostRun config", out.Status, "passed")
-	}
-}
-
-func TestOrchestrator_PostRun_RulesPass(t *testing.T) {
-	pipelineID := "gold-orders"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "row-count", Check: types.CheckGTE, Field: "count", Value: float64(100)},
-			},
-		},
-	}
-
-	ddb := &mockDynamo{
-		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
-		},
-		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
-			return &dynamodb.QueryOutput{
-				Items: []map[string]ddbtypes.AttributeValue{
-					sensorItem(pipelineID, "row-count", map[string]ddbtypes.AttributeValue{
-						"count": &ddbtypes.AttributeValueMemberN{Value: "500"},
-					}),
-				},
-			}, nil
-		},
-	}
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode:       "post-run",
-		PipelineID: pipelineID,
-		ScheduleID: "daily",
-		Date:       "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out.Status != "passed" {
-		t.Errorf("status = %q, want %q; results = %v", out.Status, "passed", out.Results)
-	}
-}
-
-func TestPostRun_PassedStatus(t *testing.T) {
-	pipelineID := "gold-orders"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckEquals, Field: "match", Value: true},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"match":        &ddbtypes.AttributeValueMemberBOOL{Value: true},
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode:       "post-run",
-		PipelineID: pipelineID,
-		ScheduleID: "daily",
-		Date:       "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out.Status != "passed" {
-		t.Errorf("status = %q, want %q; results = %v", out.Status, "passed", out.Results)
-	}
-
-	// Verify baseline was written (first iteration, no prior baseline).
-	baselineKey := ddbItemKey("control", types.PipelinePK(pipelineID), types.SensorSK("postrun-baseline"))
-	if _, ok := ddb.items[baselineKey]; !ok {
-		t.Error("expected postrun-baseline sensor to be written on first iteration")
-	}
-}
-
-func TestPostRun_DriftDetected(t *testing.T) {
-	pipelineID := "gold-orders"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckEquals, Field: "match", Value: true},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	// Current audit result has a different count than baseline.
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"match":        &ddbtypes.AttributeValueMemberBOOL{Value: true},
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "120"},
-	}))
-	// Baseline saved from first iteration.
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode:       "post-run",
-		PipelineID: pipelineID,
-		ScheduleID: "daily",
-		Date:       "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out.Status != "drift" {
-		t.Errorf("status = %q, want %q", out.Status, "drift")
-	}
-
-	// Verify DATA_DRIFT event was published.
-	eb := d.EventBridge.(*mockEventBridge)
-	if len(eb.events) != 1 {
-		t.Fatalf("expected 1 EventBridge event, got %d", len(eb.events))
-	}
-	entry := eb.events[0].Entries[0]
-	if *entry.DetailType != string(types.EventDataDrift) {
-		t.Errorf("event type = %q, want %q", *entry.DetailType, string(types.EventDataDrift))
-	}
-}
-
-func TestPostRun_DriftWritesRerunRequest(t *testing.T) {
-	pipelineID := "gold-orders"
-	scheduleID := "daily"
-	date := "2026-03-01"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckEquals, Field: "match", Value: true},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	// Current audit result with sensor_count=150.
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"match":        &ddbtypes.AttributeValueMemberBOOL{Value: true},
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "150"},
-	}))
-	// Baseline with sensor_count=100 (different count → drift).
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode:       "post-run",
-		PipelineID: pipelineID,
-		ScheduleID: scheduleID,
-		Date:       date,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out.Status != "drift" {
-		t.Errorf("status = %q, want %q", out.Status, "drift")
-	}
-
-	// Verify RERUN_REQUEST was written to the control table.
-	wantPK := types.PipelinePK(pipelineID)
-	wantSK := types.RerunRequestSK(scheduleID, date)
-	key := ddbItemKey("control", wantPK, wantSK)
-
-	ddb.mu.Lock()
-	item, ok := ddb.items[key]
-	ddb.mu.Unlock()
-
-	if !ok {
-		t.Fatalf("expected RERUN_REQUEST item at PK=%q SK=%q, but not found", wantPK, wantSK)
-	}
-
-	reason, _ := item["reason"].(*ddbtypes.AttributeValueMemberS)
-	if reason == nil || reason.Value != "data-drift" {
-		t.Errorf("reason = %v, want %q", reason, "data-drift")
-	}
-}
-
-func TestPostRun_NoRules(t *testing.T) {
-	pipelineID := "gold-orders"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		// No PostRun config at all.
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode:       "post-run",
-		PipelineID: pipelineID,
-		ScheduleID: "daily",
-		Date:       "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out.Status != "passed" {
-		t.Errorf("status = %q, want %q when no PostRun rules", out.Status, "passed")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Validation-exhausted tests
 // ---------------------------------------------------------------------------
@@ -1409,6 +1171,218 @@ func TestOrchestrator_CompleteTrigger_Timeout(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// CompleteTrigger — post-run baseline capture tests
+// ---------------------------------------------------------------------------
+
+func TestCompleteTrigger_Success_CapturesBaseline(t *testing.T) {
+	pipelineID := "pipe-baseline"
+	date := "2026-03-08T06"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		PostRun: &types.PostRunConfig{
+			Rules: []types.ValidationRule{
+				{Key: "audit-result", Check: types.CheckGTE, Field: "sensor_count", Value: float64(100)},
+			},
+		},
+	}
+
+	ddb := newMockDDB()
+	ddb.putRaw("control", configItem(pipelineID, cfg))
+	ddb.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
+		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "150"},
+	}))
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "complete-trigger",
+		PipelineID: pipelineID,
+		ScheduleID: "stream",
+		Date:       date,
+		Event:      "success",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != types.TriggerStatusCompleted {
+		t.Errorf("status = %q, want %q", out.Status, types.TriggerStatusCompleted)
+	}
+
+	// Verify date-scoped baseline was written.
+	baselineKey := ddbItemKey("control", types.PipelinePK(pipelineID), types.SensorSK("postrun-baseline#"+date))
+	ddb.mu.Lock()
+	_, exists := ddb.items[baselineKey]
+	ddb.mu.Unlock()
+	if !exists {
+		t.Error("expected date-scoped postrun-baseline sensor to be written on success")
+	}
+
+	// Verify POST_RUN_BASELINE_CAPTURED event was published.
+	eb := d.EventBridge.(*mockEventBridge)
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	found := false
+	for _, evt := range eb.events {
+		if *evt.Entries[0].DetailType == string(types.EventPostRunBaselineCaptured) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected POST_RUN_BASELINE_CAPTURED event")
+	}
+}
+
+func TestCompleteTrigger_Fail_NoBaseline(t *testing.T) {
+	pipelineID := "pipe-no-baseline"
+	date := "2026-03-08T06"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		PostRun: &types.PostRunConfig{
+			Rules: []types.ValidationRule{
+				{Key: "audit-result", Check: types.CheckExists},
+			},
+		},
+	}
+
+	ddb := newMockDDB()
+	ddb.putRaw("control", configItem(pipelineID, cfg))
+	ddb.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "complete-trigger",
+		PipelineID: pipelineID,
+		ScheduleID: "stream",
+		Date:       date,
+		Event:      "fail",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != types.TriggerStatusFailedFinal {
+		t.Errorf("status = %q, want %q", out.Status, types.TriggerStatusFailedFinal)
+	}
+
+	// Verify NO baseline was written on failure.
+	baselineKey := ddbItemKey("control", types.PipelinePK(pipelineID), types.SensorSK("postrun-baseline#"+date))
+	ddb.mu.Lock()
+	_, exists := ddb.items[baselineKey]
+	ddb.mu.Unlock()
+	if exists {
+		t.Error("postrun-baseline should NOT be written on failure")
+	}
+}
+
+func TestCompleteTrigger_Success_NoPostRun_NoBaseline(t *testing.T) {
+	pipelineID := "pipe-no-postrun"
+	date := "2026-03-08"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		// No PostRun config.
+	}
+
+	ddb := newMockDDB()
+	ddb.putRaw("control", configItem(pipelineID, cfg))
+	ddb.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	d := newTestDeps(ddb)
+	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "complete-trigger",
+		PipelineID: pipelineID,
+		ScheduleID: "stream",
+		Date:       date,
+		Event:      "success",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != types.TriggerStatusCompleted {
+		t.Errorf("status = %q, want %q", out.Status, types.TriggerStatusCompleted)
+	}
+
+	// No PostRun config → no baseline written.
+	baselineKey := ddbItemKey("control", types.PipelinePK(pipelineID), types.SensorSK("postrun-baseline#"+date))
+	ddb.mu.Lock()
+	_, exists := ddb.items[baselineKey]
+	ddb.mu.Unlock()
+	if exists {
+		t.Error("postrun-baseline should NOT be written when no PostRun config")
+	}
+}
+
+func TestCompleteTrigger_DateScopedBaseline(t *testing.T) {
+	pipelineID := "pipe-date-scope"
+	date := "2026-03-08T06"
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: pipelineID},
+		PostRun: &types.PostRunConfig{
+			Rules: []types.ValidationRule{
+				{Key: "audit-result", Check: types.CheckGTE, Field: "sensor_count", Value: float64(1)},
+			},
+		},
+	}
+
+	ddb := newMockDDB()
+	ddb.putRaw("control", configItem(pipelineID, cfg))
+	ddb.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+	// Per-period sensor that will be remapped to "audit-result".
+	ddb.putRaw("control", sensorItem(pipelineID, "audit-result#20260308T06", map[string]ddbtypes.AttributeValue{
+		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "42"},
+	}))
+
+	d := newTestDeps(ddb)
+	_, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode:       "complete-trigger",
+		PipelineID: pipelineID,
+		ScheduleID: "stream",
+		Date:       date,
+		Event:      "success",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Baseline should be date-scoped.
+	baselineKey := ddbItemKey("control", types.PipelinePK(pipelineID), types.SensorSK("postrun-baseline#"+date))
+	ddb.mu.Lock()
+	item, exists := ddb.items[baselineKey]
+	ddb.mu.Unlock()
+	if !exists {
+		t.Fatal("expected date-scoped postrun-baseline")
+	}
+
+	// Verify the baseline captured sensor_count from the remapped sensor.
+	if data, ok := item["data"]; ok {
+		if dataMap, ok := data.(*ddbtypes.AttributeValueMemberM); ok {
+			if sc, ok := dataMap.Value["sensor_count"]; ok {
+				if scN, ok := sc.(*ddbtypes.AttributeValueMemberN); ok {
+					if scN.Value != "42" {
+						t.Errorf("baseline sensor_count = %q, want %q", scN.Value, "42")
+					}
+				}
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Unknown mode test
 // ---------------------------------------------------------------------------
 
@@ -1560,476 +1534,46 @@ func TestInjectDateArgs_GlueNilArguments(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractFloat — tested indirectly through post-run with audit-result values
+// ExtractFloat — direct unit tests
 // ---------------------------------------------------------------------------
 
 func TestExtractFloat_Float64(t *testing.T) {
-	// Sensor with sensor_count stored as DynamoDB Number (float64 after JSON unmarshal).
-	pipelineID := "ef-float64"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "42.5"},
-	}))
-	// Baseline with different float count to trigger drift detection.
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// 42.5 != 100 → drift detected. This confirms extractFloat correctly
-	// parsed the float64 value from the sensor data map.
-	if out.Status != "drift" {
-		t.Errorf("status = %q, want %q — extractFloat should parse float64", out.Status, "drift")
+	data := map[string]interface{}{"sensor_count": float64(42.5)}
+	got := lambda.ExtractFloat(data, "sensor_count")
+	if got != 42.5 {
+		t.Errorf("ExtractFloat = %v, want 42.5", got)
 	}
 }
 
 func TestExtractFloat_String(t *testing.T) {
-	// Sensor with sensor_count stored as a string "3.14".
-	pipelineID := "ef-string"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberS{Value: "3.14"},
-	}))
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// 3.14 != 100 → drift. Confirms extractFloat parses string values.
-	if out.Status != "drift" {
-		t.Errorf("status = %q, want %q — extractFloat should parse string", out.Status, "drift")
+	data := map[string]interface{}{"sensor_count": "3.14"}
+	got := lambda.ExtractFloat(data, "sensor_count")
+	if got != 3.14 {
+		t.Errorf("ExtractFloat = %v, want 3.14", got)
 	}
 }
 
 func TestExtractFloat_InvalidString(t *testing.T) {
-	// Sensor with sensor_count = "notanumber" → extractFloat returns 0 → skips drift.
-	pipelineID := "ef-invalid"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberS{Value: "notanumber"},
-	}))
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// currCount=0 (invalid string) → skips drift check → evaluates rules normally.
-	if out.Status == "drift" {
-		t.Error("status = drift, but invalid string should yield 0 and skip drift check")
+	data := map[string]interface{}{"sensor_count": "notanumber"}
+	got := lambda.ExtractFloat(data, "sensor_count")
+	if got != 0 {
+		t.Errorf("ExtractFloat = %v, want 0 for invalid string", got)
 	}
 }
 
 func TestExtractFloat_MissingKey(t *testing.T) {
-	// Sensor without "sensor_count" field → extractFloat returns 0 → skips drift.
-	pipelineID := "ef-missing"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"other_field": &ddbtypes.AttributeValueMemberS{Value: "hello"},
-	}))
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Missing key → extractFloat returns 0 → currCount=0 → skips drift check.
-	if out.Status == "drift" {
-		t.Error("status = drift, but missing sensor_count should yield 0 and skip drift check")
+	data := map[string]interface{}{"other_field": "hello"}
+	got := lambda.ExtractFloat(data, "sensor_count")
+	if got != 0 {
+		t.Errorf("ExtractFloat = %v, want 0 for missing key", got)
 	}
 }
 
 func TestExtractFloat_UnsupportedType(t *testing.T) {
-	// Sensor with sensor_count stored as a BOOL → extractFloat returns 0 → skips drift.
-	pipelineID := "ef-unsupported"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberBOOL{Value: true},
-	}))
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Bool type → extractFloat returns 0 → currCount=0 → skips drift check.
-	if out.Status == "drift" {
-		t.Error("status = drift, but unsupported type (bool) should yield 0 and skip drift check")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handlePostRun — additional branch coverage
-// ---------------------------------------------------------------------------
-
-func TestPostRun_BaselineWriteError(t *testing.T) {
-	// WriteSensor fails on first iteration → logged but doesn't abort.
-	pipelineID := "pr-baseline-err"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	// Use mockDynamo (not newMockDDB) so we can inject a PutItem error
-	// specifically for the baseline sensor write.
-	var putCount int
-	ddb := &mockDynamo{
-		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
-		},
-		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
-			// Return audit-result but NO postrun-baseline → triggers baseline write.
-			return &dynamodb.QueryOutput{
-				Items: []map[string]ddbtypes.AttributeValue{
-					sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-						"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-					}),
-				},
-			}, nil
-		},
-		putItemFn: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
-			putCount++
-			return nil, fmt.Errorf("dynamodb: provisioned throughput exceeded")
-		},
-	}
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Baseline write failed, but rules still evaluated.
-	if out.Mode != "post-run" {
-		t.Errorf("mode = %q, want %q", out.Mode, "post-run")
-	}
-	// Should not be an error — the baseline write failure is non-fatal.
-	if out.Error != "" {
-		t.Errorf("unexpected error in output: %q", out.Error)
-	}
-}
-
-func TestPostRun_DriftWriteRerunError(t *testing.T) {
-	// WriteRerunRequest fails on drift → logged non-fatally, still returns "drift".
-	pipelineID := "pr-rerun-err"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	var putCallCount int
-	ddb := &mockDynamo{
-		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
-		},
-		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
-			return &dynamodb.QueryOutput{
-				Items: []map[string]ddbtypes.AttributeValue{
-					sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-						"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "150"},
-					}),
-					sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-						"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-					}),
-				},
-			}, nil
-		},
-		putItemFn: func(_ context.Context, _ *dynamodb.PutItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
-			putCallCount++
-			return nil, fmt.Errorf("dynamodb: write rerun request failed")
-		},
-	}
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out.Status != "drift" {
-		t.Errorf("status = %q, want %q — rerun write failure should not change result", out.Status, "drift")
-	}
-}
-
-func TestPostRun_ZeroPrevCount_NoDrift(t *testing.T) {
-	pipelineID := "pr-zero-prev"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-	// Baseline with sensor_count=0.
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "0"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// prevCount=0 → skips drift check (prevCount <= 0 guard).
-	if out.Status == "drift" {
-		t.Error("status = drift, but prevCount=0 should skip drift check")
-	}
-}
-
-func TestPostRun_ZeroCurrCount_NoDrift(t *testing.T) {
-	pipelineID := "pr-zero-curr"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	// audit-result with sensor_count=0.
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "0"},
-	}))
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// currCount=0 → skips drift check.
-	if out.Status == "drift" {
-		t.Error("status = drift, but currCount=0 should skip drift check")
-	}
-}
-
-func TestPostRun_SameCounts_NoDrift(t *testing.T) {
-	pipelineID := "pr-same-counts"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Same counts → no drift, evaluates rules normally.
-	if out.Status == "drift" {
-		t.Error("status = drift, but same counts should not trigger drift")
-	}
-}
-
-func TestPostRun_NegativeDrift(t *testing.T) {
-	// Current count < baseline count → still drift (currCount != prevCount).
-	pipelineID := "pr-neg-drift"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "80"},
-	}))
-	ddb.putRaw("control", sensorItem(pipelineID, "postrun-baseline", map[string]ddbtypes.AttributeValue{
-		"sensor_count": &ddbtypes.AttributeValueMemberN{Value: "100"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out.Status != "drift" {
-		t.Errorf("status = %q, want %q — negative drift (80 < 100) should still trigger drift", out.Status, "drift")
-	}
-}
-
-func TestPostRun_GetAllSensorsError(t *testing.T) {
-	pipelineID := "pr-sensor-err"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckExists},
-			},
-		},
-	}
-
-	ddb := &mockDynamo{
-		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
-		},
-		queryFn: func(_ context.Context, _ *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
-			return nil, fmt.Errorf("dynamodb: request limit exceeded")
-		},
-	}
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected Lambda error: %v", err)
-	}
-	if out.Error == "" {
-		t.Error("expected error in output when GetAllSensors fails")
-	}
-}
-
-func TestPostRun_RulesNotReady(t *testing.T) {
-	pipelineID := "pr-not-ready"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		PostRun: &types.PostRunConfig{
-			Rules: []types.ValidationRule{
-				{Key: "audit-result", Check: types.CheckGTE, Field: "count", Value: float64(1000)},
-			},
-		},
-	}
-
-	ddb := newMockDDB()
-	ddb.putRaw("control", configItem(pipelineID, cfg))
-	ddb.putRaw("control", sensorItem(pipelineID, "audit-result", map[string]ddbtypes.AttributeValue{
-		"count": &ddbtypes.AttributeValueMemberN{Value: "50"},
-	}))
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "post-run", PipelineID: pipelineID, ScheduleID: "daily", Date: "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out.Status != "not_ready" {
-		t.Errorf("status = %q, want %q — count 50 < 1000 should not pass", out.Status, "not_ready")
+	data := map[string]interface{}{"sensor_count": true}
+	got := lambda.ExtractFloat(data, "sensor_count")
+	if got != 0 {
+		t.Errorf("ExtractFloat = %v, want 0 for unsupported type (bool)", got)
 	}
 }
 
@@ -2422,14 +1966,15 @@ func TestRemapPerPeriod_NoMatch(t *testing.T) {
 }
 
 func TestRemapPerPeriod_BaseKeyExists(t *testing.T) {
-	// If base key "hourly-status" already exists, don't overwrite with per-period sensor.
+	// Per-period sensor ALWAYS overwrites the base key so the evaluation
+	// uses the date-specific value instead of a stale base-key value.
 	pipelineID := "remap-base-exists"
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: pipelineID},
 		Validation: types.ValidationConfig{
 			Trigger: "ALL",
 			Rules: []types.ValidationRule{
-				{Key: "hourly-status", Check: types.CheckEquals, Field: "source", Value: "base"},
+				{Key: "hourly-status", Check: types.CheckEquals, Field: "source", Value: "per-period"},
 			},
 		},
 	}
@@ -2464,9 +2009,9 @@ func TestRemapPerPeriod_BaseKeyExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Rule checks for source="base" — the base key should NOT be overwritten.
+	// Per-period sensor overwrites base key — rule checks source="per-period".
 	if out.Status != "passed" {
-		t.Errorf("status = %q, want %q — base key should not be overwritten by per-period sensor", out.Status, "passed")
+		t.Errorf("status = %q, want %q — per-period sensor should overwrite base key", out.Status, "passed")
 	}
 }
 
@@ -3032,57 +2577,6 @@ func TestTrigger_GetConfigError(t *testing.T) {
 	}
 	if out.Error == "" {
 		t.Error("expected error in output when GetConfig fails")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// PostRun — GetConfig error and config not found
-// ---------------------------------------------------------------------------
-
-func TestPostRun_GetConfigError(t *testing.T) {
-	ddb := &mockDynamo{
-		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-			return nil, fmt.Errorf("dynamodb: internal error")
-		},
-	}
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode:       "post-run",
-		PipelineID: "any-pipe",
-		ScheduleID: "daily",
-		Date:       "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected Lambda error: %v", err)
-	}
-	if out.Error == "" {
-		t.Error("expected error in output when GetConfig fails")
-	}
-}
-
-func TestPostRun_ConfigNotFound(t *testing.T) {
-	ddb := &mockDynamo{
-		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-			return &dynamodb.GetItemOutput{Item: nil}, nil
-		},
-	}
-
-	d := newTestDeps(ddb)
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode:       "post-run",
-		PipelineID: "missing-pipe",
-		ScheduleID: "daily",
-		Date:       "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected Lambda error: %v", err)
-	}
-	if out.Error == "" {
-		t.Error("expected error in output for missing config")
-	}
-	if !strings.Contains(out.Error, "config not found") {
-		t.Errorf("error = %q, want it to contain 'config not found'", out.Error)
 	}
 }
 

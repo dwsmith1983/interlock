@@ -54,7 +54,7 @@ func (r *Runner) checkEMRServerlessStatus(ctx context.Context, metadata map[stri
 		return StatusResult{State: RunCheckRunning, Message: "missing emr-serverless metadata"}, nil
 	}
 
-	client, err := r.getEMRServerlessClient("")
+	client, err := r.getEMRServerlessClient(ctx, "")
 	if err != nil {
 		return StatusResult{}, fmt.Errorf("emr-serverless status: getting client: %w", err)
 	}

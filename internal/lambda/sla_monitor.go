@@ -341,7 +341,10 @@ func createOneTimeSchedule(ctx context.Context, d *Deps, name, timestamp string,
 			Input:   aws.String(string(payloadJSON)),
 		},
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("create one-time schedule %q: %w", name, err)
+	}
+	return nil
 }
 
 // handleSLAReconcile calculates deadlines and fires any alerts for deadlines

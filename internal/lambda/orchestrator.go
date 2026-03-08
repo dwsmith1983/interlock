@@ -23,8 +23,6 @@ func HandleOrchestrator(ctx context.Context, d *Deps, input OrchestratorInput) (
 		return handleTrigger(ctx, d, input)
 	case "check-job":
 		return handleCheckJob(ctx, d, input)
-	case "post-run":
-		return handlePostRun(ctx, d, input)
 	case "validation-exhausted":
 		return handleValidationExhausted(ctx, d, input)
 	case "trigger-exhausted":
@@ -54,12 +52,14 @@ func handleEvaluate(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		return OrchestratorOutput{Mode: "evaluate", Error: err.Error()}, nil
 	}
 
-	remapPerPeriodSensors(sensors, input.Date)
+	RemapPerPeriodSensors(sensors, input.Date)
 
 	result := validation.EvaluateRules(cfg.Validation.Trigger, cfg.Validation.Rules, sensors, time.Now())
 
 	if result.Passed {
-		_ = publishEvent(ctx, d, string(types.EventValidationPassed), input.PipelineID, input.ScheduleID, input.Date, "all validation rules passed")
+		if err := publishEvent(ctx, d, string(types.EventValidationPassed), input.PipelineID, input.ScheduleID, input.Date, "all validation rules passed"); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventValidationPassed, "error", err)
+		}
 	}
 
 	status := "not_ready"
@@ -104,7 +104,9 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 
 	runID := extractRunID(metadata)
 
-	_ = publishEvent(ctx, d, string(types.EventJobTriggered), input.PipelineID, input.ScheduleID, input.Date, fmt.Sprintf("triggered %s job", cfg.Job.Type))
+	if err := publishEvent(ctx, d, string(types.EventJobTriggered), input.PipelineID, input.ScheduleID, input.Date, fmt.Sprintf("triggered %s job", cfg.Job.Type)); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobTriggered, "error", err)
+	}
 
 	// Non-polling triggers (http, command, lambda) complete synchronously
 	// during Execute. Write success to joblog immediately and set a sentinel
@@ -167,7 +169,9 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 	switch result.State {
 	case "succeeded":
 		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventSuccess, input.RunID, 0, "")
-		_ = publishEvent(ctx, d, string(types.EventJobCompleted), input.PipelineID, input.ScheduleID, input.Date, "job succeeded")
+		if err := publishEvent(ctx, d, string(types.EventJobCompleted), input.PipelineID, input.ScheduleID, input.Date, "job succeeded"); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobCompleted, "error", err)
+		}
 		return OrchestratorOutput{Mode: "check-job", Event: "success"}, nil
 	case "failed":
 		var writeOpts []store.JobEventOption
@@ -175,7 +179,9 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 			writeOpts = append(writeOpts, store.WithFailureCategory(result.FailureCategory))
 		}
 		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventFail, input.RunID, 0, result.Message, writeOpts...)
-		_ = publishEvent(ctx, d, string(types.EventJobFailed), input.PipelineID, input.ScheduleID, input.Date, "job failed: "+result.Message)
+		if err := publishEvent(ctx, d, string(types.EventJobFailed), input.PipelineID, input.ScheduleID, input.Date, "job failed: "+result.Message); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobFailed, "error", err)
+		}
 		return OrchestratorOutput{Mode: "check-job", Event: "fail"}, nil
 	default:
 		// Still running — return no event so SFN loops back to WaitForJob.
@@ -183,84 +189,9 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 	}
 }
 
-// handlePostRun evaluates post-run validation rules if configured and detects
-// data drift by comparing current audit sensor values against a saved baseline.
-func handlePostRun(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
-	cfg, err := d.Store.GetConfig(ctx, input.PipelineID)
-	if err != nil {
-		return OrchestratorOutput{Mode: "post-run", Error: err.Error()}, nil
-	}
-	if cfg == nil {
-		return OrchestratorOutput{Mode: "post-run", Error: fmt.Sprintf("config not found for pipeline %q", input.PipelineID)}, nil
-	}
-
-	if cfg.PostRun == nil || len(cfg.PostRun.Rules) == 0 {
-		return OrchestratorOutput{Mode: "post-run", Status: "passed"}, nil
-	}
-
-	sensors, err := d.Store.GetAllSensors(ctx, input.PipelineID)
-	if err != nil {
-		return OrchestratorOutput{Mode: "post-run", Error: err.Error()}, nil
-	}
-
-	remapPerPeriodSensors(sensors, input.Date)
-
-	// Check for data drift: compare audit counts against baseline.
-	baselineKey := "postrun-baseline"
-	baseline, hasBaseline := sensors[baselineKey]
-	auditResult, hasAudit := sensors["audit-result"]
-
-	if hasAudit && hasBaseline {
-		prevCount := extractFloat(baseline, "sensor_count")
-		currCount := extractFloat(auditResult, "sensor_count")
-		if prevCount > 0 && currCount > 0 && currCount != prevCount {
-			delta := currCount - prevCount
-			alertDetail := map[string]interface{}{
-				"previousCount": prevCount,
-				"currentCount":  currCount,
-				"delta":         delta,
-				"source":        "post-run monitor",
-				"actionHint":    fmt.Sprintf("%.0f new records detected — re-run triggered", delta),
-			}
-			_ = publishEvent(ctx, d, string(types.EventDataDrift), input.PipelineID, input.ScheduleID, input.Date,
-				fmt.Sprintf("data drift detected for %s: %.0f → %.0f records", input.PipelineID, prevCount, currCount), alertDetail)
-
-			// Trigger a re-run via the existing circuit breaker path.
-			if writeErr := d.Store.WriteRerunRequest(ctx, input.PipelineID, input.ScheduleID, input.Date, "data-drift"); writeErr != nil {
-				d.Logger.WarnContext(ctx, "failed to write rerun request on drift", "pipelineId", input.PipelineID, "error", writeErr)
-			}
-
-			return OrchestratorOutput{
-				Mode:   "post-run",
-				Status: "drift",
-			}, nil
-		}
-	}
-
-	// First iteration: save current audit result as baseline for future comparisons.
-	if hasAudit && !hasBaseline {
-		if writeErr := d.Store.WriteSensor(ctx, input.PipelineID, baselineKey, auditResult); writeErr != nil {
-			d.Logger.WarnContext(ctx, "failed to write post-run baseline", "pipelineId", input.PipelineID, "error", writeErr)
-		}
-	}
-
-	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, time.Now())
-
-	status := "not_ready"
-	if result.Passed {
-		status = "passed"
-	}
-
-	return OrchestratorOutput{
-		Mode:    "post-run",
-		Status:  status,
-		Results: result.Results,
-	}, nil
-}
-
-// extractFloat retrieves a numeric value from a sensor data map, handling both
+// ExtractFloat retrieves a numeric value from a sensor data map, handling both
 // float64 (native JSON) and string representations.
-func extractFloat(data map[string]interface{}, key string) float64 {
+func ExtractFloat(data map[string]interface{}, key string) float64 {
 	v, ok := data[key]
 	if !ok {
 		return 0
@@ -283,7 +214,9 @@ func handleValidationExhausted(ctx context.Context, d *Deps, input OrchestratorI
 		return OrchestratorOutput{}, fmt.Errorf("write validation-exhausted joblog: %w", err)
 	}
 
-	_ = publishEvent(ctx, d, string(types.EventValidationExhausted), input.PipelineID, input.ScheduleID, input.Date, "evaluation window exhausted without passing")
+	if err := publishEvent(ctx, d, string(types.EventValidationExhausted), input.PipelineID, input.ScheduleID, input.Date, "evaluation window exhausted without passing"); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventValidationExhausted, "error", err)
+	}
 
 	return OrchestratorOutput{
 		Mode:   "validation-exhausted",
@@ -299,8 +232,10 @@ func handleJobPollExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 		return OrchestratorOutput{}, fmt.Errorf("write job-poll-exhausted joblog: %w", err)
 	}
 
-	_ = publishEvent(ctx, d, string(types.EventJobPollExhausted), input.PipelineID, input.ScheduleID, input.Date,
-		"job poll window exhausted")
+	if err := publishEvent(ctx, d, string(types.EventJobPollExhausted), input.PipelineID, input.ScheduleID, input.Date,
+		"job poll window exhausted"); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobPollExhausted, "error", err)
+	}
 
 	return OrchestratorOutput{
 		Mode:   "job-poll-exhausted",
@@ -308,12 +243,12 @@ func handleJobPollExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 	}, nil
 }
 
-// remapPerPeriodSensors adds base-key aliases for per-period sensor keys.
+// RemapPerPeriodSensors adds base-key aliases for per-period sensor keys.
 // For example, sensor "hourly-status#20260303T07" becomes accessible under
 // key "hourly-status" when the execution date is "2026-03-03T07". This allows
 // validation rules with key "hourly-status" to match per-period sensor records.
 // Handles both normalized (2026-03-03) and compact (20260303) date formats.
-func remapPerPeriodSensors(sensors map[string]map[string]interface{}, date string) {
+func RemapPerPeriodSensors(sensors map[string]map[string]interface{}, date string) {
 	if date == "" {
 		return
 	}
@@ -327,9 +262,7 @@ func remapPerPeriodSensors(sensors map[string]map[string]interface{}, date strin
 		for _, suffix := range suffixes {
 			if strings.HasSuffix(key, suffix) {
 				base := strings.TrimSuffix(key, suffix)
-				if _, exists := sensors[base]; !exists {
-					sensors[base] = data
-				}
+				sensors[base] = data
 				break
 			}
 		}
@@ -351,8 +284,10 @@ func handleTriggerExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 		return OrchestratorOutput{}, fmt.Errorf("write trigger-exhausted joblog: %w", err)
 	}
 
-	_ = publishEvent(ctx, d, string(types.EventRetryExhausted), input.PipelineID, input.ScheduleID, input.Date,
-		fmt.Sprintf("trigger retries exhausted for %s: %s", input.PipelineID, errMsg))
+	if err := publishEvent(ctx, d, string(types.EventRetryExhausted), input.PipelineID, input.ScheduleID, input.Date,
+		fmt.Sprintf("trigger retries exhausted for %s: %s", input.PipelineID, errMsg)); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRetryExhausted, "error", err)
+	}
 
 	// Release lock so pipeline can be re-triggered.
 	if err := d.Store.ReleaseTriggerLock(ctx, input.PipelineID, input.ScheduleID, input.Date); err != nil {
@@ -368,6 +303,8 @@ func handleTriggerExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 
 // handleCompleteTrigger sets the trigger row to its terminal status.
 // Success → COMPLETED; fail/timeout → FAILED_FINAL.
+// On success with PostRun configured, captures a date-scoped baseline snapshot
+// of all sensors for later drift comparison by the stream-based post-run evaluator.
 func handleCompleteTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
 	status := types.TriggerStatusCompleted
 	if input.Event != types.JobEventSuccess {
@@ -378,10 +315,64 @@ func handleCompleteTrigger(ctx context.Context, d *Deps, input OrchestratorInput
 		return OrchestratorOutput{}, fmt.Errorf("set trigger status: %w", err)
 	}
 
+	// On success, capture post-run baseline for drift detection.
+	if input.Event == types.JobEventSuccess {
+		if err := capturePostRunBaseline(ctx, d, input.PipelineID, input.ScheduleID, input.Date); err != nil {
+			d.Logger.WarnContext(ctx, "failed to capture post-run baseline",
+				"pipeline", input.PipelineID, "error", err)
+		}
+	}
+
 	return OrchestratorOutput{
 		Mode:   "complete-trigger",
 		Status: status,
 	}, nil
+}
+
+// capturePostRunBaseline reads all sensors and writes a date-scoped baseline
+// snapshot if the pipeline has PostRun config. The baseline is stored as
+// "postrun-baseline#<date>" so drift detection can compare against it.
+func capturePostRunBaseline(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) error {
+	cfg, err := d.Store.GetConfig(ctx, pipelineID)
+	if err != nil {
+		return fmt.Errorf("get config: %w", err)
+	}
+	if cfg == nil || cfg.PostRun == nil || len(cfg.PostRun.Rules) == 0 {
+		return nil
+	}
+
+	sensors, err := d.Store.GetAllSensors(ctx, pipelineID)
+	if err != nil {
+		return fmt.Errorf("get sensors: %w", err)
+	}
+
+	RemapPerPeriodSensors(sensors, date)
+
+	// Build baseline from post-run rule keys.
+	baseline := make(map[string]interface{})
+	for _, rule := range cfg.PostRun.Rules {
+		if data, ok := sensors[rule.Key]; ok {
+			for k, v := range data {
+				baseline[k] = v
+			}
+		}
+	}
+
+	if len(baseline) == 0 {
+		return nil
+	}
+
+	baselineKey := "postrun-baseline#" + date
+	if err := d.Store.WriteSensor(ctx, pipelineID, baselineKey, baseline); err != nil {
+		return fmt.Errorf("write baseline: %w", err)
+	}
+
+	if err := publishEvent(ctx, d, string(types.EventPostRunBaselineCaptured), pipelineID, scheduleID, date,
+		fmt.Sprintf("post-run baseline captured for %s", pipelineID)); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunBaselineCaptured, "error", err)
+	}
+
+	return nil
 }
 
 // buildTriggerConfig converts a JobConfig into a TriggerConfig by

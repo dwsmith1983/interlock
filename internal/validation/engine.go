@@ -3,6 +3,7 @@ package validation
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -160,6 +161,9 @@ func toFloat64(v interface{}) (float64, bool) {
 		return float64(n), true
 	case int32:
 		return float64(n), true
+	case string:
+		f, err := strconv.ParseFloat(n, 64)
+		return f, err == nil
 	default:
 		return 0, false
 	}
