@@ -64,13 +64,15 @@ func main() {
 			logger.Error("failed to read Slack secret from Secrets Manager", "arn", secretARN, "error", err)
 			os.Exit(1)
 		}
-		if out.SecretString != nil {
-			token := strings.TrimSpace(*out.SecretString)
-			if !strings.HasPrefix(token, "xoxb-") && !strings.HasPrefix(token, "xoxe-") {
-				logger.Warn("SLACK_SECRET_ARN value does not look like a Slack bot token (expected xoxb-/xoxe- prefix)")
-			}
-			deps.SlackBotToken = token
+		if out.SecretString == nil {
+			logger.Error("Secrets Manager returned nil SecretString", "arn", secretARN)
+			os.Exit(1)
 		}
+		token := strings.TrimSpace(*out.SecretString)
+		if !strings.HasPrefix(token, "xoxb-") && !strings.HasPrefix(token, "xoxe-") {
+			logger.Warn("SLACK_SECRET_ARN value does not look like a Slack bot token (expected xoxb-/xoxe- prefix)")
+		}
+		deps.SlackBotToken = token
 	}
 
 	lambda.Start(func(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
