@@ -66,7 +66,7 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 		return StatusResult{State: RunCheckRunning, Message: "missing glue metadata"}, nil
 	}
 
-	client, err := r.getGlueClient("")
+	client, err := r.getGlueClient(ctx, "")
 	if err != nil {
 		return StatusResult{}, fmt.Errorf("glue status: getting client: %w", err)
 	}
@@ -115,7 +115,7 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 // Returns (true, reason) if either check finds failure evidence. Returns
 // (false, "") on any error or if no failure is found.
 func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *string) (failed bool, reason string) {
-	client, err := r.getCWLogsClient("")
+	client, err := r.getCWLogsClient(ctx, "")
 	if err != nil {
 		return false, ""
 	}

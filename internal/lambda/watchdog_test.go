@@ -1446,9 +1446,7 @@ func TestWatchdog_ScheduleSLAAlerts_HourlyPipeline_UsesCompositeDate(t *testing.
 	// Fix time at 14:10 UTC so the :30 deadline (14:30) is still in the future
 	// and the cron "5 * * * *" last fired at 14:05 (after StartedAt).
 	fixedNow := time.Date(2026, 3, 7, 14, 10, 0, 0, time.UTC)
-	origNow := lambda.WatchdogNowFunc
-	lambda.WatchdogNowFunc = func() time.Time { return fixedNow }
-	t.Cleanup(func() { lambda.WatchdogNowFunc = origNow })
+	d.NowFunc = func() time.Time { return fixedNow }
 	d.StartedAt = fixedNow.Add(-5 * time.Minute)
 
 	// Hourly pipeline with relative deadline — resolveWatchdogSLADate should
@@ -1604,8 +1602,7 @@ func TestWatchdog_PostRunSensorMissing(t *testing.T) {
 
 	// Fix the clock so today is deterministic.
 	fixedNow := time.Date(2026, 3, 8, 14, 0, 0, 0, time.UTC)
-	lambda.WatchdogNowFunc = func() time.Time { return fixedNow }
-	defer func() { lambda.WatchdogNowFunc = time.Now }()
+	d.NowFunc = func() time.Time { return fixedNow }
 
 	today := fixedNow.Format("2006-01-02")
 
@@ -1654,8 +1651,7 @@ func TestWatchdog_PostRunSensorPresent(t *testing.T) {
 
 	// Fix the clock so today is deterministic.
 	fixedNow := time.Date(2026, 3, 8, 14, 0, 0, 0, time.UTC)
-	lambda.WatchdogNowFunc = func() time.Time { return fixedNow }
-	defer func() { lambda.WatchdogNowFunc = time.Now }()
+	d.NowFunc = func() time.Time { return fixedNow }
 
 	today := fixedNow.Format("2006-01-02")
 
@@ -1700,8 +1696,7 @@ func TestWatchdog_PostRunNoConfig(t *testing.T) {
 
 	// Fix the clock.
 	fixedNow := time.Date(2026, 3, 8, 14, 0, 0, 0, time.UTC)
-	lambda.WatchdogNowFunc = func() time.Time { return fixedNow }
-	defer func() { lambda.WatchdogNowFunc = time.Now }()
+	d.NowFunc = func() time.Time { return fixedNow }
 
 	today := fixedNow.Format("2006-01-02")
 

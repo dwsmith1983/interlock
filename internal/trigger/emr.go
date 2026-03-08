@@ -71,7 +71,7 @@ func (r *Runner) checkEMRStatus(ctx context.Context, metadata map[string]interfa
 		return StatusResult{State: RunCheckRunning, Message: "missing emr metadata"}, nil
 	}
 
-	client, err := r.getEMRClient("")
+	client, err := r.getEMRClient(ctx, "")
 	if err != nil {
 		return StatusResult{}, fmt.Errorf("emr status: getting client: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -170,8 +171,10 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 
 	if rerunCount >= maxRetries {
 		// Retry limit reached — publish exhaustion event and mark as final failure.
-		_ = publishEvent(ctx, d, string(types.EventRetryExhausted), pipelineID, schedule, date,
-			fmt.Sprintf("retry limit reached (%d/%d) for %s", rerunCount, maxRetries, pipelineID))
+		if err := publishEvent(ctx, d, string(types.EventRetryExhausted), pipelineID, schedule, date,
+			fmt.Sprintf("retry limit reached (%d/%d) for %s", rerunCount, maxRetries, pipelineID)); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRetryExhausted, "error", err)
+		}
 
 		if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, types.TriggerStatusFailedFinal); err != nil {
 			return fmt.Errorf("set trigger status FAILED_FINAL for %q: %w", pipelineID, err)
@@ -208,7 +211,7 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 	}
 
 	// Use a unique execution name that includes the rerun attempt number.
-	execName := fmt.Sprintf("%s-%s-%s-rerun-%d", pipelineID, schedule, date, attempt)
+	execName := truncateExecName(fmt.Sprintf("%s-%s-%s-rerun-%d", pipelineID, schedule, date, attempt))
 	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
 		return fmt.Errorf("start SFN rerun for %q: %w", pipelineID, err)
 	}
@@ -285,8 +288,10 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 	if count >= budget {
 		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 			types.JobEventRerunRejected, "", 0, limitLabel)
-		_ = publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
-			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, limitLabel))
+		if err := publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
+			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, limitLabel)); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunRejected, "error", err)
+		}
 		d.Logger.Info("rerun request rejected (limit exceeded)",
 			"pipelineId", pipelineID, "schedule", schedule, "date", date,
 			"reason", reason, "count", count, "budget", budget)
@@ -315,8 +320,10 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 	if !allowed {
 		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 			types.JobEventRerunRejected, "", 0, rejectReason)
-		_ = publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
-			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, rejectReason))
+		if err := publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
+			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, rejectReason)); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunRejected, "error", err)
+		}
 		d.Logger.Info("rerun request rejected",
 			"pipelineId", pipelineID, "schedule", schedule, "date", date,
 			"reason", rejectReason)
@@ -351,7 +358,7 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		return nil
 	}
 
-	execName := fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, time.Now().Unix())
+	execName := truncateExecName(fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, time.Now().Unix()))
 	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
 		return fmt.Errorf("start SFN rerun for %q: %w", pipelineID, err)
 	}
@@ -527,8 +534,10 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		return fmt.Errorf("start SFN for %q: %w", pipelineID, err)
 	}
 
-	_ = publishEvent(ctx, d, string(types.EventJobTriggered), pipelineID, scheduleID, date,
-		fmt.Sprintf("stream trigger fired for %s", pipelineID))
+	if err := publishEvent(ctx, d, string(types.EventJobTriggered), pipelineID, scheduleID, date,
+		fmt.Sprintf("stream trigger fired for %s", pipelineID)); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobTriggered, "error", err)
+	}
 
 	d.Logger.Info("started step function execution",
 		"pipelineId", pipelineID,
@@ -567,8 +576,10 @@ func checkLateDataArrival(ctx context.Context, d *Deps, pipelineID, schedule, da
 		types.JobEventLateDataArrival, "", 0,
 		"sensor updated after pipeline completed successfully")
 
-	_ = publishEvent(ctx, d, string(types.EventLateDataArrival), pipelineID, schedule, date,
-		fmt.Sprintf("late data arrival for %s: sensor updated after job completion", pipelineID))
+	if err := publishEvent(ctx, d, string(types.EventLateDataArrival), pipelineID, schedule, date,
+		fmt.Sprintf("late data arrival for %s: sensor updated after job completion", pipelineID)); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventLateDataArrival, "error", err)
+	}
 
 	// Trigger a re-run — circuit breaker in handleRerunRequest will validate sensor freshness.
 	if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, schedule, date, "late-data"); writeErr != nil {
@@ -636,15 +647,22 @@ func handlePostRunInflight(ctx context.Context, d *Deps, cfg *types.PipelineConf
 
 	prevCount := ExtractFloat(baseline, "sensor_count")
 	currCount := ExtractFloat(sensorData, "sensor_count")
-	if prevCount > 0 && currCount > 0 && currCount != prevCount {
-		_ = publishEvent(ctx, d, string(types.EventPostRunDriftInflight), pipelineID, scheduleID, date,
+	threshold := 0.0
+	if cfg.PostRun.DriftThreshold != nil {
+		threshold = *cfg.PostRun.DriftThreshold
+	}
+	if prevCount > 0 && currCount > 0 && math.Abs(currCount-prevCount) > threshold {
+		if err := publishEvent(ctx, d, string(types.EventPostRunDriftInflight), pipelineID, scheduleID, date,
 			fmt.Sprintf("inflight drift detected for %s: %.0f → %.0f (informational)", pipelineID, prevCount, currCount),
 			map[string]interface{}{
-				"previousCount": prevCount,
-				"currentCount":  currCount,
-				"sensorKey":     sensorKey,
-				"source":        "post-run-stream",
-			})
+				"previousCount":  prevCount,
+				"currentCount":   currCount,
+				"driftThreshold": threshold,
+				"sensorKey":      sensorKey,
+				"source":         "post-run-stream",
+			}); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDriftInflight, "error", err)
+		}
 	}
 	return nil
 }
@@ -664,16 +682,23 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 	if baseline != nil {
 		prevCount := ExtractFloat(baseline, "sensor_count")
 		currCount := ExtractFloat(sensorData, "sensor_count")
-		if prevCount > 0 && currCount > 0 && currCount != prevCount {
+		threshold := 0.0
+		if cfg.PostRun.DriftThreshold != nil {
+			threshold = *cfg.PostRun.DriftThreshold
+		}
+		if prevCount > 0 && currCount > 0 && math.Abs(currCount-prevCount) > threshold {
 			delta := currCount - prevCount
-			_ = publishEvent(ctx, d, string(types.EventPostRunDrift), pipelineID, scheduleID, date,
+			if err := publishEvent(ctx, d, string(types.EventPostRunDrift), pipelineID, scheduleID, date,
 				fmt.Sprintf("post-run drift detected for %s: %.0f → %.0f records", pipelineID, prevCount, currCount),
 				map[string]interface{}{
-					"previousCount": prevCount,
-					"currentCount":  currCount,
-					"delta":         delta,
-					"source":        "post-run-stream",
-				})
+					"previousCount":  prevCount,
+					"currentCount":   currCount,
+					"delta":          delta,
+					"driftThreshold": threshold,
+					"source":         "post-run-stream",
+				}); err != nil {
+				d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDrift, "error", err)
+			}
 
 			// Trigger rerun via the existing circuit breaker path.
 			if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, scheduleID, date, "data-drift"); writeErr != nil {
@@ -694,11 +719,15 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, time.Now())
 
 	if result.Passed {
-		_ = publishEvent(ctx, d, string(types.EventPostRunPassed), pipelineID, scheduleID, date,
-			fmt.Sprintf("post-run validation passed for %s", pipelineID))
+		if err := publishEvent(ctx, d, string(types.EventPostRunPassed), pipelineID, scheduleID, date,
+			fmt.Sprintf("post-run validation passed for %s", pipelineID)); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunPassed, "error", err)
+		}
 	} else {
-		_ = publishEvent(ctx, d, string(types.EventPostRunFailed), pipelineID, scheduleID, date,
-			fmt.Sprintf("post-run validation failed for %s", pipelineID))
+		if err := publishEvent(ctx, d, string(types.EventPostRunFailed), pipelineID, scheduleID, date,
+			fmt.Sprintf("post-run validation failed for %s", pipelineID)); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunFailed, "error", err)
+		}
 	}
 
 	return nil
@@ -753,11 +782,22 @@ func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
 	return sc
 }
 
+// truncateExecName ensures an SFN execution name does not exceed the 80-character
+// AWS limit. When truncation is needed the suffix (date + timestamp) is preserved
+// by trimming characters from the beginning of the name.
+func truncateExecName(name string) string {
+	const maxLen = 80
+	if len(name) <= maxLen {
+		return name
+	}
+	return name[len(name)-maxLen:]
+}
+
 // startSFN starts a Step Function execution with a unique execution name.
 // The name includes a Unix timestamp suffix to avoid ExecutionAlreadyExists
 // errors when a previous execution for the same pipeline/schedule/date failed.
 func startSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string) error {
-	name := fmt.Sprintf("%s-%s-%s-%d", pipelineID, scheduleID, date, time.Now().Unix())
+	name := truncateExecName(fmt.Sprintf("%s-%s-%s-%d", pipelineID, scheduleID, date, time.Now().Unix()))
 	return startSFNWithName(ctx, d, cfg, pipelineID, scheduleID, date, name)
 }
 
@@ -889,9 +929,19 @@ func ResolveExecutionDate(sensorData map[string]interface{}) string {
 	}
 
 	normalized := normalizeDate(dateStr)
+	// Validate YYYY-MM-DD format.
+	if _, err := time.Parse("2006-01-02", normalized); err != nil {
+		return time.Now().Format("2006-01-02")
+	}
 
 	if hourStr != "" {
-		return normalized + "T" + hourStr
+		// Validate hour is 2-digit 00-23.
+		if len(hourStr) == 2 {
+			if h, err := strconv.Atoi(hourStr); err == nil && h >= 0 && h <= 23 {
+				return normalized + "T" + hourStr
+			}
+		}
+		return normalized
 	}
 	return normalized
 }

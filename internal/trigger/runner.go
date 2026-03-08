@@ -108,7 +108,7 @@ func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[str
 		if cfg.Glue == nil {
 			return nil, fmt.Errorf("glue trigger config is nil")
 		}
-		client, err := r.getGlueClient("")
+		client, err := r.getGlueClient(ctx, "")
 		if err != nil {
 			return nil, err
 		}
@@ -117,7 +117,7 @@ func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[str
 		if cfg.EMR == nil {
 			return nil, fmt.Errorf("emr trigger config is nil")
 		}
-		client, err := r.getEMRClient("")
+		client, err := r.getEMRClient(ctx, "")
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +126,7 @@ func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[str
 		if cfg.EMRServerless == nil {
 			return nil, fmt.Errorf("emr-serverless trigger config is nil")
 		}
-		client, err := r.getEMRServerlessClient("")
+		client, err := r.getEMRServerlessClient(ctx, "")
 		if err != nil {
 			return nil, err
 		}
@@ -135,7 +135,7 @@ func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[str
 		if cfg.StepFunction == nil {
 			return nil, fmt.Errorf("step-function trigger config is nil")
 		}
-		client, err := r.getSFNClient("")
+		client, err := r.getSFNClient(ctx, "")
 		if err != nil {
 			return nil, err
 		}
@@ -149,7 +149,7 @@ func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[str
 		if cfg.Lambda == nil {
 			return nil, fmt.Errorf("lambda trigger config is nil")
 		}
-		client, err := r.getLambdaClient("")
+		client, err := r.getLambdaClient(ctx, "")
 		if err != nil {
 			return nil, err
 		}
@@ -209,7 +209,7 @@ func (r *Runner) checkAirflowStatus(ctx context.Context, metadata map[string]int
 
 // getAWSConfig returns the shared AWS config, loading it lazily on first call.
 // The caller must hold r.mu.
-func (r *Runner) getAWSConfig(region string) (aws.Config, error) {
+func (r *Runner) getAWSConfig(ctx context.Context, region string) (aws.Config, error) {
 	if r.awsCfg != nil {
 		return *r.awsCfg, nil
 	}
@@ -217,7 +217,7 @@ func (r *Runner) getAWSConfig(region string) (aws.Config, error) {
 	if region != "" {
 		opts = append(opts, awsconfig.WithRegion(region))
 	}
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return aws.Config{}, fmt.Errorf("loading AWS config: %w", err)
 	}
@@ -225,13 +225,13 @@ func (r *Runner) getAWSConfig(region string) (aws.Config, error) {
 	return cfg, nil
 }
 
-func (r *Runner) getGlueClient(region string) (GlueAPI, error) {
+func (r *Runner) getGlueClient(ctx context.Context, region string) (GlueAPI, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.glueClient != nil {
 		return r.glueClient, nil
 	}
-	cfg, err := r.getAWSConfig(region)
+	cfg, err := r.getAWSConfig(ctx, region)
 	if err != nil {
 		return nil, err
 	}
@@ -239,13 +239,13 @@ func (r *Runner) getGlueClient(region string) (GlueAPI, error) {
 	return r.glueClient, nil
 }
 
-func (r *Runner) getEMRClient(region string) (EMRAPI, error) {
+func (r *Runner) getEMRClient(ctx context.Context, region string) (EMRAPI, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.emrClient != nil {
 		return r.emrClient, nil
 	}
-	cfg, err := r.getAWSConfig(region)
+	cfg, err := r.getAWSConfig(ctx, region)
 	if err != nil {
 		return nil, err
 	}
@@ -253,13 +253,13 @@ func (r *Runner) getEMRClient(region string) (EMRAPI, error) {
 	return r.emrClient, nil
 }
 
-func (r *Runner) getEMRServerlessClient(region string) (EMRServerlessAPI, error) {
+func (r *Runner) getEMRServerlessClient(ctx context.Context, region string) (EMRServerlessAPI, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.emrSLClient != nil {
 		return r.emrSLClient, nil
 	}
-	cfg, err := r.getAWSConfig(region)
+	cfg, err := r.getAWSConfig(ctx, region)
 	if err != nil {
 		return nil, err
 	}
@@ -267,13 +267,13 @@ func (r *Runner) getEMRServerlessClient(region string) (EMRServerlessAPI, error)
 	return r.emrSLClient, nil
 }
 
-func (r *Runner) getSFNClient(region string) (SFNAPI, error) {
+func (r *Runner) getSFNClient(ctx context.Context, region string) (SFNAPI, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.sfnClient != nil {
 		return r.sfnClient, nil
 	}
-	cfg, err := r.getAWSConfig(region)
+	cfg, err := r.getAWSConfig(ctx, region)
 	if err != nil {
 		return nil, err
 	}
@@ -281,13 +281,13 @@ func (r *Runner) getSFNClient(region string) (SFNAPI, error) {
 	return r.sfnClient, nil
 }
 
-func (r *Runner) getCWLogsClient(region string) (CloudWatchLogsAPI, error) {
+func (r *Runner) getCWLogsClient(ctx context.Context, region string) (CloudWatchLogsAPI, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.cwLogsClient != nil {
 		return r.cwLogsClient, nil
 	}
-	cfg, err := r.getAWSConfig(region)
+	cfg, err := r.getAWSConfig(ctx, region)
 	if err != nil {
 		return nil, err
 	}
@@ -295,13 +295,13 @@ func (r *Runner) getCWLogsClient(region string) (CloudWatchLogsAPI, error) {
 	return r.cwLogsClient, nil
 }
 
-func (r *Runner) getLambdaClient(region string) (LambdaAPI, error) {
+func (r *Runner) getLambdaClient(ctx context.Context, region string) (LambdaAPI, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.lambdaClient != nil {
 		return r.lambdaClient, nil
 	}
-	cfg, err := r.getAWSConfig(region)
+	cfg, err := r.getAWSConfig(ctx, region)
 	if err != nil {
 		return nil, err
 	}

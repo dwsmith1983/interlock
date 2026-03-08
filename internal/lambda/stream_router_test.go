@@ -773,6 +773,33 @@ func TestResolveExecutionDate_HourWithLeadingZero(t *testing.T) {
 	}
 }
 
+func TestResolveExecutionDate_InvalidDate(t *testing.T) {
+	data := map[string]interface{}{"date": "not-a-date"}
+	got := lambda.ResolveExecutionDate(data)
+	// Should fall back to today's date.
+	today := time.Now().Format("2006-01-02")
+	if got != today {
+		t.Errorf("got %q, want today %q", got, today)
+	}
+}
+
+func TestResolveExecutionDate_InvalidHour(t *testing.T) {
+	data := map[string]interface{}{"date": "20260303", "hour": "25"}
+	got := lambda.ResolveExecutionDate(data)
+	// Invalid hour should be ignored; return date only.
+	if got != "2026-03-03" {
+		t.Errorf("got %q, want %q", got, "2026-03-03")
+	}
+}
+
+func TestResolveExecutionDate_NonNumericHour(t *testing.T) {
+	data := map[string]interface{}{"date": "20260303", "hour": "ab"}
+	got := lambda.ResolveExecutionDate(data)
+	if got != "2026-03-03" {
+		t.Errorf("got %q, want %q", got, "2026-03-03")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Rerun request helpers and tests
 // ---------------------------------------------------------------------------

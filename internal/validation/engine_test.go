@@ -530,3 +530,30 @@ func TestEvaluateRule_LT_Int64Field(t *testing.T) {
 
 	assert.True(t, result.Passed)
 }
+
+func TestEvaluateRule_GTE_StringNumericField(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#data",
+		Check: types.CheckGTE,
+		Field: "count",
+		Value: "100",
+	}
+	sensor := map[string]interface{}{"count": "150"}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.True(t, result.Passed)
+}
+
+func TestEvaluateRule_GTE_StringNonNumericField(t *testing.T) {
+	rule := types.ValidationRule{
+		Key:   "SENSOR#data",
+		Check: types.CheckGTE,
+		Field: "count",
+		Value: float64(100),
+	}
+	sensor := map[string]interface{}{"count": "not-a-number"}
+	result := EvaluateRule(rule, sensor, time.Now())
+
+	assert.False(t, result.Passed)
+	assert.Contains(t, result.Reason, "not numeric")
+}
