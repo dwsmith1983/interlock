@@ -237,6 +237,64 @@ func TestCheckAirflowStatus_MissingStateField(t *testing.T) {
 	assert.Contains(t, err.Error(), "response missing state field")
 }
 
+func TestExecuteAirflow_EnvExpansionRestricted(t *testing.T) {
+	t.Setenv("INTERLOCK_TEST_VAR", "safe")
+	t.Setenv("SECRET_VAR", "leaked")
+
+	var receivedAuth string
+	var receivedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		var payload map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		receivedBody = payload
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"dag_run_id": "run-env-test",
+		})
+	}))
+	defer srv.Close()
+
+	cfg := &types.AirflowTriggerConfig{
+		URL:     srv.URL,
+		DagID:   "test_dag",
+		Headers: map[string]string{"Authorization": "Bearer ${INTERLOCK_TEST_VAR}/${SECRET_VAR}"},
+		Body:    `{"safe":"${INTERLOCK_TEST_VAR}","secret":"${SECRET_VAR}"}`,
+	}
+
+	_, err := ExecuteAirflow(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// INTERLOCK_ prefixed vars should resolve; others should not.
+	assert.Equal(t, "Bearer safe/", receivedAuth)
+	conf, _ := receivedBody["conf"].(map[string]interface{})
+	assert.Equal(t, "safe", conf["safe"])
+	assert.Equal(t, "", conf["secret"])
+	assert.NotContains(t, receivedAuth, "leaked")
+}
+
+func TestCheckAirflowStatus_EnvExpansionRestricted(t *testing.T) {
+	t.Setenv("INTERLOCK_TEST_VAR", "safe")
+	t.Setenv("SECRET_VAR", "leaked")
+
+	var receivedAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"state": "running",
+		})
+	}))
+	defer srv.Close()
+
+	headers := map[string]string{"Authorization": "Bearer ${INTERLOCK_TEST_VAR}/${SECRET_VAR}"}
+	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", headers)
+	require.NoError(t, err)
+	assert.Equal(t, "running", state)
+	assert.Equal(t, "Bearer safe/", receivedAuth)
+	assert.NotContains(t, receivedAuth, "leaked")
+}
+
 func TestCheckAirflowStatus_WithHeaders(t *testing.T) {
 	var receivedAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

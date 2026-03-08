@@ -27,10 +27,8 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 
 	payload := map[string]interface{}{}
 	if cfg.Body != "" {
-		// os.ExpandEnv is intentional: operators store ${VAR} references in
-		// pipeline configs, resolved at runtime from the execution environment.
 		var conf interface{}
-		if err := json.Unmarshal([]byte(os.ExpandEnv(cfg.Body)), &conf); err != nil {
+		if err := json.Unmarshal([]byte(os.Expand(cfg.Body, safeEnvLookup)), &conf); err != nil {
 			return nil, fmt.Errorf("airflow trigger: invalid body JSON: %w", err)
 		}
 		payload["conf"] = conf
@@ -48,8 +46,7 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range cfg.Headers {
-		// os.ExpandEnv is intentional — see body comment above.
-		req.Header.Set(k, os.ExpandEnv(v))
+		req.Header.Set(k, os.Expand(v, safeEnvLookup))
 	}
 
 	client := defaultHTTPClient
@@ -105,8 +102,7 @@ func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string,
 
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
-		// os.ExpandEnv is intentional — see ExecuteAirflow comment.
-		req.Header.Set(k, os.ExpandEnv(v))
+		req.Header.Set(k, os.Expand(v, safeEnvLookup))
 	}
 
 	resp, err := defaultHTTPClient.Do(req)

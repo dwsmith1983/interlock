@@ -43,9 +43,7 @@ func ExecuteDatabricks(ctx context.Context, cfg *types.DatabricksTriggerConfig, 
 
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range cfg.Headers {
-		// os.ExpandEnv is intentional: operators store ${VAR} references in
-		// pipeline configs, resolved at runtime from the execution environment.
-		req.Header.Set(k, os.ExpandEnv(v))
+		req.Header.Set(k, os.Expand(v, safeEnvLookup))
 	}
 
 	resp, err := httpClient.Do(req)
@@ -97,8 +95,7 @@ func (r *Runner) checkDatabricksStatus(ctx context.Context, metadata map[string]
 
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
-		// os.ExpandEnv is intentional — see ExecuteDatabricks comment.
-		req.Header.Set(k, os.ExpandEnv(v))
+		req.Header.Set(k, os.Expand(v, safeEnvLookup))
 	}
 
 	resp, err := r.httpClient.Do(req)
