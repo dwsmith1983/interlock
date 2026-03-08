@@ -13,6 +13,7 @@ type TriggerConfig struct {
 	EMRServerless *EMRServerlessTriggerConfig `yaml:"emr_serverless,omitempty" json:"emrServerless,omitempty"`
 	StepFunction  *StepFunctionTriggerConfig  `yaml:"step_function,omitempty" json:"stepFunction,omitempty"`
 	Databricks    *DatabricksTriggerConfig    `yaml:"databricks,omitempty" json:"databricks,omitempty"`
+	Lambda        *LambdaTriggerConfig        `yaml:"lambda,omitempty" json:"lambda,omitempty"`
 }
 
 // HTTPTriggerConfig holds configuration for HTTP triggers.
@@ -70,6 +71,12 @@ type DatabricksTriggerConfig struct {
 	JobID        string            `yaml:"job_id,omitempty" json:"jobId,omitempty"`
 	Headers      map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	Arguments    map[string]string `yaml:"arguments,omitempty" json:"arguments,omitempty"`
+}
+
+// LambdaTriggerConfig holds configuration for direct AWS Lambda invocation.
+type LambdaTriggerConfig struct {
+	FunctionName string `yaml:"functionName" json:"functionName"`
+	Payload      string `yaml:"payload,omitempty" json:"payload,omitempty"`
 }
 
 // TriggerArguments returns the arguments map for the active trigger variant, or nil.
