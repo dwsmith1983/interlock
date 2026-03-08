@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -64,7 +65,11 @@ func main() {
 			os.Exit(1)
 		}
 		if out.SecretString != nil {
-			deps.SlackBotToken = *out.SecretString
+			token := strings.TrimSpace(*out.SecretString)
+			if !strings.HasPrefix(token, "xoxb-") && !strings.HasPrefix(token, "xoxe-") {
+				logger.Warn("SLACK_SECRET_ARN value does not look like a Slack bot token (expected xoxb-/xoxe- prefix)")
+			}
+			deps.SlackBotToken = token
 		}
 	}
 
