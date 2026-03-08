@@ -1926,3 +1926,453 @@ func TestE2E_AlertFormatAllEventTypes(t *testing.T) {
 		})
 	}
 }
+
+// =========================================================================
+// Helper: count SFN executions (thread-safe)
+// =========================================================================
+
+func countSFNExecutions(sfnM *mockSFN) int {
+	sfnM.mu.Lock()
+	defer sfnM.mu.Unlock()
+	return len(sfnM.executions)
+}
+
+// resetEventBridge clears all collected events for phase-based assertions.
+func resetEventBridge(eb *mockEventBridge) {
+	eb.mu.Lock()
+	eb.events = nil
+	eb.mu.Unlock()
+}
+
+// seedCompletedPipelineE2E sets up a pipeline that has completed: COMPLETED trigger,
+// successful job event, and fresh sensor data (for circuit breaker freshness check).
+func seedCompletedPipelineE2E(t *testing.T, ctx context.Context, d *lambda.Deps, mock *mockDDB, pipelineID, date string) {
+	t.Helper()
+	seedTriggerWithStatus(mock, pipelineID, "stream", date, types.TriggerStatusCompleted)
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-1*time.Hour).UnixMilli())
+	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, oldTS)},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+	})
+	freshTS := fmt.Sprintf("%d", time.Now().UnixMilli())
+	require.NoError(t, d.Store.WriteSensor(ctx, pipelineID, "upstream-complete", map[string]interface{}{
+		"status": "ready", "updatedAt": freshTS,
+	}))
+}
+
+// assertTriggerLockExists checks that a trigger lock exists for the given key.
+func assertTriggerLockExists(t *testing.T, mock *mockDDB, pipelineID, schedule, date string) {
+	t.Helper()
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	key := ddbItemKey(testControlTable, types.PipelinePK(pipelineID), types.TriggerSK(schedule, date))
+	_, ok := mock.items[key]
+	assert.True(t, ok, "expected trigger lock for %s/%s/%s", pipelineID, schedule, date)
+}
+
+// assertNoTriggerLock checks that no trigger lock exists for the given key.
+func assertNoTriggerLock(t *testing.T, mock *mockDDB, pipelineID, schedule, date string) {
+	t.Helper()
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	key := ddbItemKey(testControlTable, types.PipelinePK(pipelineID), types.TriggerSK(schedule, date))
+	_, ok := mock.items[key]
+	assert.False(t, ok, "expected no trigger lock for %s/%s/%s", pipelineID, schedule, date)
+}
+
+// =========================================================================
+// Gap 1: Manual rerun vs drift rerun budget separation
+// =========================================================================
+
+func TestE2E_RerunBudgetSeparation(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("ExhaustDriftThenManualStillWorks", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-bs1")
+		cfg.Job.MaxDriftReruns = intPtr(1)
+		cfg.Job.MaxManualReruns = intPtr(2)
+		cfg.PostRun = &types.PostRunConfig{
+			Rules: []types.ValidationRule{{Key: "quality-check", Check: types.CheckExists}},
+		}
+		seedConfig(mock, cfg)
+		seedCompletedPipelineE2E(t, ctx, d, mock, "pipe-bs1", "2026-03-07")
+
+		// Phase 1: First drift rerun — accepted (0 < budget 1).
+		sfnBefore := countSFNExecutions(sfnM)
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "data-drift")))
+		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "first drift rerun should start SFN")
+
+		// Phase 2: Second drift rerun — rejected (1 >= budget 1).
+		resetEventBridge(eb)
+		sfnBefore = countSFNExecutions(sfnM)
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "data-drift")))
+		assert.Equal(t, sfnBefore, countSFNExecutions(sfnM), "second drift rerun should NOT start SFN")
+		assert.Contains(t, collectEventTypes(eb), "RERUN_REJECTED")
+
+		// Phase 3: First manual rerun — accepted despite drift budget exhausted.
+		resetEventBridge(eb)
+		sfnBefore = countSFNExecutions(sfnM)
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "manual")))
+		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "first manual rerun should succeed")
+
+		// Phase 4: Second manual rerun — accepted (1 < budget 2).
+		resetEventBridge(eb)
+		sfnBefore = countSFNExecutions(sfnM)
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "manual")))
+		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "second manual rerun should succeed")
+
+		// Phase 5: Third manual rerun — rejected (2 >= budget 2).
+		resetEventBridge(eb)
+		sfnBefore = countSFNExecutions(sfnM)
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "manual")))
+		assert.Equal(t, sfnBefore, countSFNExecutions(sfnM), "third manual rerun should NOT start SFN")
+		assert.Contains(t, collectEventTypes(eb), "RERUN_REJECTED")
+		assertAlertFormats(t, eb)
+	})
+}
+
+// =========================================================================
+// Gap 2: Post-run inflight drift (sensor changes while job is RUNNING)
+// =========================================================================
+
+func TestE2E_PostRunInflight(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("DriftWhileRunning_PublishesEvent_NoRerun", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-inf1")
+		cfg.PostRun = &types.PostRunConfig{
+			Rules: []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
+		}
+		seedConfig(mock, cfg)
+		seedTriggerWithStatus(mock, "pipe-inf1", "stream", "2026-03-07", types.TriggerStatusRunning)
+
+		// Baseline from a previous run.
+		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-inf1", "postrun-baseline#2026-03-07",
+			map[string]interface{}{"sensor_count": float64(100)}))
+
+		// Sensor arrives with different count while job is running.
+		record := makeSensorRecord("pipe-inf1", "audit-result", toStreamAttributes(map[string]interface{}{
+			"sensor_count": float64(200),
+			"date":         "2026-03-07",
+		}))
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}))
+
+		assert.Contains(t, collectEventTypes(eb), "POST_RUN_DRIFT_INFLIGHT")
+		assert.False(t, hasRerunRequest(mock, "pipe-inf1"), "should NOT write rerun request while running")
+		assert.Equal(t, 0, countSFNExecutions(sfnM))
+		assertAlertFormats(t, eb)
+	})
+
+	t.Run("NoDriftWhileRunning_NoEvent", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-inf2")
+		cfg.PostRun = &types.PostRunConfig{
+			Rules: []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
+		}
+		seedConfig(mock, cfg)
+		seedTriggerWithStatus(mock, "pipe-inf2", "stream", "2026-03-07", types.TriggerStatusRunning)
+
+		// Baseline matches incoming sensor — no drift.
+		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-inf2", "postrun-baseline#2026-03-07",
+			map[string]interface{}{"sensor_count": float64(100)}))
+
+		record := makeSensorRecord("pipe-inf2", "audit-result", toStreamAttributes(map[string]interface{}{
+			"sensor_count": float64(100),
+			"date":         "2026-03-07",
+		}))
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}))
+
+		assert.Empty(t, collectEventTypes(eb))
+		assert.Equal(t, 0, countSFNExecutions(sfnM))
+	})
+}
+
+// =========================================================================
+// Gap 3: Calendar exclusion full window skip
+// =========================================================================
+
+func TestE2E_CalendarExclusionFullSkip(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("ExcludedDate_NoTriggerLock_NoSFN", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		today := time.Now().Format("2006-01-02")
+		cfg := e2ePipeline("pipe-cal1")
+		cfg.Schedule.Exclude = &types.ExclusionConfig{
+			Dates: []string{today},
+		}
+		seedConfig(mock, cfg)
+
+		record := makeSensorRecord("pipe-cal1", "upstream-complete",
+			map[string]events.DynamoDBAttributeValue{"status": events.NewStringAttribute("ready")})
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}))
+
+		assert.Equal(t, 0, countSFNExecutions(sfnM))
+		assertNoTriggerLock(t, mock, "pipe-cal1", "stream", today)
+		assert.Empty(t, collectEventTypes(eb))
+	})
+}
+
+// =========================================================================
+// Gap 4: Hour boundary rollover (per-hour execution)
+// =========================================================================
+
+func TestE2E_HourBoundaryRollover(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("TwoHoursGetIndependentTriggers", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, _ := buildE2EDeps(mock, tr, sc)
+
+		cfg := types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "pipe-hr1"},
+			Schedule: types.ScheduleConfig{
+				Trigger: &types.TriggerCondition{
+					Key: "hourly-status", Check: types.CheckEquals, Field: "status", Value: "ready",
+				},
+				Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+			},
+			Validation: types.ValidationConfig{
+				Trigger: "ALL",
+				Rules:   []types.ValidationRule{{Key: "hourly-status", Check: types.CheckExists}},
+			},
+			Job: types.JobConfig{
+				Type:   types.TriggerCommand,
+				Config: map[string]interface{}{"command": "echo hello"},
+			},
+		}
+		seedConfig(mock, cfg)
+
+		// Hour 23 sensor arrives.
+		record23 := makeSensorRecord("pipe-hr1", "hourly-status#20260307T23", toStreamAttributes(map[string]interface{}{
+			"status": "ready",
+			"date":   "20260307",
+			"hour":   "23",
+		}))
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record23}}))
+
+		// Hour 00 (next day) sensor arrives.
+		record00 := makeSensorRecord("pipe-hr1", "hourly-status#20260308T00", toStreamAttributes(map[string]interface{}{
+			"status": "ready",
+			"date":   "20260308",
+			"hour":   "00",
+		}))
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record00}}))
+
+		// Two independent SFN executions.
+		sfnM.mu.Lock()
+		require.Len(t, sfnM.executions, 2, "each hour should get its own SFN execution")
+		var dates []string
+		for _, exec := range sfnM.executions {
+			var input map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(*exec.Input), &input))
+			dates = append(dates, input["date"].(string))
+		}
+		sfnM.mu.Unlock()
+
+		assert.Contains(t, dates, "2026-03-07T23")
+		assert.Contains(t, dates, "2026-03-08T00")
+
+		// Independent trigger locks.
+		assertTriggerLockExists(t, mock, "pipe-hr1", "stream", "2026-03-07T23")
+		assertTriggerLockExists(t, mock, "pipe-hr1", "stream", "2026-03-08T00")
+	})
+}
+
+// =========================================================================
+// Gap 5: Concurrent drift dedup via rerun budget
+// =========================================================================
+
+func TestE2E_ConcurrentDriftDedup(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("TwoDriftSensors_OnlyOneRerunAccepted", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-cd1")
+		cfg.Job.MaxDriftReruns = intPtr(1)
+		cfg.PostRun = &types.PostRunConfig{
+			Rules: []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
+		}
+		seedConfig(mock, cfg)
+		seedCompletedPipelineE2E(t, ctx, d, mock, "pipe-cd1", "2026-03-07")
+
+		// Baseline captured at completion.
+		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-cd1", "postrun-baseline#2026-03-07",
+			map[string]interface{}{"sensor_count": float64(100)}))
+
+		// First drift sensor arrives.
+		record1 := makeSensorRecord("pipe-cd1", "audit-result", toStreamAttributes(map[string]interface{}{
+			"sensor_count": float64(200),
+			"date":         "2026-03-07",
+		}))
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record1}}))
+		assert.Contains(t, collectEventTypes(eb), "POST_RUN_DRIFT")
+
+		// Process first rerun request — accepted.
+		resetEventBridge(eb)
+		sfnBefore := countSFNExecutions(sfnM)
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-cd1", "data-drift")))
+		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "first drift rerun accepted")
+
+		// Process second rerun request — rejected (budget exhausted).
+		resetEventBridge(eb)
+		sfnBefore = countSFNExecutions(sfnM)
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-cd1", "data-drift")))
+		assert.Equal(t, sfnBefore, countSFNExecutions(sfnM), "second drift rerun rejected")
+		assert.Contains(t, collectEventTypes(eb), "RERUN_REJECTED")
+		assertAlertFormats(t, eb)
+	})
+}
+
+// =========================================================================
+// Gap 6: Post-run sensor arriving before baseline exists
+// =========================================================================
+
+func TestE2E_PostRunBeforeBaseline(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("NoBaseline_GracefulSkip", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-nb1")
+		cfg.PostRun = &types.PostRunConfig{
+			Rules: []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
+		}
+		seedConfig(mock, cfg)
+		seedTriggerWithStatus(mock, "pipe-nb1", "stream", "2026-03-07", types.TriggerStatusRunning)
+		// No baseline — job hasn't completed yet.
+
+		record := makeSensorRecord("pipe-nb1", "audit-result", toStreamAttributes(map[string]interface{}{
+			"sensor_count": float64(500),
+			"date":         "2026-03-07",
+		}))
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}))
+
+		assert.Empty(t, collectEventTypes(eb), "should not publish any event when baseline is missing")
+		assert.False(t, hasRerunRequest(mock, "pipe-nb1"))
+		assert.Equal(t, 0, countSFNExecutions(sfnM))
+	})
+}
+
+// =========================================================================
+// Gap 7: Rerun after trigger TTL expiry
+// =========================================================================
+
+func TestE2E_RerunAfterTriggerTTLExpiry(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("TriggerDeleted_ManualRerunSucceeds", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-ttl1")
+		cfg.Job.MaxManualReruns = intPtr(2)
+		seedConfig(mock, cfg)
+		// NO trigger lock — simulates DynamoDB TTL deletion.
+
+		// Seed a successful job event so circuit breaker can check freshness.
+		oldTS := fmt.Sprintf("%d", time.Now().Add(-1*time.Hour).UnixMilli())
+		mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
+			"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-ttl1")},
+			"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", "2026-03-07", oldTS)},
+			"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+		})
+		freshTS := fmt.Sprintf("%d", time.Now().UnixMilli())
+		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-ttl1", "upstream-complete", map[string]interface{}{
+			"status": "ready", "updatedAt": freshTS,
+		}))
+
+		sfnBefore := countSFNExecutions(sfnM)
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-ttl1", "manual")))
+		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "rerun should start SFN even without existing trigger")
+		assertAlertFormats(t, eb)
+	})
+}
+
+// =========================================================================
+// Gap 8: SLA with hourly pipeline (relative deadline)
+// =========================================================================
+
+func TestE2E_SLAHourlyDeadline(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("WatchdogSchedulesPreviousHourSLA", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, _, _ := buildE2EDeps(mock, tr, sc)
+
+		// Fix time at 14:10 UTC.
+		fixedNow := time.Date(2026, 3, 7, 14, 10, 0, 0, time.UTC)
+		d.NowFunc = func() time.Time { return fixedNow }
+		d.StartedAt = fixedNow.Add(-5 * time.Minute)
+
+		cfg := types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "pipe-sla-hr"},
+			Schedule: types.ScheduleConfig{
+				Cron:       "5 * * * *",
+				Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
+			},
+			SLA: &types.SLAConfig{
+				Deadline:         ":30",
+				ExpectedDuration: "15m",
+			},
+			Validation: types.ValidationConfig{Trigger: "ALL"},
+			Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+		}
+		seedConfig(mock, cfg)
+
+		require.NoError(t, lambda.HandleWatchdog(ctx, d))
+
+		// Verify SLA calculation produces previous hour (T13) composite date.
+		calcOut, err := lambda.HandleSLAMonitor(ctx, d, lambda.SLAMonitorInput{
+			Mode:             "calculate",
+			PipelineID:       "pipe-sla-hr",
+			ScheduleID:       "cron",
+			Date:             "2026-03-07T13",
+			Deadline:         ":30",
+			ExpectedDuration: "15m",
+		})
+		require.NoError(t, err)
+
+		breachAt, err := time.Parse(time.RFC3339, calcOut.BreachAt)
+		require.NoError(t, err)
+		// Hour 13 data + :30 deadline → breach at 13:30 + 1 hour = 14:30.
+		assert.Equal(t, 30, breachAt.Minute(), "breach minute should be 30")
+
+		warningAt, err := time.Parse(time.RFC3339, calcOut.WarningAt)
+		require.NoError(t, err)
+		// Warning = breach - expectedDuration (15m) → 14:15.
+		assert.Equal(t, 15, warningAt.Minute(), "warning minute should be 15")
+	})
+}
