@@ -24,6 +24,11 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
+	if err := ilambda.ValidateEnv("watchdog"); err != nil {
+		logger.Error("environment validation failed", "error", err)
+		os.Exit(1)
+	}
+
 	cfg, err := awsconfig.LoadDefaultConfig(context.Background())
 	if err != nil {
 		logger.Error("failed to load AWS config", "error", err)

@@ -145,3 +145,62 @@ func TestCheckDatabricksStatus_MissingMetadata(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, RunCheckRunning, result.State)
 }
+
+func TestCheckDatabricksStatus_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("internal error"))
+	}))
+	defer srv.Close()
+
+	r := NewRunner(WithHTTPClient(srv.Client()))
+	_, err := r.checkDatabricksStatus(context.Background(), map[string]interface{}{
+		"databricks_workspace_url": srv.URL,
+		"databricks_run_id":        "123",
+	}, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "status 500")
+}
+
+func TestCheckDatabricksStatus_MissingWorkspaceURL(t *testing.T) {
+	r := NewRunner()
+	result, err := r.checkDatabricksStatus(context.Background(), map[string]interface{}{
+		"databricks_run_id": "123",
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckRunning, result.State)
+	assert.Equal(t, "missing databricks metadata", result.Message)
+}
+
+func TestCheckDatabricksStatus_MissingRunID(t *testing.T) {
+	r := NewRunner()
+	result, err := r.checkDatabricksStatus(context.Background(), map[string]interface{}{
+		"databricks_workspace_url": "https://example.com",
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckRunning, result.State)
+	assert.Equal(t, "missing databricks metadata", result.Message)
+}
+
+func TestCheckDatabricksStatus_WithHeaders(t *testing.T) {
+	var receivedAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"state": map[string]interface{}{
+				"life_cycle_state": "RUNNING",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	r := NewRunner(WithHTTPClient(srv.Client()))
+	result, err := r.checkDatabricksStatus(context.Background(), map[string]interface{}{
+		"databricks_workspace_url": srv.URL,
+		"databricks_run_id":        "123",
+	}, map[string]string{"Authorization": "Bearer test-token"})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckRunning, result.State)
+	assert.Equal(t, "Bearer test-token", receivedAuth)
+}

@@ -59,11 +59,8 @@ func (s *Store) WriteRerun(ctx context.Context, pipelineID, schedule, date, reas
 // It uses a count-only query (no item data returned) and handles pagination.
 func (s *Store) CountReruns(ctx context.Context, pipelineID, schedule, date string) (int, error) {
 	prefix := fmt.Sprintf("RERUN#%s#%s#", schedule, date)
-	total := 0
-
-	var startKey map[string]ddbtypes.AttributeValue
-	for {
-		out, err := s.Client.Query(ctx, &dynamodb.QueryInput{
+	total, err := QueryCount(ctx, s.Client, func(startKey map[string]ddbtypes.AttributeValue) *dynamodb.QueryInput {
+		return &dynamodb.QueryInput{
 			TableName:              &s.RerunTable,
 			Select:                 ddbtypes.SelectCount,
 			KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
@@ -72,19 +69,11 @@ func (s *Store) CountReruns(ctx context.Context, pipelineID, schedule, date stri
 				":prefix": &ddbtypes.AttributeValueMemberS{Value: prefix},
 			},
 			ExclusiveStartKey: startKey,
-		})
-		if err != nil {
-			return 0, fmt.Errorf("count reruns %q/%s/%s: %w", pipelineID, schedule, date, err)
 		}
-
-		total += int(out.Count)
-
-		if out.LastEvaluatedKey == nil {
-			break
-		}
-		startKey = out.LastEvaluatedKey
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count reruns %q/%s/%s: %w", pipelineID, schedule, date, err)
 	}
-
 	return total, nil
 }
 
@@ -111,25 +100,18 @@ func (s *Store) CountRerunsBySource(ctx context.Context, pipelineID, schedule, d
 	}
 	filterExpr := fmt.Sprintf("reason IN (%s)", strings.Join(placeholders, ", "))
 
-	total := 0
-	var startKey map[string]ddbtypes.AttributeValue
-	for {
-		out, err := s.Client.Query(ctx, &dynamodb.QueryInput{
+	total, err := QueryCount(ctx, s.Client, func(startKey map[string]ddbtypes.AttributeValue) *dynamodb.QueryInput {
+		return &dynamodb.QueryInput{
 			TableName:                 &s.RerunTable,
 			Select:                    ddbtypes.SelectCount,
 			KeyConditionExpression:    aws.String("PK = :pk AND begins_with(SK, :prefix)"),
 			FilterExpression:          aws.String(filterExpr),
 			ExpressionAttributeValues: filterValues,
 			ExclusiveStartKey:         startKey,
-		})
-		if err != nil {
-			return 0, fmt.Errorf("count reruns by source %q/%s/%s: %w", pipelineID, schedule, date, err)
 		}
-		total += int(out.Count)
-		if out.LastEvaluatedKey == nil {
-			break
-		}
-		startKey = out.LastEvaluatedKey
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count reruns by source %q/%s/%s: %w", pipelineID, schedule, date, err)
 	}
 	return total, nil
 }
