@@ -1,4 +1,3 @@
-// Package trigger implements pipeline trigger execution.
 package trigger
 
 import (
