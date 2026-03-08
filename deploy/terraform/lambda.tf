@@ -192,6 +192,9 @@ resource "aws_lambda_function" "sla_monitor" {
 
   environment {
     variables = {
+      CONTROL_TABLE        = aws_dynamodb_table.control.name
+      JOBLOG_TABLE         = aws_dynamodb_table.joblog.name
+      RERUN_TABLE          = aws_dynamodb_table.rerun.name
       EVENT_BUS_NAME       = aws_cloudwatch_event_bus.interlock.name
       SLA_MONITOR_ARN      = "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${var.environment}-interlock-sla-monitor"
       SCHEDULER_ROLE_ARN   = aws_iam_role.scheduler_sla.arn
@@ -302,6 +305,30 @@ resource "aws_iam_role_policy" "dynamodb_watchdog" {
   name   = "dynamodb-mixed"
   role   = aws_iam_role.lambda["watchdog"].id
   policy = data.aws_iam_policy_document.dynamodb_watchdog.json
+}
+
+# -----------------------------------------------------------------------------
+# DynamoDB read — sla-monitor (control + joblog, read-only for alert suppression)
+# -----------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "dynamodb_sla_read" {
+  statement {
+    sid = "ReadControlJoblog"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:Query",
+    ]
+    resources = [
+      aws_dynamodb_table.control.arn,
+      aws_dynamodb_table.joblog.arn,
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "dynamodb_sla_read" {
+  name   = "dynamodb-read"
+  role   = aws_iam_role.lambda["sla-monitor"].id
+  policy = data.aws_iam_policy_document.dynamodb_sla_read.json
 }
 
 # -----------------------------------------------------------------------------
