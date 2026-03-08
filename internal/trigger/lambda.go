@@ -28,7 +28,7 @@ func ExecuteLambda(ctx context.Context, cfg *types.LambdaTriggerConfig, client L
 	}
 
 	if cfg.Payload != "" {
-		input.Payload = []byte(os.ExpandEnv(cfg.Payload))
+		input.Payload = []byte(os.Expand(cfg.Payload, safeEnvLookup))
 	}
 
 	out, err := client.Invoke(ctx, input)

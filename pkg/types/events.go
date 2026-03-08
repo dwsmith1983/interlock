@@ -32,6 +32,7 @@ const (
 	EventPostRunDriftInflight    EventDetailType = "POST_RUN_DRIFT_INFLIGHT"
 	EventPostRunSensorMissing    EventDetailType = "POST_RUN_SENSOR_MISSING"
 	EventRerunAccepted           EventDetailType = "RERUN_ACCEPTED"
+	EventInfraAlarm              EventDetailType = "INFRA_ALARM"
 )
 
 // EventSource is the EventBridge source for all interlock events.

@@ -92,18 +92,18 @@ func convertAttributeValue(av events.DynamoDBAttributeValue) interface{} {
 // ResolveExecutionDate builds the execution date from sensor data fields.
 // If both "date" and "hour" are present, returns "YYYY-MM-DDThh".
 // If only "date", returns "YYYY-MM-DD". Falls back to today's date.
-func ResolveExecutionDate(sensorData map[string]interface{}) string {
+func ResolveExecutionDate(sensorData map[string]interface{}, now time.Time) string {
 	dateStr, _ := sensorData["date"].(string)
 	hourStr, _ := sensorData["hour"].(string)
 
 	if dateStr == "" {
-		return time.Now().Format("2006-01-02")
+		return now.Format("2006-01-02")
 	}
 
 	normalized := normalizeDate(dateStr)
 	// Validate YYYY-MM-DD format.
 	if _, err := time.Parse("2006-01-02", normalized); err != nil {
-		return time.Now().Format("2006-01-02")
+		return now.Format("2006-01-02")
 	}
 
 	if hourStr != "" {
@@ -147,7 +147,7 @@ func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule,
 		ScheduleID: schedule,
 		Date:       date,
 		Message:    message,
-		Timestamp:  time.Now(),
+		Timestamp:  d.now(),
 	}
 	if len(detail) > 0 && detail[0] != nil {
 		evt.Detail = detail[0]

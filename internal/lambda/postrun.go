@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 
 	"github.com/dwsmith1983/interlock/internal/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -27,7 +26,7 @@ func matchesPostRunRule(sensorKey string, rules []types.ValidationRule) bool {
 // date-scoped baseline captured at trigger completion.
 func handlePostRunSensorEvent(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, sensorKey string, sensorData map[string]interface{}) error {
 	scheduleID := resolveScheduleID(cfg)
-	date := ResolveExecutionDate(sensorData)
+	date := ResolveExecutionDate(sensorData, d.now())
 
 	// Consistent read to handle race where sensor stream event arrives
 	// before SFN sets trigger to COMPLETED.
@@ -148,7 +147,7 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 	}
 	RemapPerPeriodSensors(sensors, date)
 
-	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, time.Now())
+	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, d.now())
 
 	if result.Passed {
 		if err := publishEvent(ctx, d, string(types.EventPostRunPassed), pipelineID, scheduleID, date,

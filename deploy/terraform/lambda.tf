@@ -72,15 +72,16 @@ resource "aws_cloudwatch_log_group" "lambda" {
 # -----------------------------------------------------------------------------
 
 resource "aws_lambda_function" "event_sink" {
-  function_name    = "${var.environment}-interlock-event-sink"
-  role             = aws_iam_role.lambda["event-sink"].arn
-  handler          = "bootstrap"
-  runtime          = "provided.al2023"
-  architectures    = ["arm64"]
-  memory_size      = 128
-  timeout          = 30
-  filename         = "${var.dist_path}/event-sink.zip"
-  source_code_hash = filebase64sha256("${var.dist_path}/event-sink.zip")
+  function_name                  = "${var.environment}-interlock-event-sink"
+  role                           = aws_iam_role.lambda["event-sink"].arn
+  handler                        = "bootstrap"
+  runtime                        = "provided.al2023"
+  architectures                  = ["arm64"]
+  memory_size                    = 128
+  timeout                        = 30
+  filename                       = "${var.dist_path}/event-sink.zip"
+  source_code_hash               = filebase64sha256("${var.dist_path}/event-sink.zip")
+  reserved_concurrent_executions = var.lambda_concurrency.event_sink
 
   environment {
     variables = {
@@ -97,23 +98,27 @@ resource "aws_lambda_function" "event_sink" {
 # -----------------------------------------------------------------------------
 
 resource "aws_lambda_function" "alert_dispatcher" {
-  function_name    = "${var.environment}-interlock-alert-dispatcher"
-  role             = aws_iam_role.lambda["alert-dispatcher"].arn
-  handler          = "bootstrap"
-  runtime          = "provided.al2023"
-  architectures    = ["arm64"]
-  memory_size      = 128
-  timeout          = 30
-  filename         = "${var.dist_path}/alert-dispatcher.zip"
-  source_code_hash = filebase64sha256("${var.dist_path}/alert-dispatcher.zip")
+  function_name                  = "${var.environment}-interlock-alert-dispatcher"
+  role                           = aws_iam_role.lambda["alert-dispatcher"].arn
+  handler                        = "bootstrap"
+  runtime                        = "provided.al2023"
+  architectures                  = ["arm64"]
+  memory_size                    = 128
+  timeout                        = 30
+  filename                       = "${var.dist_path}/alert-dispatcher.zip"
+  source_code_hash               = filebase64sha256("${var.dist_path}/alert-dispatcher.zip")
+  reserved_concurrent_executions = var.lambda_concurrency.alert_dispatcher
 
   environment {
-    variables = {
-      SLACK_BOT_TOKEN  = var.slack_bot_token
-      SLACK_CHANNEL_ID = var.slack_channel_id
-      EVENTS_TABLE     = aws_dynamodb_table.events.name
-      EVENTS_TTL_DAYS  = var.events_table_ttl_days
-    }
+    variables = merge(
+      var.slack_secret_arn == "" ? { SLACK_BOT_TOKEN = var.slack_bot_token } : {},
+      {
+        SLACK_CHANNEL_ID = var.slack_channel_id
+        SLACK_SECRET_ARN = var.slack_secret_arn
+        EVENTS_TABLE     = aws_dynamodb_table.events.name
+        EVENTS_TTL_DAYS  = var.events_table_ttl_days
+      }
+    )
   }
 
   depends_on = [aws_cloudwatch_log_group.lambda["alert-dispatcher"]]
@@ -124,15 +129,16 @@ resource "aws_lambda_function" "alert_dispatcher" {
 # -----------------------------------------------------------------------------
 
 resource "aws_lambda_function" "stream_router" {
-  function_name    = "${var.environment}-interlock-stream-router"
-  role             = aws_iam_role.lambda["stream-router"].arn
-  handler          = "bootstrap"
-  runtime          = "provided.al2023"
-  architectures    = ["arm64"]
-  memory_size      = var.lambda_memory_size
-  timeout          = 60
-  filename         = "${var.dist_path}/stream-router.zip"
-  source_code_hash = filebase64sha256("${var.dist_path}/stream-router.zip")
+  function_name                  = "${var.environment}-interlock-stream-router"
+  role                           = aws_iam_role.lambda["stream-router"].arn
+  handler                        = "bootstrap"
+  runtime                        = "provided.al2023"
+  architectures                  = ["arm64"]
+  memory_size                    = var.lambda_memory_size
+  timeout                        = 60
+  filename                       = "${var.dist_path}/stream-router.zip"
+  source_code_hash               = filebase64sha256("${var.dist_path}/stream-router.zip")
+  reserved_concurrent_executions = var.lambda_concurrency.stream_router
 
   environment {
     variables = {
@@ -153,15 +159,16 @@ resource "aws_lambda_function" "stream_router" {
 # -----------------------------------------------------------------------------
 
 resource "aws_lambda_function" "orchestrator" {
-  function_name    = "${var.environment}-interlock-orchestrator"
-  role             = aws_iam_role.lambda["orchestrator"].arn
-  handler          = "bootstrap"
-  runtime          = "provided.al2023"
-  architectures    = ["arm64"]
-  memory_size      = var.lambda_memory_size
-  timeout          = 120
-  filename         = "${var.dist_path}/orchestrator.zip"
-  source_code_hash = filebase64sha256("${var.dist_path}/orchestrator.zip")
+  function_name                  = "${var.environment}-interlock-orchestrator"
+  role                           = aws_iam_role.lambda["orchestrator"].arn
+  handler                        = "bootstrap"
+  runtime                        = "provided.al2023"
+  architectures                  = ["arm64"]
+  memory_size                    = var.lambda_memory_size
+  timeout                        = 120
+  filename                       = "${var.dist_path}/orchestrator.zip"
+  source_code_hash               = filebase64sha256("${var.dist_path}/orchestrator.zip")
+  reserved_concurrent_executions = var.lambda_concurrency.orchestrator
 
   environment {
     variables = {
@@ -180,15 +187,16 @@ resource "aws_lambda_function" "orchestrator" {
 # -----------------------------------------------------------------------------
 
 resource "aws_lambda_function" "sla_monitor" {
-  function_name    = "${var.environment}-interlock-sla-monitor"
-  role             = aws_iam_role.lambda["sla-monitor"].arn
-  handler          = "bootstrap"
-  runtime          = "provided.al2023"
-  architectures    = ["arm64"]
-  memory_size      = var.lambda_memory_size
-  timeout          = 30
-  filename         = "${var.dist_path}/sla-monitor.zip"
-  source_code_hash = filebase64sha256("${var.dist_path}/sla-monitor.zip")
+  function_name                  = "${var.environment}-interlock-sla-monitor"
+  role                           = aws_iam_role.lambda["sla-monitor"].arn
+  handler                        = "bootstrap"
+  runtime                        = "provided.al2023"
+  architectures                  = ["arm64"]
+  memory_size                    = var.lambda_memory_size
+  timeout                        = 30
+  filename                       = "${var.dist_path}/sla-monitor.zip"
+  source_code_hash               = filebase64sha256("${var.dist_path}/sla-monitor.zip")
+  reserved_concurrent_executions = var.lambda_concurrency.sla_monitor
 
   environment {
     variables = {
@@ -210,15 +218,16 @@ resource "aws_lambda_function" "sla_monitor" {
 # -----------------------------------------------------------------------------
 
 resource "aws_lambda_function" "watchdog" {
-  function_name    = "${var.environment}-interlock-watchdog"
-  role             = aws_iam_role.lambda["watchdog"].arn
-  handler          = "bootstrap"
-  runtime          = "provided.al2023"
-  architectures    = ["arm64"]
-  memory_size      = var.lambda_memory_size
-  timeout          = 60
-  filename         = "${var.dist_path}/watchdog.zip"
-  source_code_hash = filebase64sha256("${var.dist_path}/watchdog.zip")
+  function_name                  = "${var.environment}-interlock-watchdog"
+  role                           = aws_iam_role.lambda["watchdog"].arn
+  handler                        = "bootstrap"
+  runtime                        = "provided.al2023"
+  architectures                  = ["arm64"]
+  memory_size                    = var.lambda_memory_size
+  timeout                        = 60
+  filename                       = "${var.dist_path}/watchdog.zip"
+  source_code_hash               = filebase64sha256("${var.dist_path}/watchdog.zip")
+  reserved_concurrent_executions = var.lambda_concurrency.watchdog
 
   environment {
     variables = {
@@ -397,6 +406,26 @@ resource "aws_iam_role_policy" "alert_dispatcher_dynamodb" {
 }
 
 # -----------------------------------------------------------------------------
+# Secrets Manager read — alert-dispatcher (Slack bot token, opt-in)
+# -----------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "secrets_alert_dispatcher" {
+  count = var.slack_secret_arn != "" ? 1 : 0
+  name  = "secrets-read"
+  role  = aws_iam_role.lambda["alert-dispatcher"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "ReadSlackSecret"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = var.slack_secret_arn
+    }]
+  })
+}
+
+# -----------------------------------------------------------------------------
 # DynamoDB Streams — stream-router (control + joblog streams)
 # -----------------------------------------------------------------------------
 
@@ -532,9 +561,9 @@ resource "aws_iam_role_policy" "glue_trigger" {
         Resource = "*"
       },
       {
-        Sid      = "GlueLogVerification"
-        Effect   = "Allow"
-        Action   = ["logs:FilterLogEvents"]
+        Sid    = "GlueLogVerification"
+        Effect = "Allow"
+        Action = ["logs:FilterLogEvents"]
         Resource = [
           "arn:aws:logs:*:*:log-group:/aws-glue/jobs/logs-v2:*",
           "arn:aws:logs:*:*:log-group:/aws-glue/jobs/error:*"
@@ -591,6 +620,23 @@ resource "aws_iam_role_policy" "sfn_trigger" {
       Effect   = "Allow"
       Action   = ["states:StartExecution", "states:DescribeExecution"]
       Resource = "*"
+    }]
+  })
+}
+
+# --- Lambda ---
+
+resource "aws_iam_role_policy" "lambda_trigger" {
+  count = var.enable_lambda_trigger ? 1 : 0
+  name  = "lambda-trigger"
+  role  = aws_iam_role.lambda["orchestrator"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = var.lambda_trigger_arns
     }]
   })
 }

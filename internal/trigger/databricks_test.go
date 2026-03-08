@@ -182,6 +182,58 @@ func TestCheckDatabricksStatus_MissingRunID(t *testing.T) {
 	assert.Equal(t, "missing databricks metadata", result.Message)
 }
 
+func TestExecuteDatabricks_EnvExpansionRestricted(t *testing.T) {
+	t.Setenv("INTERLOCK_TEST_VAR", "safe")
+	t.Setenv("SECRET_VAR", "leaked")
+
+	var receivedAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"run_id": 42,
+		})
+	}))
+	defer srv.Close()
+
+	cfg := &types.DatabricksTriggerConfig{
+		WorkspaceURL: srv.URL,
+		JobID:        "my-job",
+		Headers:      map[string]string{"Authorization": "Bearer ${INTERLOCK_TEST_VAR}/${SECRET_VAR}"},
+	}
+
+	_, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer safe/", receivedAuth)
+	assert.NotContains(t, receivedAuth, "leaked")
+}
+
+func TestCheckDatabricksStatus_EnvExpansionRestricted(t *testing.T) {
+	t.Setenv("INTERLOCK_TEST_VAR", "safe")
+	t.Setenv("SECRET_VAR", "leaked")
+
+	var receivedAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"state": map[string]interface{}{
+				"life_cycle_state": "RUNNING",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	r := NewRunner(WithHTTPClient(srv.Client()))
+	_, err := r.checkDatabricksStatus(context.Background(), map[string]interface{}{
+		"databricks_workspace_url": srv.URL,
+		"databricks_run_id":        "123",
+	}, map[string]string{"Authorization": "Bearer ${INTERLOCK_TEST_VAR}/${SECRET_VAR}"})
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer safe/", receivedAuth)
+	assert.NotContains(t, receivedAuth, "leaked")
+}
+
 func TestCheckDatabricksStatus_WithHeaders(t *testing.T) {
 	var receivedAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

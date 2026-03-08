@@ -739,7 +739,7 @@ func TestStreamRouter_LateDataArrival_CompletedFailed_Silent(t *testing.T) {
 
 func TestResolveExecutionDate_WithDateAndHour(t *testing.T) {
 	data := map[string]interface{}{"date": "20260303", "hour": "10", "complete": true}
-	got := lambda.ResolveExecutionDate(data)
+	got := lambda.ResolveExecutionDate(data, time.Now())
 	if got != "2026-03-03T10" {
 		t.Errorf("got %q, want %q", got, "2026-03-03T10")
 	}
@@ -747,7 +747,7 @@ func TestResolveExecutionDate_WithDateAndHour(t *testing.T) {
 
 func TestResolveExecutionDate_DashedDate(t *testing.T) {
 	data := map[string]interface{}{"date": "2026-03-03", "hour": "10"}
-	got := lambda.ResolveExecutionDate(data)
+	got := lambda.ResolveExecutionDate(data, time.Now())
 	if got != "2026-03-03T10" {
 		t.Errorf("got %q, want %q", got, "2026-03-03T10")
 	}
@@ -755,7 +755,7 @@ func TestResolveExecutionDate_DashedDate(t *testing.T) {
 
 func TestResolveExecutionDate_DateOnly(t *testing.T) {
 	data := map[string]interface{}{"date": "20260303"}
-	got := lambda.ResolveExecutionDate(data)
+	got := lambda.ResolveExecutionDate(data, time.Now())
 	if got != "2026-03-03" {
 		t.Errorf("got %q, want %q", got, "2026-03-03")
 	}
@@ -763,16 +763,17 @@ func TestResolveExecutionDate_DateOnly(t *testing.T) {
 
 func TestResolveExecutionDate_NoFields(t *testing.T) {
 	data := map[string]interface{}{"complete": true}
-	got := lambda.ResolveExecutionDate(data)
-	today := time.Now().Format("2006-01-02")
-	if got != today {
-		t.Errorf("got %q, want %q", got, today)
+	now := time.Now()
+	got := lambda.ResolveExecutionDate(data, now)
+	want := now.Format("2006-01-02")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestResolveExecutionDate_HourWithLeadingZero(t *testing.T) {
 	data := map[string]interface{}{"date": "20260303", "hour": "03"}
-	got := lambda.ResolveExecutionDate(data)
+	got := lambda.ResolveExecutionDate(data, time.Now())
 	if got != "2026-03-03T03" {
 		t.Errorf("got %q, want %q", got, "2026-03-03T03")
 	}
@@ -780,17 +781,18 @@ func TestResolveExecutionDate_HourWithLeadingZero(t *testing.T) {
 
 func TestResolveExecutionDate_InvalidDate(t *testing.T) {
 	data := map[string]interface{}{"date": "not-a-date"}
-	got := lambda.ResolveExecutionDate(data)
+	now := time.Now()
+	got := lambda.ResolveExecutionDate(data, now)
 	// Should fall back to today's date.
-	today := time.Now().Format("2006-01-02")
-	if got != today {
-		t.Errorf("got %q, want today %q", got, today)
+	want := now.Format("2006-01-02")
+	if got != want {
+		t.Errorf("got %q, want today %q", got, want)
 	}
 }
 
 func TestResolveExecutionDate_InvalidHour(t *testing.T) {
 	data := map[string]interface{}{"date": "20260303", "hour": "25"}
-	got := lambda.ResolveExecutionDate(data)
+	got := lambda.ResolveExecutionDate(data, time.Now())
 	// Invalid hour should be ignored; return date only.
 	if got != "2026-03-03" {
 		t.Errorf("got %q, want %q", got, "2026-03-03")
@@ -799,7 +801,7 @@ func TestResolveExecutionDate_InvalidHour(t *testing.T) {
 
 func TestResolveExecutionDate_NonNumericHour(t *testing.T) {
 	data := map[string]interface{}{"date": "20260303", "hour": "ab"}
-	got := lambda.ResolveExecutionDate(data)
+	got := lambda.ResolveExecutionDate(data, time.Now())
 	if got != "2026-03-03" {
 		t.Errorf("got %q, want %q", got, "2026-03-03")
 	}
@@ -1116,6 +1118,36 @@ func TestSensor_StartSFNError(t *testing.T) {
 	sfnMock.mu.Lock()
 	defer sfnMock.mu.Unlock()
 	assert.Empty(t, sfnMock.executions, "SFN error means no execution recorded")
+}
+
+func TestSensor_StartSFNError_ReleasesLock(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	// Make SFN client return an error.
+	sfnMock.err = fmt.Errorf("SFN throttled")
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+		"date":   events.NewStringAttribute("2026-03-08"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err, "HandleStreamEvent swallows errors")
+
+	// The trigger lock must have been released after SFN failure.
+	// Schedule ID for stream-triggered pipelines is "stream".
+	lockKey := ddbItemKey(testControlTable,
+		types.PipelinePK("gold-revenue"),
+		types.TriggerSK("stream", "2026-03-08"))
+	mock.mu.Lock()
+	_, lockExists := mock.items[lockKey]
+	mock.mu.Unlock()
+	assert.False(t, lockExists, "trigger lock must be released after SFN start failure")
 }
 
 func TestSensor_PerHour_DateOnly(t *testing.T) {
@@ -2179,19 +2211,19 @@ func TestConvertAV_Null(t *testing.T) {
 
 func TestNormalizeDate_AlreadyNormalized(t *testing.T) {
 	data := map[string]interface{}{"date": "2026-03-03"}
-	got := lambda.ResolveExecutionDate(data)
+	got := lambda.ResolveExecutionDate(data, time.Now())
 	assert.Equal(t, "2026-03-03", got)
 }
 
 func TestNormalizeDate_Compact(t *testing.T) {
 	data := map[string]interface{}{"date": "20260303"}
-	got := lambda.ResolveExecutionDate(data)
+	got := lambda.ResolveExecutionDate(data, time.Now())
 	assert.Equal(t, "2026-03-03", got)
 }
 
 func TestNormalizeDate_CompactWithHour(t *testing.T) {
 	data := map[string]interface{}{"date": "20260303", "hour": "07"}
-	got := lambda.ResolveExecutionDate(data)
+	got := lambda.ResolveExecutionDate(data, time.Now())
 	assert.Equal(t, "2026-03-03T07", got)
 }
 

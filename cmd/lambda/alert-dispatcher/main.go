@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/store"
@@ -50,6 +52,32 @@ func main() {
 		EventsTTLDays:  ttl,
 		HTTPClient:     &http.Client{Timeout: 10 * time.Second},
 		Logger:         logger,
+	}
+
+	// Override Slack token from Secrets Manager when configured.
+	if secretARN := os.Getenv("SLACK_SECRET_ARN"); secretARN != "" {
+		smClient := secretsmanager.NewFromConfig(cfg)
+		out, err := smClient.GetSecretValue(context.Background(), &secretsmanager.GetSecretValueInput{
+			SecretId: &secretARN,
+		})
+		if err != nil {
+			logger.Error("failed to read Slack secret from Secrets Manager", "arn", secretARN, "error", err)
+			os.Exit(1)
+		}
+		if out.SecretString == nil {
+			logger.Error("Secrets Manager returned nil SecretString", "arn", secretARN)
+			os.Exit(1)
+		}
+		token := strings.TrimSpace(*out.SecretString)
+		if !strings.HasPrefix(token, "xoxb-") && !strings.HasPrefix(token, "xoxe-") {
+			logger.Warn("SLACK_SECRET_ARN value does not look like a Slack bot token (expected xoxb-/xoxe- prefix)")
+		}
+		deps.SlackBotToken = token
+	}
+
+	if deps.SlackBotToken == "" {
+		logger.Error("no Slack token configured: set SLACK_BOT_TOKEN or SLACK_SECRET_ARN")
+		os.Exit(1)
 	}
 
 	lambda.Start(func(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {

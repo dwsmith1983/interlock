@@ -64,8 +64,10 @@ func detectStaleTriggers(ctx context.Context, d *Deps) error {
 		if tr.TTL > 0 {
 			alertDetail["ttlExpired"] = time.Unix(tr.TTL, 0).UTC().Format(time.RFC3339)
 		}
-		_ = publishEvent(ctx, d, string(types.EventSFNTimeout), pipelineID, schedule, date,
-			fmt.Sprintf("step function timed out for %s/%s/%s", pipelineID, schedule, date), alertDetail)
+		if err := publishEvent(ctx, d, string(types.EventSFNTimeout), pipelineID, schedule, date,
+			fmt.Sprintf("step function timed out for %s/%s/%s", pipelineID, schedule, date), alertDetail); err != nil {
+			d.Logger.Warn("failed to publish SFN timeout event", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
+		}
 
 		if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, types.TriggerStatusFailedFinal); err != nil {
 			d.Logger.Error("failed to set trigger status to FAILED_FINAL",
@@ -164,7 +166,7 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 				continue
 			}
 
-			date := ResolveExecutionDate(sensorData)
+			date := ResolveExecutionDate(sensorData, now)
 
 			found, err := d.Store.HasTriggerForDate(ctx, id, scheduleID, date)
 			if err != nil {
@@ -194,6 +196,9 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 			}
 
 			if err := startSFN(ctx, d, cfg, id, scheduleID, date); err != nil {
+				if relErr := d.Store.ReleaseTriggerLock(ctx, id, scheduleID, date); relErr != nil {
+					d.Logger.Warn("failed to release lock after SFN start failure during reconciliation", "error", relErr)
+				}
 				d.Logger.Error("SFN start failed during reconciliation",
 					"pipelineId", id, "date", date, "error", err)
 				continue
@@ -203,8 +208,10 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 				"source":     "reconciliation",
 				"actionHint": "watchdog recovered missed sensor trigger",
 			}
-			_ = publishEvent(ctx, d, string(types.EventTriggerRecovered), id, scheduleID, date,
-				fmt.Sprintf("trigger recovered for %s/%s/%s", id, scheduleID, date), alertDetail)
+			if err := publishEvent(ctx, d, string(types.EventTriggerRecovered), id, scheduleID, date,
+				fmt.Sprintf("trigger recovered for %s/%s/%s", id, scheduleID, date), alertDetail); err != nil {
+				d.Logger.Warn("failed to publish trigger recovered event", "error", err, "pipeline", id, "schedule", scheduleID, "date", date)
+			}
 
 			d.Logger.Info("recovered missed trigger",
 				"pipelineId", id,
@@ -329,8 +336,10 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		if cfg.Schedule.Time != "" {
 			alertDetail["expectedTime"] = cfg.Schedule.Time
 		}
-		_ = publishEvent(ctx, d, string(types.EventScheduleMissed), id, scheduleID, today,
-			fmt.Sprintf("missed schedule for %s on %s", id, today), alertDetail)
+		if err := publishEvent(ctx, d, string(types.EventScheduleMissed), id, scheduleID, today,
+			fmt.Sprintf("missed schedule for %s on %s", id, today), alertDetail); err != nil {
+			d.Logger.Warn("failed to publish missed schedule event", "error", err, "pipeline", id, "schedule", scheduleID, "date", today)
+		}
 
 		d.Logger.Info("detected missed schedule",
 			"pipelineId", id,
@@ -381,6 +390,7 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 		switch {
 		case err != nil:
 			d.Logger.Warn("trigger lookup failed in SLA scheduling", "pipelineId", id, "error", err)
+			continue
 		case tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal):
 			continue
 		case isJobTerminal(ctx, d, id, scheduleID, date):
@@ -395,7 +405,7 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 			Deadline:         cfg.SLA.Deadline,
 			ExpectedDuration: cfg.SLA.ExpectedDuration,
 			Timezone:         cfg.SLA.Timezone,
-		})
+		}, now)
 		if err != nil {
 			d.Logger.Error("SLA calculate failed", "pipelineId", id, "error", err)
 			continue
@@ -567,13 +577,17 @@ func detectMissingPostRunSensors(ctx context.Context, d *Deps) error {
 			"ruleKeys":      strings.Join(ruleKeys, ", "),
 			"actionHint":    "post-run sensor data has not arrived within the expected timeout",
 		}
-		_ = publishEvent(ctx, d, string(types.EventPostRunSensorMissing), id, scheduleID, today,
-			fmt.Sprintf("post-run sensor missing for %s on %s", id, today), alertDetail)
+		if err := publishEvent(ctx, d, string(types.EventPostRunSensorMissing), id, scheduleID, today,
+			fmt.Sprintf("post-run sensor missing for %s on %s", id, today), alertDetail); err != nil {
+			d.Logger.Warn("failed to publish post-run sensor missing event", "error", err, "pipeline", id, "schedule", scheduleID, "date", today)
+		}
 
 		// Write dedup marker to avoid re-alerting on subsequent watchdog runs.
-		_ = d.Store.WriteSensor(ctx, id, dedupKey, map[string]interface{}{
+		if err := d.Store.WriteSensor(ctx, id, dedupKey, map[string]interface{}{
 			"alerted": "true",
-		})
+		}); err != nil {
+			d.Logger.Warn("failed to write post-run dedup marker", "error", err, "pipeline", id, "date", today)
+		}
 
 		d.Logger.Info("detected missing post-run sensor",
 			"pipelineId", id,

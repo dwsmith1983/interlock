@@ -25,7 +25,7 @@ import (
 func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
 	switch input.Mode {
 	case "calculate":
-		return handleSLACalculate(input)
+		return handleSLACalculate(input, d.now())
 	case "fire-alert":
 		return handleSLAFireAlert(ctx, d, input)
 	case "schedule":
@@ -43,7 +43,7 @@ func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAM
 // and expected duration. Warning time = deadline - expectedDuration.
 // Breach time = deadline. Returns full ISO 8601 timestamps required by
 // Step Functions TimestampPath.
-func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
+func handleSLACalculate(input SLAMonitorInput, now time.Time) (SLAMonitorOutput, error) {
 	dur, err := time.ParseDuration(input.ExpectedDuration)
 	if err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("parse expectedDuration %q: %w", input.ExpectedDuration, err)
@@ -57,7 +57,7 @@ func handleSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
 		}
 	}
 
-	now := time.Now().In(loc)
+	now = now.In(loc)
 
 	// Parse the execution date. Supports:
 	//   "2006-01-02"    — daily
@@ -147,16 +147,16 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 			suppressed = true
 		}
 		if suppressed {
-			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: time.Now().UTC().Format(time.RFC3339)}, nil
+			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.now().UTC().Format(time.RFC3339)}, nil
 		}
 	}
 
 	if input.AlertType == "SLA_WARNING" && input.BreachAt != "" {
 		breachAt, err := time.Parse(time.RFC3339, input.BreachAt)
-		if err == nil && !time.Now().UTC().Before(breachAt) {
+		if err == nil && !d.now().UTC().Before(breachAt) {
 			d.Logger.InfoContext(ctx, "suppressing SLA_WARNING (past breach time)",
 				"pipeline", input.PipelineID, "breachAt", input.BreachAt)
-			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: time.Now().UTC().Format(time.RFC3339)}, nil
+			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.now().UTC().Format(time.RFC3339)}, nil
 		}
 	}
 
@@ -194,7 +194,7 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 
 	return SLAMonitorOutput{
 		AlertType: input.AlertType,
-		FiredAt:   time.Now().UTC().Format(time.RFC3339),
+		FiredAt:   d.now().UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -202,7 +202,7 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 // SLA warning and breach times. Each schedule invokes this Lambda with
 // mode "fire-alert" at the exact timestamp, then auto-deletes.
 func handleSLASchedule(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
-	calc, err := handleSLACalculate(input)
+	calc, err := handleSLACalculate(input, d.now())
 	if err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("schedule: %w", err)
 	}
@@ -253,7 +253,7 @@ func handleSLASchedule(ctx context.Context, d *Deps, input SLAMonitorInput) (SLA
 func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
 	// If warningAt/breachAt not provided, recalculate from deadline/expectedDuration.
 	if input.WarningAt == "" && input.BreachAt == "" && input.Deadline != "" {
-		calc, err := handleSLACalculate(input)
+		calc, err := handleSLACalculate(input, d.now())
 		if err != nil {
 			return SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
 		}
@@ -279,7 +279,7 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 	}
 
 	// Determine final SLA status from the timestamps passed in
-	now := time.Now().UTC()
+	now := d.now().UTC()
 	alertType := string(types.EventSLAMet)
 	if input.BreachAt != "" {
 		breachAt, _ := time.Parse(time.RFC3339, input.BreachAt)
@@ -351,12 +351,12 @@ func createOneTimeSchedule(ctx context.Context, d *Deps, name, timestamp string,
 // that have already passed. Fallback for environments without EventBridge
 // Scheduler configured.
 func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
-	calc, err := handleSLACalculate(input)
+	calc, err := handleSLACalculate(input, d.now())
 	if err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("reconcile: %w", err)
 	}
 
-	now := time.Now().UTC()
+	now := d.now().UTC()
 	warningAt, _ := time.Parse(time.RFC3339, calc.WarningAt)
 	breachAt, _ := time.Parse(time.RFC3339, calc.BreachAt)
 
@@ -404,7 +404,8 @@ func isJobTerminal(ctx context.Context, d *Deps, pipelineID, scheduleID, date st
 	}
 	switch rec.Event {
 	case types.JobEventSuccess, types.JobEventFail, types.JobEventTimeout,
-		types.JobEventInfraTriggerExhausted, types.JobEventValidationExhausted:
+		types.JobEventInfraTriggerExhausted, types.JobEventValidationExhausted,
+		types.JobEventJobPollExhausted:
 		return true
 	default:
 		return false
