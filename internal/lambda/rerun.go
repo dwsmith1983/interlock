@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -37,7 +36,9 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 
 	// --- Calendar exclusion check (execution date) ---
 	if isExcludedDate(cfg, date) {
-		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventRerunRejected, "", 0, "excluded by calendar")
+		if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventRerunRejected, "", 0, "excluded by calendar"); err != nil {
+			d.Logger.Warn("failed to write rerun-rejected joblog for calendar exclusion", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
+		}
 		if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, schedule, date,
 			fmt.Sprintf("rerun blocked for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
@@ -76,8 +77,10 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 	}
 
 	if count >= budget {
-		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
-			types.JobEventRerunRejected, "", 0, limitLabel)
+		if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+			types.JobEventRerunRejected, "", 0, limitLabel); err != nil {
+			d.Logger.Warn("failed to write rerun-rejected joblog for limit exceeded", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
+		}
 		if err := publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
 			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, limitLabel)); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunRejected, "error", err)
@@ -108,8 +111,10 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 	}
 
 	if !allowed {
-		_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
-			types.JobEventRerunRejected, "", 0, rejectReason)
+		if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+			types.JobEventRerunRejected, "", 0, rejectReason); err != nil {
+			d.Logger.Warn("failed to write rerun-rejected joblog for circuit breaker", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
+		}
 		if err := publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
 			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, rejectReason)); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunRejected, "error", err)
@@ -127,7 +132,9 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 
 	// Delete date-scoped postrun-baseline so re-run captures fresh baseline.
 	if cfg.PostRun != nil {
-		_ = d.Store.DeleteSensor(ctx, pipelineID, "postrun-baseline#"+date)
+		if err := d.Store.DeleteSensor(ctx, pipelineID, "postrun-baseline#"+date); err != nil {
+			d.Logger.Warn("failed to delete postrun-baseline sensor", "error", err, "pipeline", pipelineID, "date", date)
+		}
 	}
 
 	// Atomically reset the trigger lock for the new execution.
@@ -146,15 +153,17 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 	}
 
 	// Publish acceptance event only after lock atomicity is confirmed.
-	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
-		types.JobEventRerunAccepted, "", 0, "")
+	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+		types.JobEventRerunAccepted, "", 0, ""); err != nil {
+		d.Logger.Warn("failed to write rerun-accepted joblog", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
+	}
 
 	if pubErr := publishEvent(ctx, d, string(types.EventRerunAccepted), pipelineID, schedule, date,
 		fmt.Sprintf("rerun accepted for %s (reason: %s)", pipelineID, reason)); pubErr != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunAccepted, "error", pubErr)
 	}
 
-	execName := truncateExecName(fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, time.Now().Unix()))
+	execName := truncateExecName(fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, d.now().Unix()))
 	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
 		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); relErr != nil {
 			d.Logger.Warn("failed to release lock after SFN start failure", "error", relErr)
@@ -366,9 +375,11 @@ func checkLateDataArrival(ctx context.Context, d *Deps, pipelineID, schedule, da
 	}
 
 	// Dual-write: joblog entry (audit) + EventBridge event (alerting).
-	_ = d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
+	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 		types.JobEventLateDataArrival, "", 0,
-		"sensor updated after pipeline completed successfully")
+		"sensor updated after pipeline completed successfully"); err != nil {
+		d.Logger.Warn("failed to write late-data-arrival joblog", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
+	}
 
 	if err := publishEvent(ctx, d, string(types.EventLateDataArrival), pipelineID, schedule, date,
 		fmt.Sprintf("late data arrival for %s: sensor updated after job completion", pipelineID)); err != nil {

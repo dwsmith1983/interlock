@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/internal/validation"
@@ -54,7 +53,7 @@ func handleEvaluate(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 
 	RemapPerPeriodSensors(sensors, input.Date)
 
-	result := validation.EvaluateRules(cfg.Validation.Trigger, cfg.Validation.Rules, sensors, time.Now())
+	result := validation.EvaluateRules(cfg.Validation.Trigger, cfg.Validation.Rules, sensors, d.now())
 
 	if result.Passed {
 		if err := publishEvent(ctx, d, string(types.EventValidationPassed), input.PipelineID, input.ScheduleID, input.Date, "all validation rules passed"); err != nil {
@@ -112,8 +111,10 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 	// during Execute. Write success to joblog immediately and set a sentinel
 	// runId so the Step Functions CheckJob JSONPath resolves.
 	if metadata == nil {
-		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
-			types.JobEventSuccess, "sync", 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type))
+		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
+			types.JobEventSuccess, "sync", 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type)); err != nil {
+			d.Logger.Warn("failed to write sync job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
+		}
 		runID = "sync"
 		metadata = map[string]interface{}{"completedSync": true}
 	}
@@ -168,7 +169,9 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 
 	switch result.State {
 	case "succeeded":
-		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventSuccess, input.RunID, 0, "")
+		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventSuccess, input.RunID, 0, ""); err != nil {
+			d.Logger.Warn("failed to write polled job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
+		}
 		if err := publishEvent(ctx, d, string(types.EventJobCompleted), input.PipelineID, input.ScheduleID, input.Date, "job succeeded"); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobCompleted, "error", err)
 		}
@@ -178,7 +181,9 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		if result.FailureCategory != "" {
 			writeOpts = append(writeOpts, store.WithFailureCategory(result.FailureCategory))
 		}
-		_ = d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventFail, input.RunID, 0, result.Message, writeOpts...)
+		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventFail, input.RunID, 0, result.Message, writeOpts...); err != nil {
+			d.Logger.Warn("failed to write polled job failure joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
+		}
 		if err := publishEvent(ctx, d, string(types.EventJobFailed), input.PipelineID, input.ScheduleID, input.Date, "job failed: "+result.Message); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobFailed, "error", err)
 		}
