@@ -791,6 +791,70 @@ func TestE2E_PostRunMonitoring(t *testing.T) {
 		assertAlertFormats(t, eb)
 	})
 
+	t.Run("DriftDetected_CustomField", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
+		d, _, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-b2-cf")
+		cfg.PostRun = &types.PostRunConfig{
+			Evaluation: &types.EvaluationWindow{Window: "10m", Interval: "5m"},
+			Rules:      []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
+			DriftField: "count",
+		}
+
+		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
+			pipeline: cfg,
+			sensors: map[string]map[string]interface{}{
+				"upstream-complete": {"status": "ready"},
+				"audit-result":      {"count": float64(100)},
+			},
+			postRunSensorUpdates: []map[string]map[string]interface{}{
+				{}, // iteration 0: no updates; baseline saved
+				{"audit-result": {"count": float64(120), "date": "2026-03-07"}}, // iteration 1: count changed
+			},
+		})
+
+		assert.Equal(t, sfnDone, r.terminal)
+		assert.Contains(t, r.events, "POST_RUN_DRIFT")
+		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b2-cf"))
+		assert.True(t, hasRerunRequest(mock, "pipe-b2-cf"), "drift on custom field should write RERUN_REQUEST")
+		assertAlertFormats(t, eb)
+	})
+
+	t.Run("DriftDetected_DefaultField", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
+		d, _, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-b2-df")
+		cfg.PostRun = &types.PostRunConfig{
+			Evaluation: &types.EvaluationWindow{Window: "10m", Interval: "5m"},
+			Rules:      []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
+			// DriftField intentionally left empty — should default to "sensor_count"
+		}
+
+		r := runSFN(t, ctx, d, mock, eb, e2eScenario{
+			pipeline: cfg,
+			sensors: map[string]map[string]interface{}{
+				"upstream-complete": {"status": "ready"},
+				"audit-result":      {"sensor_count": float64(100)},
+			},
+			postRunSensorUpdates: []map[string]map[string]interface{}{
+				{}, // iteration 0: no updates; baseline saved
+				{"audit-result": {"sensor_count": float64(120), "date": "2026-03-07"}}, // iteration 1: count changed
+			},
+		})
+
+		assert.Equal(t, sfnDone, r.terminal)
+		assert.Contains(t, r.events, "POST_RUN_DRIFT")
+		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b2-df"))
+		assert.True(t, hasRerunRequest(mock, "pipe-b2-df"), "drift on default field should write RERUN_REQUEST")
+		assertAlertFormats(t, eb)
+	})
+
 	t.Run("WindowExhausted", func(t *testing.T) {
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
@@ -2070,6 +2134,37 @@ func TestE2E_PostRunInflight(t *testing.T) {
 
 		assert.Contains(t, collectEventTypes(eb), "POST_RUN_DRIFT_INFLIGHT")
 		assert.False(t, hasRerunRequest(mock, "pipe-inf1"), "should NOT write rerun request while running")
+		assert.Equal(t, 0, countSFNExecutions(sfnM))
+		assertAlertFormats(t, eb)
+	})
+
+	t.Run("InflightDrift_CustomField", func(t *testing.T) {
+		mock := newMockDDB()
+		tr := &mockTriggerRunner{}
+		sc := &mockStatusPoller{}
+		d, sfnM, eb := buildE2EDeps(mock, tr, sc)
+
+		cfg := e2ePipeline("pipe-inf-cf")
+		cfg.PostRun = &types.PostRunConfig{
+			Rules:      []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}},
+			DriftField: "count",
+		}
+		seedConfig(mock, cfg)
+		seedTriggerWithStatus(mock, "pipe-inf-cf", "2026-03-07", types.TriggerStatusRunning)
+
+		// Baseline uses custom field "count".
+		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-inf-cf", "postrun-baseline#2026-03-07",
+			map[string]interface{}{"count": float64(100)}))
+
+		// Sensor arrives with different count while job is running.
+		record := makeSensorRecord("pipe-inf-cf", "audit-result", toStreamAttributes(map[string]interface{}{
+			"count": float64(200),
+			"date":  "2026-03-07",
+		}))
+		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}))
+
+		assert.Contains(t, collectEventTypes(eb), "POST_RUN_DRIFT_INFLIGHT")
+		assert.False(t, hasRerunRequest(mock, "pipe-inf-cf"), "should NOT write rerun request while running")
 		assert.Equal(t, 0, countSFNExecutions(sfnM))
 		assertAlertFormats(t, eb)
 	})

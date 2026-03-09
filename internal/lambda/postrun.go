@@ -10,6 +10,17 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+// defaultDriftField is the sensor field used for drift comparison when
+// PostRunConfig.DriftField is not set.
+const defaultDriftField = "sensor_count"
+
+func resolveDriftField(cfg *types.PostRunConfig) string {
+	if cfg.DriftField != "" {
+		return cfg.DriftField
+	}
+	return defaultDriftField
+}
+
 // matchesPostRunRule returns true if the sensor key matches any post-run rule key
 // (prefix match to support per-period sensor keys).
 func matchesPostRunRule(sensorKey string, rules []types.ValidationRule) bool {
@@ -66,8 +77,9 @@ func handlePostRunInflight(ctx context.Context, d *Deps, cfg *types.PipelineConf
 		return nil // No baseline yet — job hasn't completed once.
 	}
 
-	prevCount := ExtractFloat(baseline, "sensor_count")
-	currCount := ExtractFloat(sensorData, "sensor_count")
+	driftField := resolveDriftField(cfg.PostRun)
+	prevCount := ExtractFloat(baseline, driftField)
+	currCount := ExtractFloat(sensorData, driftField)
 	threshold := 0.0
 	if cfg.PostRun.DriftThreshold != nil {
 		threshold = *cfg.PostRun.DriftThreshold
@@ -78,7 +90,9 @@ func handlePostRunInflight(ctx context.Context, d *Deps, cfg *types.PipelineConf
 			map[string]interface{}{
 				"previousCount":  prevCount,
 				"currentCount":   currCount,
+				"delta":          currCount - prevCount,
 				"driftThreshold": threshold,
+				"driftField":     driftField,
 				"sensorKey":      sensorKey,
 				"source":         "post-run-stream",
 			}); err != nil {
@@ -101,8 +115,9 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 
 	// Check for data drift if baseline exists.
 	if baseline != nil {
-		prevCount := ExtractFloat(baseline, "sensor_count")
-		currCount := ExtractFloat(sensorData, "sensor_count")
+		driftField := resolveDriftField(cfg.PostRun)
+		prevCount := ExtractFloat(baseline, driftField)
+		currCount := ExtractFloat(sensorData, driftField)
 		threshold := 0.0
 		if cfg.PostRun.DriftThreshold != nil {
 			threshold = *cfg.PostRun.DriftThreshold
@@ -116,6 +131,7 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 					"currentCount":   currCount,
 					"delta":          delta,
 					"driftThreshold": threshold,
+					"driftField":     driftField,
 					"source":         "post-run-stream",
 				}); err != nil {
 				d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDrift, "error", err)
