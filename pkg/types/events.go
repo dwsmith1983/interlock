@@ -33,6 +33,7 @@ const (
 	EventPostRunSensorMissing    EventDetailType = "POST_RUN_SENSOR_MISSING"
 	EventRerunAccepted           EventDetailType = "RERUN_ACCEPTED"
 	EventInfraAlarm              EventDetailType = "INFRA_ALARM"
+	EventSensorDeadlineExpired   EventDetailType = "SENSOR_DEADLINE_EXPIRED"
 )
 
 // EventSource is the EventBridge source for all interlock events.
