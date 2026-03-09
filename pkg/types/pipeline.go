@@ -111,4 +111,5 @@ type PostRunConfig struct {
 	Rules          []ValidationRule  `yaml:"rules" json:"rules"`
 	SensorTimeout  string            `yaml:"sensorTimeout,omitempty" json:"sensorTimeout,omitempty"`   // e.g. "2h"; default 2h
 	DriftThreshold *float64          `yaml:"driftThreshold,omitempty" json:"driftThreshold,omitempty"` // minimum absolute delta to trigger drift; default 0 (any change)
+	DriftField     string            `yaml:"driftField,omitempty" json:"driftField,omitempty"`         // sensor field for drift comparison; default "sensor_count"
 }

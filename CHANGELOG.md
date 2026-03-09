@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-03-10
+
+### Added
+
+- **Configurable drift detection field** (`PostRunConfig.DriftField`) — specifies which sensor field to compare for post-run drift detection. Defaults to `"sensor_count"` for backward compatibility. Fixes broken drift detection when sensors use a different field name (e.g., `"count"`).
+
+### Fixed
+
+- **Post-run drift detection never fired when sensor field was `count`** — drift comparison was hardcoded to `"sensor_count"` but bronze consumers write `"count"` in hourly-status sensors, causing `ExtractFloat` to return 0 for both baseline and current values. The `prevCount > 0 && currCount > 0` guard silently suppressed all drift detection.
+- **Two flaky time-sensitive tests** — `TestSLAMonitor_Reconcile_PastWarningFutureBreach` and `TestWatchdog_MissedSchedule_DetailFields` used real wall-clock time instead of injected `NowFunc`, causing failures depending on time of day.
+
 ## [0.7.2] - 2026-03-08
 
 ### Added
@@ -343,6 +354,7 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.7.3]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.3
 [0.7.2]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.2
 [0.7.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.1
 [0.7.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.0
