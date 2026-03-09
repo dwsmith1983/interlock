@@ -1516,7 +1516,7 @@ func TestWatchdog_ScheduleSLAAlerts_CalendarExcluded_Skips(t *testing.T) {
 	assert.Empty(t, schedMock.created, "calendar-excluded day should skip SLA scheduling")
 }
 
-func TestWatchdog_ScheduleSLAAlerts_SensorTriggered_Skips(t *testing.T) {
+func TestWatchdog_ScheduleSLAAlerts_SensorTriggered_CreatesSLASchedules(t *testing.T) {
 	mock := newMockDDB()
 	d, _, _ := testDeps(mock)
 	schedMock := &mockScheduler{}
@@ -1525,25 +1525,30 @@ func TestWatchdog_ScheduleSLAAlerts_SensorTriggered_Skips(t *testing.T) {
 	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
 	d.SchedulerGroupName = "interlock-sla"
 
-	// Sensor-triggered pipeline (no cron) — SLA scheduling happens in SFN,
-	// not proactively from the watchdog.
+	// Fix time at 14:10 UTC — :30 deadline (T14:30 breach) is in the future.
+	fixedNow := time.Date(2026, 3, 9, 14, 10, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+	d.StartedAt = fixedNow.Add(-5 * time.Minute)
+
+	// Sensor-triggered pipeline (no cron) with SLA — should get proactive
+	// SLA scheduling from the watchdog.
 	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "bronze-cdr"},
+		Pipeline: types.PipelineIdentity{ID: "silver-seq-hour"},
 		Schedule: types.ScheduleConfig{
 			Trigger: &types.TriggerCondition{
-				Key:   "hourly-status",
+				Key:   "audit-result",
 				Check: "equals",
-				Field: "status",
-				Value: "ready",
+				Field: "match",
+				Value: true,
 			},
-			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
 		},
 		SLA: &types.SLAConfig{
-			Deadline:         ":15",
-			ExpectedDuration: "3m",
+			Deadline:         ":30",
+			ExpectedDuration: "10m",
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "bronze-cdr-etl"}},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "seq-agg-hour"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -1552,7 +1557,254 @@ func TestWatchdog_ScheduleSLAAlerts_SensorTriggered_Skips(t *testing.T) {
 
 	schedMock.mu.Lock()
 	defer schedMock.mu.Unlock()
-	assert.Empty(t, schedMock.created, "sensor-triggered pipeline should not get proactive SLA scheduling")
+	assert.Len(t, schedMock.created, 2, "sensor-triggered pipeline should get proactive SLA scheduling (warning + breach)")
+	for _, s := range schedMock.created {
+		assert.Contains(t, *s.Name, "silver-seq-hour")
+	}
+}
+
+func TestWatchdog_ScheduleSLAAlerts_SensorDeadlineExpired_WritesFAILEDFINAL(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	// Fix time at 14:50 UTC — both SLA breach (:30 → T14:30) and trigger
+	// deadline (:45 → T14:45) are in the past.
+	fixedNow := time.Date(2026, 3, 9, 14, 50, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+	d.StartedAt = fixedNow.Add(-5 * time.Minute)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-seq-hour"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:      "audit-result",
+				Check:    "equals",
+				Field:    "match",
+				Value:    true,
+				Deadline: ":45",
+			},
+			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         ":30",
+			ExpectedDuration: "10m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "seq-agg-hour"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Verify FAILED_FINAL trigger was written for the resolved date.
+	// resolveWatchdogSLADate at 14:50 with ":30" deadline → "2026-03-09T13"
+	triggerKey := ddbItemKey(testControlTable,
+		types.PipelinePK("silver-seq-hour"),
+		types.TriggerSK("stream", "2026-03-09T13"))
+	mock.mu.Lock()
+	item, ok := mock.items[triggerKey]
+	mock.mu.Unlock()
+	require.True(t, ok, "FAILED_FINAL trigger row should have been written")
+	statusVal := item["status"].(*ddbtypes.AttributeValueMemberS).Value
+	assert.Equal(t, types.TriggerStatusFailedFinal, statusVal)
+
+	// Verify SENSOR_DEADLINE_EXPIRED event was published.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var found bool
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType == string(types.EventSensorDeadlineExpired) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected SENSOR_DEADLINE_EXPIRED event")
+}
+
+func TestWatchdog_ScheduleSLAAlerts_SensorDeadlineExpired_SkipsIfTriggerExists(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	// Fix time at 14:50 UTC — trigger deadline (:45) is past.
+	fixedNow := time.Date(2026, 3, 9, 14, 50, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+	d.StartedAt = fixedNow.Add(-5 * time.Minute)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-seq-hour"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:      "audit-result",
+				Check:    "equals",
+				Field:    "match",
+				Value:    true,
+				Deadline: ":45",
+			},
+			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         ":30",
+			ExpectedDuration: "10m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "seq-agg-hour"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed a RUNNING trigger for the resolved date — pipeline started but is
+	// still running. The deadline-expired logic should NOT write FAILED_FINAL.
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("silver-seq-hour")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-09T13")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No SENSOR_DEADLINE_EXPIRED event — pipeline already has a trigger.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventSensorDeadlineExpired), *ev.Entries[0].DetailType,
+			"should not publish SENSOR_DEADLINE_EXPIRED when trigger exists")
+	}
+}
+
+func TestWatchdog_ScheduleSLAAlerts_SensorDeadlineNotExpired_SchedulesSLAOnly(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	// Fix time at 14:10 UTC — SLA deadline :30 (breach T14:30) is future,
+	// trigger deadline :45 (T14:45) is also future. Should create SLA
+	// schedules but NOT write FAILED_FINAL.
+	fixedNow := time.Date(2026, 3, 9, 14, 10, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+	d.StartedAt = fixedNow.Add(-5 * time.Minute)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-seq-hour"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:      "audit-result",
+				Check:    "equals",
+				Field:    "match",
+				Value:    true,
+				Deadline: ":45",
+			},
+			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         ":30",
+			ExpectedDuration: "10m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "seq-agg-hour"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// SLA schedules should be created.
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	assert.Len(t, schedMock.created, 2, "expected SLA schedules (warning + breach)")
+
+	// No FAILED_FINAL trigger should exist.
+	triggerKey := ddbItemKey(testControlTable,
+		types.PipelinePK("silver-seq-hour"),
+		types.TriggerSK("stream", "2026-03-09T13"))
+	mock.mu.Lock()
+	_, ok := mock.items[triggerKey]
+	mock.mu.Unlock()
+	assert.False(t, ok, "no FAILED_FINAL trigger should exist when deadline not expired")
+
+	// No SENSOR_DEADLINE_EXPIRED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventSensorDeadlineExpired), *ev.Entries[0].DetailType)
+	}
+}
+
+func TestWatchdog_ScheduleSLAAlerts_DailySensorDeadlineExpired_WritesFAILEDFINAL(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	// Fix time at 10:00 UTC — both SLA breach (08:00) and trigger deadline
+	// (09:00) are in the past. Daily pipeline with absolute deadlines.
+	fixedNow := time.Date(2026, 3, 9, 10, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+	d.StartedAt = fixedNow.Add(-5 * time.Minute)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "silver-seq-day"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:      "daily-status",
+				Check:    "equals",
+				Field:    "all_hours_complete",
+				Value:    true,
+				Deadline: "09:00",
+			},
+			Evaluation: types.EvaluationWindow{Window: "30m", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         "08:00",
+			ExpectedDuration: "30m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "seq-agg-day"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Verify FAILED_FINAL trigger for daily date (no composite T).
+	triggerKey := ddbItemKey(testControlTable,
+		types.PipelinePK("silver-seq-day"),
+		types.TriggerSK("stream", "2026-03-09"))
+	mock.mu.Lock()
+	item, ok := mock.items[triggerKey]
+	mock.mu.Unlock()
+	require.True(t, ok, "FAILED_FINAL trigger row should have been written for daily pipeline")
+	statusVal := item["status"].(*ddbtypes.AttributeValueMemberS).Value
+	assert.Equal(t, types.TriggerStatusFailedFinal, statusVal)
+
+	// Verify SENSOR_DEADLINE_EXPIRED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var found bool
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType == string(types.EventSensorDeadlineExpired) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected SENSOR_DEADLINE_EXPIRED event for daily pipeline")
 }
 
 // ---------------------------------------------------------------------------
