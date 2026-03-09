@@ -1405,16 +1405,18 @@ func TestSLAScheduleName_Deterministic(t *testing.T) {
 
 func TestSLAMonitor_Reconcile_PastWarningFutureBreach(t *testing.T) {
 	eb := &mockEventBridge{}
+	fixedNow := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 	d := &lambda.Deps{
 		EventBridge:  eb,
 		EventBusName: "test-bus",
 		Logger:       slog.Default(),
+		NowFunc:      func() time.Time { return fixedNow },
 	}
 
 	// We need warning in the past and breach in the future.
 	// Use tomorrow's date with deadline "23:59" and a 48h expected duration.
 	// Breach = tomorrow 23:59 (future); warning = yesterday 23:59 (past).
-	tomorrow := time.Now().Add(24 * time.Hour).Format("2006-01-02")
+	tomorrow := fixedNow.Add(24 * time.Hour).Format("2006-01-02")
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 		Mode:             "reconcile",
 		PipelineID:       "silver-cdr-hour",

@@ -1037,6 +1037,7 @@ func TestWatchdog_StaleTrigger_DetailFields(t *testing.T) {
 func TestWatchdog_MissedSchedule_DetailFields(t *testing.T) {
 	mock := newMockDDB()
 	d, _, ebMock := testDeps(mock)
+	d.NowFunc = func() time.Time { return time.Date(2026, 3, 10, 0, 30, 0, 0, time.UTC) }
 	// Push StartedAt far into the past so the pre-deployment filter never skips.
 	d.StartedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
