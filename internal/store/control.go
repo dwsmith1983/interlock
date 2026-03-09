@@ -429,3 +429,26 @@ func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date
 	}
 	return nil
 }
+
+// CreateTriggerIfAbsent writes a trigger row with the given status only if no
+// trigger row exists for this pipeline/schedule/date. Returns true if the row
+// was created, false if a row already existed (TOCTOU-safe via conditional put).
+func (s *Store) CreateTriggerIfAbsent(ctx context.Context, pipelineID, schedule, date, status string) (bool, error) {
+	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &s.ControlTable,
+		Item: map[string]ddbtypes.AttributeValue{
+			"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
+			"status": &ddbtypes.AttributeValueMemberS{Value: status},
+		},
+		ConditionExpression: aws.String("attribute_not_exists(PK)"),
+	})
+	if err != nil {
+		var condErr *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("create trigger if absent %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return true, nil
+}

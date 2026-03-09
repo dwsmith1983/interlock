@@ -155,6 +155,7 @@ job:
 | `emr-serverless` | AWS SDK | EMR Serverless job runs |
 | `step-function` | AWS SDK | AWS Step Functions executions |
 | `databricks` | HTTP (REST 2.1) | Databricks job runs |
+| `lambda` | AWS SDK | Direct Lambda invocation |
 
 ## Deployment
 
@@ -170,7 +171,7 @@ module "interlock" {
 }
 ```
 
-The module creates all required infrastructure: DynamoDB tables, Lambda functions, Step Functions state machine, EventBridge rules, and IAM roles.
+The module creates all required infrastructure: DynamoDB tables, Lambda functions, Step Functions state machine, EventBridge rules, CloudWatch alarms, and IAM roles. See the [deployment docs](https://dwsmith1983.github.io/interlock/docs/deployment/terraform/) for the full variable reference.
 
 ## Example
 
@@ -208,7 +209,7 @@ interlock/
 
 ```bash
 make test            # Run all tests
-make build-lambda    # Build 4 Lambda handlers (linux/arm64)
+make build-lambda    # Build 6 Lambda handlers (linux/arm64)
 make lint            # go fmt + go vet
 ```
 

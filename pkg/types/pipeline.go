@@ -31,10 +31,11 @@ type ScheduleConfig struct {
 
 // TriggerCondition defines which sensor write starts evaluation.
 type TriggerCondition struct {
-	Key   string      `yaml:"key" json:"key"`
-	Check CheckOp     `yaml:"check" json:"check"`
-	Field string      `yaml:"field" json:"field"`
-	Value interface{} `yaml:"value" json:"value"`
+	Key      string      `yaml:"key" json:"key"`
+	Check    CheckOp     `yaml:"check" json:"check"`
+	Field    string      `yaml:"field" json:"field"`
+	Value    interface{} `yaml:"value" json:"value"`
+	Deadline string      `yaml:"deadline,omitempty" json:"deadline,omitempty"` // ":MM" or "HH:MM" — auto-trigger window closes after this deadline
 }
 
 // ExclusionConfig defines when a pipeline should NOT run.

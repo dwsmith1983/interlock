@@ -53,6 +53,12 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `INFRA_FAILURE` | Unrecoverable infrastructure error | Step Functions execution reaches Fail state |
 | `SFN_TIMEOUT` | Step Functions execution timed out | Global `TimeoutSeconds` exceeded (configurable via `sfn_timeout_seconds` Terraform variable) |
 | `DATA_DRIFT` | Post-run drift detected | Post-run evaluation detected data quality drift against baseline |
+| `POST_RUN_DRIFT` | Post-run sensor changed after completion | Sensor value drifted from baseline after job completed |
+| `POST_RUN_DRIFT_INFLIGHT` | Post-run sensor changed while job running | Informational drift detected during an active execution |
+| `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Watchdog detected no post-run sensor within `sensorTimeout` |
+| `BASELINE_CAPTURE_FAILED` | Baseline capture error | Error occurred while capturing the post-run baseline at trigger completion |
+| `SENSOR_DEADLINE_EXPIRED` | Sensor trigger window closed without pipeline starting | Sensor trigger window closed without pipeline starting; manual restart required via `RERUN_REQUEST` |
+| `PIPELINE_EXCLUDED` | Pipeline excluded by calendar | Sensor, rerun, job-failure, or post-run drift skipped due to calendar exclusion |
 
 ### Rerun Events
 
@@ -62,6 +68,7 @@ Published by the **stream-router** when processing rerun requests and late data 
 |---|---|---|
 | `LATE_DATA_ARRIVAL` | Sensor updated after job completed | Sensor `updatedAt` is newer than joblog `completedAt` |
 | `RERUN_REJECTED` | Rerun request rejected by circuit breaker | No new sensor data since last job completion |
+| `RERUN_ACCEPTED` | Rerun request accepted | Rerun passed circuit breaker validation and trigger lock was reset |
 
 ### Watchdog Events
 
@@ -215,3 +222,38 @@ Since EventBridge supports many target types, you can build any alert delivery p
 | Custom processing | Lambda function | Enrich, deduplicate, or aggregate events |
 | Queue for batch processing | SQS queue | Downstream systems that process events in batches |
 | Cross-account delivery | EventBridge in another account | Centralized observability |
+
+## CloudWatch Alarms
+
+The Terraform module creates CloudWatch alarms that monitor infrastructure health independently of pipeline events. Alarm state changes are reshaped into `INFRA_ALARM` events via EventBridge input transformers and routed to both event-sink and alert-dispatcher — no additional Go code required.
+
+### Alarm Categories
+
+| Category | Count | Metric | Threshold |
+|---|---|---|---|
+| Lambda errors | 6 (one per function) | `Errors` | `>= 1` per 5-minute period |
+| Step Functions failures | 1 | `ExecutionsFailed` | `>= 1` per 5-minute period |
+| DLQ depth | 3 (control, joblog, alert) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
+| Stream iterator age | 2 (control, joblog) | `IteratorAge` | `>= 300,000ms` (5 minutes) |
+
+### How It Works
+
+1. CloudWatch detects a metric threshold breach and transitions the alarm to `ALARM` state
+2. The alarm state change publishes to the default EventBridge bus
+3. An EventBridge rule with an **input transformer** reshapes the alarm into an `INFRA_ALARM` event with the standard Interlock event structure
+4. The transformed event routes to both event-sink (→ events table) and the SQS alert queue (→ alert-dispatcher → Slack)
+
+### SNS Integration
+
+Optionally route alarm notifications to an SNS topic for external consumers (PagerDuty, email, etc.):
+
+```hcl
+module "interlock" {
+  source = "path/to/interlock/deploy/terraform"
+
+  sns_alarm_topic_arn = aws_sns_topic.ops_alerts.arn
+  # ...
+}
+```
+
+When `sns_alarm_topic_arn` is set, all alarms add the topic as an alarm action alongside the EventBridge route.

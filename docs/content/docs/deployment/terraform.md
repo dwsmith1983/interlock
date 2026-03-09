@@ -113,6 +113,69 @@ terraform apply
 | `enable_emr_trigger` | bool | `false` | Grant orchestrator Lambda permission to submit EMR steps |
 | `enable_emr_serverless_trigger` | bool | `false` | Grant orchestrator Lambda permission to start EMR Serverless jobs |
 | `enable_sfn_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Step Functions executions |
+| `enable_lambda_trigger` | bool | `false` | Grant orchestrator Lambda permission to invoke Lambda functions |
+| `lambda_trigger_arns` | list(string) | `["*"]` | Lambda function ARNs the orchestrator may invoke (scoped IAM). Only used when `enable_lambda_trigger` is `true` |
+| `slack_bot_token` | string (sensitive) | `""` | Slack Bot API token with `chat:write` scope for alert-dispatcher |
+| `slack_channel_id` | string | `""` | Slack channel ID for alert notifications |
+| `slack_secret_arn` | string | `""` | AWS Secrets Manager ARN containing the Slack bot token. When set, alert-dispatcher reads the token from Secrets Manager instead of the `slack_bot_token` environment variable |
+| `events_table_ttl_days` | number | `90` | TTL in days for events table records |
+| `lambda_concurrency` | object | See below | Reserved concurrent executions per Lambda function |
+| `sns_alarm_topic_arn` | string | `""` | SNS topic ARN for CloudWatch alarm notifications. When set, all alarms send to this topic |
+
+#### Lambda Concurrency Defaults
+
+The `lambda_concurrency` variable is an object with per-function keys:
+
+```hcl
+lambda_concurrency = {
+  stream_router    = 10
+  orchestrator     = 10
+  sla_monitor      = 5
+  watchdog         = 2
+  event_sink       = 5
+  alert_dispatcher = 3
+}
+```
+
+Set any key to `-1` to use unreserved concurrency (Lambda default).
+
+## Secrets Manager
+
+By default, alert-dispatcher reads the Slack bot token from the `SLACK_BOT_TOKEN` environment variable. For production deployments, store the token in AWS Secrets Manager and pass the ARN:
+
+```hcl
+module "interlock" {
+  source = "path/to/interlock/deploy/terraform"
+
+  slack_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:interlock/slack-token-AbCdEf"
+  slack_channel_id = "C0123456789"
+  # ...
+}
+```
+
+When `slack_secret_arn` is set, the module automatically grants `secretsmanager:GetSecretValue` to the alert-dispatcher Lambda role. The token must have the `xoxb-` prefix (Bot token).
+
+## CloudWatch Alarms
+
+The module creates CloudWatch alarms across four categories. All alarms conditionally route to an SNS topic when `sns_alarm_topic_arn` is set.
+
+| Category | Alarms | Threshold |
+|---|---|---|
+| Lambda errors | One per function (6 total) | `Errors >= 1` per 5-minute period |
+| Step Functions failures | One for the pipeline state machine | `ExecutionsFailed >= 1` per 5-minute period |
+| DLQ depth | One per dead-letter queue (3 total) | `ApproximateNumberOfMessagesVisible >= 1` |
+| Stream iterator age | One per DynamoDB Stream mapping (2 total) | `IteratorAge >= 300,000ms` (5 minutes) |
+
+CloudWatch alarm state changes are reshaped via EventBridge input transformers into `INFRA_ALARM` events and routed to both event-sink and alert-dispatcher. This means infrastructure alerts appear in the events table and Slack alongside pipeline lifecycle events — no additional Go code required.
+
+```hcl
+module "interlock" {
+  source = "path/to/interlock/deploy/terraform"
+
+  sns_alarm_topic_arn = aws_sns_topic.ops_alerts.arn
+  # ...
+}
+```
 
 ## What Gets Created
 
