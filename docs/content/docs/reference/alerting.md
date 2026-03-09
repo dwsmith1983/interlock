@@ -57,6 +57,7 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `POST_RUN_DRIFT_INFLIGHT` | Post-run sensor changed while job running | Informational drift detected during an active execution |
 | `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Watchdog detected no post-run sensor within `sensorTimeout` |
 | `BASELINE_CAPTURE_FAILED` | Baseline capture error | Error occurred while capturing the post-run baseline at trigger completion |
+| `SENSOR_DEADLINE_EXPIRED` | Sensor trigger window closed without pipeline starting | Sensor trigger window closed without pipeline starting; manual restart required via `RERUN_REQUEST` |
 | `PIPELINE_EXCLUDED` | Pipeline excluded by calendar | Sensor, rerun, job-failure, or post-run drift skipped due to calendar exclusion |
 
 ### Rerun Events
