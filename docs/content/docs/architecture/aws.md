@@ -112,7 +112,7 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 | `job-poll-exhausted` | Publish `JOB_POLL_EXHAUSTED` event, write timeout joblog entry, set trigger to `FAILED_FINAL` when the job poll window expires |
 | `complete-trigger` | Set trigger status to `COMPLETED` (on success) or `FAILED_FINAL` (on failure/timeout). Ensures trigger records reflect terminal state |
 
-Supported trigger types: `http`, `command`, `airflow`, `glue`, `emr`, `emr-serverless`, `step-function`, `databricks`.
+Supported trigger types: `http`, `command`, `airflow`, `glue`, `emr`, `emr-serverless`, `step-function`, `databricks`, `lambda`.
 
 ### sla-monitor
 
@@ -144,6 +144,8 @@ Receives EventBridge events via a rule that matches all `source: "interlock"` ev
 Processes messages from the SQS alert queue. Formats pipeline events into Slack Block Kit messages and posts them using the Slack Bot API (`chat.postMessage`).
 
 **Threading**: looks up existing thread records in the events table (`THREAD#{scheduleId}#{date}`). If a thread exists for the pipeline-day, replies in-thread. Otherwise, posts a new message and saves the thread timestamp for subsequent alerts.
+
+**Secrets Manager**: when `SLACK_SECRET_ARN` is set, the Slack bot token is read from Secrets Manager at cold start instead of the `SLACK_BOT_TOKEN` environment variable. The module conditionally grants `secretsmanager:GetSecretValue` to the alert-dispatcher role.
 
 **Error handling**: Slack API errors return batch item failures so SQS retries individual messages. Thread lookup/save errors are logged but don't fail the message delivery.
 
@@ -217,6 +219,21 @@ The ASL template at `deploy/statemachine.asl.json` uses substitution variables r
 - `${sfn_timeout_seconds}` — global execution timeout (default 14400 / 4h)
 - `${trigger_max_attempts}` — trigger infrastructure retry count (default 3)
 
+## CloudWatch Alarms
+
+The Terraform module creates CloudWatch alarms across four categories to monitor infrastructure health:
+
+| Category | Alarms | Metric | Threshold |
+|---|---|---|---|
+| Lambda errors | 6 (one per function) | `Errors` | `>= 1` per 5-minute period |
+| SFN failures | 1 (pipeline state machine) | `ExecutionsFailed` | `>= 1` per 5-minute period |
+| DLQ depth | 3 (control, joblog, alert queues) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
+| Stream iterator age | 2 (control, joblog streams) | `IteratorAge` | `>= 300,000ms` (5 min) |
+
+Alarm state changes are reshaped into `INFRA_ALARM` events via EventBridge input transformers and routed to event-sink and alert-dispatcher. Optionally, alarms also publish to an SNS topic via the `sns_alarm_topic_arn` variable.
+
+See [Alerting](../../reference/alerting/#cloudwatch-alarms) for details on the event flow and consumer patterns.
+
 ## EventBridge
 
 A custom event bus (`{environment}-interlock-events`) receives all framework events. All four Lambda functions have `events:PutEvents` permission on this bus.
@@ -245,7 +262,7 @@ Each Lambda function has its own IAM role with least-privilege policies:
 | sla-monitor | None | PutEvents | `scheduler:CreateSchedule`, `scheduler:DeleteSchedule` |
 | watchdog | Read control, joblog, rerun; write control only | PutEvents | -- |
 | event-sink | Write events table | -- | -- |
-| alert-dispatcher | Read/write events table (thread storage) | -- | SQS ReceiveMessage/DeleteMessage |
+| alert-dispatcher | Read/write events table (thread storage) | -- | SQS ReceiveMessage/DeleteMessage, conditional `secretsmanager:GetSecretValue` |
 
 Trigger permissions for the orchestrator are opt-in via Terraform variables (`enable_glue_trigger`, `enable_emr_trigger`, etc.).
 
