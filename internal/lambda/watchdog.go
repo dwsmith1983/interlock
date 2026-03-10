@@ -381,6 +381,19 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 		scheduleID := resolveScheduleID(cfg)
 		date := resolveWatchdogSLADate(cfg, now)
 
+		// Sensor-triggered daily pipelines run T+1: data for today completes
+		// tomorrow, so the SLA deadline is relative to tomorrow's date.
+		// Only slaDate is shifted; the original date is kept for schedule
+		// naming, trigger lookup, and fire-alert payload so cancellation
+		// stays consistent with the SFN's view of the pipeline.
+		slaDate := date
+		if cfg.Schedule.Cron == "" && !strings.HasPrefix(cfg.SLA.Deadline, ":") {
+			t, err := time.Parse("2006-01-02", date)
+			if err == nil {
+				slaDate = t.AddDate(0, 0, 1).Format("2006-01-02")
+			}
+		}
+
 		// Skip if pipeline already completed or permanently failed for this date.
 		tr, err := d.Store.GetTrigger(ctx, id, scheduleID, date)
 		switch {
@@ -397,7 +410,7 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 			Mode:             "calculate",
 			PipelineID:       id,
 			ScheduleID:       scheduleID,
-			Date:             date,
+			Date:             slaDate,
 			Deadline:         cfg.SLA.Deadline,
 			ExpectedDuration: cfg.SLA.ExpectedDuration,
 			Timezone:         cfg.SLA.Timezone,
