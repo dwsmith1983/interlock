@@ -270,9 +270,10 @@ func TestWatchdog_Reconcile_TriggersRecovery(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var recoveredCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
-			recoveredCount++
+		if *ev.Entries[0].DetailType != string(types.EventTriggerRecovered) {
+			continue
 		}
+		recoveredCount++
 	}
 	assert.Equal(t, 1, recoveredCount, "expected one TRIGGER_RECOVERED event")
 }
@@ -465,9 +466,10 @@ func TestWatchdog_Reconcile_PerHour_MultipleRecoveries(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var recoveredCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
-			recoveredCount++
+		if *ev.Entries[0].DetailType != string(types.EventTriggerRecovered) {
+			continue
 		}
+		recoveredCount++
 	}
 	assert.Equal(t, 2, recoveredCount, "expected two TRIGGER_RECOVERED events")
 }
@@ -521,9 +523,10 @@ func TestWatchdog_Reconcile_PerHour_PartiallyTriggered(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var recoveredCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
-			recoveredCount++
+		if *ev.Entries[0].DetailType != string(types.EventTriggerRecovered) {
+			continue
 		}
+		recoveredCount++
 	}
 	assert.Equal(t, 1, recoveredCount, "expected one TRIGGER_RECOVERED event for T11 only")
 }
@@ -600,9 +603,10 @@ func TestWatchdog_MissedSchedule_AlertsPostDeployment(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var missedCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventScheduleMissed) {
-			missedCount++
+		if *ev.Entries[0].DetailType != string(types.EventScheduleMissed) {
+			continue
 		}
+		missedCount++
 	}
 	assert.Equal(t, 1, missedCount, "expected one SCHEDULE_MISSED event for post-deployment schedule")
 }
@@ -1117,13 +1121,14 @@ func TestWatchdog_MissedSchedule_BeforeScheduleTime_NoAlert(t *testing.T) {
 	ebMock.mu.Lock()
 	defer ebMock.mu.Unlock()
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventScheduleMissed) {
-			detailJSON := *ev.Entries[0].Detail
-			var evt types.InterlockEvent
-			_ = json.Unmarshal([]byte(detailJSON), &evt)
-			if evt.PipelineID == "bronze-late" {
-				t.Error("should not publish SCHEDULE_MISSED when current time is before Schedule.Time")
-			}
+		if *ev.Entries[0].DetailType != string(types.EventScheduleMissed) {
+			continue
+		}
+		detailJSON := *ev.Entries[0].Detail
+		var evt types.InterlockEvent
+		_ = json.Unmarshal([]byte(detailJSON), &evt)
+		if evt.PipelineID == "bronze-late" {
+			t.Error("should not publish SCHEDULE_MISSED when current time is before Schedule.Time")
 		}
 	}
 }
@@ -1360,9 +1365,10 @@ func TestWatchdog_Reconcile_ProceedsOnNonTerminalJoblog(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var recovered int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
-			recovered++
+		if *ev.Entries[0].DetailType != string(types.EventTriggerRecovered) {
+			continue
 		}
+		recovered++
 	}
 	assert.Equal(t, 1, recovered, "should publish TRIGGER_RECOVERED for non-terminal joblog")
 }
@@ -1621,10 +1627,11 @@ func TestWatchdog_ScheduleSLAAlerts_SensorDeadlineExpired_WritesFAILEDFINAL(t *t
 	defer ebMock.mu.Unlock()
 	var found bool
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventSensorDeadlineExpired) {
-			found = true
-			break
+		if *ev.Entries[0].DetailType != string(types.EventSensorDeadlineExpired) {
+			continue
 		}
+		found = true
+		break
 	}
 	assert.True(t, found, "expected SENSOR_DEADLINE_EXPIRED event")
 }
@@ -1801,10 +1808,11 @@ func TestWatchdog_ScheduleSLAAlerts_DailySensorDeadlineExpired_WritesFAILEDFINAL
 	defer ebMock.mu.Unlock()
 	var found bool
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventSensorDeadlineExpired) {
-			found = true
-			break
+		if *ev.Entries[0].DetailType != string(types.EventSensorDeadlineExpired) {
+			continue
 		}
+		found = true
+		break
 	}
 	assert.True(t, found, "expected SENSOR_DEADLINE_EXPIRED event for daily pipeline")
 }
@@ -1885,9 +1893,10 @@ func TestWatchdog_PostRunSensorMissing(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var missingCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventPostRunSensorMissing) {
-			missingCount++
+		if *ev.Entries[0].DetailType != string(types.EventPostRunSensorMissing) {
+			continue
 		}
+		missingCount++
 	}
 	assert.Equal(t, 1, missingCount, "expected one POST_RUN_SENSOR_MISSING event")
 
@@ -2419,15 +2428,16 @@ func TestWatchdog_InclusionSchedule_TriggerMissing_PublishesAlert(t *testing.T) 
 
 	var irregularMissedCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventIrregularScheduleMissed) {
-			irregularMissedCount++
-
-			// Verify event detail contains the expected pipeline and date.
-			var detail types.InterlockEvent
-			_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
-			assert.Equal(t, "monthly-close", detail.PipelineID)
-			assert.Equal(t, "2026-03-05", detail.Date)
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
 		}
+		irregularMissedCount++
+
+		// Verify event detail contains the expected pipeline and date.
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		assert.Equal(t, "monthly-close", detail.PipelineID)
+		assert.Equal(t, "2026-03-05", detail.Date)
 	}
 	assert.Equal(t, 1, irregularMissedCount, "expected exactly one IRREGULAR_SCHEDULE_MISSED event")
 }
@@ -2550,11 +2560,12 @@ func TestWatchdog_InclusionSchedule_MultiDateGap(t *testing.T) {
 
 	var missedDates []string
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventIrregularScheduleMissed) {
-			var detail types.InterlockEvent
-			_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
-			missedDates = append(missedDates, detail.Date)
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
 		}
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		missedDates = append(missedDates, detail.Date)
 	}
 	assert.Len(t, missedDates, 2, "expected IRREGULAR_SCHEDULE_MISSED events for both past dates")
 	assert.Contains(t, missedDates, "2026-03-05")
@@ -2601,12 +2612,13 @@ func TestWatchdog_InclusionSchedule_RespectsScheduleTime(t *testing.T) {
 	ebMock.mu.Lock()
 	defer ebMock.mu.Unlock()
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventIrregularScheduleMissed) {
-			var detail types.InterlockEvent
-			_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
-			if detail.PipelineID == "monthly-close" {
-				t.Error("should not publish IRREGULAR_SCHEDULE_MISSED before Schedule.Time")
-			}
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
+		}
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		if detail.PipelineID == "monthly-close" {
+			t.Error("should not publish IRREGULAR_SCHEDULE_MISSED before Schedule.Time")
 		}
 	}
 }
@@ -2648,13 +2660,14 @@ func TestWatchdog_InclusionSchedule_PastScheduleTime(t *testing.T) {
 
 	var irregularMissedCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventIrregularScheduleMissed) {
-			irregularMissedCount++
-			var detail types.InterlockEvent
-			_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
-			assert.Equal(t, "monthly-close", detail.PipelineID)
-			assert.Equal(t, "2026-03-31", detail.Date)
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
 		}
+		irregularMissedCount++
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		assert.Equal(t, "monthly-close", detail.PipelineID)
+		assert.Equal(t, "2026-03-31", detail.Date)
 	}
 	assert.Equal(t, 1, irregularMissedCount, "expected exactly one IRREGULAR_SCHEDULE_MISSED event")
 }
@@ -2698,13 +2711,14 @@ func TestWatchdog_InclusionSchedule_WithTimezone(t *testing.T) {
 
 	var irregularMissedCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventIrregularScheduleMissed) {
-			irregularMissedCount++
-			var detail types.InterlockEvent
-			_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
-			assert.Equal(t, "monthly-close", detail.PipelineID)
-			assert.Equal(t, "2026-03-31", detail.Date)
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
 		}
+		irregularMissedCount++
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		assert.Equal(t, "monthly-close", detail.PipelineID)
+		assert.Equal(t, "2026-03-31", detail.Date)
 	}
 	assert.Equal(t, 1, irregularMissedCount, "expected exactly one IRREGULAR_SCHEDULE_MISSED event")
 }
@@ -2745,13 +2759,14 @@ func TestWatchdog_InclusionSchedule_NoTimeConfig(t *testing.T) {
 
 	var irregularMissedCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventIrregularScheduleMissed) {
-			irregularMissedCount++
-			var detail types.InterlockEvent
-			_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
-			assert.Equal(t, "monthly-close", detail.PipelineID)
-			assert.Equal(t, "2026-03-31", detail.Date)
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
 		}
+		irregularMissedCount++
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		assert.Equal(t, "monthly-close", detail.PipelineID)
+		assert.Equal(t, "2026-03-31", detail.Date)
 	}
 	assert.Equal(t, 1, irregularMissedCount, "expected exactly one IRREGULAR_SCHEDULE_MISSED event")
 }
@@ -2798,13 +2813,14 @@ func TestWatchdog_InclusionSchedule_TimezoneUTCDateMismatch(t *testing.T) {
 
 	var irregularMissedCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventIrregularScheduleMissed) {
-			irregularMissedCount++
-			var detail types.InterlockEvent
-			_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
-			assert.Equal(t, "quarterly-close", detail.PipelineID)
-			assert.Equal(t, "2026-03-31", detail.Date)
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
 		}
+		irregularMissedCount++
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		assert.Equal(t, "quarterly-close", detail.PipelineID)
+		assert.Equal(t, "2026-03-31", detail.Date)
 	}
 	assert.Equal(t, 1, irregularMissedCount,
 		"expected IRREGULAR_SCHEDULE_MISSED: UTC is April 1 but Eastern is still March 31 past 10:00")
@@ -2937,9 +2953,10 @@ func TestWatchdog_RelativeSLA_SensorArrival_Breached(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var breachCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventRelativeSLABreach) {
-			breachCount++
+		if *ev.Entries[0].DetailType != string(types.EventRelativeSLABreach) {
+			continue
 		}
+		breachCount++
 	}
 	assert.Equal(t, 1, breachCount, "expected one RELATIVE_SLA_BREACH event")
 }
@@ -3036,9 +3053,10 @@ func TestWatchdog_RelativeSLA_CrossDayArrival(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var breachCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventRelativeSLABreach) {
-			breachCount++
+		if *ev.Entries[0].DetailType != string(types.EventRelativeSLABreach) {
+			continue
 		}
+		breachCount++
 	}
 	assert.Equal(t, 1, breachCount, "expected one RELATIVE_SLA_BREACH event for cross-day sensor arrival")
 }

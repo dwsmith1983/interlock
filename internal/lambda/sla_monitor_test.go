@@ -251,10 +251,10 @@ func TestSLAMonitor_FireAlert_RelativeSLAWarning(t *testing.T) {
 	}
 	ebMock := &mockEventBridge{}
 	d := &lambda.Deps{
-		Store:       s,
-		EventBridge: ebMock,
+		Store:        s,
+		EventBridge:  ebMock,
 		EventBusName: "interlock-bus",
-		Logger:      slog.Default(),
+		Logger:       slog.Default(),
 	}
 
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
@@ -284,10 +284,10 @@ func TestSLAMonitor_FireAlert_RelativeSLABreach(t *testing.T) {
 	}
 	ebMock := &mockEventBridge{}
 	d := &lambda.Deps{
-		Store:       s,
-		EventBridge: ebMock,
+		Store:        s,
+		EventBridge:  ebMock,
 		EventBusName: "interlock-bus",
-		Logger:      slog.Default(),
+		Logger:       slog.Default(),
 	}
 
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
