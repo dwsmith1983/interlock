@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -206,6 +207,35 @@ func MostRecentInclusionDate(dates []string, now time.Time) (string, bool) {
 		}
 	}
 	return best, found
+}
+
+// maxInclusionLookback is the maximum number of past inclusion dates to check.
+// Caps DynamoDB reads when the watchdog has been down for an extended period.
+const maxInclusionLookback = 3
+
+// PastInclusionDates returns dates from the list that are on or before now,
+// sorted most recent first and capped at maxInclusionLookback (3) entries.
+// The cap bounds DynamoDB reads when the watchdog has been down for an
+// extended period. Dates must be YYYY-MM-DD strings; unparseable entries
+// are silently skipped. Returns nil if no dates qualify.
+func PastInclusionDates(dates []string, now time.Time) []string {
+	nowDate := now.Format("2006-01-02")
+	var past []string
+	for _, d := range dates {
+		if _, err := time.Parse("2006-01-02", d); err != nil {
+			continue
+		}
+		if d <= nowDate {
+			past = append(past, d)
+		}
+	}
+	// Sort descending (most recent first) using string comparison on YYYY-MM-DD.
+	sort.Sort(sort.Reverse(sort.StringSlice(past)))
+	// Cap to maxInclusionLookback to bound downstream DynamoDB reads.
+	if len(past) > maxInclusionLookback {
+		past = past[:maxInclusionLookback]
+	}
+	return past
 }
 
 // isExcludedTime is the core calendar exclusion check. It evaluates
