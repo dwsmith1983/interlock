@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-03-10
+
+### Fixed
+
+- **False SLA warnings/breaches for sensor-triggered daily pipelines** — `scheduleSLAAlerts` resolved the SLA deadline against today's date, but sensor-triggered daily pipelines run T+1 (data for today completes tomorrow). Between 00:00 UTC and the deadline hour, the breach time landed on the same day instead of the next day, causing premature SLA alerts. The SLA calculation now shifts the deadline date by +1 day for sensor-triggered daily pipelines.
+
 ## [0.7.3] - 2026-03-10
 
 ### Added
@@ -354,6 +360,7 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.7.4]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.4
 [0.7.3]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.3
 [0.7.2]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.2
 [0.7.1]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.1
