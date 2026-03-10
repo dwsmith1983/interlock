@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -163,6 +164,146 @@ func TestSLAMonitor_Calculate_InvalidDuration(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid duration")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Relative SLA calculation tests
+// ---------------------------------------------------------------------------
+
+func TestSLAMonitor_Calculate_Relative_Basic(t *testing.T) {
+	// Relative SLA: maxDuration=2h, sensorArrivalAt=14:00 UTC, no expectedDuration.
+	// breachAt = 14:00 + 2h = 16:00 UTC
+	// warningAt = breachAt - 25% of 2h = 16:00 - 0h30m = 15:30 UTC
+	d := &lambda.Deps{Logger: slog.Default()}
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:            "calculate",
+		PipelineID:      "adhoc-pipeline",
+		MaxDuration:     "2h",
+		SensorArrivalAt: "2026-03-10T14:00:00Z",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "2026-03-10T16:00:00Z", out.BreachAt)
+	assert.Equal(t, "2026-03-10T15:30:00Z", out.WarningAt)
+}
+
+func TestSLAMonitor_Calculate_Relative_WithExpectedDuration(t *testing.T) {
+	// Relative SLA: maxDuration=2h, sensorArrivalAt=14:00 UTC, expectedDuration=30m.
+	// breachAt = 14:00 + 2h = 16:00 UTC
+	// warningAt = 16:00 - 30m = 15:30 UTC
+	d := &lambda.Deps{Logger: slog.Default()}
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:             "calculate",
+		PipelineID:       "adhoc-pipeline",
+		MaxDuration:      "2h",
+		SensorArrivalAt:  "2026-03-10T14:00:00Z",
+		ExpectedDuration: "30m",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "2026-03-10T16:00:00Z", out.BreachAt)
+	assert.Equal(t, "2026-03-10T15:30:00Z", out.WarningAt)
+}
+
+func TestSLAMonitor_Calculate_Relative_Default75Percent(t *testing.T) {
+	// Without expectedDuration, warning should be at 75% of maxDuration.
+	// maxDuration=4h → breachAt = arrival + 4h, warningAt = breachAt - 1h (75% of 4h = 3h, so warning at T+3h).
+	d := &lambda.Deps{Logger: slog.Default()}
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:            "calculate",
+		PipelineID:      "adhoc-pipeline",
+		MaxDuration:     "4h",
+		SensorArrivalAt: "2026-03-10T10:00:00Z",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "2026-03-10T14:00:00Z", out.BreachAt)
+	// 75% of 4h = 3h, so warning at 10:00 + 3h = 13:00 (i.e. breachAt - 1h)
+	assert.Equal(t, "2026-03-10T13:00:00Z", out.WarningAt)
+}
+
+func TestSLAMonitor_Calculate_Relative_InvalidMaxDuration(t *testing.T) {
+	d := &lambda.Deps{Logger: slog.Default()}
+	_, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:            "calculate",
+		PipelineID:      "adhoc-pipeline",
+		MaxDuration:     "not-a-duration",
+		SensorArrivalAt: "2026-03-10T14:00:00Z",
+	})
+	require.Error(t, err)
+}
+
+func TestSLAMonitor_Calculate_Relative_InvalidSensorArrivalAt(t *testing.T) {
+	d := &lambda.Deps{Logger: slog.Default()}
+	_, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:            "calculate",
+		PipelineID:      "adhoc-pipeline",
+		MaxDuration:     "2h",
+		SensorArrivalAt: "not-a-time",
+	})
+	require.Error(t, err)
+}
+
+func TestSLAMonitor_FireAlert_RelativeSLAWarning(t *testing.T) {
+	mock := newMockDDB()
+	s := &store.Store{
+		Client:       mock,
+		ControlTable: testControlTable,
+		JobLogTable:  "joblog",
+		RerunTable:   "rerun",
+	}
+	ebMock := &mockEventBridge{}
+	d := &lambda.Deps{
+		Store:       s,
+		EventBridge: ebMock,
+		EventBusName: "interlock-bus",
+		Logger:      slog.Default(),
+	}
+
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "adhoc-pipeline",
+		ScheduleID: "stream",
+		Date:       "2026-03-10",
+		AlertType:  string(types.EventRelativeSLAWarning),
+		BreachAt:   "2099-01-01T00:00:00Z", // far future — don't suppress
+	})
+	require.NoError(t, err)
+	assert.Equal(t, string(types.EventRelativeSLAWarning), out.AlertType)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1)
+	assert.Equal(t, string(types.EventRelativeSLAWarning), *ebMock.events[0].Entries[0].DetailType)
+}
+
+func TestSLAMonitor_FireAlert_RelativeSLABreach(t *testing.T) {
+	mock := newMockDDB()
+	s := &store.Store{
+		Client:       mock,
+		ControlTable: testControlTable,
+		JobLogTable:  "joblog",
+		RerunTable:   "rerun",
+	}
+	ebMock := &mockEventBridge{}
+	d := &lambda.Deps{
+		Store:       s,
+		EventBridge: ebMock,
+		EventBusName: "interlock-bus",
+		Logger:      slog.Default(),
+	}
+
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "fire-alert",
+		PipelineID: "adhoc-pipeline",
+		ScheduleID: "stream",
+		Date:       "2026-03-10",
+		AlertType:  string(types.EventRelativeSLABreach),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, string(types.EventRelativeSLABreach), out.AlertType)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	require.Len(t, ebMock.events, 1)
+	assert.Equal(t, string(types.EventRelativeSLABreach), *ebMock.events[0].Entries[0].DetailType)
 }
 
 // ---------------------------------------------------------------------------

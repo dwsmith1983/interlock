@@ -24,9 +24,16 @@ type ScheduleConfig struct {
 	Timezone   string            `yaml:"timezone,omitempty" json:"timezone,omitempty"`
 	Trigger    *TriggerCondition `yaml:"trigger,omitempty" json:"trigger,omitempty"`
 	Exclude    *ExclusionConfig  `yaml:"exclude,omitempty" json:"exclude,omitempty"`
+	Include    *InclusionConfig  `yaml:"include,omitempty" json:"include,omitempty"`
 	Calendar   string            `yaml:"calendar,omitempty" json:"calendar,omitempty"`
 	Time       string            `yaml:"time,omitempty" json:"time,omitempty"`
 	Evaluation EvaluationWindow  `yaml:"evaluation" json:"evaluation"`
+}
+
+// InclusionConfig defines explicit dates when a pipeline SHOULD run.
+// Mutually exclusive with Cron.
+type InclusionConfig struct {
+	Dates []string `yaml:"dates" json:"dates"` // YYYY-MM-DD
 }
 
 // TriggerCondition defines which sensor write starts evaluation.
@@ -53,8 +60,9 @@ type EvaluationWindow struct {
 
 // SLAConfig defines pipeline deadlines (observational, never stops execution).
 type SLAConfig struct {
-	Deadline         string `yaml:"deadline" json:"deadline"`                 // "HH:MM"
-	ExpectedDuration string `yaml:"expectedDuration" json:"expectedDuration"` // e.g. "30m"
+	Deadline         string `yaml:"deadline,omitempty" json:"deadline,omitempty"`                 // "HH:MM" wall-clock deadline
+	ExpectedDuration string `yaml:"expectedDuration,omitempty" json:"expectedDuration,omitempty"` // e.g. "30m"
+	MaxDuration      string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`           // e.g. "2h"; relative SLA from first sensor arrival
 	Timezone         string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
 	Critical         bool   `yaml:"critical,omitempty" json:"critical,omitempty"`
 }

@@ -1,12 +1,22 @@
 package validation
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
+
+func containsSubstr(ss []string, sub string) bool {
+	for _, s := range ss {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
 
 func intPtr(v int) *int { return &v }
 
@@ -160,14 +170,106 @@ func TestValidatePipelineConfig(t *testing.T) {
 			},
 			wantCount: 4,
 		},
+		// --- v0.8.0: inclusion calendar + relative SLA validation ---
+		{
+			name: "cron and include mutually exclusive",
+			cfg: types.PipelineConfig{
+				Schedule: types.ScheduleConfig{
+					Cron:    "0 2 * * *",
+					Include: &types.InclusionConfig{Dates: []string{"2026-03-31"}},
+				},
+			},
+			wantCount:  1,
+			wantSubstr: "schedule.cron and schedule.include are mutually exclusive",
+		},
+		{
+			name: "include with valid dates",
+			cfg: types.PipelineConfig{
+				Schedule: types.ScheduleConfig{
+					Include: &types.InclusionConfig{Dates: []string{"2026-03-31", "2026-06-30"}},
+				},
+			},
+			wantCount: 0,
+		},
+		{
+			name: "include with empty dates",
+			cfg: types.PipelineConfig{
+				Schedule: types.ScheduleConfig{
+					Include: &types.InclusionConfig{Dates: []string{}},
+				},
+			},
+			wantCount:  1,
+			wantSubstr: "schedule.include.dates must not be empty",
+		},
+		{
+			name: "include with invalid date format",
+			cfg: types.PipelineConfig{
+				Schedule: types.ScheduleConfig{
+					Include: &types.InclusionConfig{Dates: []string{"2026-03-31", "03/31/2026"}},
+				},
+			},
+			wantCount:  1,
+			wantSubstr: "schedule.include.dates[1] invalid format",
+		},
+		{
+			name: "maxDuration valid",
+			cfg: types.PipelineConfig{
+				Schedule: types.ScheduleConfig{
+					Trigger: &types.TriggerCondition{Key: "some-sensor", Check: types.CheckExists},
+				},
+				SLA: &types.SLAConfig{MaxDuration: "2h"},
+			},
+			wantCount: 0,
+		},
+		{
+			name: "maxDuration exceeds 24h",
+			cfg: types.PipelineConfig{
+				Schedule: types.ScheduleConfig{
+					Trigger: &types.TriggerCondition{Key: "some-sensor", Check: types.CheckExists},
+				},
+				SLA: &types.SLAConfig{MaxDuration: "25h"},
+			},
+			wantCount:  1,
+			wantSubstr: "sla.maxDuration exceeds 24h",
+		},
+		{
+			name: "maxDuration invalid format",
+			cfg: types.PipelineConfig{
+				Schedule: types.ScheduleConfig{
+					Trigger: &types.TriggerCondition{Key: "some-sensor", Check: types.CheckExists},
+				},
+				SLA: &types.SLAConfig{MaxDuration: "not-a-duration"},
+			},
+			wantCount:  1,
+			wantSubstr: "sla.maxDuration invalid Go duration",
+		},
+		{
+			name: "maxDuration requires trigger",
+			cfg: types.PipelineConfig{
+				SLA: &types.SLAConfig{MaxDuration: "2h"},
+			},
+			wantCount:  1,
+			wantSubstr: "sla.maxDuration requires schedule.trigger",
+		},
+		{
+			name: "maxDuration and deadline coexist",
+			cfg: types.PipelineConfig{
+				Schedule: types.ScheduleConfig{
+					Trigger: &types.TriggerCondition{Key: "some-sensor", Check: types.CheckExists},
+				},
+				SLA: &types.SLAConfig{Deadline: "08:00", MaxDuration: "2h"},
+			},
+			wantCount: 0,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			errs := ValidatePipelineConfig(&tt.cfg)
 			assert.Len(t, errs, tt.wantCount)
-			if tt.wantSubstr != "" && len(errs) > 0 {
-				assert.Contains(t, errs[0], tt.wantSubstr)
+			if tt.wantSubstr != "" {
+				assert.True(t, containsSubstr(errs, tt.wantSubstr),
+					"expected one of %v to contain %q", errs, tt.wantSubstr)
 			}
 		})
 	}

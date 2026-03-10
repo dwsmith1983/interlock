@@ -188,6 +188,26 @@ func resolveTimezone(tz string) *time.Location {
 	return time.UTC
 }
 
+// MostRecentInclusionDate returns the most recent date from dates that is on
+// or before now (comparing date only, ignoring time of day). Dates must be
+// YYYY-MM-DD strings; unparseable entries are silently skipped. Returns
+// ("", false) if no dates qualify.
+func MostRecentInclusionDate(dates []string, now time.Time) (string, bool) {
+	nowDate := now.Format("2006-01-02")
+	best := ""
+	found := false
+	for _, d := range dates {
+		if _, err := time.Parse("2006-01-02", d); err != nil {
+			continue
+		}
+		if d <= nowDate && d > best {
+			best = d
+			found = true
+		}
+	}
+	return best, found
+}
+
 // isExcludedTime is the core calendar exclusion check. It evaluates
 // whether the given time falls on a weekend or a specifically excluded date.
 func isExcludedTime(excl *types.ExclusionConfig, t time.Time) bool {

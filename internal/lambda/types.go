@@ -86,6 +86,8 @@ type SLAMonitorInput struct {
 	AlertType        string `json:"alertType,omitempty"`        // SLA_WARNING, SLA_BREACH (fire-alert)
 	Deadline         string `json:"deadline,omitempty"`         // "HH:MM" or ":MM"
 	ExpectedDuration string `json:"expectedDuration,omitempty"` // e.g. "30m"
+	MaxDuration      string `json:"maxDuration,omitempty"`      // e.g. "2h"; relative SLA
+	SensorArrivalAt  string `json:"sensorArrivalAt,omitempty"`  // RFC3339; T=0 for relative SLA
 	Timezone         string `json:"timezone,omitempty"`
 	Critical         bool   `json:"critical,omitempty"`
 	WarningAt        string `json:"warningAt,omitempty"` // RFC3339, passed to cancel mode

@@ -395,7 +395,9 @@
         "scheduleId.$": "$.scheduleId",
         "date.$": "$.date",
         "deadline.$": "$.config.sla.deadline",
-        "expectedDuration.$": "$.config.sla.expectedDuration"
+        "expectedDuration.$": "$.config.sla.expectedDuration",
+        "maxDuration.$": "$.config.sla.maxDuration",
+        "sensorArrivalAt.$": "$.sensorArrivalAt"
       },
       "ResultPath": "$.slaResult",
       "Next": "CompleteTriggerFailed",
@@ -447,7 +449,9 @@
         "scheduleId.$": "$.scheduleId",
         "date.$": "$.date",
         "deadline.$": "$.config.sla.deadline",
-        "expectedDuration.$": "$.config.sla.expectedDuration"
+        "expectedDuration.$": "$.config.sla.expectedDuration",
+        "maxDuration.$": "$.config.sla.maxDuration",
+        "sensorArrivalAt.$": "$.sensorArrivalAt"
       },
       "ResultPath": "$.slaResult",
       "Next": "Done",

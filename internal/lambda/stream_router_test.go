@@ -568,6 +568,79 @@ func TestStreamRouter_TriggerValueMismatch_NoSFN(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// First-sensor-arrival recording tests
+// ---------------------------------------------------------------------------
+
+func TestStreamRouter_SensorMatch_RecordsFirstSensorArrival(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	fixedNow := time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Verify SFN was started (lock acquired).
+	sfnMock.mu.Lock()
+	require.Len(t, sfnMock.executions, 1, "expected SFN execution")
+	sfnMock.mu.Unlock()
+
+	// Verify the first-sensor-arrival record was written.
+	date := fixedNow.Format("2006-01-02")
+	sensorKey := "first-sensor-arrival#" + date
+	data, err := d.Store.GetSensorData(context.Background(), "gold-revenue", sensorKey)
+	require.NoError(t, err)
+	require.NotNil(t, data, "first-sensor-arrival sensor should be written on lock acquisition")
+	assert.Equal(t, fixedNow.Format(time.RFC3339), data["arrivedAt"])
+}
+
+func TestStreamRouter_SensorMatch_FirstArrivalIdempotent(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	firstArrival := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
+	secondArrival := time.Date(2026, 3, 10, 15, 0, 0, 0, time.UTC)
+
+	cfg := testStreamConfig()
+	seedConfig(mock, cfg)
+
+	// Pre-seed a first-sensor-arrival record (as if lock was acquired earlier).
+	date := firstArrival.Format("2006-01-02")
+	seedSensor(mock, "gold-revenue", "first-sensor-arrival#"+date, map[string]interface{}{
+		"arrivedAt": firstArrival.Format(time.RFC3339),
+	})
+
+	// Set time to second arrival.
+	d.NowFunc = func() time.Time { return secondArrival }
+
+	// Send another sensor event — lock already held, so no SFN or overwrite.
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Verify original arrival time is preserved (not overwritten).
+	sensorKey := "first-sensor-arrival#" + date
+	data, err := d.Store.GetSensorData(context.Background(), "gold-revenue", sensorKey)
+	require.NoError(t, err)
+	require.NotNil(t, data, "first-sensor-arrival sensor should still exist")
+	assert.Equal(t, firstArrival.Format(time.RFC3339), data["arrivedAt"],
+		"first arrival time should not be overwritten by subsequent sensor events")
+}
+
+// ---------------------------------------------------------------------------
 // Late data arrival tests
 // ---------------------------------------------------------------------------
 
