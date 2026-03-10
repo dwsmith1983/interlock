@@ -2006,6 +2006,255 @@ func TestWatchdog_ScheduleSLAAlerts_SensorDaily_DeadlineNextDay(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// SLA date boundary tests for the T+1 fix
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_SLADateBoundaries(t *testing.T) {
+	// Helper to set up a scheduler-enabled Deps with a fixed clock.
+	setupDeps := func(mock *mockDDB, fixedNow time.Time) (*lambda.Deps, *mockScheduler) {
+		d, _, _ := testDeps(mock)
+		schedMock := &mockScheduler{}
+		d.Scheduler = schedMock
+		d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+		d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+		d.SchedulerGroupName = "interlock-sla"
+		d.NowFunc = func() time.Time { return fixedNow }
+		d.StartedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+		return d, schedMock
+	}
+
+	// sensorDailyCfg builds a sensor-triggered daily pipeline config.
+	sensorDailyCfg := func(id string) types.PipelineConfig {
+		return types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: id},
+			Schedule: types.ScheduleConfig{
+				Trigger: &types.TriggerCondition{
+					Key:   "daily-status",
+					Check: types.CheckExists,
+				},
+				Evaluation: types.EvaluationWindow{Window: "30m", Interval: "5m"},
+			},
+			SLA: &types.SLAConfig{
+				Deadline:         "02:00",
+				ExpectedDuration: "30m",
+			},
+			Validation: types.ValidationConfig{Trigger: "ALL"},
+			Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo test"}},
+		}
+	}
+
+	// findBreachExpr returns the ScheduleExpression from the breach schedule.
+	findBreachExpr := func(t *testing.T, schedMock *mockScheduler) string {
+		t.Helper()
+		schedMock.mu.Lock()
+		defer schedMock.mu.Unlock()
+		for _, s := range schedMock.created {
+			if strings.Contains(*s.Name, "breach") {
+				return *s.ScheduleExpression
+			}
+		}
+		t.Fatal("no breach schedule found")
+		return ""
+	}
+
+	// --- Positive cases: sensor-triggered daily, SHOULD shift T+1 ---
+
+	t.Run("MidnightWindow", func(t *testing.T) {
+		mock := newMockDDB()
+		fixedNow := time.Date(2026, 3, 10, 0, 30, 0, 0, time.UTC)
+		d, schedMock := setupDeps(mock, fixedNow)
+
+		cfg := sensorDailyCfg("sla-boundary-midnight")
+		seedConfig(mock, cfg)
+
+		err := lambda.HandleWatchdog(context.Background(), d)
+		require.NoError(t, err)
+
+		expr := findBreachExpr(t, schedMock)
+		assert.Contains(t, expr, "2026-03-11T02:00:00",
+			"midnight window: breach should be next day; got %s", expr)
+		assert.NotContains(t, expr, "2026-03-10T02:00:00",
+			"midnight window: breach should NOT be today; got %s", expr)
+	})
+
+	t.Run("AfterDeadlineHour", func(t *testing.T) {
+		mock := newMockDDB()
+		fixedNow := time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC)
+		d, schedMock := setupDeps(mock, fixedNow)
+
+		cfg := sensorDailyCfg("sla-boundary-after-deadline")
+		seedConfig(mock, cfg)
+
+		err := lambda.HandleWatchdog(context.Background(), d)
+		require.NoError(t, err)
+
+		expr := findBreachExpr(t, schedMock)
+		assert.Contains(t, expr, "2026-03-11T02:00:00",
+			"after deadline: breach should be next day; got %s", expr)
+	})
+
+	t.Run("JustBeforeMidnight", func(t *testing.T) {
+		mock := newMockDDB()
+		fixedNow := time.Date(2026, 3, 10, 23, 59, 0, 0, time.UTC)
+		d, schedMock := setupDeps(mock, fixedNow)
+
+		cfg := sensorDailyCfg("sla-boundary-before-midnight")
+		seedConfig(mock, cfg)
+
+		err := lambda.HandleWatchdog(context.Background(), d)
+		require.NoError(t, err)
+
+		expr := findBreachExpr(t, schedMock)
+		assert.Contains(t, expr, "2026-03-11T02:00:00",
+			"just before midnight: breach should be next day; got %s", expr)
+	})
+
+	t.Run("MonthBoundary", func(t *testing.T) {
+		mock := newMockDDB()
+		fixedNow := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+		d, schedMock := setupDeps(mock, fixedNow)
+
+		cfg := sensorDailyCfg("sla-boundary-month")
+		seedConfig(mock, cfg)
+
+		err := lambda.HandleWatchdog(context.Background(), d)
+		require.NoError(t, err)
+
+		expr := findBreachExpr(t, schedMock)
+		assert.Contains(t, expr, "2026-04-01",
+			"month boundary: breach should cross into April; got %s", expr)
+	})
+
+	t.Run("YearBoundary", func(t *testing.T) {
+		mock := newMockDDB()
+		fixedNow := time.Date(2026, 12, 31, 12, 0, 0, 0, time.UTC)
+		d, schedMock := setupDeps(mock, fixedNow)
+
+		cfg := sensorDailyCfg("sla-boundary-year")
+		seedConfig(mock, cfg)
+
+		err := lambda.HandleWatchdog(context.Background(), d)
+		require.NoError(t, err)
+
+		expr := findBreachExpr(t, schedMock)
+		assert.Contains(t, expr, "2027-01-01",
+			"year boundary: breach should cross into 2027; got %s", expr)
+	})
+
+	t.Run("LeapYear", func(t *testing.T) {
+		mock := newMockDDB()
+		fixedNow := time.Date(2028, 2, 28, 12, 0, 0, 0, time.UTC)
+		d, schedMock := setupDeps(mock, fixedNow)
+
+		cfg := sensorDailyCfg("sla-boundary-leap")
+		seedConfig(mock, cfg)
+
+		err := lambda.HandleWatchdog(context.Background(), d)
+		require.NoError(t, err)
+
+		expr := findBreachExpr(t, schedMock)
+		assert.Contains(t, expr, "2028-02-29",
+			"leap year: breach should land on Feb 29; got %s", expr)
+	})
+
+	t.Run("NonLeapYear", func(t *testing.T) {
+		mock := newMockDDB()
+		fixedNow := time.Date(2027, 2, 28, 12, 0, 0, 0, time.UTC)
+		d, schedMock := setupDeps(mock, fixedNow)
+
+		cfg := sensorDailyCfg("sla-boundary-nonleap")
+		seedConfig(mock, cfg)
+
+		err := lambda.HandleWatchdog(context.Background(), d)
+		require.NoError(t, err)
+
+		expr := findBreachExpr(t, schedMock)
+		assert.Contains(t, expr, "2027-03-01",
+			"non-leap year: breach should roll to Mar 1; got %s", expr)
+	})
+
+	// --- Negative cases: should NOT shift ---
+
+	t.Run("CronDailyNoShift", func(t *testing.T) {
+		mock := newMockDDB()
+		fixedNow := time.Date(2026, 3, 10, 0, 30, 0, 0, time.UTC)
+		d, schedMock := setupDeps(mock, fixedNow)
+
+		cfg := types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "sla-boundary-cron"},
+			Schedule: types.ScheduleConfig{
+				Cron:       "0 2 * * *",
+				Evaluation: types.EvaluationWindow{Window: "30m", Interval: "5m"},
+			},
+			SLA: &types.SLAConfig{
+				Deadline:         "02:00",
+				ExpectedDuration: "30m",
+			},
+			Validation: types.ValidationConfig{Trigger: "ALL"},
+			Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo test"}},
+		}
+		seedConfig(mock, cfg)
+
+		err := lambda.HandleWatchdog(context.Background(), d)
+		require.NoError(t, err)
+
+		expr := findBreachExpr(t, schedMock)
+		assert.Contains(t, expr, "2026-03-10T02:00:00",
+			"cron daily: breach should be same day (no T+1 shift); got %s", expr)
+		assert.NotContains(t, expr, "2026-03-11",
+			"cron daily: breach should NOT be next day; got %s", expr)
+	})
+
+	t.Run("HourlySensorNoShift", func(t *testing.T) {
+		mock := newMockDDB()
+		fixedNow := time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC)
+		d, schedMock := setupDeps(mock, fixedNow)
+
+		cfg := types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "sla-boundary-hourly"},
+			Schedule: types.ScheduleConfig{
+				Trigger: &types.TriggerCondition{
+					Key:   "hourly-status",
+					Check: types.CheckExists,
+				},
+				Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
+			},
+			SLA: &types.SLAConfig{
+				Deadline:         ":45",
+				ExpectedDuration: "10m",
+			},
+			Validation: types.ValidationConfig{Trigger: "ALL"},
+			Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo test"}},
+		}
+		seedConfig(mock, cfg)
+
+		err := lambda.HandleWatchdog(context.Background(), d)
+		require.NoError(t, err)
+
+		// For hourly sensor at 10:00, resolveWatchdogSLADate returns
+		// "2026-03-10T09" (previous hour). The T+1 shift does NOT apply
+		// because the deadline starts with ":". The breach should be at
+		// :45 of the processing hour (T09's data processed in T10),
+		// i.e. 2026-03-10T10:45:00.
+		schedMock.mu.Lock()
+		defer schedMock.mu.Unlock()
+		require.NotEmpty(t, schedMock.created, "expected SLA schedules for hourly sensor pipeline")
+
+		for _, s := range schedMock.created {
+			if !strings.Contains(*s.Name, "breach") {
+				continue
+			}
+			expr := *s.ScheduleExpression
+			// Breach should stay on 2026-03-10, NOT shift to 2026-03-11.
+			assert.Contains(t, expr, "2026-03-10",
+				"hourly sensor: breach should stay on same day; got %s", expr)
+			assert.NotContains(t, expr, "2026-03-11",
+				"hourly sensor: breach should NOT shift to next day; got %s", expr)
+		}
+	})
+}
+
 func TestWatchdog_PostRunNoConfig(t *testing.T) {
 	mock := newMockDDB()
 	d, _, ebMock := testDeps(mock)
