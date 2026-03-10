@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1940,6 +1941,68 @@ func TestWatchdog_PostRunSensorPresent(t *testing.T) {
 	for _, ev := range ebMock.events {
 		assert.NotEqual(t, string(types.EventPostRunSensorMissing), *ev.Entries[0].DetailType,
 			"should not publish POST_RUN_SENSOR_MISSING when sensor has recent updatedAt")
+	}
+}
+
+func TestWatchdog_ScheduleSLAAlerts_SensorDaily_DeadlineNextDay(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	// Fix time at 00:30 UTC on 2026-03-10. For a sensor-triggered daily
+	// pipeline with SLA deadline "02:00", data for 2026-03-10 won't complete
+	// until ~00:05 on 2026-03-11. The breach should be 2026-03-11T02:00:00Z
+	// (tomorrow), NOT 2026-03-10T02:00:00Z (today).
+	fixedNow := time.Date(2026, 3, 10, 0, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+	d.StartedAt = fixedNow.Add(-5 * time.Minute)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "gold-daily-sensor"},
+		Schedule: types.ScheduleConfig{
+			// No cron — sensor-triggered daily pipeline.
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         "02:00",
+			ExpectedDuration: "30m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "gold-daily"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	schedMock.mu.Lock()
+	defer schedMock.mu.Unlock()
+	require.Len(t, schedMock.created, 2, "expected 2 SLA schedules (warning + breach)")
+
+	// Find the breach schedule and verify it targets tomorrow (2026-03-11),
+	// not today (2026-03-10).
+	for _, s := range schedMock.created {
+		name := *s.Name
+		if !strings.Contains(name, "breach") {
+			continue
+		}
+		// The schedule expression is "at(2026-03-11T02:00:00)" for the
+		// correct (next-day) deadline.
+		expr := *s.ScheduleExpression
+		assert.Contains(t, expr, "2026-03-11T02:00:00",
+			"sensor-triggered daily pipeline breach should target next day; got %s", expr)
+		assert.NotContains(t, expr, "2026-03-10T02:00:00",
+			"sensor-triggered daily pipeline breach should NOT target today; got %s", expr)
 	}
 }
 
