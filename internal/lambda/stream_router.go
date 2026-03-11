@@ -215,6 +215,11 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	scheduleID := resolveScheduleID(cfg)
 	date := ResolveExecutionDate(sensorData, now)
 
+	// Dry-run mode: observe and record what would happen, but never start SFN.
+	if cfg.DryRun {
+		return handleDryRunTrigger(ctx, d, cfg, pipelineID, scheduleID, date, sensorData, now)
+	}
+
 	// Acquire trigger lock to prevent duplicate executions.
 	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, scheduleID, date, ResolveTriggerLockTTL())
 	if err != nil {

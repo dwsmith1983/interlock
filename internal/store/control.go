@@ -273,6 +273,58 @@ func (s *Store) WriteRerunRequest(ctx context.Context, pipelineID, schedule, dat
 	return nil
 }
 
+// WriteDryRunMarker writes a DRY_RUN# marker row with a 7-day TTL.
+// The write is conditional (attribute_not_exists) so repeated calls are
+// idempotent — the original triggeredAt is preserved.
+func (s *Store) WriteDryRunMarker(ctx context.Context, pipelineID, schedule, date string, triggeredAt time.Time) (bool, error) {
+	ttlEpoch := time.Now().Add(7 * 24 * time.Hour).Unix()
+	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &s.ControlTable,
+		Item: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.DryRunSK(schedule, date)},
+			"data": &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
+				"triggeredAt": &ddbtypes.AttributeValueMemberS{Value: triggeredAt.UTC().Format(time.RFC3339)},
+			}},
+			"ttl": &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttlEpoch)},
+		},
+		ConditionExpression: aws.String("attribute_not_exists(PK)"),
+	})
+	if err != nil {
+		var ccfe *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &ccfe) {
+			return false, nil
+		}
+		return false, fmt.Errorf("write dry-run marker %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return true, nil
+}
+
+// GetDryRunMarker reads the DRY_RUN# marker for a given pipeline/schedule/date.
+// Returns nil, nil if no marker exists.
+func (s *Store) GetDryRunMarker(ctx context.Context, pipelineID, schedule, date string) (*types.ControlRecord, error) {
+	out, err := s.Client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      &s.ControlTable,
+		ConsistentRead: aws.Bool(true),
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.DryRunSK(schedule, date)},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get dry-run marker %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	if out.Item == nil {
+		return nil, nil
+	}
+
+	var rec types.ControlRecord
+	if err := attributevalue.UnmarshalMap(out.Item, &rec); err != nil {
+		return nil, fmt.Errorf("unmarshal dry-run marker %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return &rec, nil
+}
+
 // AcquireTriggerLock attempts to acquire a trigger lock for a given pipeline,
 // schedule, and date. Returns true if the lock was acquired, false if it is
 // already held. The lock is set with a TTL for automatic expiration.

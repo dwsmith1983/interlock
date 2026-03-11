@@ -3793,3 +3793,453 @@ func TestSensorEvent_CalendarExclusion_PublishesEvent(t *testing.T) {
 	require.NotEmpty(t, ebMock.events, "PIPELINE_EXCLUDED event must be published on sensor exclusion")
 	assert.Equal(t, string(types.EventPipelineExcluded), *ebMock.events[0].Entries[0].DetailType)
 }
+
+// ---------------------------------------------------------------------------
+// Dry-run / shadow mode tests
+// ---------------------------------------------------------------------------
+
+// fixedTestDate is used across dry-run tests for deterministic date handling.
+const fixedTestDate = "2026-03-11"
+
+// seedDryRunMarker inserts a DRY_RUN# row directly into the mock.
+// triggeredAt is stored in the "data" attribute map so ControlRecord.Data picks it up.
+func seedDryRunMarker(mock *mockDDB, pipelineID, schedule, date, triggeredAt string) {
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"SK": &ddbtypes.AttributeValueMemberS{Value: types.DryRunSK(schedule, date)},
+		"data": &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
+			"triggeredAt": &ddbtypes.AttributeValueMemberS{Value: triggeredAt},
+		}},
+	})
+}
+
+// testDryRunConfig returns a PipelineConfig with DryRun: true and a stream trigger.
+func testDryRunConfig() types.PipelineConfig {
+	cfg := testStreamConfig()
+	cfg.DryRun = true
+	return cfg
+}
+
+// gatherEventDetailTypes collects all EventBridge detail-type strings from a mock.
+func gatherEventDetailTypes(ebMock *mockEventBridge) []string {
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var out []string
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType != nil {
+				out = append(out, *e.DetailType)
+			}
+		}
+	}
+	return out
+}
+
+func TestHandleSensorEvent_DryRun_WouldTrigger(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	fixedTime := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	cfg := testDryRunConfig()
+	seedConfig(mock, cfg)
+
+	// Seed the trigger sensor so validation rules pass.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+	})
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// NO SFN execution must be started.
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN execution")
+	sfnMock.mu.Unlock()
+
+	// EventBridge must have DRY_RUN_WOULD_TRIGGER event.
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunWouldTrigger), "expected DRY_RUN_WOULD_TRIGGER event")
+
+	// DRY_RUN# marker must be written.
+	markerKey := ddbItemKey(testControlTable,
+		types.PipelinePK("gold-revenue"),
+		types.DryRunSK("stream", fixedTestDate))
+	mock.mu.Lock()
+	_, markerExists := mock.items[markerKey]
+	mock.mu.Unlock()
+	assert.True(t, markerExists, "expected DRY_RUN# marker to be written in mock DDB")
+}
+
+func TestHandleSensorEvent_DryRun_LateData(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	fixedTime := time.Date(2026, 3, 11, 1, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	cfg := testDryRunConfig()
+	seedConfig(mock, cfg)
+
+	// Pre-seed DRY_RUN# marker — simulates a previous WOULD_TRIGGER.
+	seedDryRunMarker(mock, "gold-revenue", "stream", fixedTestDate, "2026-03-11T01:15:00Z")
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// NO SFN execution.
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run with late data must not start SFN")
+	sfnMock.mu.Unlock()
+
+	// Must have DRY_RUN_LATE_DATA event.
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunLateData), "expected DRY_RUN_LATE_DATA event")
+}
+
+func TestHandleSensorEvent_DryRun_SLAProjection_Met(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	// 01:15 UTC — well before the 08:00 deadline, 30m duration → finishes 01:45, well within SLA.
+	fixedTime := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	cfg := testDryRunConfig()
+	cfg.SLA = &types.SLAConfig{
+		Deadline:         "08:00",
+		ExpectedDuration: "30m",
+	}
+	seedConfig(mock, cfg)
+
+	// Seed validation sensor so rules pass.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+	})
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunWouldTrigger), "expected WOULD_TRIGGER event")
+	assert.Contains(t, evtTypes, string(types.EventDryRunSLAProjection), "expected SLA_PROJECTION event")
+
+	// Parse the SLA projection event detail and check status="met".
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunSLAProjection) {
+				var detail map[string]interface{}
+				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+				innerDetail, ok := detail["detail"].(map[string]interface{})
+				require.True(t, ok, "expected detail.detail map in SLA projection event")
+				assert.Equal(t, "met", innerDetail["status"], "SLA projection status should be 'met'")
+				return
+			}
+		}
+	}
+	t.Fatal("DRY_RUN_SLA_PROJECTION event not found in published events")
+}
+
+func TestHandleSensorEvent_DryRun_SLAProjection_Breach(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	// 01:50 UTC — 30m duration → estimated completion 02:20, which is AFTER 02:00 deadline → breach.
+	fixedTime := time.Date(2026, 3, 11, 1, 50, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	cfg := testDryRunConfig()
+	cfg.SLA = &types.SLAConfig{
+		Deadline:         "02:00",
+		ExpectedDuration: "30m",
+	}
+	seedConfig(mock, cfg)
+
+	// Seed validation sensor so rules pass.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+	})
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunSLAProjection), "expected SLA_PROJECTION event")
+
+	// Find the SLA projection event and verify status="breach".
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunSLAProjection) {
+				var detail map[string]interface{}
+				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+				innerDetail, ok := detail["detail"].(map[string]interface{})
+				require.True(t, ok, "expected detail.detail map")
+				assert.Equal(t, "breach", innerDetail["status"], "SLA projection status should be 'breach'")
+				return
+			}
+		}
+	}
+	t.Fatal("DRY_RUN_SLA_PROJECTION event not found")
+}
+
+func TestHandleSensorEvent_DryRun_ValidationNotReady(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	fixedTime := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	// Config with a second validation rule for a sensor that does NOT exist.
+	cfg := testDryRunConfig()
+	cfg.Validation.Rules = append(cfg.Validation.Rules, types.ValidationRule{
+		Key:   "other-required-sensor",
+		Check: types.CheckExists,
+	})
+	seedConfig(mock, cfg)
+
+	// Seed only the trigger sensor — "other-required-sensor" is absent.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+	})
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No SFN.
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	// No DRY_RUN# marker written.
+	markerKey := ddbItemKey(testControlTable,
+		types.PipelinePK("gold-revenue"),
+		types.DryRunSK("stream", fixedTestDate))
+	mock.mu.Lock()
+	_, markerExists := mock.items[markerKey]
+	mock.mu.Unlock()
+	assert.False(t, markerExists, "no DRY_RUN# marker should be written when validation fails")
+
+	// No events published.
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Empty(t, evtTypes, "no events should be published when dry-run validation fails")
+}
+
+func TestHandleSensorEvent_DryRun_CapturesBaseline(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	fixedTime := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	cfg := testDryRunConfig()
+	cfg.PostRun = &types.PostRunConfig{
+		Rules: []types.ValidationRule{
+			{Key: "audit-result", Check: types.CheckExists},
+		},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed the trigger sensor (for validation rules).
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+	})
+	// Seed the post-run sensor that the baseline will capture.
+	seedSensor(mock, "gold-revenue", "audit-result", map[string]interface{}{
+		"sensor_count": float64(500),
+	})
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	// WOULD_TRIGGER event published.
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunWouldTrigger))
+
+	// postrun-baseline# sensor key must be written.
+	baselineKey := ddbItemKey(testControlTable,
+		types.PipelinePK("gold-revenue"),
+		types.SensorSK("postrun-baseline#"+fixedTestDate))
+	mock.mu.Lock()
+	_, baselineExists := mock.items[baselineKey]
+	mock.mu.Unlock()
+	assert.True(t, baselineExists, "expected postrun-baseline# sensor to be written in DDB")
+}
+
+// ---------------------------------------------------------------------------
+// Post-run dry-run sensor tests
+// ---------------------------------------------------------------------------
+
+func TestDryRunPostRunSensor_DriftDetected(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	fixedTime := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	cfg := testDryRunConfig()
+	cfg.PostRun = &types.PostRunConfig{
+		Rules: []types.ValidationRule{
+			{Key: "audit-result", Check: types.CheckExists},
+		},
+	}
+	seedConfig(mock, cfg)
+
+	// Pre-seed DRY_RUN# marker (would-trigger already happened).
+	seedDryRunMarker(mock, "gold-revenue", "stream", fixedTestDate, "2026-03-11T01:15:00Z")
+
+	// Pre-seed baseline with sensor_count=500.
+	seedSensor(mock, "gold-revenue", "postrun-baseline#"+fixedTestDate, map[string]interface{}{
+		"sensor_count": float64(500),
+	})
+
+	// Sensor arrives for post-run key with sensor_count=520 (drift detected).
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("520"),
+			"date":         events.NewStringAttribute(fixedTestDate),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// DRY_RUN_DRIFT event published.
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunDrift), "expected DRY_RUN_DRIFT event")
+
+	// No SFN execution.
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run drift must not start SFN")
+	sfnMock.mu.Unlock()
+
+	// No RERUN_REQUEST written.
+	rerunKey := ddbItemKey(testControlTable,
+		types.PipelinePK("gold-revenue"),
+		types.RerunRequestSK("stream", fixedTestDate))
+	mock.mu.Lock()
+	_, rerunExists := mock.items[rerunKey]
+	mock.mu.Unlock()
+	assert.False(t, rerunExists, "dry-run must not write a rerun request")
+}
+
+func TestDryRunPostRunSensor_NoDrift(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	fixedTime := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	cfg := testDryRunConfig()
+	cfg.PostRun = &types.PostRunConfig{
+		Rules: []types.ValidationRule{
+			{Key: "audit-result", Check: types.CheckExists},
+		},
+	}
+	seedConfig(mock, cfg)
+
+	// Pre-seed DRY_RUN# marker.
+	seedDryRunMarker(mock, "gold-revenue", "stream", fixedTestDate, "2026-03-11T01:15:00Z")
+
+	// Baseline with sensor_count=500.
+	seedSensor(mock, "gold-revenue", "postrun-baseline#"+fixedTestDate, map[string]interface{}{
+		"sensor_count": float64(500),
+	})
+
+	// Sensor arrives with same sensor_count=500 — no drift.
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("500"),
+			"date":         events.NewStringAttribute(fixedTestDate),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No events published (no drift).
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Empty(t, evtTypes, "no events should be published when no drift detected")
+}
+
+func TestDryRunPostRunSensor_NoMarker(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	fixedTime := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	cfg := testDryRunConfig()
+	cfg.PostRun = &types.PostRunConfig{
+		Rules: []types.ValidationRule{
+			{Key: "audit-result", Check: types.CheckExists},
+		},
+	}
+	seedConfig(mock, cfg)
+
+	// NO DRY_RUN# marker seeded — no trigger happened yet.
+
+	// Sensor arrives for post-run key.
+	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
+		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute("500"),
+			"date":         events.NewStringAttribute(fixedTestDate),
+		}),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// No events published (no marker means no trigger happened).
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Empty(t, evtTypes, "no events when no DRY_RUN# marker exists")
+}

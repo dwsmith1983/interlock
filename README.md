@@ -143,6 +143,47 @@ job:
   maxRetries: 2
 ```
 
+## Dry-Run / Shadow Mode
+
+Evaluate Interlock against running pipelines without executing any jobs. Set `dryRun: true` in your pipeline config — the stream-router observes the real sensor stream and records what it *would* do as EventBridge events, while your existing orchestrator continues running as-is.
+
+```yaml
+pipeline:
+  id: gold-revenue-dryrun
+schedule:
+  trigger:
+    key: upstream-complete
+    check: equals
+    field: status
+    value: ready
+sla:
+  deadline: "10:00"
+  expectedDuration: 30m
+validation:
+  trigger: "ALL"
+  rules:
+    - key: upstream-complete
+      check: equals
+      field: status
+      value: ready
+job:
+  type: glue
+  config:
+    jobName: gold-revenue-etl
+dryRun: true
+```
+
+Dry-run publishes four observation events:
+
+| Event | Meaning |
+|-------|---------|
+| `DRY_RUN_WOULD_TRIGGER` | All validation rules passed — Interlock would have triggered the job |
+| `DRY_RUN_LATE_DATA` | Sensor updated after the trigger point — would have triggered a re-run |
+| `DRY_RUN_SLA_PROJECTION` | Estimated completion vs. deadline — would the SLA be met or breached? |
+| `DRY_RUN_DRIFT` | Post-run sensor data changed — would have detected drift and re-run |
+
+No Step Function executions, no job triggers, no rerun requests. Remove `dryRun: true` to switch to live mode — `DRY_RUN#` markers have a 7-day TTL and don't interfere with `TRIGGER#` rows.
+
 ## Trigger Types
 
 | Type | SDK/Protocol | Use Case |

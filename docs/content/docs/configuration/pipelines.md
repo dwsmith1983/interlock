@@ -77,6 +77,18 @@ Time-based constraints for pipeline completion. See [Schedules](../schedules/) f
 
 Declarative rules that determine pipeline readiness. See [Validation Rules](#validation-rules) below.
 
+### `dryRun`
+
+Enables observation-only mode. When `true`, Interlock evaluates trigger conditions and validation rules against real sensor data but never starts a Step Function execution or triggers any job. All observations are published as EventBridge events (`DRY_RUN_WOULD_TRIGGER`, `DRY_RUN_LATE_DATA`, `DRY_RUN_SLA_PROJECTION`, `DRY_RUN_DRIFT`).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `dryRun` | bool | `false` | Enable dry-run / shadow mode |
+
+Requires `schedule.trigger` (sensor-driven evaluation) and `job.type` to be configured. Calendar exclusions are still honored. Remove `dryRun: true` to switch to live mode — `DRY_RUN#` markers have a 7-day TTL and don't interfere with `TRIGGER#` rows.
+
+See [Alerting](../../reference/alerting/) for the full dry-run event reference.
+
 ### `job`
 
 Defines how to start the downstream job when validation passes. See [Triggers](../triggers/) for all 8 supported job types.

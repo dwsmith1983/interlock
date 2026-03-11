@@ -261,6 +261,36 @@ func TestValidatePipelineConfig(t *testing.T) {
 			},
 			wantCount: 0,
 		},
+		// --- dry-run validation ---
+		{
+			name: "dryRun without job.type or trigger",
+			cfg: types.PipelineConfig{
+				DryRun: true,
+				Job:    types.JobConfig{Type: ""},
+			},
+			wantCount:  2,
+			wantSubstr: "dryRun requires job.type",
+		},
+		{
+			name: "dryRun with job.type but no trigger",
+			cfg: types.PipelineConfig{
+				DryRun: true,
+				Job:    types.JobConfig{Type: "glue"},
+			},
+			wantCount:  1,
+			wantSubstr: "dryRun requires schedule.trigger",
+		},
+		{
+			name: "dryRun fully configured",
+			cfg: types.PipelineConfig{
+				DryRun: true,
+				Schedule: types.ScheduleConfig{
+					Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists},
+				},
+				Job: types.JobConfig{Type: "glue"},
+			},
+			wantCount: 0,
+		},
 	}
 
 	for _, tt := range tests {
