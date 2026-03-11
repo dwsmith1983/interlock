@@ -1017,3 +1017,105 @@ func TestWriteRerunRequest_DynamoError(t *testing.T) {
 		t.Errorf("expected 'write rerun request' in error, got: %v", err)
 	}
 }
+
+// --- HasTriggerForDates tests ---
+
+func TestHasTriggerForDates_AllFound(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	pk := types.PipelinePK("pipe-1")
+
+	// Seed triggers for two dates.
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-05")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	result, err := s.HasTriggerForDates(context.Background(), "pipe-1", "stream", []string{"2026-03-01", "2026-03-05"})
+	if err != nil {
+		t.Fatalf("HasTriggerForDates: %v", err)
+	}
+	if !result["2026-03-01"] {
+		t.Error("expected 2026-03-01 to be found")
+	}
+	if !result["2026-03-05"] {
+		t.Error("expected 2026-03-05 to be found")
+	}
+}
+
+func TestHasTriggerForDates_SomeFound(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	pk := types.PipelinePK("pipe-1")
+
+	// Seed a trigger for only one date.
+	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-01")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	})
+
+	result, err := s.HasTriggerForDates(context.Background(), "pipe-1", "stream", []string{"2026-03-01", "2026-03-05"})
+	if err != nil {
+		t.Fatalf("HasTriggerForDates: %v", err)
+	}
+	if !result["2026-03-01"] {
+		t.Error("expected 2026-03-01 to be found")
+	}
+	if result["2026-03-05"] {
+		t.Error("expected 2026-03-05 to NOT be found")
+	}
+}
+
+func TestHasTriggerForDates_NoneFound(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	result, err := s.HasTriggerForDates(context.Background(), "pipe-1", "stream", []string{"2026-03-01", "2026-03-05"})
+	if err != nil {
+		t.Fatalf("HasTriggerForDates: %v", err)
+	}
+	if result["2026-03-01"] {
+		t.Error("expected 2026-03-01 to NOT be found")
+	}
+	if result["2026-03-05"] {
+		t.Error("expected 2026-03-05 to NOT be found")
+	}
+}
+
+func TestHasTriggerForDates_EmptyDates(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	result, err := s.HasTriggerForDates(context.Background(), "pipe-1", "stream", nil)
+	if err != nil {
+		t.Fatalf("HasTriggerForDates: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty map, got %v", result)
+	}
+}
+
+func TestHasTriggerForDates_DynamoError(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	injected := errors.New("throttled")
+	mock.errFn = errOnOp("Query", injected)
+
+	_, err := s.HasTriggerForDates(context.Background(), "pipe-1", "stream", []string{"2026-03-01"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+}

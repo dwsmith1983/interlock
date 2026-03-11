@@ -270,9 +270,10 @@ func TestWatchdog_Reconcile_TriggersRecovery(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var recoveredCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
-			recoveredCount++
+		if *ev.Entries[0].DetailType != string(types.EventTriggerRecovered) {
+			continue
 		}
+		recoveredCount++
 	}
 	assert.Equal(t, 1, recoveredCount, "expected one TRIGGER_RECOVERED event")
 }
@@ -465,9 +466,10 @@ func TestWatchdog_Reconcile_PerHour_MultipleRecoveries(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var recoveredCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
-			recoveredCount++
+		if *ev.Entries[0].DetailType != string(types.EventTriggerRecovered) {
+			continue
 		}
+		recoveredCount++
 	}
 	assert.Equal(t, 2, recoveredCount, "expected two TRIGGER_RECOVERED events")
 }
@@ -521,9 +523,10 @@ func TestWatchdog_Reconcile_PerHour_PartiallyTriggered(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var recoveredCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
-			recoveredCount++
+		if *ev.Entries[0].DetailType != string(types.EventTriggerRecovered) {
+			continue
 		}
+		recoveredCount++
 	}
 	assert.Equal(t, 1, recoveredCount, "expected one TRIGGER_RECOVERED event for T11 only")
 }
@@ -600,9 +603,10 @@ func TestWatchdog_MissedSchedule_AlertsPostDeployment(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var missedCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventScheduleMissed) {
-			missedCount++
+		if *ev.Entries[0].DetailType != string(types.EventScheduleMissed) {
+			continue
 		}
+		missedCount++
 	}
 	assert.Equal(t, 1, missedCount, "expected one SCHEDULE_MISSED event for post-deployment schedule")
 }
@@ -1117,13 +1121,14 @@ func TestWatchdog_MissedSchedule_BeforeScheduleTime_NoAlert(t *testing.T) {
 	ebMock.mu.Lock()
 	defer ebMock.mu.Unlock()
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventScheduleMissed) {
-			detailJSON := *ev.Entries[0].Detail
-			var evt types.InterlockEvent
-			_ = json.Unmarshal([]byte(detailJSON), &evt)
-			if evt.PipelineID == "bronze-late" {
-				t.Error("should not publish SCHEDULE_MISSED when current time is before Schedule.Time")
-			}
+		if *ev.Entries[0].DetailType != string(types.EventScheduleMissed) {
+			continue
+		}
+		detailJSON := *ev.Entries[0].Detail
+		var evt types.InterlockEvent
+		_ = json.Unmarshal([]byte(detailJSON), &evt)
+		if evt.PipelineID == "bronze-late" {
+			t.Error("should not publish SCHEDULE_MISSED when current time is before Schedule.Time")
 		}
 	}
 }
@@ -1360,9 +1365,10 @@ func TestWatchdog_Reconcile_ProceedsOnNonTerminalJoblog(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var recovered int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventTriggerRecovered) {
-			recovered++
+		if *ev.Entries[0].DetailType != string(types.EventTriggerRecovered) {
+			continue
 		}
+		recovered++
 	}
 	assert.Equal(t, 1, recovered, "should publish TRIGGER_RECOVERED for non-terminal joblog")
 }
@@ -1621,10 +1627,11 @@ func TestWatchdog_ScheduleSLAAlerts_SensorDeadlineExpired_WritesFAILEDFINAL(t *t
 	defer ebMock.mu.Unlock()
 	var found bool
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventSensorDeadlineExpired) {
-			found = true
-			break
+		if *ev.Entries[0].DetailType != string(types.EventSensorDeadlineExpired) {
+			continue
 		}
+		found = true
+		break
 	}
 	assert.True(t, found, "expected SENSOR_DEADLINE_EXPIRED event")
 }
@@ -1801,10 +1808,11 @@ func TestWatchdog_ScheduleSLAAlerts_DailySensorDeadlineExpired_WritesFAILEDFINAL
 	defer ebMock.mu.Unlock()
 	var found bool
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventSensorDeadlineExpired) {
-			found = true
-			break
+		if *ev.Entries[0].DetailType != string(types.EventSensorDeadlineExpired) {
+			continue
 		}
+		found = true
+		break
 	}
 	assert.True(t, found, "expected SENSOR_DEADLINE_EXPIRED event for daily pipeline")
 }
@@ -1885,9 +1893,10 @@ func TestWatchdog_PostRunSensorMissing(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	var missingCount int
 	for _, ev := range ebMock.events {
-		if *ev.Entries[0].DetailType == string(types.EventPostRunSensorMissing) {
-			missingCount++
+		if *ev.Entries[0].DetailType != string(types.EventPostRunSensorMissing) {
+			continue
 		}
+		missingCount++
 	}
 	assert.Equal(t, 1, missingCount, "expected one POST_RUN_SENSOR_MISSING event")
 
@@ -2295,5 +2304,805 @@ func TestWatchdog_PostRunNoConfig(t *testing.T) {
 	for _, ev := range ebMock.events {
 		assert.NotEqual(t, string(types.EventPostRunSensorMissing), *ev.Entries[0].DetailType,
 			"should not publish POST_RUN_SENSOR_MISSING for pipeline without PostRun config")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Inclusion schedule missed detection tests
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_InclusionSchedule_NilInclude_Skipped(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Pipeline with no Include config — should be ignored by inclusion detection.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "monthly-close"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No IRREGULAR_SCHEDULE_MISSED events.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventIrregularScheduleMissed), *ev.Entries[0].DetailType,
+			"should not publish IRREGULAR_SCHEDULE_MISSED when Include is nil")
+	}
+}
+
+func TestWatchdog_InclusionSchedule_TriggerExists_NoAlert(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Use a fixed time for deterministic behavior.
+	fixedNow := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "monthly-close"},
+		Schedule: types.ScheduleConfig{
+			Include: &types.InclusionConfig{
+				Dates: []string{"2026-03-05", "2026-03-15"},
+			},
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Most recent inclusion date on or before now is 2026-03-05.
+	// Seed a trigger for that date so no alert is expected.
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("monthly-close")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-05")},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No IRREGULAR_SCHEDULE_MISSED events.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventIrregularScheduleMissed), *ev.Entries[0].DetailType,
+			"should not publish IRREGULAR_SCHEDULE_MISSED when trigger exists for date")
+	}
+}
+
+func TestWatchdog_InclusionSchedule_TriggerMissing_PublishesAlert(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Use a fixed time for deterministic behavior.
+	fixedNow := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "monthly-close"},
+		Schedule: types.ScheduleConfig{
+			Include: &types.InclusionConfig{
+				Dates: []string{"2026-03-05", "2026-03-15"},
+			},
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	// No trigger seeded for 2026-03-05 — should detect as missed.
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Expect IRREGULAR_SCHEDULE_MISSED event.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+
+	var irregularMissedCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
+		}
+		irregularMissedCount++
+
+		// Verify event detail contains the expected pipeline and date.
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		assert.Equal(t, "monthly-close", detail.PipelineID)
+		assert.Equal(t, "2026-03-05", detail.Date)
+	}
+	assert.Equal(t, 1, irregularMissedCount, "expected exactly one IRREGULAR_SCHEDULE_MISSED event")
+}
+
+func TestWatchdog_InclusionSchedule_DedupPreventsRepeat(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	fixedNow := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "monthly-close"},
+		Schedule: types.ScheduleConfig{
+			Include: &types.InclusionConfig{
+				Dates: []string{"2026-03-05"},
+			},
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed dedup marker to simulate a previous watchdog run already detected this.
+	seedSensor(mock, "monthly-close", "irregular-missed-check#2026-03-05", map[string]interface{}{
+		"alerted": "true",
+	})
+
+	// No trigger for 2026-03-05, but dedup marker exists — should NOT alert again.
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventIrregularScheduleMissed), *ev.Entries[0].DetailType,
+			"should not publish IRREGULAR_SCHEDULE_MISSED when dedup marker exists")
+	}
+}
+
+func TestWatchdog_InclusionSchedule_AllFutureDates_NoAlert(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	fixedNow := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "quarterly-filing"},
+		Schedule: types.ScheduleConfig{
+			Include: &types.InclusionConfig{
+				Dates: []string{"2026-03-15", "2026-06-15", "2026-09-15"},
+			},
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No inclusion date on or before now — no alert.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventIrregularScheduleMissed), *ev.Entries[0].DetailType,
+			"should not publish IRREGULAR_SCHEDULE_MISSED when all dates are in the future")
+	}
+}
+
+func TestWatchdog_InclusionSchedule_MultiDateGap(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Fix time so both 2026-03-05 and 2026-03-08 are in the past.
+	fixedNow := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "monthly-close"},
+		Schedule: types.ScheduleConfig{
+			Include: &types.InclusionConfig{
+				Dates: []string{"2026-03-05", "2026-03-08", "2026-03-15"},
+			},
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	// No triggers seeded for either date — should detect BOTH as missed.
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// Expect IRREGULAR_SCHEDULE_MISSED events for both dates.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+
+	var missedDates []string
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
+		}
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		missedDates = append(missedDates, detail.Date)
+	}
+	assert.Len(t, missedDates, 2, "expected IRREGULAR_SCHEDULE_MISSED events for both past dates")
+	assert.Contains(t, missedDates, "2026-03-05")
+	assert.Contains(t, missedDates, "2026-03-08")
+}
+
+// ---------------------------------------------------------------------------
+// Inclusion schedule: Schedule.Time grace period
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_InclusionSchedule_RespectsScheduleTime(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Inclusion date is today. Schedule.Time is "10:00" but current time is 08:00 UTC.
+	// Should NOT fire an alert because we haven't reached the expected start time yet.
+	fixedNow := time.Date(2026, 3, 31, 8, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "monthly-close"},
+		Schedule: types.ScheduleConfig{
+			Include: &types.InclusionConfig{
+				Dates: []string{"2026-03-31"},
+			},
+			Time: "10:00",
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No IRREGULAR_SCHEDULE_MISSED events — too early.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
+		}
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		if detail.PipelineID == "monthly-close" {
+			t.Error("should not publish IRREGULAR_SCHEDULE_MISSED before Schedule.Time")
+		}
+	}
+}
+
+func TestWatchdog_InclusionSchedule_PastScheduleTime(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Inclusion date is today. Schedule.Time is "10:00" and current time is 11:00 UTC.
+	// No trigger exists — should fire an alert.
+	fixedNow := time.Date(2026, 3, 31, 11, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "monthly-close"},
+		Schedule: types.ScheduleConfig{
+			Include: &types.InclusionConfig{
+				Dates: []string{"2026-03-31"},
+			},
+			Time: "10:00",
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+
+	var irregularMissedCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
+		}
+		irregularMissedCount++
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		assert.Equal(t, "monthly-close", detail.PipelineID)
+		assert.Equal(t, "2026-03-31", detail.Date)
+	}
+	assert.Equal(t, 1, irregularMissedCount, "expected exactly one IRREGULAR_SCHEDULE_MISSED event")
+}
+
+func TestWatchdog_InclusionSchedule_WithTimezone(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Inclusion date is today (2026-03-31). Schedule.Time is "10:00",
+	// Timezone is "Asia/Tokyo" (UTC+9). Current time is 01:30 UTC = 10:30 JST.
+	// Since 10:30 JST is past 10:00 JST and no trigger exists, should fire alert.
+	fixedNow := time.Date(2026, 3, 31, 1, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "monthly-close"},
+		Schedule: types.ScheduleConfig{
+			Include: &types.InclusionConfig{
+				Dates: []string{"2026-03-31"},
+			},
+			Timezone: "Asia/Tokyo",
+			Time:     "10:00",
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+
+	var irregularMissedCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
+		}
+		irregularMissedCount++
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		assert.Equal(t, "monthly-close", detail.PipelineID)
+		assert.Equal(t, "2026-03-31", detail.Date)
+	}
+	assert.Equal(t, 1, irregularMissedCount, "expected exactly one IRREGULAR_SCHEDULE_MISSED event")
+}
+
+func TestWatchdog_InclusionSchedule_NoTimeConfig(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// Inclusion date is today. No Schedule.Time set.
+	// Should fire alert immediately (backward compatible).
+	fixedNow := time.Date(2026, 3, 31, 0, 5, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "monthly-close"},
+		Schedule: types.ScheduleConfig{
+			Include: &types.InclusionConfig{
+				Dates: []string{"2026-03-31"},
+			},
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+
+	var irregularMissedCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
+		}
+		irregularMissedCount++
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		assert.Equal(t, "monthly-close", detail.PipelineID)
+		assert.Equal(t, "2026-03-31", detail.Date)
+	}
+	assert.Equal(t, 1, irregularMissedCount, "expected exactly one IRREGULAR_SCHEDULE_MISSED event")
+}
+
+// TestWatchdog_InclusionSchedule_TimezoneUTCDateMismatch verifies that the
+// grace-period check uses the pipeline's timezone for "today", not UTC.
+// Scenario: UTC is 2026-04-01 00:30, but US/Eastern is 2026-03-31 20:30.
+// Inclusion date is 2026-03-31 with Time "10:00" Eastern. Since 20:30 > 10:00
+// in Eastern and no trigger exists, the alert should fire.
+func TestWatchdog_InclusionSchedule_TimezoneUTCDateMismatch(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// UTC is April 1, but US/Eastern is still March 31.
+	fixedNow := time.Date(2026, 4, 1, 0, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "quarterly-close"},
+		Schedule: types.ScheduleConfig{
+			Include: &types.InclusionConfig{
+				Dates: []string{"2026-03-31"},
+			},
+			Timezone: "America/New_York",
+			Time:     "10:00",
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+
+	var irregularMissedCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType != string(types.EventIrregularScheduleMissed) {
+			continue
+		}
+		irregularMissedCount++
+		var detail types.InterlockEvent
+		_ = json.Unmarshal([]byte(*ev.Entries[0].Detail), &detail)
+		assert.Equal(t, "quarterly-close", detail.PipelineID)
+		assert.Equal(t, "2026-03-31", detail.Date)
+	}
+	assert.Equal(t, 1, irregularMissedCount,
+		"expected IRREGULAR_SCHEDULE_MISSED: UTC is April 1 but Eastern is still March 31 past 10:00")
+}
+
+// ---------------------------------------------------------------------------
+// Relative SLA breach detection (defense-in-depth)
+// ---------------------------------------------------------------------------
+
+func TestWatchdog_RelativeSLA_NoMaxDuration_Skips(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	fixedNow := time.Date(2026, 3, 10, 16, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	// Pipeline with no MaxDuration — relative SLA check should be skipped.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "standard-pipeline"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         "18:00",
+			ExpectedDuration: "30m",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventRelativeSLABreach), *ev.Entries[0].DetailType,
+			"should not publish RELATIVE_SLA_BREACH when no maxDuration configured")
+	}
+}
+
+func TestWatchdog_RelativeSLA_SensorArrival_NotYetBreached(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	fixedNow := time.Date(2026, 3, 10, 15, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "adhoc-pipeline"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			MaxDuration: "2h",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed first-sensor-arrival at 14:00. With maxDuration=2h, breach is at 16:00.
+	// Current time is 15:00, so not yet breached.
+	date := fixedNow.Format("2006-01-02")
+	seedSensor(mock, "adhoc-pipeline", "first-sensor-arrival#"+date, map[string]interface{}{
+		"arrivedAt": "2026-03-10T14:00:00Z",
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventRelativeSLABreach), *ev.Entries[0].DetailType,
+			"should not publish RELATIVE_SLA_BREACH before maxDuration elapses")
+	}
+}
+
+func TestWatchdog_RelativeSLA_SensorArrival_Breached(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	fixedNow := time.Date(2026, 3, 10, 17, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "adhoc-pipeline"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			MaxDuration: "2h",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed first-sensor-arrival at 14:00. With maxDuration=2h, breach is at 16:00.
+	// Current time is 17:00, so breached.
+	date := fixedNow.Format("2006-01-02")
+	seedSensor(mock, "adhoc-pipeline", "first-sensor-arrival#"+date, map[string]interface{}{
+		"arrivedAt": "2026-03-10T14:00:00Z",
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var breachCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType != string(types.EventRelativeSLABreach) {
+			continue
+		}
+		breachCount++
+	}
+	assert.Equal(t, 1, breachCount, "expected one RELATIVE_SLA_BREACH event")
+}
+
+func TestWatchdog_RelativeSLA_Breached_AlreadyCompleted_NoAlert(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	fixedNow := time.Date(2026, 3, 10, 17, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "adhoc-pipeline"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			MaxDuration: "2h",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	date := fixedNow.Format("2006-01-02")
+	seedSensor(mock, "adhoc-pipeline", "first-sensor-arrival#"+date, map[string]interface{}{
+		"arrivedAt": "2026-03-10T14:00:00Z",
+	})
+
+	// Seed a COMPLETED trigger — pipeline already finished.
+	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("adhoc-pipeline")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventRelativeSLABreach), *ev.Entries[0].DetailType,
+			"should not publish RELATIVE_SLA_BREACH when pipeline already completed")
+	}
+}
+
+func TestWatchdog_RelativeSLA_CrossDayArrival(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// It's now March 11 at 03:00 UTC. The sensor arrived yesterday (March 10)
+	// at 23:00 UTC. With maxDuration=2h the breach was at 01:00 UTC on March 11.
+	// stream_router wrote the arrival key under yesterday's date (T+1 pattern).
+	fixedNow := time.Date(2026, 3, 11, 3, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "t1-pipeline"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			MaxDuration: "2h",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed the arrival key under YESTERDAY's date (T-1), as stream_router does
+	// for T+1 sensor-triggered pipelines.
+	yesterday := fixedNow.AddDate(0, 0, -1).Format("2006-01-02")
+	seedSensor(mock, "t1-pipeline", "first-sensor-arrival#"+yesterday, map[string]interface{}{
+		"arrivedAt": "2026-03-10T23:00:00Z",
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	var breachCount int
+	for _, ev := range ebMock.events {
+		if *ev.Entries[0].DetailType != string(types.EventRelativeSLABreach) {
+			continue
+		}
+		breachCount++
+	}
+	assert.Equal(t, 1, breachCount, "expected one RELATIVE_SLA_BREACH event for cross-day sensor arrival")
+}
+
+func TestWatchdog_RelativeSLA_CrossDayNotBreached(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+
+	// It's now March 11 at 00:30 UTC. The sensor arrived yesterday (March 10)
+	// at 23:00 UTC. With maxDuration=2h the breach would be at 01:00 UTC on
+	// March 11, so we're NOT yet breached.
+	fixedNow := time.Date(2026, 3, 11, 0, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "t1-pipeline"},
+		Schedule: types.ScheduleConfig{
+			Trigger: &types.TriggerCondition{
+				Key:   "upstream-complete",
+				Check: types.CheckEquals,
+				Field: "status",
+				Value: "ready",
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			MaxDuration: "2h",
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed the arrival key under YESTERDAY's date (T-1).
+	yesterday := fixedNow.AddDate(0, 0, -1).Format("2006-01-02")
+	seedSensor(mock, "t1-pipeline", "first-sensor-arrival#"+yesterday, map[string]interface{}{
+		"arrivedAt": "2026-03-10T23:00:00Z",
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventRelativeSLABreach), *ev.Entries[0].DetailType,
+			"should not publish RELATIVE_SLA_BREACH before maxDuration is exceeded")
 	}
 }

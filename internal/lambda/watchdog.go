@@ -24,6 +24,9 @@ func HandleWatchdog(ctx context.Context, d *Deps) error {
 	if err := detectMissedSchedules(ctx, d); err != nil {
 		d.Logger.Error("missed schedule detection failed", "error", err)
 	}
+	if err := detectMissedInclusionSchedules(ctx, d); err != nil {
+		d.Logger.Error("missed inclusion schedule detection failed", "error", err)
+	}
 	if err := reconcileSensorTriggers(ctx, d); err != nil {
 		d.Logger.Error("sensor trigger reconciliation failed", "error", err)
 	}
@@ -35,6 +38,9 @@ func HandleWatchdog(ctx context.Context, d *Deps) error {
 	}
 	if err := detectMissingPostRunSensors(ctx, d); err != nil {
 		d.Logger.Error("post-run sensor absence detection failed", "error", err)
+	}
+	if err := detectRelativeSLABreaches(ctx, d); err != nil {
+		d.Logger.Error("relative SLA breach detection failed", "error", err)
 	}
 	return nil
 }
@@ -289,12 +295,7 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		// Only alert for schedules that should have fired after this Lambda
 		// started. Prevents retroactive alerts after fresh deploys.
 		if !d.StartedAt.IsZero() {
-			loc := time.UTC
-			if cfg.Schedule.Timezone != "" {
-				if parsed, err := time.LoadLocation(cfg.Schedule.Timezone); err == nil {
-					loc = parsed
-				}
-			}
+			loc := resolveTimezone(cfg.Schedule.Timezone)
 			if lastFire := lastCronFire(cfg.Schedule.Cron, now, loc); !lastFire.IsZero() && lastFire.Before(d.StartedAt) {
 				continue
 			}
@@ -318,12 +319,7 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		// Check if we are past the expected start time. If the pipeline
 		// has a schedule time configured, only alert after that time.
 		if cfg.Schedule.Time != "" {
-			loc := time.UTC
-			if cfg.Schedule.Timezone != "" {
-				if parsed, err := time.LoadLocation(cfg.Schedule.Timezone); err == nil {
-					loc = parsed
-				}
-			}
+			loc := resolveTimezone(cfg.Schedule.Timezone)
 			localNow := now.In(loc)
 			expectedStart, err := time.ParseInLocation("2006-01-02 15:04", today+" "+cfg.Schedule.Time, loc)
 			if err == nil && localNow.Before(expectedStart) {
@@ -349,6 +345,105 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 			"schedule", scheduleID,
 			"date", today,
 		)
+	}
+	return nil
+}
+
+// detectMissedInclusionSchedules checks pipelines with inclusion calendar config
+// for missed schedules on irregular dates. For each pipeline with an Include
+// config, it finds all past inclusion dates (capped at maxInclusionLookback)
+// and verifies that a trigger exists for each. If no trigger is found and no
+// dedup marker exists, an IRREGULAR_SCHEDULE_MISSED event is published.
+func detectMissedInclusionSchedules(ctx context.Context, d *Deps) error {
+	configs, err := d.ConfigCache.GetAll(ctx)
+	if err != nil {
+		return fmt.Errorf("load configs: %w", err)
+	}
+
+	now := d.now()
+
+	for id, cfg := range configs {
+		if cfg.Schedule.Include == nil || len(cfg.Schedule.Include.Dates) == 0 {
+			continue
+		}
+
+		// Skip calendar-excluded days.
+		if isExcluded(cfg, now) {
+			continue
+		}
+
+		pastDates := PastInclusionDates(cfg.Schedule.Include.Dates, now)
+		if len(pastDates) == 0 {
+			continue
+		}
+
+		scheduleID := resolveScheduleID(cfg)
+
+		// Resolve today in the pipeline's timezone so the grace-period
+		// guard fires correctly when UTC date != pipeline-local date.
+		tzLoc := resolveTimezone(cfg.Schedule.Timezone)
+		today := now.In(tzLoc).Format("2006-01-02")
+
+		for _, date := range pastDates {
+			// If the inclusion date is today and the pipeline has a
+			// Schedule.Time, only alert after that time has passed.
+			// This mirrors the same check in detectMissedSchedules for
+			// cron pipelines to avoid false-positive alerts before the
+			// expected start time. Past dates are not gated because
+			// their Schedule.Time has necessarily already elapsed.
+			if cfg.Schedule.Time != "" && date == today {
+				localNow := now.In(tzLoc)
+				expectedStart, err := time.ParseInLocation("2006-01-02 15:04", date+" "+cfg.Schedule.Time, tzLoc)
+				if err == nil && localNow.Before(expectedStart) {
+					continue // not yet past expected start time
+				}
+			}
+
+			// Check if a trigger exists for this inclusion date.
+			found, err := d.Store.HasTriggerForDate(ctx, id, scheduleID, date)
+			if err != nil {
+				d.Logger.Error("failed to check trigger for inclusion schedule",
+					"pipelineId", id, "date", date, "error", err)
+				continue
+			}
+			if found {
+				continue
+			}
+
+			// Check dedup marker to avoid re-alerting on subsequent watchdog runs.
+			dedupKey := "irregular-missed-check#" + date
+			dedupData, err := d.Store.GetSensorData(ctx, id, dedupKey)
+			if err != nil {
+				d.Logger.Error("dedup marker lookup failed for inclusion schedule",
+					"pipelineId", id, "date", date, "error", err)
+				continue
+			}
+			if dedupData != nil {
+				continue
+			}
+
+			alertDetail := map[string]interface{}{
+				"source":     "watchdog",
+				"actionHint": fmt.Sprintf("inclusion date %s expected to have a trigger — none found", date),
+			}
+			if err := publishEvent(ctx, d, string(types.EventIrregularScheduleMissed), id, scheduleID, date,
+				fmt.Sprintf("missed inclusion schedule for %s on %s", id, date), alertDetail); err != nil {
+				d.Logger.Warn("failed to publish irregular schedule missed event", "error", err, "pipeline", id, "date", date)
+			}
+
+			// Write dedup marker.
+			if err := d.Store.WriteSensor(ctx, id, dedupKey, map[string]interface{}{
+				"alerted": "true",
+			}); err != nil {
+				d.Logger.Warn("failed to write inclusion dedup marker", "error", err, "pipeline", id, "date", date)
+			}
+
+			d.Logger.Info("detected missed inclusion schedule",
+				"pipelineId", id,
+				"schedule", scheduleID,
+				"date", date,
+			)
+		}
 	}
 	return nil
 }
@@ -546,12 +641,7 @@ func resolveTriggerDeadlineDate(cfg *types.PipelineConfig, now time.Time) string
 // Unlike handleSLACalculate, this does NOT roll forward when the time is past.
 // Returns zero time on parse errors.
 func resolveTriggerDeadlineTime(deadline, date, timezone string) time.Time {
-	loc := time.UTC
-	if timezone != "" {
-		if parsed, err := time.LoadLocation(timezone); err == nil {
-			loc = parsed
-		}
-	}
+	loc := resolveTimezone(timezone)
 
 	if strings.HasPrefix(deadline, ":") {
 		// Relative (hourly): ":MM" — deadline is in the NEXT hour after the
@@ -842,4 +932,134 @@ func hasPostRunSensorUpdate(rules []types.ValidationRule, sensors map[string]map
 		}
 	}
 	return false
+}
+
+// detectRelativeSLABreaches checks pipelines with MaxDuration SLA config for
+// breaches. This is a defense-in-depth fallback: if the EventBridge Scheduler
+// fails to fire the relative SLA breach alert, the watchdog catches it.
+//
+// Both today and yesterday are checked because stream_router writes the
+// first-sensor-arrival key using ResolveExecutionDate(), which for T+1
+// sensor-triggered pipelines produces yesterday's date. Checking both dates
+// covers the cross-day boundary.
+func detectRelativeSLABreaches(ctx context.Context, d *Deps) error {
+	configs, err := d.ConfigCache.GetAll(ctx)
+	if err != nil {
+		return fmt.Errorf("load configs: %w", err)
+	}
+
+	now := d.now()
+	datesToCheck := []string{
+		now.Format("2006-01-02"),
+		now.AddDate(0, 0, -1).Format("2006-01-02"),
+	}
+
+	for id, cfg := range configs {
+		if cfg.SLA == nil || cfg.SLA.MaxDuration == "" {
+			continue
+		}
+
+		maxDur, err := time.ParseDuration(cfg.SLA.MaxDuration)
+		if err != nil {
+			d.Logger.Warn("invalid maxDuration in SLA config",
+				"pipelineId", id, "maxDuration", cfg.SLA.MaxDuration, "error", err)
+			continue
+		}
+
+		scheduleID := resolveScheduleID(cfg)
+
+		for _, checkDate := range datesToCheck {
+			checkRelativeSLAForDate(ctx, d, id, cfg, scheduleID, checkDate, maxDur, now)
+		}
+	}
+	return nil
+}
+
+// checkRelativeSLAForDate checks a single date for a relative SLA breach on
+// the given pipeline. It looks up the first-sensor-arrival marker, verifies
+// the breach window has elapsed, and publishes an alert if needed.
+func checkRelativeSLAForDate(ctx context.Context, d *Deps, id string, cfg *types.PipelineConfig, scheduleID, checkDate string, maxDur time.Duration, now time.Time) {
+	arrivalKey := "first-sensor-arrival#" + checkDate
+	arrivalData, err := d.Store.GetSensorData(ctx, id, arrivalKey)
+	if err != nil {
+		d.Logger.Error("first-sensor-arrival lookup failed",
+			"pipelineId", id, "date", checkDate, "error", err)
+		return
+	}
+	if arrivalData == nil {
+		return
+	}
+
+	arrivedAtStr, ok := arrivalData["arrivedAt"].(string)
+	if !ok || arrivedAtStr == "" {
+		return
+	}
+	arrivedAt, err := time.Parse(time.RFC3339, arrivedAtStr)
+	if err != nil {
+		d.Logger.Warn("invalid arrivedAt in first-sensor-arrival",
+			"pipelineId", id, "arrivedAt", arrivedAtStr, "error", err)
+		return
+	}
+
+	// Check if the relative SLA has been breached.
+	breachAt := arrivedAt.Add(maxDur)
+	if now.Before(breachAt) {
+		return
+	}
+
+	// Skip if pipeline already completed or permanently failed.
+	tr, err := d.Store.GetTrigger(ctx, id, scheduleID, checkDate)
+	if err != nil {
+		d.Logger.Warn("trigger lookup failed in relative SLA check",
+			"pipelineId", id, "date", checkDate, "error", err)
+		return
+	}
+	if tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal) {
+		return
+	}
+	if isJobTerminal(ctx, d, id, scheduleID, checkDate) {
+		return
+	}
+
+	// Check dedup marker to avoid re-alerting on subsequent watchdog runs.
+	// The dedup key includes checkDate to avoid cross-date collisions.
+	dedupKey := "relative-sla-breach-check#" + checkDate
+	dedupData, err := d.Store.GetSensorData(ctx, id, dedupKey)
+	if err != nil {
+		d.Logger.Error("dedup marker lookup failed for relative SLA breach",
+			"pipelineId", id, "date", checkDate, "error", err)
+		return
+	}
+	if dedupData != nil {
+		return
+	}
+
+	alertDetail := map[string]interface{}{
+		"source":          "watchdog",
+		"maxDuration":     cfg.SLA.MaxDuration,
+		"sensorArrivalAt": arrivedAtStr,
+		"breachAt":        breachAt.UTC().Format(time.RFC3339),
+		"actionHint":      "relative SLA breached — pipeline has exceeded maxDuration since first sensor arrival",
+	}
+	if err := publishEvent(ctx, d, string(types.EventRelativeSLABreach), id, scheduleID, checkDate,
+		fmt.Sprintf("relative SLA breach for %s on %s", id, checkDate), alertDetail); err != nil {
+		d.Logger.Warn("failed to publish relative SLA breach event",
+			"error", err, "pipeline", id, "date", checkDate)
+	}
+
+	// Write dedup marker.
+	if err := d.Store.WriteSensor(ctx, id, dedupKey, map[string]interface{}{
+		"alerted": "true",
+	}); err != nil {
+		d.Logger.Warn("failed to write relative SLA breach dedup marker",
+			"error", err, "pipeline", id, "date", checkDate)
+	}
+
+	d.Logger.Info("detected relative SLA breach",
+		"pipelineId", id,
+		"schedule", scheduleID,
+		"date", checkDate,
+		"sensorArrivalAt", arrivedAtStr,
+		"breachAt", breachAt.UTC().Format(time.RFC3339),
+	)
 }

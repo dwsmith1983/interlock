@@ -39,11 +39,19 @@ func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAM
 	}
 }
 
-// handleSLACalculate computes warning and breach times from the deadline
-// and expected duration. Warning time = deadline - expectedDuration.
-// Breach time = deadline. Returns full ISO 8601 timestamps required by
-// Step Functions TimestampPath.
+// handleSLACalculate computes warning and breach times. Supports two modes:
+//
+//  1. Schedule-based (deadline): breachAt = deadline, warningAt = deadline - expectedDuration.
+//  2. Relative (maxDuration + sensorArrivalAt): breachAt = sensorArrivalAt + maxDuration,
+//     warningAt = breachAt - expectedDuration (or breachAt - 25% of maxDuration if no expectedDuration).
+//
+// Returns full ISO 8601 timestamps required by Step Functions TimestampPath.
 func handleSLACalculate(input SLAMonitorInput, now time.Time) (SLAMonitorOutput, error) {
+	// Relative SLA path: maxDuration + sensorArrivalAt.
+	if input.MaxDuration != "" && input.SensorArrivalAt != "" {
+		return handleRelativeSLACalculate(input)
+	}
+
 	dur, err := time.ParseDuration(input.ExpectedDuration)
 	if err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("parse expectedDuration %q: %w", input.ExpectedDuration, err)
@@ -115,6 +123,41 @@ func handleSLACalculate(input SLAMonitorInput, now time.Time) (SLAMonitorOutput,
 		}
 	}
 	warningAt := breachAt.Add(-dur)
+
+	return SLAMonitorOutput{
+		WarningAt: warningAt.UTC().Format(time.RFC3339),
+		BreachAt:  breachAt.UTC().Format(time.RFC3339),
+	}, nil
+}
+
+// handleRelativeSLACalculate computes warning and breach times from
+// sensorArrivalAt + maxDuration. Warning offset uses expectedDuration
+// if provided, otherwise defaults to 25% of maxDuration (i.e. warning
+// fires at 75% of the total allowed time).
+func handleRelativeSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
+	maxDur, err := time.ParseDuration(input.MaxDuration)
+	if err != nil {
+		return SLAMonitorOutput{}, fmt.Errorf("parse maxDuration %q: %w", input.MaxDuration, err)
+	}
+
+	arrivalAt, err := time.Parse(time.RFC3339, input.SensorArrivalAt)
+	if err != nil {
+		return SLAMonitorOutput{}, fmt.Errorf("parse sensorArrivalAt %q: %w", input.SensorArrivalAt, err)
+	}
+
+	breachAt := arrivalAt.Add(maxDur)
+
+	// Warning offset: use expectedDuration if provided, otherwise 25% of maxDuration.
+	var warningOffset time.Duration
+	if input.ExpectedDuration != "" {
+		warningOffset, err = time.ParseDuration(input.ExpectedDuration)
+		if err != nil {
+			return SLAMonitorOutput{}, fmt.Errorf("parse expectedDuration %q: %w", input.ExpectedDuration, err)
+		}
+	} else {
+		warningOffset = maxDur / 4
+	}
+	warningAt := breachAt.Add(-warningOffset)
 
 	return SLAMonitorOutput{
 		WarningAt: warningAt.UTC().Format(time.RFC3339),
@@ -251,14 +294,23 @@ func handleSLASchedule(ctx context.Context, d *Deps, input SLAMonitorInput) (SLA
 // Warning/breach events were already published at the correct time by the
 // Scheduler-invoked fire-alert calls.
 func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
-	// If warningAt/breachAt not provided, recalculate from deadline/expectedDuration.
-	if input.WarningAt == "" && input.BreachAt == "" && input.Deadline != "" {
-		calc, err := handleSLACalculate(input, d.now())
-		if err != nil {
-			return SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
+	// If warningAt/breachAt not provided, recalculate from the available config.
+	if input.WarningAt == "" && input.BreachAt == "" {
+		if input.MaxDuration != "" && input.SensorArrivalAt != "" {
+			calc, err := handleRelativeSLACalculate(input)
+			if err != nil {
+				return SLAMonitorOutput{}, fmt.Errorf("cancel recalculate (relative): %w", err)
+			}
+			input.WarningAt = calc.WarningAt
+			input.BreachAt = calc.BreachAt
+		} else if input.Deadline != "" {
+			calc, err := handleSLACalculate(input, d.now())
+			if err != nil {
+				return SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
+			}
+			input.WarningAt = calc.WarningAt
+			input.BreachAt = calc.BreachAt
 		}
-		input.WarningAt = calc.WarningAt
-		input.BreachAt = calc.BreachAt
 	}
 
 	if d.Scheduler != nil {

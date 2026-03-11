@@ -34,6 +34,9 @@ const (
 	EventRerunAccepted           EventDetailType = "RERUN_ACCEPTED"
 	EventInfraAlarm              EventDetailType = "INFRA_ALARM"
 	EventSensorDeadlineExpired   EventDetailType = "SENSOR_DEADLINE_EXPIRED"
+	EventIrregularScheduleMissed EventDetailType = "IRREGULAR_SCHEDULE_MISSED"
+	EventRelativeSLAWarning      EventDetailType = "RELATIVE_SLA_WARNING"
+	EventRelativeSLABreach       EventDetailType = "RELATIVE_SLA_BREACH"
 )
 
 // EventSource is the EventBridge source for all interlock events.

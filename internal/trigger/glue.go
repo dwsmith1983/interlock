@@ -102,10 +102,21 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 	}
 }
 
-// verifyGlueRCA checks the RCA (root cause analysis) log stream for a Glue
-// job run to detect false successes. Glue can report SUCCEEDED when the Spark
-// job actually failed (driver exits 0 despite SparkException). The RCA stream
-// contains GlueExceptionAnalysisJobFailed events for these cases.
+// driverOutputFilterPattern matches ERROR or FATAL log4j severity markers in
+// the Glue driver output (stdout) stream. The surrounding spaces ensure we
+// match log4j format ("timestamp ERROR class - message") and avoid false
+// positives from JVM flags like -XX:OnOutOfMemoryError.
+//
+// This is intentionally scoped to the driver output stream (runID), NOT the
+// stderr stream (runID-driver-stderr) which contains benign JVM noise.
+const driverOutputFilterPattern = `?" ERROR " ?" FATAL "`
+
+// verifyGlueRCA checks CloudWatch log streams for a Glue job run to detect
+// false successes. Glue can report SUCCEEDED when the Spark job actually
+// failed (driver exits 0 despite SparkException).
+//
+// Check 1: RCA stream — looks for GlueExceptionAnalysisJobFailed events.
+// Check 2: Driver output stream — looks for ERROR/FATAL log4j severity markers.
 //
 // Returns (true, reason) if failure evidence is found. Returns (false, "") on
 // any error or if no failure is found.
@@ -119,8 +130,9 @@ func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *
 	if logGroupName != nil && *logGroupName != "" {
 		logGroup = *logGroupName
 	}
-	rcaStream := runID + "-job-insights-rca-driver"
 
+	// Check 1: RCA stream for GlueExceptionAnalysisJobFailed events.
+	rcaStream := runID + "-job-insights-rca-driver"
 	out, err := client.FilterLogEvents(ctx, &cloudwatchlogs.FilterLogEventsInput{
 		LogGroupName:   &logGroup,
 		LogStreamNames: []string{rcaStream},
@@ -133,6 +145,21 @@ func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *
 			return true, "RCA: " + r
 		}
 		return true, "RCA: JobFailed"
+	}
+
+	// Check 2: Driver output stream for ERROR/FATAL log4j severity markers.
+	dout, derr := client.FilterLogEvents(ctx, &cloudwatchlogs.FilterLogEventsInput{
+		LogGroupName:   &logGroup,
+		LogStreamNames: []string{runID},
+		FilterPattern:  aws.String(driverOutputFilterPattern),
+		Limit:          aws.Int32(1),
+	})
+	if derr == nil && len(dout.Events) > 0 {
+		msg := aws.ToString(dout.Events[0].Message)
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		return true, "driver log: " + msg
 	}
 
 	return false, ""

@@ -13,10 +13,11 @@ import (
 // sfnInput is the top-level input for the Step Function state machine.
 // It includes pipeline identity fields and a config block used by Wait states.
 type sfnInput struct {
-	PipelineID string    `json:"pipelineId"`
-	ScheduleID string    `json:"scheduleId"`
-	Date       string    `json:"date"`
-	Config     sfnConfig `json:"config"`
+	PipelineID      string    `json:"pipelineId"`
+	ScheduleID      string    `json:"scheduleId"`
+	Date            string    `json:"date"`
+	SensorArrivalAt string    `json:"sensorArrivalAt,omitempty"` // RFC3339; first sensor arrival for relative SLA
+	Config          sfnConfig `json:"config"`
 }
 
 // sfnConfig holds timing parameters for the SFN evaluation loop and SLA branch.
@@ -100,6 +101,21 @@ func startSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, p
 		Date:       date,
 		Config:     sc,
 	}
+
+	// Populate sensorArrivalAt for relative SLA passthrough.
+	if sc.SLA != nil && sc.SLA.MaxDuration != "" && d.Store != nil {
+		arrivalKey := "first-sensor-arrival#" + date
+		arrivalData, readErr := d.Store.GetSensorData(ctx, pipelineID, arrivalKey)
+		if readErr != nil {
+			d.Logger.WarnContext(ctx, "failed to read first-sensor-arrival for SFN input",
+				"pipelineId", pipelineID, "error", readErr)
+		} else if arrivalData != nil {
+			if at, ok := arrivalData["arrivedAt"].(string); ok {
+				input.SensorArrivalAt = at
+			}
+		}
+	}
+
 	payload, err := json.Marshal(input)
 	if err != nil {
 		return fmt.Errorf("marshal SFN input: %w", err)

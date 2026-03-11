@@ -125,9 +125,24 @@ func TestCheckGlueStatus_MissingMetadata(t *testing.T) {
 type mockCWLogsClient struct {
 	filterOut *cloudwatchlogs.FilterLogEventsOutput
 	filterErr error
+	// streamResponses maps a log stream name to a specific response.
+	// When set, FilterLogEvents returns the response matching the first
+	// stream name in the request; it falls back to filterOut/filterErr
+	// for unmatched streams.
+	streamResponses map[string]mockCWLogsResponse
+}
+
+type mockCWLogsResponse struct {
+	out *cloudwatchlogs.FilterLogEventsOutput
+	err error
 }
 
 func (m *mockCWLogsClient) FilterLogEvents(ctx context.Context, params *cloudwatchlogs.FilterLogEventsInput, optFns ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.FilterLogEventsOutput, error) {
+	if m.streamResponses != nil && len(params.LogStreamNames) > 0 {
+		if resp, ok := m.streamResponses[params.LogStreamNames[0]]; ok {
+			return resp.out, resp.err
+		}
+	}
 	return m.filterOut, m.filterErr
 }
 
@@ -251,8 +266,9 @@ func TestCheckGlueStatus_RCAUsesJobRunLogGroup(t *testing.T) {
 		"glue_job_run_id": "jr_abc123",
 	})
 	require.NoError(t, err)
-	require.Len(t, capturedLogGroups, 1)
+	require.Len(t, capturedLogGroups, 2, "both RCA and driver output checks should use custom log group")
 	assert.Equal(t, customLogGroup, capturedLogGroups[0], "RCA check should use custom log group")
+	assert.Equal(t, customLogGroup, capturedLogGroups[1], "driver output check should use custom log group")
 }
 
 type capturingCWLogsClient struct {
@@ -267,11 +283,10 @@ func (c *capturingCWLogsClient) FilterLogEvents(ctx context.Context, params *clo
 	return c.delegate.FilterLogEvents(ctx, params, optFns...)
 }
 
-func TestCheckGlueStatus_RCAOnlyCheck(t *testing.T) {
-	// Verify that only the RCA check is performed (no error log group check).
-	// The error log group check was removed because Glue's stderr always
-	// contains benign JVM startup output with "Error" in class names,
-	// causing 100% false positive rate.
+func TestCheckGlueStatus_RCAAndDriverOutputChecks(t *testing.T) {
+	// Verify that both the RCA check and driver output check are performed,
+	// but NOT the error log group check (removed in PR #60 due to 100%
+	// false positive rate from benign JVM startup stderr).
 	glueClient := &mockGlueClient{
 		getOut: &glue.GetJobRunOutput{
 			JobRun: &gluetypes.JobRun{
@@ -298,10 +313,152 @@ func TestCheckGlueStatus_RCAOnlyCheck(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, RunCheckSucceeded, result.State)
 
-	// Only one FilterLogEvents call (RCA check), no error log group check.
-	require.Len(t, capturedInputs, 1)
+	// Two FilterLogEvents calls: RCA check + driver output check.
+	require.Len(t, capturedInputs, 2)
+
+	// First call: RCA stream check.
 	assert.Equal(t, "/aws-glue/jobs/logs-v2", aws.ToString(capturedInputs[0].LogGroupName))
+	assert.Equal(t, []string{"jr_abc123-job-insights-rca-driver"}, capturedInputs[0].LogStreamNames)
 	assert.Contains(t, aws.ToString(capturedInputs[0].FilterPattern), "GlueExceptionAnalysisJobFailed")
+
+	// Second call: driver output stream check.
+	assert.Equal(t, "/aws-glue/jobs/logs-v2", aws.ToString(capturedInputs[1].LogGroupName))
+	assert.Equal(t, []string{"jr_abc123"}, capturedInputs[1].LogStreamNames)
+	assert.Contains(t, aws.ToString(capturedInputs[1].FilterPattern), `" ERROR "`)
+	assert.Contains(t, aws.ToString(capturedInputs[1].FilterPattern), `" FATAL "`)
+}
+
+func TestCheckGlueStatus_DriverLogDetectsError(t *testing.T) {
+	// Glue reports SUCCEEDED, RCA stream is empty, but driver output stream
+	// contains an ERROR log4j line → should detect as FAILED.
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState: gluetypes.JobRunStateSucceeded,
+			},
+		},
+	}
+	cwClient := &mockCWLogsClient{
+		streamResponses: map[string]mockCWLogsResponse{
+			"jr_abc123-job-insights-rca-driver": {
+				out: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
+			},
+			"jr_abc123": {
+				out: &cloudwatchlogs.FilterLogEventsOutput{
+					Events: []cwltypes.FilteredLogEvent{
+						{Message: aws.String("2026-01-15 10:00:00,000 ERROR org.apache.spark.sql.FileFormatWriter: Aborting job abc123. java.io.IOException: No space left on device")},
+					},
+				},
+			},
+		},
+	}
+
+	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckFailed, result.State)
+	assert.Contains(t, result.Message, "driver log")
+	assert.Equal(t, types.FailureTransient, result.FailureCategory)
+}
+
+func TestCheckGlueStatus_DriverLogDetectsFatal(t *testing.T) {
+	// Glue reports SUCCEEDED, RCA empty, driver output has a FATAL log4j
+	// line → should detect as FAILED.
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState: gluetypes.JobRunStateSucceeded,
+			},
+		},
+	}
+	cwClient := &mockCWLogsClient{
+		streamResponses: map[string]mockCWLogsResponse{
+			"jr_abc123-job-insights-rca-driver": {
+				out: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
+			},
+			"jr_abc123": {
+				out: &cloudwatchlogs.FilterLogEventsOutput{
+					Events: []cwltypes.FilteredLogEvent{
+						{Message: aws.String("2026-01-15 10:00:00,000 FATAL org.apache.spark.util.SparkUncaughtExceptionHandler: Uncaught exception")},
+					},
+				},
+			},
+		},
+	}
+
+	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckFailed, result.State)
+	assert.Contains(t, result.Message, "driver log")
+	assert.Contains(t, result.Message, "FATAL")
+	assert.Equal(t, types.FailureTransient, result.FailureCategory)
+}
+
+func TestCheckGlueStatus_DriverLogClean(t *testing.T) {
+	// Glue SUCCEEDED, RCA empty, driver log empty → SUCCEEDED (no false positive).
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState: gluetypes.JobRunStateSucceeded,
+			},
+		},
+	}
+	cwClient := &mockCWLogsClient{
+		streamResponses: map[string]mockCWLogsResponse{
+			"jr_abc123-job-insights-rca-driver": {
+				out: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
+			},
+			"jr_abc123": {
+				out: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
+			},
+		},
+	}
+
+	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckSucceeded, result.State)
+	assert.Equal(t, "SUCCEEDED", result.Message)
+}
+
+func TestCheckGlueStatus_DriverLogErrorFallsThrough(t *testing.T) {
+	// Glue SUCCEEDED, RCA empty, driver log query returns error →
+	// should fall through to SUCCEEDED (graceful degradation).
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState: gluetypes.JobRunStateSucceeded,
+			},
+		},
+	}
+	cwClient := &mockCWLogsClient{
+		streamResponses: map[string]mockCWLogsResponse{
+			"jr_abc123-job-insights-rca-driver": {
+				out: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
+			},
+			"jr_abc123": {
+				err: fmt.Errorf("ResourceNotFoundException: log stream not found"),
+			},
+		},
+	}
+
+	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckSucceeded, result.State, "should fall through to SUCCEEDED when driver log check fails")
 }
 
 func TestExtractGlueFailureReason(t *testing.T) {

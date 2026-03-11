@@ -208,6 +208,36 @@ func (s *Store) WriteSensor(ctx context.Context, pipelineID, sensorKey string, d
 	return nil
 }
 
+// WriteSensorIfAbsent writes a sensor row only if it does not already exist.
+// Returns true if the write succeeded (key was absent), false if the key
+// already existed. This is used for idempotent first-occurrence recording.
+func (s *Store) WriteSensorIfAbsent(ctx context.Context, pipelineID, sensorKey string, data map[string]interface{}) (bool, error) {
+	rec := types.ControlRecord{
+		PK:   types.PipelinePK(pipelineID),
+		SK:   types.SensorSK(sensorKey),
+		Data: data,
+	}
+
+	item, err := attributevalue.MarshalMap(rec)
+	if err != nil {
+		return false, fmt.Errorf("marshal sensor %q for %q: %w", sensorKey, pipelineID, err)
+	}
+
+	_, err = s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           &s.ControlTable,
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(PK)"),
+	})
+	if err != nil {
+		var ccfe *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &ccfe) {
+			return false, nil
+		}
+		return false, fmt.Errorf("write sensor if absent %q for %q: %w", sensorKey, pipelineID, err)
+	}
+	return true, nil
+}
+
 // DeleteSensor removes a sensor row from the control table.
 func (s *Store) DeleteSensor(ctx context.Context, pipelineID, sensorKey string) error {
 	_, err := s.Client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
@@ -428,6 +458,20 @@ func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date
 		return fmt.Errorf("set trigger status %q/%s/%s: %w", pipelineID, schedule, date, err)
 	}
 	return nil
+}
+
+// HasTriggerForDates checks multiple dates for existing triggers and returns a
+// map of date to existence. Internally calls HasTriggerForDate for each date.
+func (s *Store) HasTriggerForDates(ctx context.Context, pipelineID, schedule string, dates []string) (map[string]bool, error) {
+	result := make(map[string]bool, len(dates))
+	for _, date := range dates {
+		found, err := s.HasTriggerForDate(ctx, pipelineID, schedule, date)
+		if err != nil {
+			return nil, fmt.Errorf("check trigger for date %s: %w", date, err)
+		}
+		result[date] = found
+	}
+	return result, nil
 }
 
 // CreateTriggerIfAbsent writes a trigger row with the given status only if no
