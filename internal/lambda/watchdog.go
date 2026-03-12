@@ -146,6 +146,11 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 			continue
 		}
 
+		// Dry-run pipelines are observation-only — skip reconciliation.
+		if cfg.DryRun {
+			continue
+		}
+
 		if isExcluded(cfg, now) {
 			continue
 		}

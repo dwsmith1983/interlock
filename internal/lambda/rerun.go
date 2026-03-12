@@ -34,6 +34,13 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		return nil
 	}
 
+	// Dry-run pipelines never start real executions.
+	if cfg.DryRun {
+		d.Logger.Info("dry-run: skipping rerun request",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date)
+		return nil
+	}
+
 	// --- Calendar exclusion check (execution date) ---
 	if isExcludedDate(cfg, date) {
 		if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventRerunRejected, "", 0, "excluded by calendar"); err != nil {
@@ -196,6 +203,13 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 	}
 	if cfg == nil {
 		d.Logger.Warn("no config found for pipeline, skipping rerun", "pipelineId", pipelineID)
+		return nil
+	}
+
+	// Dry-run pipelines never start real executions.
+	if cfg.DryRun {
+		d.Logger.Info("dry-run: skipping job failure rerun",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date)
 		return nil
 	}
 

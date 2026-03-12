@@ -4245,3 +4245,62 @@ func TestDryRunPostRunSensor_NoMarker(t *testing.T) {
 	evtTypes := gatherEventDetailTypes(ebMock)
 	assert.Empty(t, evtTypes, "no events when no DRY_RUN# marker exists")
 }
+
+// ---------------------------------------------------------------------------
+// Dry-run: rerun and job-failure suppression
+// ---------------------------------------------------------------------------
+
+func TestRerun_DryRun_SkipsExecution(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testDryRunConfig()
+	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+
+	// Seed a failed job event so the rerun request would normally be accepted.
+	seedJobEvent(mock, "1709280000000", types.JobEventFail)
+
+	record := makeDefaultRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Dry-run pipeline must NOT start an SFN execution.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "dry-run pipeline must not start SFN on rerun request")
+
+	// No rerun records written (guard fires before any store side effects).
+	count, countErr := d.Store.CountRerunsBySource(context.Background(), "gold-revenue", "stream", "2026-03-01", []string{"manual"})
+	require.NoError(t, countErr)
+	assert.Zero(t, count, "dry-run must not write rerun records")
+}
+
+func TestJobFailure_DryRun_SkipsRerun(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testDryRunConfig()
+	cfg.Job.MaxRetries = 2
+	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+
+	// Send a JOB# failure event — normally triggers a rerun under retry limit.
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Dry-run pipeline must NOT start an SFN execution.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "dry-run pipeline must not start SFN on job failure")
+
+	// No rerun records written (guard fires before any store side effects).
+	count, countErr := d.Store.CountRerunsBySource(context.Background(), "gold-revenue", "stream", "2026-03-01", []string{"job-fail-retry"})
+	require.NoError(t, countErr)
+	assert.Zero(t, count, "dry-run must not write rerun records on job failure")
+}
