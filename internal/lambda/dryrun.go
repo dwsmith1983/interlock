@@ -14,7 +14,7 @@ import (
 // It evaluates trigger conditions and validation rules, records observations
 // as EventBridge events, but never starts a Step Function execution.
 // Calendar exclusions are already checked before this function is called.
-func handleDryRunTrigger(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string, sensorData map[string]interface{}, now time.Time) error {
+func handleDryRunTrigger(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string, now time.Time) error {
 	// Check for existing dry-run marker — if present, this is late data.
 	marker, err := d.Store.GetDryRunMarker(ctx, pipelineID, scheduleID, date)
 	if err != nil {

@@ -217,7 +217,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 
 	// Dry-run mode: observe and record what would happen, but never start SFN.
 	if cfg.DryRun {
-		return handleDryRunTrigger(ctx, d, cfg, pipelineID, scheduleID, date, sensorData, now)
+		return handleDryRunTrigger(ctx, d, cfg, pipelineID, scheduleID, date, now)
 	}
 
 	// Acquire trigger lock to prevent duplicate executions.

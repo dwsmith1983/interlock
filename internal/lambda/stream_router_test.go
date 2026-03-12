@@ -3949,14 +3949,15 @@ func TestHandleSensorEvent_DryRun_SLAProjection_Met(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	for _, input := range ebMock.events {
 		for _, e := range input.Entries {
-			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunSLAProjection) {
-				var detail map[string]interface{}
-				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
-				innerDetail, ok := detail["detail"].(map[string]interface{})
-				require.True(t, ok, "expected detail.detail map in SLA projection event")
-				assert.Equal(t, "met", innerDetail["status"], "SLA projection status should be 'met'")
-				return
+			if e.DetailType == nil || *e.DetailType != string(types.EventDryRunSLAProjection) {
+				continue
 			}
+			var detail map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+			innerDetail, ok := detail["detail"].(map[string]interface{})
+			require.True(t, ok, "expected detail.detail map in SLA projection event")
+			assert.Equal(t, "met", innerDetail["status"], "SLA projection status should be 'met'")
+			return
 		}
 	}
 	t.Fatal("DRY_RUN_SLA_PROJECTION event not found in published events")
@@ -4002,14 +4003,15 @@ func TestHandleSensorEvent_DryRun_SLAProjection_Breach(t *testing.T) {
 	defer ebMock.mu.Unlock()
 	for _, input := range ebMock.events {
 		for _, e := range input.Entries {
-			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunSLAProjection) {
-				var detail map[string]interface{}
-				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
-				innerDetail, ok := detail["detail"].(map[string]interface{})
-				require.True(t, ok, "expected detail.detail map")
-				assert.Equal(t, "breach", innerDetail["status"], "SLA projection status should be 'breach'")
-				return
+			if e.DetailType == nil || *e.DetailType != string(types.EventDryRunSLAProjection) {
+				continue
 			}
+			var detail map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+			innerDetail, ok := detail["detail"].(map[string]interface{})
+			require.True(t, ok, "expected detail.detail map")
+			assert.Equal(t, "breach", innerDetail["status"], "SLA projection status should be 'breach'")
+			return
 		}
 	}
 	t.Fatal("DRY_RUN_SLA_PROJECTION event not found")
