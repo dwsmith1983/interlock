@@ -172,9 +172,9 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventSuccess, input.RunID, 0, ""); err != nil {
 			d.Logger.Warn("failed to write polled job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
 		}
-		if err := publishEvent(ctx, d, string(types.EventJobCompleted), input.PipelineID, input.ScheduleID, input.Date, "job succeeded"); err != nil {
-			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobCompleted, "error", err)
-		}
+		// JOB_COMPLETED is published by the stream-router when the JOB#
+		// record arrives via DynamoDB stream (handleJobSuccess). Publishing
+		// here as well would cause duplicate alerts for polled jobs.
 		return OrchestratorOutput{Mode: "check-job", Event: "success"}, nil
 	case "failed":
 		var writeOpts []store.JobEventOption

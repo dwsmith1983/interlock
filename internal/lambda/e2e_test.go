@@ -558,7 +558,7 @@ func TestE2E_PrimarySFNPaths(t *testing.T) {
 		assert.Equal(t, "SLA_MET", r.slaOutcome)
 		assert.Contains(t, r.events, "VALIDATION_PASSED")
 		assert.Contains(t, r.events, "JOB_TRIGGERED")
-		assert.Contains(t, r.events, "JOB_COMPLETED")
+		// JOB_COMPLETED is emitted by stream-router (not SFN), verified in stream_router_test.go.
 		assert.Contains(t, r.events, "SLA_MET")
 		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-a1"))
 		assert.Contains(t, collectJoblogEvents(mock, "pipe-a1"), "success")
@@ -589,7 +589,6 @@ func TestE2E_PrimarySFNPaths(t *testing.T) {
 		assert.Equal(t, 4, r.evalCount)
 		assert.Contains(t, r.events, "VALIDATION_PASSED")
 		assert.Contains(t, r.events, "JOB_TRIGGERED")
-		assert.Contains(t, r.events, "JOB_COMPLETED")
 		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-a2"))
 		assertAlertFormats(t, eb)
 	})
@@ -754,7 +753,6 @@ func TestE2E_PostRunMonitoring(t *testing.T) {
 		})
 
 		assert.Equal(t, sfnDone, r.terminal)
-		assert.Contains(t, r.events, "JOB_COMPLETED")
 		assert.NotContains(t, r.events, "POST_RUN_DRIFT")
 		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-b1"))
 		assertAlertFormats(t, eb)
@@ -1932,7 +1930,7 @@ func TestE2E_CrossHandlerEdgeCases(t *testing.T) {
 
 		assert.Equal(t, sfnDone, r.terminal)
 		// check-job should have skipped the non-terminal entry and polled StatusChecker.
-		assert.Contains(t, r.events, "JOB_COMPLETED", "check-job should fall through non-terminal joblog to StatusChecker")
+		// JOB_COMPLETED is emitted by stream-router when the JOB# record arrives, not by the orchestrator.
 		assert.Equal(t, types.TriggerStatusCompleted, e2eTriggerStatus(mock, "pipe-j2"))
 		joblogs := collectJoblogEvents(mock, "pipe-j2")
 		assert.Contains(t, joblogs, "success", "StatusChecker success should be written to joblog")
