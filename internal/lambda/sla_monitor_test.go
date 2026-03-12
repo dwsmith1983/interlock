@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	schedulerTypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 	"github.com/stretchr/testify/assert"
@@ -449,9 +450,11 @@ func TestSLAMonitor_Cancel_PastBreach(t *testing.T) {
 	if out.AlertType != "SLA_BREACH" {
 		t.Errorf("alertType = %q, want %q", out.AlertType, "SLA_BREACH")
 	}
-	// Should NOT publish SLA_MET event (breach already fired by Scheduler)
-	if len(eb.events) != 0 {
-		t.Errorf("expected 0 EventBridge calls for past breach, got %d", len(eb.events))
+	// Should publish SLA_BREACH so reruns get a notification
+	if len(eb.events) != 1 {
+		t.Errorf("expected 1 EventBridge call for past breach, got %d", len(eb.events))
+	} else if dt := aws.ToString(eb.events[0].Entries[0].DetailType); dt != "SLA_BREACH" {
+		t.Errorf("expected SLA_BREACH event, got %q", dt)
 	}
 }
 
@@ -1427,7 +1430,7 @@ func TestSLAMonitor_Cancel_PastWarningFutureBreach(t *testing.T) {
 		Logger:             slog.Default(),
 	}
 
-	// Warning in the past, breach in the future — should be SLA_WARNING.
+	// Warning in the past, breach in the future — completed before breach = SLA_MET.
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 		Mode:       "cancel",
 		PipelineID: "gold-orders",
@@ -1437,9 +1440,10 @@ func TestSLAMonitor_Cancel_PastWarningFutureBreach(t *testing.T) {
 		BreachAt:   "2099-12-31T23:59:00Z",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "SLA_WARNING", out.AlertType)
-	// SLA_WARNING/SLA_BREACH are already fired by Scheduler; only SLA_MET publishes.
-	assert.Empty(t, eb.events, "should not publish event for SLA_WARNING cancel")
+	assert.Equal(t, "SLA_MET", out.AlertType)
+	// Completed before breach = MET, always published for rerun visibility.
+	require.Len(t, eb.events, 1, "should publish SLA_MET event on cancel")
+	assert.Equal(t, "SLA_MET", aws.ToString(eb.events[0].Entries[0].DetailType))
 }
 
 func TestSLAMonitor_Cancel_EmptyTimesNoDeadline(t *testing.T) {
