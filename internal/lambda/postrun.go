@@ -36,6 +36,11 @@ func matchesPostRunRule(sensorKey string, rules []types.ValidationRule) bool {
 // arrives via DynamoDB Stream. Compares current sensor values against the
 // date-scoped baseline captured at trigger completion.
 func handlePostRunSensorEvent(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, sensorKey string, sensorData map[string]interface{}) error {
+	// For dry-run pipelines, check DRY_RUN# marker instead of TRIGGER# row.
+	if cfg.DryRun {
+		return handleDryRunPostRunSensor(ctx, d, cfg, pipelineID, sensorKey, sensorData)
+	}
+
 	scheduleID := resolveScheduleID(cfg)
 	date := ResolveExecutionDate(sensorData, d.now())
 

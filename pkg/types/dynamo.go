@@ -36,6 +36,11 @@ func RerunRequestSK(schedule, date string) string {
 	return "RERUN_REQUEST#" + schedule + "#" + date
 }
 
+// DryRunSK returns the sort key for a dry-run marker.
+func DryRunSK(schedule, date string) string {
+	return "DRY_RUN#" + schedule + "#" + date
+}
+
 // ---------------------------------------------------------------------------
 // Status / event constants
 // ---------------------------------------------------------------------------

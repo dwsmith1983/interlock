@@ -64,5 +64,15 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		}
 	}
 
+	// Dry-run validation.
+	if cfg.DryRun {
+		if cfg.Job.Type == "" {
+			errs = append(errs, "dryRun requires job.type to be configured")
+		}
+		if cfg.Schedule.Trigger == nil {
+			errs = append(errs, "dryRun requires schedule.trigger (sensor-driven evaluation)")
+		}
+	}
+
 	return errs
 }

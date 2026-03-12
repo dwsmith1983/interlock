@@ -70,6 +70,19 @@ Published by the **stream-router** when processing rerun requests and late data 
 | `RERUN_REJECTED` | Rerun request rejected by circuit breaker | No new sensor data since last job completion |
 | `RERUN_ACCEPTED` | Rerun request accepted | Rerun passed circuit breaker validation and trigger lock was reset |
 
+### Dry-Run Events
+
+Published by the **stream-router** Lambda for pipelines with `dryRun: true`. These events record what Interlock *would* do without executing any jobs or starting Step Functions.
+
+| Detail Type | Meaning | When |
+|---|---|---|
+| `DRY_RUN_WOULD_TRIGGER` | All validation rules passed | Interlock would have triggered the pipeline job at this time |
+| `DRY_RUN_LATE_DATA` | Sensor updated after trigger point | Sensor data arrived after the dry-run trigger was recorded — would have triggered a re-run |
+| `DRY_RUN_SLA_PROJECTION` | Estimated completion vs. deadline | Projects whether the SLA would be met or breached based on `expectedDuration` and `deadline` |
+| `DRY_RUN_DRIFT` | Post-run sensor data changed | Sensor value drifted from baseline captured at trigger time — would have triggered a drift re-run |
+
+The `DRY_RUN_SLA_PROJECTION` detail includes `status` (`"met"` or `"breach"`), `estimatedCompletion`, `deadline`, and `marginSeconds` fields.
+
 ### Watchdog Events
 
 Published by the **watchdog** Lambda, invoked on an EventBridge schedule (default: every 5 minutes).

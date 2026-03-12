@@ -9,6 +9,7 @@ type PipelineConfig struct {
 	Validation ValidationConfig `yaml:"validation" json:"validation"`
 	Job        JobConfig        `yaml:"job" json:"job"`
 	PostRun    *PostRunConfig   `yaml:"postRun,omitempty" json:"postRun,omitempty"`
+	DryRun     bool             `yaml:"dryRun,omitempty" json:"dryRun,omitempty"`
 }
 
 // PipelineIdentity holds pipeline metadata.

@@ -1710,9 +1710,9 @@ func TestE2E_Watchdog(t *testing.T) {
 func TestE2E_SLABranchCompleteness(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("SLAWarningOutcome", func(t *testing.T) {
+	t.Run("SLACancelPastWarningBeforeBreach", func(t *testing.T) {
 		// Cancel when warning has passed but breach is still in the future.
-		// Expected: cancel returns SLA_WARNING (not SLA_MET or SLA_BREACH).
+		// Expected: cancel returns SLA_MET (completed before breach = MET).
 		mock := newMockDDB()
 		tr := &mockTriggerRunner{}
 		sc := &mockStatusPoller{seq: []lambda.StatusResult{{State: "succeeded"}}}
@@ -1732,9 +1732,9 @@ func TestE2E_SLABranchCompleteness(t *testing.T) {
 		})
 
 		assert.Equal(t, sfnDone, r.terminal)
-		assert.Equal(t, "SLA_WARNING", r.slaOutcome)
-		// SLA_MET event should NOT be published (warning already fired).
-		assert.NotContains(t, r.events, "SLA_MET")
+		assert.Equal(t, "SLA_MET", r.slaOutcome)
+		// SLA_MET event should be published (binary verdict: completed before breach).
+		assert.Contains(t, r.events, "SLA_MET")
 		assertAlertFormats(t, eb)
 	})
 

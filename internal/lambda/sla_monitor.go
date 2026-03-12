@@ -330,29 +330,30 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 		}
 	}
 
-	// Determine final SLA status from the timestamps passed in
+	// Determine final SLA status: binary MET or BREACH.
+	// WARNING is not a valid completion outcome — if the job finished, it either
+	// beat the breach deadline (MET) or missed it (BREACH).
 	now := d.now().UTC()
 	alertType := string(types.EventSLAMet)
 	if input.BreachAt != "" {
 		breachAt, _ := time.Parse(time.RFC3339, input.BreachAt)
-		warningAt, _ := time.Parse(time.RFC3339, input.WarningAt)
 		if !breachAt.IsZero() && (now.After(breachAt) || now.Equal(breachAt)) {
-			alertType = "SLA_BREACH"
-		} else if !warningAt.IsZero() && (now.After(warningAt) || now.Equal(warningAt)) {
-			alertType = "SLA_WARNING"
+			alertType = string(types.EventSLABreach)
 		}
 	}
 
-	// Publish SLA_MET — the only outcome not already fired by the Scheduler
-	if alertType == string(types.EventSLAMet) {
-		_ = publishEvent(ctx, d, string(types.EventSLAMet), input.PipelineID, input.ScheduleID, input.Date,
-			fmt.Sprintf("pipeline %s: %s", input.PipelineID, types.EventSLAMet))
-	}
-
+	// Always publish the verdict. For first runs, Scheduler entries would have
+	// fired WARNING/BREACH but are now deleted — MET is the only new signal.
+	// For reruns, the Scheduler entries were already deleted by the first run's
+	// cancel, so this publish is the only path to a notification.
 	d.Logger.InfoContext(ctx, "cancelled SLA schedules",
 		"pipeline", input.PipelineID,
 		"alertType", alertType,
 	)
+	if err := publishEvent(ctx, d, alertType, input.PipelineID, input.ScheduleID, input.Date,
+		fmt.Sprintf("pipeline %s: %s", input.PipelineID, alertType)); err != nil {
+		return SLAMonitorOutput{}, fmt.Errorf("publish SLA cancel verdict: %w", err)
+	}
 
 	return SLAMonitorOutput{
 		AlertType: alertType,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1117,5 +1118,127 @@ func TestHasTriggerForDates_DynamoError(t *testing.T) {
 	}
 	if !errors.Is(err, injected) {
 		t.Errorf("expected wrapped injected error, got: %v", err)
+	}
+}
+
+// --- WriteDryRunMarker / GetDryRunMarker tests ---
+
+func TestWriteDryRunMarker(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	triggeredAt := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+
+	written, err := s.WriteDryRunMarker(context.Background(), "gold-revenue", "stream", "2026-03-11", triggeredAt)
+	if err != nil {
+		t.Fatalf("WriteDryRunMarker: %v", err)
+	}
+	if !written {
+		t.Fatal("expected written=true on first call")
+	}
+
+	// Read back via GetDryRunMarker.
+	rec, err := s.GetDryRunMarker(context.Background(), "gold-revenue", "stream", "2026-03-11")
+	if err != nil {
+		t.Fatalf("GetDryRunMarker: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("expected non-nil record")
+	}
+
+	// Verify PK/SK.
+	if rec.PK != types.PipelinePK("gold-revenue") {
+		t.Errorf("PK = %q, want %q", rec.PK, types.PipelinePK("gold-revenue"))
+	}
+	if rec.SK != types.DryRunSK("stream", "2026-03-11") {
+		t.Errorf("SK = %q, want %q", rec.SK, types.DryRunSK("stream", "2026-03-11"))
+	}
+
+	// Verify triggeredAt stored inside the data map in the raw item.
+	key := itemKey("control", types.PipelinePK("gold-revenue"), types.DryRunSK("stream", "2026-03-11"))
+	mock.mu.Lock()
+	item, ok := mock.items[key]
+	mock.mu.Unlock()
+
+	if !ok {
+		t.Fatal("expected item in mock store")
+	}
+
+	dataAttr, hasData := item["data"]
+	if !hasData {
+		t.Fatal("expected data attribute to be present")
+	}
+	dataMap := dataAttr.(*ddbtypes.AttributeValueMemberM).Value
+	triggeredAtAttr, hasTA := dataMap["triggeredAt"]
+	if !hasTA {
+		t.Fatal("expected triggeredAt inside data map")
+	}
+	triggeredAtStr := triggeredAtAttr.(*ddbtypes.AttributeValueMemberS).Value
+	if triggeredAtStr != "2026-03-11T01:15:00Z" {
+		t.Errorf("triggeredAt = %q, want %q", triggeredAtStr, "2026-03-11T01:15:00Z")
+	}
+
+	// Verify triggeredAt is also accessible via ControlRecord.Data (unmarshaled).
+	if rec.Data == nil {
+		t.Fatal("expected non-nil Data in ControlRecord")
+	}
+	if rec.Data["triggeredAt"] != "2026-03-11T01:15:00Z" {
+		t.Errorf("rec.Data[triggeredAt] = %v, want %q", rec.Data["triggeredAt"], "2026-03-11T01:15:00Z")
+	}
+
+	// Verify TTL is set (future epoch).
+	ttlAttr, hasTTL := item["ttl"]
+	if !hasTTL {
+		t.Fatal("expected ttl attribute to be present")
+	}
+	ttlStr := ttlAttr.(*ddbtypes.AttributeValueMemberN).Value
+	if ttlStr == "" {
+		t.Error("expected non-empty TTL value")
+	}
+	// TTL must be in the future (greater than now).
+	now := time.Now().Unix()
+	var ttlEpoch int64
+	if _, scanErr := fmt.Sscanf(ttlStr, "%d", &ttlEpoch); scanErr != nil {
+		t.Errorf("failed to parse ttl %q: %v", ttlStr, scanErr)
+	} else if ttlEpoch <= now {
+		t.Errorf("ttl %d is not in the future (now=%d)", ttlEpoch, now)
+	}
+}
+
+func TestWriteDryRunMarker_Dedup(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+
+	firstTriggeredAt := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+	secondTriggeredAt := time.Date(2026, 3, 11, 1, 30, 0, 0, time.UTC)
+
+	// First write should succeed.
+	written, err := s.WriteDryRunMarker(context.Background(), "gold-revenue", "stream", "2026-03-11", firstTriggeredAt)
+	if err != nil {
+		t.Fatalf("first WriteDryRunMarker: %v", err)
+	}
+	if !written {
+		t.Fatal("expected written=true on first call")
+	}
+
+	// Second write should return false (idempotent — key already exists).
+	written, err = s.WriteDryRunMarker(context.Background(), "gold-revenue", "stream", "2026-03-11", secondTriggeredAt)
+	if err != nil {
+		t.Fatalf("second WriteDryRunMarker: %v", err)
+	}
+	if written {
+		t.Error("expected written=false on duplicate call (conditional check failed)")
+	}
+
+	// Verify original triggeredAt is preserved (not overwritten).
+	key := itemKey("control", types.PipelinePK("gold-revenue"), types.DryRunSK("stream", "2026-03-11"))
+	mock.mu.Lock()
+	item := mock.items[key]
+	mock.mu.Unlock()
+
+	dataMap := item["data"].(*ddbtypes.AttributeValueMemberM).Value
+	triggeredAtStr := dataMap["triggeredAt"].(*ddbtypes.AttributeValueMemberS).Value
+	if triggeredAtStr != "2026-03-11T01:15:00Z" {
+		t.Errorf("triggeredAt = %q, want original %q (must not be overwritten)", triggeredAtStr, "2026-03-11T01:15:00Z")
 	}
 }

@@ -37,6 +37,10 @@ const (
 	EventIrregularScheduleMissed EventDetailType = "IRREGULAR_SCHEDULE_MISSED"
 	EventRelativeSLAWarning      EventDetailType = "RELATIVE_SLA_WARNING"
 	EventRelativeSLABreach       EventDetailType = "RELATIVE_SLA_BREACH"
+	EventDryRunWouldTrigger      EventDetailType = "DRY_RUN_WOULD_TRIGGER"
+	EventDryRunLateData          EventDetailType = "DRY_RUN_LATE_DATA"
+	EventDryRunSLAProjection     EventDetailType = "DRY_RUN_SLA_PROJECTION"
+	EventDryRunDrift             EventDetailType = "DRY_RUN_DRIFT"
 )
 
 // EventSource is the EventBridge source for all interlock events.

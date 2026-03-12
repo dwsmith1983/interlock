@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-03-12
+
+### Added
+
+- **Dry-run / shadow mode** (`dryRun: true`) — observation-only mode for evaluating Interlock against running pipelines without executing jobs. The stream-router evaluates trigger conditions, validation rules, and SLA projections inline, publishing all observations as EventBridge events. No Step Function executions, no job triggers, no rerun requests. New events: `DRY_RUN_WOULD_TRIGGER`, `DRY_RUN_LATE_DATA`, `DRY_RUN_SLA_PROJECTION`, `DRY_RUN_DRIFT`. DRY_RUN# markers stored with 7-day TTL for dedup and late-data detection. Post-run drift detection captures baseline at trigger time and compares when sensors update. SLA projection reuses production `handleSLACalculate` for consistent deadline resolution. Requires `schedule.trigger` and `job.type`. Calendar exclusions honored.
+- **`DryRunSK` key helper** for DynamoDB DRY_RUN# sort keys.
+- **`WriteDryRunMarker` / `GetDryRunMarker` store methods** with conditional write (idempotent dedup) and consistent read.
+- **Config validation** for dry-run: requires both `job.type` and `schedule.trigger`.
+
 ## [0.8.0] - 2026-03-10
 
 ### Added
@@ -378,6 +387,7 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.9.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.9.0
 [0.8.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.8.0
 [0.7.4]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.4
 [0.7.3]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.3
