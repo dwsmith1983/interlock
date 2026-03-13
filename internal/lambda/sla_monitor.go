@@ -342,17 +342,31 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 		}
 	}
 
-	// Always publish the verdict. For first runs, Scheduler entries would have
-	// fired WARNING/BREACH but are now deleted — MET is the only new signal.
-	// For reruns, the Scheduler entries were already deleted by the first run's
-	// cancel, so this publish is the only path to a notification.
+	// Only publish a verdict if the pipeline was actually triggered.
+	// If no trigger record exists, the pipeline never ran — publishing SLA_MET
+	// would be misleading since the SLA wasn't "met" (nothing executed).
+	publish := true
+	if d.Store != nil {
+		tr, err := d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
+		if err != nil {
+			d.Logger.WarnContext(ctx, "trigger lookup failed in cancel, proceeding with verdict",
+				"pipeline", input.PipelineID, "error", err)
+		} else if tr == nil {
+			d.Logger.InfoContext(ctx, "skipping SLA verdict — pipeline was never triggered",
+				"pipeline", input.PipelineID, "date", input.Date, "alertType", alertType)
+			publish = false
+		}
+	}
+
 	d.Logger.InfoContext(ctx, "cancelled SLA schedules",
 		"pipeline", input.PipelineID,
 		"alertType", alertType,
 	)
-	if err := publishEvent(ctx, d, alertType, input.PipelineID, input.ScheduleID, input.Date,
-		fmt.Sprintf("pipeline %s: %s", input.PipelineID, alertType)); err != nil {
-		return SLAMonitorOutput{}, fmt.Errorf("publish SLA cancel verdict: %w", err)
+	if publish {
+		if err := publishEvent(ctx, d, alertType, input.PipelineID, input.ScheduleID, input.Date,
+			fmt.Sprintf("pipeline %s: %s", input.PipelineID, alertType)); err != nil {
+			return SLAMonitorOutput{}, fmt.Errorf("publish SLA cancel verdict: %w", err)
+		}
 	}
 
 	return SLAMonitorOutput{
@@ -423,13 +437,17 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 	var alertType string
 	switch {
 	case now.After(breachAt) || now.Equal(breachAt):
-		_ = publishEvent(ctx, d, "SLA_BREACH", input.PipelineID, input.ScheduleID, input.Date,
-			fmt.Sprintf("pipeline %s: SLA_BREACH", input.PipelineID), reconcileDetail)
+		if err := publishEvent(ctx, d, "SLA_BREACH", input.PipelineID, input.ScheduleID, input.Date,
+			fmt.Sprintf("pipeline %s: SLA_BREACH", input.PipelineID), reconcileDetail); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", "SLA_BREACH", "error", err)
+		}
 		alertType = "SLA_BREACH"
 	case now.After(warningAt) || now.Equal(warningAt):
 		// Past warning but before breach — fire warning only
-		_ = publishEvent(ctx, d, "SLA_WARNING", input.PipelineID, input.ScheduleID, input.Date,
-			fmt.Sprintf("pipeline %s: SLA_WARNING", input.PipelineID), reconcileDetail)
+		if err := publishEvent(ctx, d, "SLA_WARNING", input.PipelineID, input.ScheduleID, input.Date,
+			fmt.Sprintf("pipeline %s: SLA_WARNING", input.PipelineID), reconcileDetail); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", "SLA_WARNING", "error", err)
+		}
 		alertType = "SLA_WARNING"
 	default:
 		alertType = "SLA_MET"
