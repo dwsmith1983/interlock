@@ -66,6 +66,12 @@ func detectStaleTriggers(ctx context.Context, d *Deps) error {
 			continue
 		}
 
+		// Dry-run pipelines should never have TRIGGER# rows, but guard
+		// against stale rows from pre-dry-run migrations or bugs.
+		if cfg, cfgErr := d.ConfigCache.Get(ctx, pipelineID); cfgErr == nil && cfg != nil && cfg.DryRun {
+			continue
+		}
+
 		alertDetail := map[string]interface{}{
 			"source":     "watchdog",
 			"actionHint": "step function exceeded TTL — check SFN execution history",
@@ -292,6 +298,11 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 			continue
 		}
 
+		// Dry-run pipelines are observation-only — skip missed schedule detection.
+		if cfg.DryRun {
+			continue
+		}
+
 		// Skip calendar-excluded days.
 		if isExcluded(cfg, now) {
 			continue
@@ -369,6 +380,11 @@ func detectMissedInclusionSchedules(ctx context.Context, d *Deps) error {
 
 	for id, cfg := range configs {
 		if cfg.Schedule.Include == nil || len(cfg.Schedule.Include.Dates) == 0 {
+			continue
+		}
+
+		// Dry-run pipelines are observation-only — skip inclusion schedule detection.
+		if cfg.DryRun {
 			continue
 		}
 
@@ -471,6 +487,11 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 
 	for id, cfg := range configs {
 		if cfg.SLA == nil {
+			continue
+		}
+
+		// Dry-run pipelines are observation-only — skip SLA scheduling.
+		if cfg.DryRun {
 			continue
 		}
 
@@ -581,6 +602,11 @@ func checkTriggerDeadlines(ctx context.Context, d *Deps) error {
 
 	for id, cfg := range configs {
 		if cfg.Schedule.Trigger == nil || cfg.Schedule.Trigger.Deadline == "" {
+			continue
+		}
+
+		// Dry-run pipelines are observation-only — skip trigger deadline checks.
+		if cfg.DryRun {
 			continue
 		}
 
@@ -758,6 +784,11 @@ func detectMissingPostRunSensors(ctx context.Context, d *Deps) error {
 
 	for id, cfg := range configs {
 		if cfg.PostRun == nil || len(cfg.PostRun.Rules) == 0 {
+			continue
+		}
+
+		// Dry-run pipelines are observation-only — skip post-run sensor checks.
+		if cfg.DryRun {
 			continue
 		}
 
@@ -961,6 +992,11 @@ func detectRelativeSLABreaches(ctx context.Context, d *Deps) error {
 
 	for id, cfg := range configs {
 		if cfg.SLA == nil || cfg.SLA.MaxDuration == "" {
+			continue
+		}
+
+		// Dry-run pipelines are observation-only — skip relative SLA checks.
+		if cfg.DryRun {
 			continue
 		}
 

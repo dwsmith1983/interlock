@@ -3106,3 +3106,86 @@ func TestWatchdog_RelativeSLA_CrossDayNotBreached(t *testing.T) {
 			"should not publish RELATIVE_SLA_BREACH before maxDuration is exceeded")
 	}
 }
+
+// TestWatchdog_DryRun_SkipsAllSchedulingAndAlerts verifies that dry-run pipelines
+// are completely invisible to the watchdog: no SLA schedules created, no
+// SCHEDULE_MISSED events, no trigger deadline closures, and no relative SLA breaches.
+func TestWatchdog_DryRun_SkipsAllSchedulingAndAlerts(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	fixedTime := time.Date(2026, 3, 13, 20, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+	d.StartedAt = fixedTime.Add(-1 * time.Hour)
+
+	// Configure a dry-run pipeline with cron schedule, SLA, trigger deadline,
+	// and inclusion dates — all features that the watchdog checks.
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "dryrun-weather"},
+		DryRun:   true,
+		Schedule: types.ScheduleConfig{
+			Cron:       "0 * * * *",
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+			Trigger: &types.TriggerCondition{
+				Key:      "weather-data",
+				Check:    "field_equals",
+				Field:    "complete",
+				Value:    "true",
+				Deadline: ":45",
+			},
+		},
+		SLA: &types.SLAConfig{
+			Deadline:         ":30",
+			ExpectedDuration: "15m",
+			MaxDuration:      "2h",
+		},
+		Validation: types.ValidationConfig{
+			Trigger: "ALL",
+			Rules: []types.ValidationRule{
+				{Key: "weather-data", Check: "field_equals", Field: "complete", Value: "true"},
+			},
+		},
+		Job: types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "test"}},
+	}
+	seedConfig(mock, cfg)
+
+	// Seed a first-sensor-arrival key to trigger the relative SLA path.
+	seedSensor(mock, "dryrun-weather", "first-sensor-arrival#2026-03-13", map[string]interface{}{
+		"arrivedAt": "2026-03-13T17:00:00Z",
+	})
+
+	// Seed the trigger sensor so reconciliation would fire if not guarded.
+	seedSensor(mock, "dryrun-weather", "weather-data", map[string]interface{}{
+		"complete": "true",
+	})
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// No EventBridge Scheduler entries for SLA.
+	schedMock.mu.Lock()
+	assert.Empty(t, schedMock.created, "dry-run pipeline must not create SLA schedules")
+	schedMock.mu.Unlock()
+
+	// No watchdog event types should fire for a dry-run pipeline.
+	evtTypes := gatherEventDetailTypes(ebMock)
+	prohibitedEvents := []string{
+		string(types.EventScheduleMissed),
+		string(types.EventIrregularScheduleMissed),
+		string(types.EventSensorDeadlineExpired),
+		string(types.EventRelativeSLABreach),
+		string(types.EventRelativeSLAWarning),
+		string(types.EventTriggerRecovered),
+		string(types.EventPostRunSensorMissing),
+		string(types.EventSFNTimeout),
+	}
+	for _, prohibited := range prohibitedEvents {
+		assert.NotContains(t, evtTypes, prohibited,
+			"dry-run pipeline must not produce %s events", prohibited)
+	}
+}

@@ -23,8 +23,17 @@ func handleDryRunTrigger(ctx context.Context, d *Deps, cfg *types.PipelineConfig
 
 	if marker != nil {
 		// Late data: sensor arrived after we already recorded a would-trigger.
-		triggeredAtStr, _ := marker.Data["triggeredAt"].(string)
-		triggeredAt, _ := time.Parse(time.RFC3339, triggeredAtStr)
+		triggeredAtStr, ok := marker.Data["triggeredAt"].(string)
+		if !ok || triggeredAtStr == "" {
+			d.Logger.WarnContext(ctx, "dry-run marker missing triggeredAt", "pipelineId", pipelineID)
+			return nil
+		}
+		triggeredAt, parseErr := time.Parse(time.RFC3339, triggeredAtStr)
+		if parseErr != nil {
+			d.Logger.WarnContext(ctx, "dry-run marker has invalid triggeredAt",
+				"pipelineId", pipelineID, "value", triggeredAtStr, "error", parseErr)
+			return nil
+		}
 		lateBy := now.Sub(triggeredAt)
 
 		if pubErr := publishEvent(ctx, d, string(types.EventDryRunLateData), pipelineID, scheduleID, date,
@@ -83,8 +92,29 @@ func handleDryRunTrigger(ctx context.Context, d *Deps, cfg *types.PipelineConfig
 	}
 
 	// SLA projection if configured.
+	var slaVerdict *dryRunSLAVerdict
 	if cfg.SLA != nil && cfg.SLA.ExpectedDuration != "" {
-		publishDryRunSLAProjection(ctx, d, cfg, pipelineID, scheduleID, date, now)
+		slaVerdict = publishDryRunSLAProjection(ctx, d, cfg, pipelineID, scheduleID, date, now)
+	}
+
+	// Publish DRY_RUN_COMPLETED to close the observation loop.
+	completedDetail := map[string]interface{}{
+		"triggeredAt": now.UTC().Format(time.RFC3339),
+	}
+	if slaVerdict != nil {
+		completedDetail["slaStatus"] = slaVerdict.Status
+		completedDetail["estimatedCompletion"] = slaVerdict.EstimatedCompletion
+		if slaVerdict.Deadline != "" {
+			completedDetail["deadline"] = slaVerdict.Deadline
+		}
+	} else {
+		completedDetail["slaStatus"] = "n/a"
+	}
+
+	if pubErr := publishEvent(ctx, d, string(types.EventDryRunCompleted), pipelineID, scheduleID, date,
+		fmt.Sprintf("dry-run: observation complete for %s/%s", pipelineID, date),
+		completedDetail); pubErr != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunCompleted, "error", pubErr)
 	}
 
 	d.Logger.Info("dry-run: would trigger",
@@ -95,15 +125,24 @@ func handleDryRunTrigger(ctx context.Context, d *Deps, cfg *types.PipelineConfig
 	return nil
 }
 
+// dryRunSLAVerdict holds the SLA projection result for inclusion in the
+// DRY_RUN_COMPLETED event detail.
+type dryRunSLAVerdict struct {
+	Status              string // "met" or "breach"
+	EstimatedCompletion string // RFC3339
+	Deadline            string // RFC3339, empty if no deadline configured
+}
+
 // publishDryRunSLAProjection computes and publishes an SLA projection event
 // for a dry-run pipeline. Reuses handleSLACalculate to resolve the breach
 // deadline consistently with production SLA monitoring (including hourly
-// pipeline T+1 adjustment).
-func publishDryRunSLAProjection(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string, triggeredAt time.Time) {
+// pipeline T+1 adjustment). Returns the verdict for inclusion in the
+// DRY_RUN_COMPLETED event.
+func publishDryRunSLAProjection(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string, triggeredAt time.Time) *dryRunSLAVerdict {
 	expectedDur, err := time.ParseDuration(cfg.SLA.ExpectedDuration)
 	if err != nil {
 		d.Logger.WarnContext(ctx, "dry-run: invalid expectedDuration", "error", err)
-		return
+		return nil
 	}
 
 	estimatedCompletion := triggeredAt.Add(expectedDur)
@@ -113,7 +152,11 @@ func publishDryRunSLAProjection(ctx context.Context, d *Deps, cfg *types.Pipelin
 		"expectedDuration":    cfg.SLA.ExpectedDuration,
 	}
 
-	status := "met"
+	verdict := &dryRunSLAVerdict{
+		Status:              "met",
+		EstimatedCompletion: estimatedCompletion.UTC().Format(time.RFC3339),
+	}
+
 	message := fmt.Sprintf("dry-run: SLA projection for %s — estimated completion %s",
 		pipelineID, estimatedCompletion.Format(time.RFC3339))
 
@@ -135,10 +178,11 @@ func publishDryRunSLAProjection(ctx context.Context, d *Deps, cfg *types.Pipelin
 			breachAt, parseErr := time.Parse(time.RFC3339, slaOutput.BreachAt)
 			if parseErr == nil {
 				detail["deadline"] = slaOutput.BreachAt
+				verdict.Deadline = slaOutput.BreachAt
 				margin := breachAt.Sub(estimatedCompletion)
 				detail["marginSeconds"] = margin.Seconds()
 				if estimatedCompletion.After(breachAt) {
-					status = "breach"
+					verdict.Status = "breach"
 					message = fmt.Sprintf("dry-run: SLA projection for %s — would breach by %.0fm",
 						pipelineID, math.Abs(margin.Minutes()))
 				} else {
@@ -149,11 +193,13 @@ func publishDryRunSLAProjection(ctx context.Context, d *Deps, cfg *types.Pipelin
 		}
 	}
 
-	detail["status"] = status
+	detail["status"] = verdict.Status
 
 	if pubErr := publishEvent(ctx, d, string(types.EventDryRunSLAProjection), pipelineID, scheduleID, date, message, detail); pubErr != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunSLAProjection, "error", pubErr)
 	}
+
+	return verdict
 }
 
 // handleDryRunPostRunSensor handles post-run sensor events for dry-run pipelines.

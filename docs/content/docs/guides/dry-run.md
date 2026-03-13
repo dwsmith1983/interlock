@@ -72,13 +72,14 @@ Sensor arrives → Stream-router
 
 ## Monitoring Events
 
-Dry-run pipelines emit four event types to EventBridge:
+Dry-run pipelines emit five event types to EventBridge:
 
 | Event | Meaning |
 |---|---|
 | `DRY_RUN_WOULD_TRIGGER` | All validation rules passed — Interlock would have triggered the job |
-| `DRY_RUN_LATE_DATA` | Sensor data arrived after the trigger point was already recorded |
 | `DRY_RUN_SLA_PROJECTION` | Estimated completion time vs. deadline — `met` or `breach` status |
+| `DRY_RUN_COMPLETED` | Observation loop closed — carries the SLA verdict (`met`, `breach`, or `n/a`) |
+| `DRY_RUN_LATE_DATA` | Sensor data arrived after the trigger point was already recorded |
 | `DRY_RUN_DRIFT` | Post-run sensor data changed from the baseline captured at trigger time |
 
 Create an EventBridge rule to capture these events:
