@@ -256,28 +256,8 @@ func handleSLASchedule(ctx context.Context, d *Deps, input SLAMonitorInput) (SLA
 		return calc, nil
 	}
 
-	for _, alert := range []struct {
-		suffix    string
-		alertType string
-		timestamp string
-	}{
-		{"warning", "SLA_WARNING", calc.WarningAt},
-		{"breach", "SLA_BREACH", calc.BreachAt},
-	} {
-		name := slaScheduleName(input.PipelineID, input.ScheduleID, input.Date, alert.suffix)
-		payload := SLAMonitorInput{
-			Mode:       "fire-alert",
-			PipelineID: input.PipelineID,
-			ScheduleID: input.ScheduleID,
-			Date:       input.Date,
-			AlertType:  alert.alertType,
-		}
-		if alert.alertType == "SLA_WARNING" {
-			payload.BreachAt = calc.BreachAt
-		}
-		if err := createOneTimeSchedule(ctx, d, name, alert.timestamp, payload); err != nil {
-			return SLAMonitorOutput{}, fmt.Errorf("create %s schedule: %w", alert.suffix, err)
-		}
+	if err := createSLASchedules(ctx, d, input.PipelineID, input.ScheduleID, input.Date, calc, false); err != nil {
+		return SLAMonitorOutput{}, err
 	}
 
 	d.Logger.InfoContext(ctx, "scheduled SLA alerts",
@@ -410,6 +390,42 @@ func createOneTimeSchedule(ctx context.Context, d *Deps, name, timestamp string,
 	})
 	if err != nil {
 		return fmt.Errorf("create one-time schedule %q: %w", name, err)
+	}
+	return nil
+}
+
+// createSLASchedules creates warning and breach one-time schedules.
+// Returns an error on the first schedule creation failure. If onConflictSkip
+// is true, ConflictException errors are silently skipped (idempotent retries).
+func createSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, date string, calc SLAMonitorOutput, onConflictSkip bool) error {
+	for _, alert := range []struct {
+		suffix    string
+		alertType string
+		timestamp string
+	}{
+		{"warning", "SLA_WARNING", calc.WarningAt},
+		{"breach", "SLA_BREACH", calc.BreachAt},
+	} {
+		name := slaScheduleName(pipelineID, scheduleID, date, alert.suffix)
+		payload := SLAMonitorInput{
+			Mode:       "fire-alert",
+			PipelineID: pipelineID,
+			ScheduleID: scheduleID,
+			Date:       date,
+			AlertType:  alert.alertType,
+		}
+		if alert.alertType == "SLA_WARNING" {
+			payload.BreachAt = calc.BreachAt
+		}
+		if err := createOneTimeSchedule(ctx, d, name, alert.timestamp, payload); err != nil {
+			if onConflictSkip {
+				var conflict *schedulerTypes.ConflictException
+				if errors.As(err, &conflict) {
+					continue
+				}
+			}
+			return fmt.Errorf("create %s schedule: %w", alert.suffix, err)
+		}
 	}
 	return nil
 }

@@ -2,13 +2,10 @@ package lambda
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
-
-	schedulerTypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 
 	"github.com/dwsmith1983/interlock/internal/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -544,35 +541,11 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 		breachAt, _ := time.Parse(time.RFC3339, calc.BreachAt)
 		if breachAt.IsZero() || breachAt.After(now) {
 			// SLA breach is in the future — create schedules.
-			var scheduleErr bool
-			for _, alert := range []struct {
-				suffix    string
-				alertType string
-				timestamp string
-			}{
-				{"warning", "SLA_WARNING", calc.WarningAt},
-				{"breach", "SLA_BREACH", calc.BreachAt},
-			} {
-				name := slaScheduleName(id, scheduleID, date, alert.suffix)
-				payload := SLAMonitorInput{
-					Mode:       "fire-alert",
-					PipelineID: id,
-					ScheduleID: scheduleID,
-					Date:       date,
-					AlertType:  alert.alertType,
-				}
-				if alert.alertType == "SLA_WARNING" {
-					payload.BreachAt = calc.BreachAt
-				}
-				if err := createOneTimeSchedule(ctx, d, name, alert.timestamp, payload); err != nil {
-					var conflict *schedulerTypes.ConflictException
-					if errors.As(err, &conflict) {
-						continue
-					}
-					d.Logger.Error("create SLA schedule failed",
-						"pipelineId", id, "suffix", alert.suffix, "error", err)
-					scheduleErr = true
-				}
+			scheduleErr := false
+			if err := createSLASchedules(ctx, d, id, scheduleID, date, calc, true); err != nil {
+				d.Logger.Error("create SLA schedule failed",
+					"pipelineId", id, "error", err)
+				scheduleErr = true
 			}
 
 			if !scheduleErr {
