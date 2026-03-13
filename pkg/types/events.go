@@ -41,6 +41,7 @@ const (
 	EventDryRunLateData          EventDetailType = "DRY_RUN_LATE_DATA"
 	EventDryRunSLAProjection     EventDetailType = "DRY_RUN_SLA_PROJECTION"
 	EventDryRunDrift             EventDetailType = "DRY_RUN_DRIFT"
+	EventDryRunCompleted         EventDetailType = "DRY_RUN_COMPLETED"
 )
 
 // EventSource is the EventBridge source for all interlock events.

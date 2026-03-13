@@ -79,7 +79,14 @@ func startSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineI
 }
 
 // startSFNWithName starts a Step Function execution with a custom execution name.
+// Defense-in-depth: refuses to start if the pipeline is in dry-run mode.
 func startSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, name string) error {
+	if cfg.DryRun {
+		d.Logger.Warn("startSFNWithName called for dry-run pipeline, suppressing execution",
+			"pipelineId", pipelineID, "schedule", scheduleID, "date", date)
+		return nil
+	}
+
 	sc := buildSFNConfig(cfg)
 
 	// Warn if the sum of evaluation + poll windows exceeds the SFN timeout.

@@ -4114,6 +4114,113 @@ func TestHandleSensorEvent_DryRun_CapturesBaseline(t *testing.T) {
 	assert.True(t, baselineExists, "expected postrun-baseline# sensor to be written in DDB")
 }
 
+func TestHandleSensorEvent_DryRun_Completed_NoSLA(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	fixedTime := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	cfg := testDryRunConfig()
+	// No SLA configured — just trigger + completed.
+	cfg.SLA = nil
+	seedConfig(mock, cfg)
+
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+	})
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunWouldTrigger))
+	assert.Contains(t, evtTypes, string(types.EventDryRunCompleted), "expected DRY_RUN_COMPLETED event")
+
+	// Parse the completed event detail — slaStatus should be "n/a".
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType == nil || *e.DetailType != string(types.EventDryRunCompleted) {
+				continue
+			}
+			var detail map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+			innerDetail, ok := detail["detail"].(map[string]interface{})
+			require.True(t, ok, "expected detail.detail map in completed event")
+			assert.Equal(t, "n/a", innerDetail["slaStatus"], "slaStatus should be n/a when no SLA configured")
+			return
+		}
+	}
+	t.Fatal("DRY_RUN_COMPLETED event not found in published events")
+}
+
+func TestHandleSensorEvent_DryRun_Completed_WithSLA(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	fixedTime := time.Date(2026, 3, 11, 1, 15, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedTime }
+
+	cfg := testDryRunConfig()
+	cfg.SLA = &types.SLAConfig{
+		Deadline:         "08:00",
+		ExpectedDuration: "30m",
+	}
+	seedConfig(mock, cfg)
+
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status": "ready",
+	})
+
+	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunWouldTrigger))
+	assert.Contains(t, evtTypes, string(types.EventDryRunSLAProjection))
+	assert.Contains(t, evtTypes, string(types.EventDryRunCompleted), "expected DRY_RUN_COMPLETED event")
+
+	// Completed event must carry the SLA verdict.
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType == nil || *e.DetailType != string(types.EventDryRunCompleted) {
+				continue
+			}
+			var detail map[string]interface{}
+			require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+			innerDetail, ok := detail["detail"].(map[string]interface{})
+			require.True(t, ok, "expected detail.detail map in completed event")
+			assert.Equal(t, "met", innerDetail["slaStatus"], "SLA should be met (trigger at 01:15, 30m duration, 08:00 deadline)")
+			assert.NotEmpty(t, innerDetail["estimatedCompletion"], "expected estimatedCompletion in completed event")
+			assert.NotEmpty(t, innerDetail["deadline"], "expected deadline in completed event")
+			return
+		}
+	}
+	t.Fatal("DRY_RUN_COMPLETED event not found in published events")
+}
+
 // ---------------------------------------------------------------------------
 // Post-run dry-run sensor tests
 // ---------------------------------------------------------------------------
@@ -4244,4 +4351,63 @@ func TestDryRunPostRunSensor_NoMarker(t *testing.T) {
 	// No events published (no marker means no trigger happened).
 	evtTypes := gatherEventDetailTypes(ebMock)
 	assert.Empty(t, evtTypes, "no events when no DRY_RUN# marker exists")
+}
+
+// ---------------------------------------------------------------------------
+// Dry-run: rerun and job-failure suppression
+// ---------------------------------------------------------------------------
+
+func TestRerun_DryRun_SkipsExecution(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testDryRunConfig()
+	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+
+	// Seed a failed job event so the rerun request would normally be accepted.
+	seedJobEvent(mock, "1709280000000", types.JobEventFail)
+
+	record := makeDefaultRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Dry-run pipeline must NOT start an SFN execution.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "dry-run pipeline must not start SFN on rerun request")
+
+	// No rerun records written (guard fires before any store side effects).
+	count, countErr := d.Store.CountRerunsBySource(context.Background(), "gold-revenue", "stream", "2026-03-01", []string{"manual"})
+	require.NoError(t, countErr)
+	assert.Zero(t, count, "dry-run must not write rerun records")
+}
+
+func TestJobFailure_DryRun_SkipsRerun(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testDryRunConfig()
+	cfg.Job.MaxRetries = 2
+	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+
+	// Send a JOB# failure event — normally triggers a rerun under retry limit.
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	// Dry-run pipeline must NOT start an SFN execution.
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	assert.Empty(t, sfnMock.executions, "dry-run pipeline must not start SFN on job failure")
+
+	// No rerun records written (guard fires before any store side effects).
+	count, countErr := d.Store.CountRerunsBySource(context.Background(), "gold-revenue", "stream", "2026-03-01", []string{"job-fail-retry"})
+	require.NoError(t, countErr)
+	assert.Zero(t, count, "dry-run must not write rerun records on job failure")
 }
