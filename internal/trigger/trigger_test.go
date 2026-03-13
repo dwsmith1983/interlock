@@ -267,3 +267,18 @@ func TestExecuteCommand_EmptyCommand(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "command is empty")
 }
+
+func TestExecuteCommand_DirectExec(t *testing.T) {
+	err := ExecuteCommand(context.Background(), "echo hello")
+	require.NoError(t, err)
+}
+
+func TestExecuteCommand_NoShellMetacharacters(t *testing.T) {
+	// The semicolon should be passed as a literal argument to echo, not
+	// interpreted as a shell command separator. With direct exec there is
+	// no shell to split on ";", so echo receives [";", "ls"] as arguments
+	// and prints them literally. If a shell were involved, "ls" would
+	// execute as a separate command.
+	err := ExecuteCommand(context.Background(), "echo ; ls")
+	require.NoError(t, err, "echo should succeed even with ; in args")
+}
