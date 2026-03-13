@@ -4418,7 +4418,7 @@ func TestDryRunPostRunSensor_NoMarker(t *testing.T) {
 
 func TestRerun_DryRun_SkipsExecution(t *testing.T) {
 	mock := newMockDDB()
-	d, sfnMock, _ := testDeps(mock)
+	d, sfnMock, ebMock := testDeps(mock)
 
 	cfg := testDryRunConfig()
 	seedConfig(mock, cfg)
@@ -4435,18 +4435,180 @@ func TestRerun_DryRun_SkipsExecution(t *testing.T) {
 
 	// Dry-run pipeline must NOT start an SFN execution.
 	sfnMock.mu.Lock()
-	defer sfnMock.mu.Unlock()
 	assert.Empty(t, sfnMock.executions, "dry-run pipeline must not start SFN on rerun request")
+	sfnMock.mu.Unlock()
 
-	// No rerun records written (guard fires before any store side effects).
+	// No rerun records written.
 	count, countErr := d.Store.CountRerunsBySource(context.Background(), "gold-revenue", "stream", "2026-03-01", []string{"manual"})
 	require.NoError(t, countErr)
 	assert.Zero(t, count, "dry-run must not write rerun records")
+
+	// Must publish DRY_RUN_WOULD_RERUN with circuitBreaker and budget fields.
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunWouldRerun), "expected DRY_RUN_WOULD_RERUN event")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunWouldRerun) {
+				var detail types.InterlockEvent
+				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+				assert.Contains(t, detail.Detail, "circuitBreaker")
+				assert.Contains(t, detail.Detail, "budget")
+			}
+		}
+	}
+}
+
+func TestRerun_DryRun_CalendarExcluded(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testDryRunConfig()
+	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-01"}}
+	seedConfig(mock, cfg)
+
+	record := makeDefaultRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunRerunRejected), "expected DRY_RUN_RERUN_REJECTED event")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunRerunRejected) {
+				var detail types.InterlockEvent
+				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+				assert.Equal(t, "excluded by calendar", detail.Detail["reason"])
+			}
+		}
+	}
+}
+
+func TestRerun_DryRun_LimitExceeded(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testDryRunConfig()
+	cfg.Job.MaxManualReruns = intPtr(0)
+	seedConfig(mock, cfg)
+
+	record := makeDefaultRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunRerunRejected), "expected DRY_RUN_RERUN_REJECTED event")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunRerunRejected) {
+				var detail types.InterlockEvent
+				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+				assert.Equal(t, "limit exceeded", detail.Detail["reason"])
+			}
+		}
+	}
+}
+
+func TestRerun_DryRun_CircuitBreakerReject(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testDryRunConfig()
+	seedConfig(mock, cfg)
+
+	// Seed a successful job with a millis-epoch timestamp.
+	seedJobEvent(mock, "2000000000000", types.JobEventSuccess)
+
+	// Seed sensors with timestamps OLDER than the job — data unchanged.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"status":    "ready",
+		"updatedAt": float64(1000000000000),
+	})
+
+	record := makeDefaultRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunRerunRejected), "expected DRY_RUN_RERUN_REJECTED event")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunRerunRejected) {
+				var detail types.InterlockEvent
+				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+				assert.Equal(t, "circuit breaker", detail.Detail["reason"])
+				assert.Equal(t, "rejected", detail.Detail["circuitBreaker"])
+			}
+		}
+	}
+}
+
+func TestRerun_DryRun_NoJobHistory(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testDryRunConfig()
+	seedConfig(mock, cfg)
+
+	// No JOB# events seeded — circuit breaker should report "skipped".
+	record := makeDefaultRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunWouldRerun), "expected DRY_RUN_WOULD_RERUN event")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunWouldRerun) {
+				var detail types.InterlockEvent
+				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+				assert.Equal(t, "skipped (no job history)", detail.Detail["circuitBreaker"])
+			}
+		}
+	}
 }
 
 func TestJobFailure_DryRun_SkipsRerun(t *testing.T) {
 	mock := newMockDDB()
-	d, sfnMock, _ := testDeps(mock)
+	d, sfnMock, ebMock := testDeps(mock)
 
 	cfg := testDryRunConfig()
 	cfg.Job.MaxRetries = 2
@@ -4462,13 +4624,89 @@ func TestJobFailure_DryRun_SkipsRerun(t *testing.T) {
 
 	// Dry-run pipeline must NOT start an SFN execution.
 	sfnMock.mu.Lock()
-	defer sfnMock.mu.Unlock()
 	assert.Empty(t, sfnMock.executions, "dry-run pipeline must not start SFN on job failure")
+	sfnMock.mu.Unlock()
 
-	// No rerun records written (guard fires before any store side effects).
+	// No rerun records written.
 	count, countErr := d.Store.CountRerunsBySource(context.Background(), "gold-revenue", "stream", "2026-03-01", []string{"job-fail-retry"})
 	require.NoError(t, countErr)
 	assert.Zero(t, count, "dry-run must not write rerun records on job failure")
+
+	// Must publish DRY_RUN_WOULD_RETRY with retries and maxRetries fields.
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunWouldRetry), "expected DRY_RUN_WOULD_RETRY event")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunWouldRetry) {
+				var detail types.InterlockEvent
+				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+				assert.Contains(t, detail.Detail, "retries")
+				assert.Contains(t, detail.Detail, "maxRetries")
+			}
+		}
+	}
+}
+
+func TestJobFailure_DryRun_RetryExhausted(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testDryRunConfig()
+	cfg.Job.MaxRetries = 0
+	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunRetryExhausted), "expected DRY_RUN_RETRY_EXHAUSTED event")
+}
+
+func TestJobFailure_DryRun_CalendarExcluded(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, ebMock := testDeps(mock)
+
+	cfg := testDryRunConfig()
+	cfg.Job.MaxRetries = 2
+	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-01"}}
+	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+
+	record := makeJobRecord("gold-revenue", types.JobEventFail)
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+
+	sfnMock.mu.Lock()
+	assert.Empty(t, sfnMock.executions, "dry-run must not start SFN")
+	sfnMock.mu.Unlock()
+
+	evtTypes := gatherEventDetailTypes(ebMock)
+	assert.Contains(t, evtTypes, string(types.EventDryRunRetryExhausted), "expected DRY_RUN_RETRY_EXHAUSTED event")
+
+	ebMock.mu.Lock()
+	defer ebMock.mu.Unlock()
+	for _, input := range ebMock.events {
+		for _, e := range input.Entries {
+			if e.DetailType != nil && *e.DetailType == string(types.EventDryRunRetryExhausted) {
+				var detail types.InterlockEvent
+				require.NoError(t, json.Unmarshal([]byte(*e.Detail), &detail))
+				assert.Equal(t, "excluded by calendar", detail.Detail["reason"])
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -34,11 +34,10 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		return nil
 	}
 
-	// Dry-run pipelines never start real executions.
+	// Dry-run pipelines evaluate all checks but publish observation events
+	// instead of executing side effects.
 	if cfg.DryRun {
-		d.Logger.Info("dry-run: skipping rerun request",
-			"pipelineId", pipelineID, "schedule", schedule, "date", date)
-		return nil
+		return handleDryRunRerunRequest(ctx, d, cfg, pipelineID, schedule, date, record)
 	}
 
 	// --- Calendar exclusion check (execution date) ---
@@ -210,11 +209,10 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 		return nil
 	}
 
-	// Dry-run pipelines never start real executions.
+	// Dry-run pipelines evaluate retry logic but publish observation events
+	// instead of executing side effects.
 	if cfg.DryRun {
-		d.Logger.Info("dry-run: skipping job failure rerun",
-			"pipelineId", pipelineID, "schedule", schedule, "date", date)
-		return nil
+		return handleDryRunJobFailure(ctx, d, cfg, pipelineID, schedule, date)
 	}
 
 	maxRetries := cfg.Job.MaxRetries
@@ -302,6 +300,171 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 		"date", date,
 		"attempt", attempt,
 	)
+	return nil
+}
+
+// handleDryRunRerunRequest evaluates all rerun checks (calendar, limit,
+// circuit breaker) and publishes observation events instead of executing
+// side effects. Mirrors the production handleRerunRequest logic.
+func handleDryRunRerunRequest(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string, record events.DynamoDBEventRecord) error {
+	// Calendar exclusion check.
+	if isExcludedDate(cfg, date) {
+		if pubErr := publishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
+			fmt.Sprintf("dry-run: rerun rejected for %s: execution date %s excluded by calendar", pipelineID, date),
+			map[string]interface{}{
+				"reason": "excluded by calendar",
+			}); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunRerunRejected, "error", pubErr)
+		}
+		return nil
+	}
+
+	// Extract reason from stream record NewImage. Default to "manual".
+	reason := "manual"
+	if img := record.Change.NewImage; img != nil {
+		if r, ok := img["reason"]; ok && r.DataType() == events.DataTypeString {
+			if v := r.String(); v != "" {
+				reason = v
+			}
+		}
+	}
+
+	// Rerun limit check.
+	var budget int
+	var sources []string
+	switch reason {
+	case "data-drift", "late-data":
+		budget = types.IntOrDefault(cfg.Job.MaxDriftReruns, 1)
+		sources = []string{"data-drift", "late-data"}
+	default:
+		budget = types.IntOrDefault(cfg.Job.MaxManualReruns, 1)
+		sources = []string{reason}
+	}
+
+	count, err := d.Store.CountRerunsBySource(ctx, pipelineID, schedule, date, sources)
+	if err != nil {
+		return fmt.Errorf("dry-run: count reruns by source for %q: %w", pipelineID, err)
+	}
+
+	if count >= budget {
+		if pubErr := publishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
+			fmt.Sprintf("dry-run: rerun rejected for %s: limit exceeded (%d/%d)", pipelineID, count, budget),
+			map[string]interface{}{
+				"reason":     "limit exceeded",
+				"rerunCount": count,
+				"budget":     budget,
+			}); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunRerunRejected, "error", pubErr)
+		}
+		return nil
+	}
+
+	// Circuit breaker (sensor freshness).
+	cbStatus := "passed"
+	job, err := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
+	if err != nil {
+		return fmt.Errorf("dry-run: get latest job event for %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+
+	if job == nil {
+		cbStatus = "skipped (no job history)"
+	} else if job.Event == types.JobEventSuccess {
+		fresh, freshErr := checkSensorFreshness(ctx, d, pipelineID, job.SK)
+		if freshErr != nil {
+			return fmt.Errorf("dry-run: check sensor freshness for %q: %w", pipelineID, freshErr)
+		}
+		if !fresh {
+			if pubErr := publishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
+				fmt.Sprintf("dry-run: rerun rejected for %s: previous run succeeded and no sensor data has changed", pipelineID),
+				map[string]interface{}{
+					"reason":         "circuit breaker",
+					"circuitBreaker": "rejected",
+				}); pubErr != nil {
+				d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunRerunRejected, "error", pubErr)
+			}
+			return nil
+		}
+	}
+
+	// All checks pass — publish would-rerun event.
+	if pubErr := publishEvent(ctx, d, string(types.EventDryRunWouldRerun), pipelineID, schedule, date,
+		fmt.Sprintf("dry-run: would rerun %s (reason: %s)", pipelineID, reason),
+		map[string]interface{}{
+			"reason":         reason,
+			"circuitBreaker": cbStatus,
+			"rerunCount":     count,
+			"budget":         budget,
+		}); pubErr != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunWouldRerun, "error", pubErr)
+	}
+
+	d.Logger.Info("dry-run: would rerun",
+		"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason)
+	return nil
+}
+
+// handleDryRunJobFailure evaluates retry logic for a dry-run pipeline and
+// publishes observation events instead of executing side effects.
+func handleDryRunJobFailure(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string) error {
+	maxRetries := cfg.Job.MaxRetries
+
+	// Read latest job event for failure category (read-only).
+	latestJob, jobErr := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
+	if jobErr != nil {
+		d.Logger.WarnContext(ctx, "dry-run: could not read latest job event for failure category",
+			"pipelineId", pipelineID, "error", jobErr)
+	}
+	if latestJob != nil {
+		if types.FailureCategory(latestJob.Category) == types.FailurePermanent {
+			maxRetries = types.IntOrDefault(cfg.Job.MaxCodeRetries, 1)
+		}
+		// TRANSIENT, TIMEOUT, or empty → use cfg.Job.MaxRetries (already set).
+	}
+
+	rerunCount, err := d.Store.CountRerunsBySource(ctx, pipelineID, schedule, date, []string{"job-fail-retry"})
+	if err != nil {
+		return fmt.Errorf("dry-run: count reruns for %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+
+	if rerunCount >= maxRetries {
+		if pubErr := publishEvent(ctx, d, string(types.EventDryRunRetryExhausted), pipelineID, schedule, date,
+			fmt.Sprintf("dry-run: retry limit reached (%d/%d) for %s", rerunCount, maxRetries, pipelineID),
+			map[string]interface{}{
+				"retries":    rerunCount,
+				"maxRetries": maxRetries,
+			}); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunRetryExhausted, "error", pubErr)
+		}
+		return nil
+	}
+
+	// Calendar exclusion check.
+	if isExcludedDate(cfg, date) {
+		if pubErr := publishEvent(ctx, d, string(types.EventDryRunRetryExhausted), pipelineID, schedule, date,
+			fmt.Sprintf("dry-run: retry skipped for %s: execution date %s excluded by calendar", pipelineID, date),
+			map[string]interface{}{
+				"reason":     "excluded by calendar",
+				"retries":    rerunCount,
+				"maxRetries": maxRetries,
+			}); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunRetryExhausted, "error", pubErr)
+		}
+		return nil
+	}
+
+	// Under budget — publish would-retry event.
+	if pubErr := publishEvent(ctx, d, string(types.EventDryRunWouldRetry), pipelineID, schedule, date,
+		fmt.Sprintf("dry-run: would retry %s (%d/%d)", pipelineID, rerunCount, maxRetries),
+		map[string]interface{}{
+			"retries":    rerunCount,
+			"maxRetries": maxRetries,
+		}); pubErr != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunWouldRetry, "error", pubErr)
+	}
+
+	d.Logger.Info("dry-run: would retry",
+		"pipelineId", pipelineID, "schedule", schedule, "date", date,
+		"retries", rerunCount, "maxRetries", maxRetries)
 	return nil
 }
 
