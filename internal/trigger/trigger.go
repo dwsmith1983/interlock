@@ -47,6 +47,19 @@ const defaultTriggerTimeout = 30 * time.Second
 // defaultHTTPClient is shared across HTTP and Airflow triggers to reuse connections.
 var defaultHTTPClient = &http.Client{Timeout: defaultTriggerTimeout}
 
+// resolveHTTPClient returns a client with the given timeout in seconds. If
+// timeoutSec is zero or matches the default, the shared defaultHTTPClient is
+// returned to reuse connections.
+func resolveHTTPClient(timeoutSec int) *http.Client {
+	if timeoutSec > 0 {
+		timeout := time.Duration(timeoutSec) * time.Second
+		if timeout != defaultTriggerTimeout {
+			return &http.Client{Timeout: timeout}
+		}
+	}
+	return defaultHTTPClient
+}
+
 // defaultRunner provides backward-compatible package-level functions.
 var defaultRunner = NewRunner()
 
@@ -60,13 +73,16 @@ func CheckStatus(ctx context.Context, triggerType types.TriggerType, metadata ma
 	return defaultRunner.CheckStatus(ctx, triggerType, metadata, headers)
 }
 
-// ExecuteCommand runs a shell command trigger.
+// ExecuteCommand runs a command trigger by splitting the command string into
+// arguments and executing the binary directly (no shell). This prevents shell
+// metacharacter injection.
 func ExecuteCommand(ctx context.Context, command string) error {
 	if command == "" {
 		return fmt.Errorf("trigger command is empty")
 	}
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	args := strings.Fields(command)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -94,14 +110,7 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 		req.Header.Set(k, os.Expand(v, safeEnvLookup))
 	}
 
-	client := defaultHTTPClient
-	if cfg.Timeout > 0 {
-		timeout := time.Duration(cfg.Timeout) * time.Second
-		if timeout != defaultTriggerTimeout {
-			client = &http.Client{Timeout: timeout}
-		}
-	}
-	resp, err := client.Do(req)
+	resp, err := resolveHTTPClient(cfg.Timeout).Do(req)
 	if err != nil {
 		return fmt.Errorf("trigger request failed: %w", err)
 	}
