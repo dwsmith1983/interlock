@@ -132,9 +132,19 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		return nil
 	}
 
-	// --- Acceptance: write rerun record FIRST (before lock reset) ---
-	if _, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, reason, ""); err != nil {
-		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
+	// --- Acceptance: acquire lock FIRST (before writing rerun) ---
+	acquired, err := d.Store.ResetTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL())
+	if err != nil {
+		return fmt.Errorf("reset trigger lock for %q: %w", pipelineID, err)
+	}
+	if !acquired {
+		if pubErr := publishEvent(ctx, d, string(types.EventInfraFailure), pipelineID, schedule, date,
+			fmt.Sprintf("lock reset failed for rerun of %s", pipelineID)); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "error", pubErr)
+		}
+		d.Logger.Warn("failed to reset trigger lock for rerun",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date)
+		return nil
 	}
 
 	// Delete date-scoped postrun-baseline so re-run captures fresh baseline.
@@ -144,22 +154,16 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		}
 	}
 
-	// Atomically reset the trigger lock for the new execution.
-	acquired, err := d.Store.ResetTriggerLock(ctx, pipelineID, schedule, date, ResolveTriggerLockTTL())
-	if err != nil {
-		return fmt.Errorf("reset trigger lock for %q: %w", pipelineID, err)
-	}
-	if !acquired {
-		if pubErr := publishEvent(ctx, d, string(types.EventInfraFailure), pipelineID, schedule, date,
-			fmt.Sprintf("lock reset failed for rerun of %s, orphaned rerun record", pipelineID)); pubErr != nil {
-			d.Logger.WarnContext(ctx, "failed to publish event", "error", pubErr)
+	// Write rerun record AFTER lock is confirmed.
+	if _, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, reason, ""); err != nil {
+		// Lock acquired but write failed — release lock to avoid deadlock.
+		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); relErr != nil {
+			d.Logger.Warn("failed to release lock after rerun write failure", "error", relErr)
 		}
-		d.Logger.Warn("failed to reset trigger lock, orphaned rerun record",
-			"pipelineId", pipelineID, "schedule", schedule, "date", date)
-		return nil
+		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
 	}
 
-	// Publish acceptance event only after lock atomicity is confirmed.
+	// Publish acceptance event only after lock and rerun record confirmed.
 	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 		types.JobEventRerunAccepted, "", 0, ""); err != nil {
 		d.Logger.Warn("failed to write rerun-accepted joblog", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
@@ -348,6 +352,13 @@ func checkSensorFreshness(ctx context.Context, d *Deps, pipelineID, jobSK string
 			}
 		default:
 			continue
+		}
+
+		// Normalize epoch: if ts looks like seconds (< 1e12), convert to millis.
+		// Epoch millis won't be < 1e12 until ~2001, and epoch seconds won't
+		// exceed 1e12 until ~33658 CE.
+		if ts > 0 && ts < 1e12 {
+			ts *= 1000
 		}
 
 		if ts > jobTimestamp {

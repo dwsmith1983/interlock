@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/dwsmith1983/interlock/internal/validation"
@@ -227,22 +228,34 @@ func handleDryRunPostRunSensor(ctx context.Context, d *Deps, cfg *types.Pipeline
 		return nil
 	}
 
+	// Find matching post-run rule for this sensor key.
+	var ruleBaseline map[string]interface{}
+	for _, rule := range cfg.PostRun.Rules {
+		if strings.HasPrefix(sensorKey, rule.Key) {
+			if nested, ok := baseline[rule.Key].(map[string]interface{}); ok {
+				ruleBaseline = nested
+			}
+			break
+		}
+	}
+	if ruleBaseline == nil {
+		return nil // No baseline for this rule (stale or first run).
+	}
+
 	// Compare drift.
 	driftField := resolveDriftField(cfg.PostRun)
-	prevCount := ExtractFloat(baseline, driftField)
-	currCount := ExtractFloat(sensorData, driftField)
 	threshold := 0.0
 	if cfg.PostRun.DriftThreshold != nil {
 		threshold = *cfg.PostRun.DriftThreshold
 	}
-
-	if prevCount > 0 && currCount > 0 && math.Abs(currCount-prevCount) > threshold {
+	dr := DetectDrift(ruleBaseline, sensorData, driftField, threshold)
+	if dr.Drifted {
 		if pubErr := publishEvent(ctx, d, string(types.EventDryRunDrift), pipelineID, scheduleID, date,
-			fmt.Sprintf("dry-run: drift detected for %s: %.0f → %.0f — would re-run", pipelineID, prevCount, currCount),
+			fmt.Sprintf("dry-run: drift detected for %s: %.0f → %.0f — would re-run", pipelineID, dr.Previous, dr.Current),
 			map[string]interface{}{
-				"previousCount":  prevCount,
-				"currentCount":   currCount,
-				"delta":          currCount - prevCount,
+				"previousCount":  dr.Previous,
+				"currentCount":   dr.Current,
+				"delta":          dr.Delta,
 				"driftThreshold": threshold,
 				"driftField":     driftField,
 				"sensorKey":      sensorKey,

@@ -141,7 +141,7 @@ func TestStreamRouter_SensorMatch_StartsSFN(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -182,7 +182,7 @@ func TestStreamRouter_SensorPrefixMatch_PerPeriodKey(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -207,7 +207,7 @@ func TestStreamRouter_SensorNoMatch_NoSFN(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -231,7 +231,7 @@ func TestStreamRouter_SensorMatch_LockHeld_NoSFN(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -256,7 +256,7 @@ func TestStreamRouter_CalendarExcluded_NoSFN(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -274,7 +274,7 @@ func TestStreamRouter_NoPipelineConfig_NoSFN(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -301,7 +301,7 @@ func TestStreamRouter_ConfigChange_InvalidatesCache(t *testing.T) {
 	sensorRecord := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
 		"status": events.NewStringAttribute("ready"),
 	})
-	err := lambda.HandleStreamEvent(context.Background(), d, lambda.StreamEvent{
+	_, err := lambda.HandleStreamEvent(context.Background(), d, lambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{sensorRecord},
 	})
 	require.NoError(t, err)
@@ -316,13 +316,13 @@ func TestStreamRouter_ConfigChange_InvalidatesCache(t *testing.T) {
 
 	// Send a CONFIG change event to invalidate the cache.
 	configRecord := makeConfigRecord("gold-revenue")
-	err = lambda.HandleStreamEvent(context.Background(), d, lambda.StreamEvent{
+	_, err = lambda.HandleStreamEvent(context.Background(), d, lambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{configRecord},
 	})
 	require.NoError(t, err)
 
 	// Now send the sensor event again — should trigger SFN with the updated config.
-	err = lambda.HandleStreamEvent(context.Background(), d, lambda.StreamEvent{
+	_, err = lambda.HandleStreamEvent(context.Background(), d, lambda.StreamEvent{
 		Records: []events.DynamoDBEventRecord{sensorRecord},
 	})
 	require.NoError(t, err)
@@ -401,7 +401,7 @@ func TestStreamRouter_JobFail_UnderRetryLimit_Reruns(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Should have started a new SFN execution for the rerun.
@@ -432,7 +432,7 @@ func TestStreamRouter_JobFail_OverRetryLimit_Alerts(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No SFN execution should be started.
@@ -457,7 +457,7 @@ func TestStreamRouter_JobSuccess_PublishesEvent(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventSuccess)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No SFN execution for success.
@@ -484,7 +484,7 @@ func TestStreamRouter_JobTimeout_TreatedAsFailure(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventTimeout)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -518,7 +518,7 @@ func TestStreamRouter_JobFail_DriftRerunsIgnored(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -534,7 +534,7 @@ func TestStreamRouter_JobFail_NoConfig_Skips(t *testing.T) {
 	record := makeJobRecord("unknown-pipeline", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -559,7 +559,7 @@ func TestStreamRouter_TriggerValueMismatch_NoSFN(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -586,7 +586,7 @@ func TestStreamRouter_SensorMatch_RecordsFirstSensorArrival(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Verify SFN was started (lock acquired).
@@ -628,7 +628,7 @@ func TestStreamRouter_SensorMatch_FirstArrivalIdempotent(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Verify original arrival time is preserved (not overwritten).
@@ -673,7 +673,7 @@ func TestStreamRouter_LateDataArrival_CompletedSuccess(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No SFN execution (lock held).
@@ -717,7 +717,7 @@ func TestStreamRouter_LateDataArrival_WritesRerunRequest(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Should have published LATE_DATA_ARRIVAL event (existing behavior).
@@ -756,7 +756,7 @@ func TestStreamRouter_LateDataArrival_StillRunning_Silent(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -797,7 +797,7 @@ func TestStreamRouter_LateDataArrival_CompletedFailed_Silent(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No late data event — pipeline didn't succeed.
@@ -902,6 +902,27 @@ func seedJobEvent(mock *mockDDB, timestamp, event string) {
 }
 
 // seedSensor inserts a sensor record with a data map into the mock control table.
+// toAttributeValue converts a Go value to a DynamoDB attribute value, supporting
+// nested maps for namespaced baseline format.
+func toAttributeValue(v interface{}) ddbtypes.AttributeValue {
+	switch val := v.(type) {
+	case string:
+		return &ddbtypes.AttributeValueMemberS{Value: val}
+	case float64:
+		return &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%g", val)}
+	case int64:
+		return &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", val)}
+	case map[string]interface{}:
+		nested := make(map[string]ddbtypes.AttributeValue, len(val))
+		for nk, nv := range val {
+			nested[nk] = toAttributeValue(nv)
+		}
+		return &ddbtypes.AttributeValueMemberM{Value: nested}
+	default:
+		return &ddbtypes.AttributeValueMemberS{Value: fmt.Sprintf("%v", val)}
+	}
+}
+
 func seedSensor(mock *mockDDB, pipelineID, sensorKey string, data map[string]interface{}) {
 	item := map[string]ddbtypes.AttributeValue{
 		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
@@ -910,14 +931,7 @@ func seedSensor(mock *mockDDB, pipelineID, sensorKey string, data map[string]int
 	if data != nil {
 		dataAV := make(map[string]ddbtypes.AttributeValue, len(data))
 		for k, v := range data {
-			switch val := v.(type) {
-			case string:
-				dataAV[k] = &ddbtypes.AttributeValueMemberS{Value: val}
-			case float64:
-				dataAV[k] = &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%g", val)}
-			case int64:
-				dataAV[k] = &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", val)}
-			}
+			dataAV[k] = toAttributeValue(v)
 		}
 		item["data"] = &ddbtypes.AttributeValueMemberM{Value: dataAV}
 	}
@@ -938,7 +952,7 @@ func TestStreamRouter_RerunRequest_FailedJob_Allowed(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Should have started a new SFN execution.
@@ -968,7 +982,7 @@ func TestStreamRouter_RerunRequest_SuccessDataChanged_Allowed(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Data changed — SFN should start.
@@ -984,20 +998,22 @@ func TestStreamRouter_RerunRequest_SuccessDataUnchanged_Rejected(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
-	// Seed a successful job event with timestamp 2000000.
-	seedJobEvent(mock, "2000000", types.JobEventSuccess)
+	// Use millis-range timestamps so epoch normalization (ts < 1e12 → ts*1000)
+	// does not distort the comparison.
+	seedJobEvent(mock, "2000000000000", types.JobEventSuccess)
 
-	// Seed a sensor with updatedAt BEFORE the job timestamp.
+	// Seed a sensor with updatedAt BEFORE the job timestamp (both in millis).
 	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
-		"updatedAt": float64(1000000), // older than job timestamp
+		"updatedAt": float64(1000000000000), // older than job timestamp
 		"status":    "ready",
 	})
 
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No SFN execution — data unchanged.
@@ -1026,7 +1042,7 @@ func TestStreamRouter_RerunRequest_InfraExhausted_Allowed(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Should have started a new SFN execution.
@@ -1034,6 +1050,37 @@ func TestStreamRouter_RerunRequest_InfraExhausted_Allowed(t *testing.T) {
 	defer sfnMock.mu.Unlock()
 	require.Len(t, sfnMock.executions, 1, "expected one SFN execution for manual rerun of infra-exhausted job")
 	assert.Contains(t, *sfnMock.executions[0].Name, "manual-rerun")
+}
+
+func TestStreamRouter_RerunRequest_SensorEpochSeconds_Normalized(t *testing.T) {
+	mock := newMockDDB()
+	d, sfnMock, _ := testDeps(mock)
+
+	cfg := testJobConfig()
+	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+
+	// Seed a successful job with timestamp in millis: 2000000000000 (year ~2033).
+	seedJobEvent(mock, "2000000000000", types.JobEventSuccess)
+
+	// Seed sensor with updatedAt in SECONDS: 2000000001 (1 second after job).
+	// Without normalization, 2000000001 < 2000000000000 → rejected.
+	// With normalization, 2000000001000 > 2000000000000 → allowed.
+	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+		"updatedAt": float64(2000000001), // seconds epoch
+		"status":    "ready",
+	})
+
+	record := makeDefaultRerunRequestRecord()
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
+
+	resp, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	_ = resp
+
+	sfnMock.mu.Lock()
+	defer sfnMock.mu.Unlock()
+	require.Len(t, sfnMock.executions, 1, "sensor with epoch-seconds updatedAt should be normalized and allow rerun")
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,7 +1103,7 @@ func TestStreamRouter_UnknownSKPrefix_Silent(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1072,15 +1119,18 @@ func TestStreamRouter_MissingPKOrSK_LogsError(t *testing.T) {
 	mock := newMockDDB()
 	d, _, _ := testDeps(mock)
 
-	// Record with no keys at all — should log error but HandleStreamEvent returns nil.
+	// Record with no keys at all — handleRecord returns error, collected as batch failure.
 	record := events.DynamoDBEventRecord{
+		EventID:   "missing-keys-1",
 		EventName: "INSERT",
 		Change:    events.DynamoDBStreamRecord{},
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
-	require.NoError(t, err, "HandleStreamEvent always returns nil; errors are logged")
+	resp, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err, "HandleStreamEvent never returns a top-level error")
+	require.Len(t, resp.BatchItemFailures, 1)
+	assert.Equal(t, "missing-keys-1", resp.BatchItemFailures[0].ItemIdentifier)
 }
 
 // ---------------------------------------------------------------------------
@@ -1105,7 +1155,7 @@ func TestLateData_TriggerNil(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No late data event — GetTrigger returned nil (trigger row doesn't match COMPLETED).
@@ -1139,7 +1189,7 @@ func TestSensor_NoTriggerCondition(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1160,7 +1210,7 @@ func TestSensor_SensorKeyMismatch(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1183,9 +1233,10 @@ func TestSensor_StartSFNError(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	// HandleStreamEvent logs errors but always returns nil.
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
-	require.NoError(t, err, "HandleStreamEvent swallows errors")
+	// Per-record error collected as batch failure.
+	resp, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	require.Len(t, resp.BatchItemFailures, 1, "SFN error should produce a batch item failure")
 
 	// SFN was called but failed.
 	sfnMock.mu.Lock()
@@ -1209,8 +1260,9 @@ func TestSensor_StartSFNError_ReleasesLock(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
-	require.NoError(t, err, "HandleStreamEvent swallows errors")
+	resp, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	require.Len(t, resp.BatchItemFailures, 1, "SFN error should produce a batch item failure")
 
 	// The trigger lock must have been released after SFN failure.
 	// Schedule ID for stream-triggered pipelines is "stream".
@@ -1237,7 +1289,7 @@ func TestSensor_PerHour_DateOnly(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1262,7 +1314,7 @@ func TestSensor_PerHour_NoDate(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1290,7 +1342,7 @@ func TestRerun_NoJobRecord_Allowed(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1307,7 +1359,7 @@ func TestRerun_NoConfig_Skips(t *testing.T) {
 	record := makeDefaultRerunRequestRecord() // uses "gold-revenue"
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1337,9 +1389,10 @@ func TestRerun_ParseSKError(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	// Error is logged, HandleStreamEvent returns nil.
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	// Per-record error collected as batch failure.
+	resp, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
+	require.Len(t, resp.BatchItemFailures, 1)
 }
 
 func TestRerun_TimeoutJob_Allowed(t *testing.T) {
@@ -1356,7 +1409,7 @@ func TestRerun_TimeoutJob_Allowed(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1379,7 +1432,7 @@ func TestRerun_UnknownJobEvent_Allowed(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1404,7 +1457,7 @@ func TestRerun_StartSFNError(t *testing.T) {
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
 	// Error is logged, HandleStreamEvent still returns nil.
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1430,7 +1483,7 @@ func TestSensorFreshness_NoSensors(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No sensors → can't prove unchanged → allow rerun.
@@ -1458,7 +1511,7 @@ func TestSensorFreshness_NoUpdatedAtField(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No updatedAt → can't prove unchanged → allow rerun.
@@ -1486,7 +1539,7 @@ func TestSensorFreshness_FreshSensor_Float(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1500,19 +1553,21 @@ func TestSensorFreshness_StaleSensor_Float(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
+	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
 
-	// Seed a successful job event with timestamp 2000000.
-	seedJobEvent(mock, "2000000", types.JobEventSuccess)
+	// Use millis-range timestamps so epoch normalization (ts < 1e12 → ts*1000)
+	// does not distort the comparison.
+	seedJobEvent(mock, "2000000000000", types.JobEventSuccess)
 
-	// Seed a sensor with updatedAt as float64 < jobTimestamp.
+	// Seed a sensor with updatedAt as float64 < jobTimestamp (both in millis).
 	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
-		"updatedAt": float64(1000000),
+		"updatedAt": float64(1000000000000),
 	})
 
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1544,7 +1599,7 @@ func TestSensorFreshness_FreshSensor_String(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1576,7 +1631,7 @@ func TestSensorFreshness_InvalidJobSK(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Invalid job SK → can't parse timestamp → allow to be safe.
@@ -1608,7 +1663,7 @@ func TestSensorFreshness_InvalidTimestamp(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Non-numeric timestamp → allow to be safe.
@@ -1633,7 +1688,7 @@ func TestJobLog_InfraExhaustedEvent(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventInfraTriggerExhausted)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1656,7 +1711,7 @@ func TestJobLog_OtherEvent(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventRerunAccepted)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1691,9 +1746,10 @@ func TestJobLog_ParseSKError(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	// Error is logged, HandleStreamEvent returns nil.
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	// Per-record error collected as batch failure.
+	resp, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
+	require.Len(t, resp.BatchItemFailures, 1)
 }
 
 func TestJobLog_MissingEventAttribute(t *testing.T) {
@@ -1722,7 +1778,7 @@ func TestJobLog_MissingEventAttribute(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Missing event attribute → logged as warning, no action.
@@ -1749,7 +1805,7 @@ func TestJobSuccess_PublishesJobCompleted(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventSuccess)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	ebMock.mu.Lock()
@@ -1777,7 +1833,7 @@ func TestJobFailure_NoConfig(t *testing.T) {
 	record := makeJobRecord("unknown-pipeline", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1811,7 +1867,7 @@ func TestBuildSFNConfig_NoPostRunFields(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1847,7 +1903,7 @@ func TestBuildSFNConfig_CustomTimings(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1879,7 +1935,7 @@ func TestBuildSFNConfig_WithSLA(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1910,7 +1966,7 @@ func TestBuildSFNConfig_JobPollWindowDefault(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1937,7 +1993,7 @@ func TestBuildSFNConfig_JobPollWindowOverride(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -1964,7 +2020,7 @@ func TestBuildSFNConfig_JobPollWindowZeroUsesDefault(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2008,7 +2064,7 @@ func TestExtractSensorData_DataMapUnwrap(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Trigger should fire because "data" map was unwrapped, exposing "status" = "ready".
@@ -2030,7 +2086,7 @@ func TestExtractSensorData_NoDataMap(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2064,7 +2120,7 @@ func TestExtractSensorData_SkipsPKSKTTL(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// PK, SK, ttl should be stripped; "status" remains for trigger evaluation.
@@ -2089,7 +2145,7 @@ func TestConvertAV_String(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2125,7 +2181,7 @@ func TestConvertAV_Number(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2161,7 +2217,7 @@ func TestConvertAV_Bool(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2198,7 +2254,7 @@ func TestConvertAV_Map(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// The data map gets unwrapped; "status" should be accessible at top level.
@@ -2236,7 +2292,7 @@ func TestConvertAV_List(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2270,7 +2326,7 @@ func TestConvertAV_Null(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2316,7 +2372,7 @@ func TestResolveScheduleID_StreamTriggered(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2341,7 +2397,7 @@ func TestResolveScheduleID_CronTriggered(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2368,12 +2424,13 @@ func TestPublishEvent_EventBridgeError(t *testing.T) {
 	ebMock.err = fmt.Errorf("EventBridge throttled")
 
 	// JobSuccess publishes an event — if EventBridge fails, handleJobSuccess returns error,
-	// but HandleStreamEvent logs it and returns nil.
+	// collected as a batch item failure.
 	record := makeJobRecord("gold-revenue", types.JobEventSuccess)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
-	require.NoError(t, err, "HandleStreamEvent swallows errors")
+	resp, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	require.Len(t, resp.BatchItemFailures, 1)
 }
 
 func TestPublishEvent_NilEventBridge(t *testing.T) {
@@ -2389,7 +2446,7 @@ func TestPublishEvent_NilEventBridge(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventSuccess)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 }
 
@@ -2406,7 +2463,7 @@ func TestPublishEvent_EmptyEventBusName(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventSuccess)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 }
 
@@ -2429,7 +2486,7 @@ func TestIsExcluded_WeekendExclusion(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2469,7 +2526,7 @@ func TestStreamRouter_MultipleRecords(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record1, record2}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2507,9 +2564,10 @@ func TestJobLog_UnexpectedPKFormat(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	// Error is logged, HandleStreamEvent returns nil.
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	// Per-record error collected as batch failure.
+	resp, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
+	require.Len(t, resp.BatchItemFailures, 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -2537,7 +2595,7 @@ func TestRerun_UnexpectedPKFormat(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 }
 
@@ -2560,7 +2618,7 @@ func TestSensor_UnexpectedPKFormat(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 }
 
@@ -2623,7 +2681,7 @@ func TestRerun_DriftLimitExceeded(t *testing.T) {
 	record := makeRerunRequestWithReason("data-drift")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No SFN — drift limit exceeded.
@@ -2651,7 +2709,7 @@ func TestRerun_ManualLimitExceeded(t *testing.T) {
 	record := makeRerunRequestWithReason("manual")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No SFN — manual limit exceeded.
@@ -2681,7 +2739,7 @@ func TestRerun_DriftUnderLimit(t *testing.T) {
 	record := makeRerunRequestWithReason("data-drift")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// SFN should have started — under drift limit.
@@ -2706,7 +2764,7 @@ func TestRerun_LateDataCountsAsDrift(t *testing.T) {
 	record := makeRerunRequestWithReason("data-drift")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -2733,7 +2791,7 @@ func TestRerun_WritesRerunBeforeLockRelease(t *testing.T) {
 	record := makeRerunRequestWithReason("manual")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// SFN should have started.
@@ -2785,7 +2843,7 @@ func TestRerun_DeletesPostrunBaseline(t *testing.T) {
 	record := makeRerunRequestWithReason("manual")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// SFN should have started.
@@ -2820,7 +2878,7 @@ func TestStreamRouter_JobFail_PermanentUsesCodeRetries(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// MaxCodeRetries=0 → immediate FAILED_FINAL, no SFN started
@@ -2854,7 +2912,7 @@ func TestStreamRouter_JobFail_TransientUsesMaxRetries(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// TRANSIENT uses MaxRetries=3, no reruns yet → should retry
@@ -2883,7 +2941,7 @@ func TestStreamRouter_JobFail_EmptyCategoryUsesMaxRetries(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No category → uses MaxRetries=3, no reruns → should retry
@@ -2979,9 +3037,9 @@ func TestPostRunSensor_Completed_DriftDetected(t *testing.T) {
 	seedConfig(mock, cfg)
 	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusCompleted)
 
-	// Seed baseline captured at completion time.
+	// Seed baseline captured at completion time (namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
-		"sensor_count": float64(100),
+		"audit-result": map[string]interface{}{"sensor_count": float64(100)},
 	})
 
 	// Sensor arrives with different count → drift.
@@ -2992,7 +3050,7 @@ func TestPostRunSensor_Completed_DriftDetected(t *testing.T) {
 		}),
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Should publish POST_RUN_DRIFT event.
@@ -3023,9 +3081,9 @@ func TestPostRunSensor_Completed_NoDrift_RulesPass(t *testing.T) {
 	seedConfig(mock, cfg)
 	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusCompleted)
 
-	// Baseline with same count as incoming sensor.
+	// Baseline with same count as incoming sensor (namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
-		"sensor_count": float64(150),
+		"audit-result": map[string]interface{}{"sensor_count": float64(150)},
 	})
 	// Seed the actual sensor so EvaluateRules can find it.
 	seedSensor(mock, "gold-revenue", "audit-result", map[string]interface{}{
@@ -3039,7 +3097,7 @@ func TestPostRunSensor_Completed_NoDrift_RulesPass(t *testing.T) {
 		}),
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Should publish POST_RUN_PASSED event.
@@ -3063,9 +3121,9 @@ func TestPostRunSensor_Running_InflightDrift(t *testing.T) {
 	seedConfig(mock, cfg)
 	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusRunning)
 
-	// Baseline from a previous run.
+	// Baseline from a previous run (namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
-		"sensor_count": float64(100),
+		"audit-result": map[string]interface{}{"sensor_count": float64(100)},
 	})
 
 	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
@@ -3075,7 +3133,7 @@ func TestPostRunSensor_Running_InflightDrift(t *testing.T) {
 		}),
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Should publish informational POST_RUN_DRIFT_INFLIGHT event (no rerun).
@@ -3113,7 +3171,7 @@ func TestPostRunSensor_FailedFinal_Skipped(t *testing.T) {
 		}),
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No post-run events should be published for FAILED_FINAL trigger.
@@ -3142,7 +3200,7 @@ func TestPostRunSensor_NoTrigger_Skipped(t *testing.T) {
 		}),
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No events published when no trigger exists.
@@ -3166,7 +3224,7 @@ func TestPostRunSensor_NoPostRunConfig_GoesToTrigger(t *testing.T) {
 		}),
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 	// No error, just silently ignored.
 }
@@ -3269,7 +3327,7 @@ func TestJobFailure_AtomicLockReset_Success(t *testing.T) {
 	record := makeJobRecordWithScheduleDate(pipeline, types.JobEventFail, schedule, date)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// SFN must have started for the rerun.
@@ -3303,7 +3361,7 @@ func TestJobFailure_LockResetFails_NoSFN(t *testing.T) {
 	record := makeJobRecordWithScheduleDate(pipeline, types.JobEventFail, schedule, date)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -3326,7 +3384,7 @@ func TestRerunRequest_AtomicLockReset(t *testing.T) {
 	record := makeRerunRequestRecordFull("manual")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// SFN must have started.
@@ -3353,7 +3411,7 @@ func TestRerunRequest_LockResetFails_PublishesInfraFailure(t *testing.T) {
 	record := makeRerunRequestRecordFull("manual")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No SFN execution.
@@ -3395,9 +3453,10 @@ func TestJobFailure_SFNStartFails_ReleasesLock(t *testing.T) {
 	record := makeJobRecordWithScheduleDate(pipeline, types.JobEventFail, schedule, date)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	// HandleStreamEvent swallows per-record errors — the handler returns nil.
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	// Per-record error collected as batch failure.
+	resp, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
+	require.Len(t, resp.BatchItemFailures, 1)
 
 	// Trigger lock must be released after SFN failure (so next attempt can acquire it).
 	assert.False(t, triggerLockExists(mock),
@@ -3420,7 +3479,7 @@ func TestRerunRequest_SFNStartFails_ReleasesLock(t *testing.T) {
 	record := makeRerunRequestRecordFull("manual")
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	assert.False(t, triggerLockExists(mock),
@@ -3557,7 +3616,7 @@ func TestRerunRequest_CalendarExclusion(t *testing.T) {
 	record := makeDefaultRerunRequestRecord() // schedule=stream, date=2026-03-01
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -3581,7 +3640,7 @@ func TestRerunRequest_CalendarExclusion_WritesJobEvent(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	mock.mu.Lock()
@@ -3622,7 +3681,7 @@ func TestRerunRequest_WeekendExclusion(t *testing.T) {
 	}
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -3646,7 +3705,7 @@ func TestJobFailure_CalendarExclusion(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -3673,7 +3732,7 @@ func TestJobFailure_CalendarExclusion_RetryLimitBeatsExclusion(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -3697,7 +3756,7 @@ func TestPostRunDrift_CalendarExclusion(t *testing.T) {
 	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusCompleted)
 
 	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
-		"sensor_count": float64(100),
+		"audit-result": map[string]interface{}{"sensor_count": float64(100)},
 	})
 
 	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
@@ -3707,7 +3766,7 @@ func TestPostRunDrift_CalendarExclusion(t *testing.T) {
 		}),
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	ebMock.mu.Lock()
@@ -3747,7 +3806,7 @@ func TestPostRunDrift_NotExcluded_WritesRerun(t *testing.T) {
 	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusCompleted)
 
 	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
-		"sensor_count": float64(100),
+		"audit-result": map[string]interface{}{"sensor_count": float64(100)},
 	})
 
 	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
@@ -3757,7 +3816,7 @@ func TestPostRunDrift_NotExcluded_WritesRerun(t *testing.T) {
 		}),
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	rerunKey := ddbItemKey(testControlTable, types.PipelinePK("gold-revenue"), types.RerunRequestSK("stream", "2026-03-01"))
@@ -3781,7 +3840,7 @@ func TestSensorEvent_CalendarExclusion_PublishesEvent(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -3855,7 +3914,7 @@ func TestHandleSensorEvent_DryRun_WouldTrigger(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// NO SFN execution must be started.
@@ -3895,7 +3954,7 @@ func TestHandleSensorEvent_DryRun_LateData(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// NO SFN execution.
@@ -3933,7 +3992,7 @@ func TestHandleSensorEvent_DryRun_SLAProjection_Met(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -3988,7 +4047,7 @@ func TestHandleSensorEvent_DryRun_SLAProjection_Breach(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -4042,7 +4101,7 @@ func TestHandleSensorEvent_DryRun_ValidationNotReady(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No SFN.
@@ -4093,7 +4152,7 @@ func TestHandleSensorEvent_DryRun_CapturesBaseline(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -4135,7 +4194,7 @@ func TestHandleSensorEvent_DryRun_Completed_NoSLA(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -4188,7 +4247,7 @@ func TestHandleSensorEvent_DryRun_Completed_WithSLA(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	sfnMock.mu.Lock()
@@ -4243,9 +4302,9 @@ func TestDryRunPostRunSensor_DriftDetected(t *testing.T) {
 	// Pre-seed DRY_RUN# marker (would-trigger already happened).
 	seedDryRunMarker(mock, "gold-revenue", "stream", fixedTestDate, "2026-03-11T01:15:00Z")
 
-	// Pre-seed baseline with sensor_count=500.
+	// Pre-seed baseline with sensor_count=500 (namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#"+fixedTestDate, map[string]interface{}{
-		"sensor_count": float64(500),
+		"audit-result": map[string]interface{}{"sensor_count": float64(500)},
 	})
 
 	// Sensor arrives for post-run key with sensor_count=520 (drift detected).
@@ -4257,7 +4316,7 @@ func TestDryRunPostRunSensor_DriftDetected(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// DRY_RUN_DRIFT event published.
@@ -4297,9 +4356,9 @@ func TestDryRunPostRunSensor_NoDrift(t *testing.T) {
 	// Pre-seed DRY_RUN# marker.
 	seedDryRunMarker(mock, "gold-revenue", "stream", fixedTestDate, "2026-03-11T01:15:00Z")
 
-	// Baseline with sensor_count=500.
+	// Baseline with sensor_count=500 (namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#"+fixedTestDate, map[string]interface{}{
-		"sensor_count": float64(500),
+		"audit-result": map[string]interface{}{"sensor_count": float64(500)},
 	})
 
 	// Sensor arrives with same sensor_count=500 — no drift.
@@ -4311,7 +4370,7 @@ func TestDryRunPostRunSensor_NoDrift(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No events published (no drift).
@@ -4345,7 +4404,7 @@ func TestDryRunPostRunSensor_NoMarker(t *testing.T) {
 	})
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// No events published (no marker means no trigger happened).
@@ -4371,7 +4430,7 @@ func TestRerun_DryRun_SkipsExecution(t *testing.T) {
 	record := makeDefaultRerunRequestRecord()
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Dry-run pipeline must NOT start an SFN execution.
@@ -4398,7 +4457,7 @@ func TestJobFailure_DryRun_SkipsRerun(t *testing.T) {
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
 
-	err := lambda.HandleStreamEvent(context.Background(), d, event)
+	_, err := lambda.HandleStreamEvent(context.Background(), d, event)
 	require.NoError(t, err)
 
 	// Dry-run pipeline must NOT start an SFN execution.
@@ -4410,4 +4469,32 @@ func TestJobFailure_DryRun_SkipsRerun(t *testing.T) {
 	count, countErr := d.Store.CountRerunsBySource(context.Background(), "gold-revenue", "stream", "2026-03-01", []string{"job-fail-retry"})
 	require.NoError(t, countErr)
 	assert.Zero(t, count, "dry-run must not write rerun records on job failure")
+}
+
+// ---------------------------------------------------------------------------
+// BatchItemFailures: partial error reporting
+// ---------------------------------------------------------------------------
+
+func TestStreamRouter_BatchItemFailures_PartialError(t *testing.T) {
+	mock := newMockDDB()
+	d, _, _ := testDeps(mock)
+
+	// Build an event with one valid record and one with empty PK (will error).
+	validRecord := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
+		"status": events.NewStringAttribute("ready"),
+	})
+
+	invalidRecord := events.DynamoDBEventRecord{
+		EventID:   "bad-record-123",
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			Keys: map[string]events.DynamoDBAttributeValue{},
+		},
+	}
+
+	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{invalidRecord, validRecord}}
+	resp, err := lambda.HandleStreamEvent(context.Background(), d, event)
+	require.NoError(t, err)
+	require.Len(t, resp.BatchItemFailures, 1)
+	assert.Equal(t, "bad-record-123", resp.BatchItemFailures[0].ItemIdentifier)
 }

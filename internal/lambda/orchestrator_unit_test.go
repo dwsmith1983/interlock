@@ -94,6 +94,49 @@ func TestInjectDateArgs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-2 characterization: RemapPerPeriodSensors map mutation during range
+// ---------------------------------------------------------------------------
+
+func TestRemapPerPeriodSensors_MultipleSuffixes_MapMutation(t *testing.T) {
+	// BUG-2 characterization: adding keys during range iteration.
+	// With Go's map iteration, newly inserted keys may or may not be visited.
+	// This test documents the nondeterministic behavior.
+	sensors := map[string]map[string]interface{}{
+		"hourly-status#2026-03-13": {"count": float64(10)},
+		"daily-check#2026-03-13":   {"count": float64(20)},
+		"weekly-scan#20260313":     {"count": float64(30)},
+	}
+	lambda.RemapPerPeriodSensors(sensors, "2026-03-13")
+	// All base keys should be present
+	assert.NotNil(t, sensors["hourly-status"], "hourly-status base key should exist")
+	assert.NotNil(t, sensors["daily-check"], "daily-check base key should exist")
+	assert.NotNil(t, sensors["weekly-scan"], "weekly-scan base key should exist")
+}
+
+func TestRemapPerPeriodSensors_StagedMerge_NoCrossContamination(t *testing.T) {
+	// Verify staged merge doesn't allow newly-added base keys to match
+	// as suffixed keys in the same iteration.
+	sensors := map[string]map[string]interface{}{
+		"hourly-status#2026-03-13": {"count": float64(10)},
+	}
+	lambda.RemapPerPeriodSensors(sensors, "2026-03-13")
+	assert.NotNil(t, sensors["hourly-status"])
+	assert.Equal(t, float64(10), sensors["hourly-status"]["count"])
+	// Original suffixed key should still exist
+	assert.NotNil(t, sensors["hourly-status#2026-03-13"])
+}
+
+// ---------------------------------------------------------------------------
+// BUG-10 characterization: baseline flattening collision
+// ---------------------------------------------------------------------------
+
+func TestExtractFloat_ZeroValueIndistinguishableFromMissing(t *testing.T) {
+	// BUG-1 characterization: ExtractFloat returns 0 for both zero and missing.
+	assert.Equal(t, float64(0), lambda.ExtractFloat(map[string]interface{}{"count": float64(0)}, "count"))
+	assert.Equal(t, float64(0), lambda.ExtractFloat(map[string]interface{}{}, "count"))
+}
+
+// ---------------------------------------------------------------------------
 // RemapPerPeriodSensors — table-driven
 // ---------------------------------------------------------------------------
 

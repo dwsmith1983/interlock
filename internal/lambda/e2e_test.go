@@ -276,7 +276,7 @@ func runSFN(t *testing.T, ctx context.Context, d *lambda.Deps, mock *mockDDB, eb
 						// Simulate stream event for each sensor update.
 						sensorRecord := makeSensorRecord(pid, key, toStreamAttributes(data))
 						streamEvt := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{sensorRecord}}
-						_ = lambda.HandleStreamEvent(ctx, d, streamEvt)
+						_, _ = lambda.HandleStreamEvent(ctx, d, streamEvt)
 					}
 				}
 			}
@@ -1021,7 +1021,7 @@ func TestE2E_AutoRetries(t *testing.T) {
 		require.NotEmpty(t, jobSK, "should have a joblog entry")
 
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-d1", jobSK, "fail"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-d1", jobSK, "fail"))
 		require.NoError(t, err)
 
 		// Verify: new SFN execution started (auto-retry under maxRetries limit)
@@ -1055,7 +1055,7 @@ func TestE2E_AutoRetries(t *testing.T) {
 		eb.events = nil
 		eb.mu.Unlock()
 
-		err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-d2", jobSK, "fail"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-d2", jobSK, "fail"))
 		require.NoError(t, err)
 
 		// Verify: no new SFN, RETRY_EXHAUSTED published, status=FAILED_FINAL
@@ -1104,7 +1104,7 @@ func TestE2E_FailureClassification(t *testing.T) {
 		eb.events = nil
 		eb.mu.Unlock()
 
-		err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-fc1", jobSK, "fail"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-fc1", jobSK, "fail"))
 		require.NoError(t, err)
 
 		// Verify: no retry (MaxCodeRetries=0), RETRY_EXHAUSTED event
@@ -1140,7 +1140,7 @@ func TestE2E_FailureClassification(t *testing.T) {
 		require.NotEmpty(t, jobSK)
 
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-fc2", jobSK, "fail"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-fc2", jobSK, "fail"))
 		require.NoError(t, err)
 
 		sfnM.mu.Lock()
@@ -1184,7 +1184,7 @@ func TestE2E_RerunReplay(t *testing.T) {
 
 		// Process RERUN_REQUEST stream event
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-e1"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-e1"))
 		require.NoError(t, err)
 
 		// Verify: new SFN started, rerun-accepted joblog written
@@ -1221,7 +1221,7 @@ func TestE2E_RerunReplay(t *testing.T) {
 		}))
 
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-e2"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-e2"))
 		require.NoError(t, err)
 
 		// Verify: no SFN, RERUN_REJECTED published
@@ -1257,7 +1257,7 @@ func TestE2E_RerunReplay(t *testing.T) {
 			"status": events.NewStringAttribute("ready"),
 			"date":   events.NewStringAttribute("2026-03-07"),
 		})
-		err := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}})
+		_, err := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}})
 		require.NoError(t, err)
 
 		// Lock already held → late data path
@@ -1306,7 +1306,7 @@ func TestE2E_DriftRetrigger(t *testing.T) {
 
 		// Phase 2: Stream-router processes RERUN_REQUEST
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f1"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f1"))
 		require.NoError(t, err)
 
 		// Verify: new SFN started for re-trigger
@@ -1343,7 +1343,7 @@ func TestE2E_DriftRetrigger(t *testing.T) {
 		assert.Contains(t, r.events, "POST_RUN_DRIFT")
 
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f2"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f2"))
 		require.NoError(t, err)
 
 		sfnM.mu.Lock()
@@ -1380,7 +1380,7 @@ func TestE2E_DriftRetrigger(t *testing.T) {
 
 		// Phase 2: verify the RERUN_REQUEST was written, allowing re-trigger
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f3"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-f3"))
 		require.NoError(t, err)
 
 		sfnM.mu.Lock()
@@ -1432,7 +1432,7 @@ func TestE2E_RerunLimits(t *testing.T) {
 
 		// Send a data-drift RERUN_REQUEST — should be rejected
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-rl1", "data-drift"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-rl1", "data-drift"))
 		require.NoError(t, err)
 
 		// Verify: no SFN started, RERUN_REJECTED event + joblog entry
@@ -1480,7 +1480,7 @@ func TestE2E_RerunLimits(t *testing.T) {
 		// Send a late-data RERUN_REQUEST — should be rejected because
 		// late-data shares the drift budget (count 1 >= budget 1)
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-rl2", "late-data"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-rl2", "late-data"))
 		require.NoError(t, err)
 
 		// Verify: no SFN started, RERUN_REJECTED event + joblog entry
@@ -1791,7 +1791,7 @@ func TestE2E_StreamRouterEntryPoints(t *testing.T) {
 		})
 
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}})
+		_, err := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}})
 		require.NoError(t, err)
 
 		// Verify: SFN started, trigger lock acquired, JOB_TRIGGERED event published.
@@ -1824,7 +1824,7 @@ func TestE2E_StreamRouterEntryPoints(t *testing.T) {
 		})
 
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-i2", jobSK, types.JobEventTimeout))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeJobStreamEvent("pipe-i2", jobSK, types.JobEventTimeout))
 		require.NoError(t, err)
 
 		// Verify: auto-retry started (timeout is retryable just like fail).
@@ -1861,7 +1861,7 @@ func TestE2E_StreamRouterEntryPoints(t *testing.T) {
 		}))
 
 		sfnCountBefore := len(sfnM.executions)
-		err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-i3"))
+		_, err := lambda.HandleStreamEvent(ctx, d, makeRerunRequestStreamEvent("pipe-i3"))
 		require.NoError(t, err)
 
 		// Verify: rerun accepted despite old sensor data (failure skips freshness check).
@@ -2067,32 +2067,37 @@ func TestE2E_RerunBudgetSeparation(t *testing.T) {
 
 		// Phase 1: First drift rerun — accepted (0 < budget 1).
 		sfnBefore := countSFNExecutions(sfnM)
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "data-drift")))
+		_, handleErr := lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "data-drift"))
+		require.NoError(t, handleErr)
 		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "first drift rerun should start SFN")
 
 		// Phase 2: Second drift rerun — rejected (1 >= budget 1).
 		resetEventBridge(eb)
 		sfnBefore = countSFNExecutions(sfnM)
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "data-drift")))
+		_, handleErr = lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "data-drift"))
+		require.NoError(t, handleErr)
 		assert.Equal(t, sfnBefore, countSFNExecutions(sfnM), "second drift rerun should NOT start SFN")
 		assert.Contains(t, collectEventTypes(eb), "RERUN_REJECTED")
 
 		// Phase 3: First manual rerun — accepted despite drift budget exhausted.
 		resetEventBridge(eb)
 		sfnBefore = countSFNExecutions(sfnM)
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "manual")))
+		_, handleErr = lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "manual"))
+		require.NoError(t, handleErr)
 		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "first manual rerun should succeed")
 
 		// Phase 4: Second manual rerun — accepted (1 < budget 2).
 		resetEventBridge(eb)
 		sfnBefore = countSFNExecutions(sfnM)
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "manual")))
+		_, handleErr = lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "manual"))
+		require.NoError(t, handleErr)
 		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "second manual rerun should succeed")
 
 		// Phase 5: Third manual rerun — rejected (2 >= budget 2).
 		resetEventBridge(eb)
 		sfnBefore = countSFNExecutions(sfnM)
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "manual")))
+		_, handleErr = lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-bs1", "manual"))
+		require.NoError(t, handleErr)
 		assert.Equal(t, sfnBefore, countSFNExecutions(sfnM), "third manual rerun should NOT start SFN")
 		assert.Contains(t, collectEventTypes(eb), "RERUN_REJECTED")
 		assertAlertFormats(t, eb)
@@ -2119,16 +2124,17 @@ func TestE2E_PostRunInflight(t *testing.T) {
 		seedConfig(mock, cfg)
 		seedTriggerWithStatus(mock, "pipe-inf1", "2026-03-07", types.TriggerStatusRunning)
 
-		// Baseline from a previous run.
+		// Baseline from a previous run (namespaced by rule key).
 		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-inf1", "postrun-baseline#2026-03-07",
-			map[string]interface{}{"sensor_count": float64(100)}))
+			map[string]interface{}{"audit-result": map[string]interface{}{"sensor_count": float64(100)}}))
 
 		// Sensor arrives with different count while job is running.
 		record := makeSensorRecord("pipe-inf1", "audit-result", toStreamAttributes(map[string]interface{}{
 			"sensor_count": float64(200),
 			"date":         "2026-03-07",
 		}))
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}))
+		_, handleErr := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}})
+		require.NoError(t, handleErr)
 
 		assert.Contains(t, collectEventTypes(eb), "POST_RUN_DRIFT_INFLIGHT")
 		assert.False(t, hasRerunRequest(mock, "pipe-inf1"), "should NOT write rerun request while running")
@@ -2150,16 +2156,17 @@ func TestE2E_PostRunInflight(t *testing.T) {
 		seedConfig(mock, cfg)
 		seedTriggerWithStatus(mock, "pipe-inf-cf", "2026-03-07", types.TriggerStatusRunning)
 
-		// Baseline uses custom field "count".
+		// Baseline uses custom field "count" (namespaced by rule key).
 		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-inf-cf", "postrun-baseline#2026-03-07",
-			map[string]interface{}{"count": float64(100)}))
+			map[string]interface{}{"audit-result": map[string]interface{}{"count": float64(100)}}))
 
 		// Sensor arrives with different count while job is running.
 		record := makeSensorRecord("pipe-inf-cf", "audit-result", toStreamAttributes(map[string]interface{}{
 			"count": float64(200),
 			"date":  "2026-03-07",
 		}))
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}))
+		_, handleErr := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}})
+		require.NoError(t, handleErr)
 
 		assert.Contains(t, collectEventTypes(eb), "POST_RUN_DRIFT_INFLIGHT")
 		assert.False(t, hasRerunRequest(mock, "pipe-inf-cf"), "should NOT write rerun request while running")
@@ -2180,15 +2187,16 @@ func TestE2E_PostRunInflight(t *testing.T) {
 		seedConfig(mock, cfg)
 		seedTriggerWithStatus(mock, "pipe-inf2", "2026-03-07", types.TriggerStatusRunning)
 
-		// Baseline matches incoming sensor — no drift.
+		// Baseline matches incoming sensor — no drift (namespaced by rule key).
 		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-inf2", "postrun-baseline#2026-03-07",
-			map[string]interface{}{"sensor_count": float64(100)}))
+			map[string]interface{}{"audit-result": map[string]interface{}{"sensor_count": float64(100)}}))
 
 		record := makeSensorRecord("pipe-inf2", "audit-result", toStreamAttributes(map[string]interface{}{
 			"sensor_count": float64(100),
 			"date":         "2026-03-07",
 		}))
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}))
+		_, handleErr := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}})
+		require.NoError(t, handleErr)
 
 		assert.Empty(t, collectEventTypes(eb))
 		assert.Equal(t, 0, countSFNExecutions(sfnM))
@@ -2217,7 +2225,8 @@ func TestE2E_CalendarExclusionFullSkip(t *testing.T) {
 
 		record := makeSensorRecord("pipe-cal1", "upstream-complete",
 			map[string]events.DynamoDBAttributeValue{"status": events.NewStringAttribute("ready")})
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}))
+		_, handleErr := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}})
+		require.NoError(t, handleErr)
 
 		assert.Equal(t, 0, countSFNExecutions(sfnM))
 		assertNoTriggerLock(t, mock, "pipe-cal1", "stream", today)
@@ -2266,7 +2275,8 @@ func TestE2E_HourBoundaryRollover(t *testing.T) {
 			"date":   "20260307",
 			"hour":   "23",
 		}))
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record23}}))
+		_, handleErr := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record23}})
+		require.NoError(t, handleErr)
 
 		// Hour 00 (next day) sensor arrives.
 		record00 := makeSensorRecord("pipe-hr1", "hourly-status#20260308T00", toStreamAttributes(map[string]interface{}{
@@ -2274,7 +2284,8 @@ func TestE2E_HourBoundaryRollover(t *testing.T) {
 			"date":   "20260308",
 			"hour":   "00",
 		}))
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record00}}))
+		_, handleErr = lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record00}})
+		require.NoError(t, handleErr)
 
 		// Two independent SFN executions.
 		sfnM.mu.Lock()
@@ -2317,28 +2328,31 @@ func TestE2E_ConcurrentDriftDedup(t *testing.T) {
 		seedConfig(mock, cfg)
 		seedCompletedPipelineE2E(t, ctx, d, mock, "pipe-cd1", "2026-03-07")
 
-		// Baseline captured at completion.
+		// Baseline captured at completion (namespaced by rule key).
 		require.NoError(t, d.Store.WriteSensor(ctx, "pipe-cd1", "postrun-baseline#2026-03-07",
-			map[string]interface{}{"sensor_count": float64(100)}))
+			map[string]interface{}{"audit-result": map[string]interface{}{"sensor_count": float64(100)}}))
 
 		// First drift sensor arrives.
 		record1 := makeSensorRecord("pipe-cd1", "audit-result", toStreamAttributes(map[string]interface{}{
 			"sensor_count": float64(200),
 			"date":         "2026-03-07",
 		}))
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record1}}))
+		_, handleErr := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record1}})
+		require.NoError(t, handleErr)
 		assert.Contains(t, collectEventTypes(eb), "POST_RUN_DRIFT")
 
 		// Process first rerun request — accepted.
 		resetEventBridge(eb)
 		sfnBefore := countSFNExecutions(sfnM)
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-cd1", "data-drift")))
+		_, handleErr = lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-cd1", "data-drift"))
+		require.NoError(t, handleErr)
 		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "first drift rerun accepted")
 
 		// Process second rerun request — rejected (budget exhausted).
 		resetEventBridge(eb)
 		sfnBefore = countSFNExecutions(sfnM)
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-cd1", "data-drift")))
+		_, handleErr = lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-cd1", "data-drift"))
+		require.NoError(t, handleErr)
 		assert.Equal(t, sfnBefore, countSFNExecutions(sfnM), "second drift rerun rejected")
 		assert.Contains(t, collectEventTypes(eb), "RERUN_REJECTED")
 		assertAlertFormats(t, eb)
@@ -2370,7 +2384,8 @@ func TestE2E_PostRunBeforeBaseline(t *testing.T) {
 			"sensor_count": float64(500),
 			"date":         "2026-03-07",
 		}))
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}))
+		_, handleErr := lambda.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}})
+		require.NoError(t, handleErr)
 
 		assert.Empty(t, collectEventTypes(eb), "should not publish any event when baseline is missing")
 		assert.False(t, hasRerunRequest(mock, "pipe-nb1"))
@@ -2412,7 +2427,8 @@ func TestE2E_RerunAfterTriggerTTLExpiry(t *testing.T) {
 		}))
 
 		sfnBefore := countSFNExecutions(sfnM)
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-ttl1", "manual")))
+		_, handleErr := lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-ttl1", "manual"))
+		require.NoError(t, handleErr)
 		assert.Equal(t, sfnBefore, countSFNExecutions(sfnM), "no SFN when trigger lock row was deleted by TTL")
 
 		// Should have published an INFRA_FAILURE event.
@@ -2457,7 +2473,8 @@ func TestE2E_RerunAfterTriggerTTLExpiry(t *testing.T) {
 		})
 
 		sfnBefore := countSFNExecutions(sfnM)
-		require.NoError(t, lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-ttl2", "manual")))
+		_, handleErr := lambda.HandleStreamEvent(ctx, d, makeRerunRequestWithReasonE2E("pipe-ttl2", "manual"))
+		require.NoError(t, handleErr)
 		assert.Greater(t, countSFNExecutions(sfnM), sfnBefore, "rerun should start SFN when trigger lock exists")
 		assertAlertFormats(t, eb)
 	})
