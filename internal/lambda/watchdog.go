@@ -721,8 +721,8 @@ func closeSensorTriggerWindow(ctx context.Context, d *Deps, pipelineID, schedule
 	// Compute the absolute trigger deadline time directly — we do NOT use
 	// handleSLACalculate here because it rolls daily deadlines forward 24h
 	// when past, which defeats the purpose of checking for expiry.
-	tz := ""
-	if cfg.SLA != nil {
+	tz := cfg.Schedule.Timezone
+	if tz == "" && cfg.SLA != nil {
 		tz = cfg.SLA.Timezone
 	}
 	triggerDeadline := resolveTriggerDeadlineTime(cfg.Schedule.Trigger.Deadline, date, tz)
