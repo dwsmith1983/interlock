@@ -119,6 +119,10 @@ resource "aws_cloudwatch_event_rule" "alert_events" {
       "DRY_RUN_SLA_PROJECTION",
       "DRY_RUN_DRIFT",
       "DRY_RUN_COMPLETED",
+      "DRY_RUN_WOULD_RERUN",
+      "DRY_RUN_RERUN_REJECTED",
+      "DRY_RUN_WOULD_RETRY",
+      "DRY_RUN_RETRY_EXHAUSTED",
     ]
   })
 }
