@@ -42,6 +42,10 @@ const (
 	EventDryRunSLAProjection     EventDetailType = "DRY_RUN_SLA_PROJECTION"
 	EventDryRunDrift             EventDetailType = "DRY_RUN_DRIFT"
 	EventDryRunCompleted         EventDetailType = "DRY_RUN_COMPLETED"
+	EventDryRunWouldRerun        EventDetailType = "DRY_RUN_WOULD_RERUN"
+	EventDryRunRerunRejected     EventDetailType = "DRY_RUN_RERUN_REJECTED"
+	EventDryRunWouldRetry        EventDetailType = "DRY_RUN_WOULD_RETRY"
+	EventDryRunRetryExhausted    EventDetailType = "DRY_RUN_RETRY_EXHAUSTED"
 )
 
 // EventSource is the EventBridge source for all interlock events.
