@@ -4,6 +4,7 @@ package validation
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -38,7 +39,7 @@ func EvaluateRules(mode string, rules []types.ValidationRule, sensors map[string
 	}
 
 	var passed bool
-	switch mode {
+	switch strings.ToUpper(mode) {
 	case "ANY":
 		passed = passCount > 0
 	default: // "ALL"
