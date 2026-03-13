@@ -542,6 +542,17 @@ resource "aws_lambda_event_source_mapping" "joblog_stream" {
 }
 
 # =============================================================================
+# Security checks
+# =============================================================================
+
+check "slack_token_deprecation" {
+  assert {
+    condition     = var.slack_bot_token == "" || var.slack_secret_arn != ""
+    error_message = "DEPRECATED: Passing a plaintext Slack bot token is deprecated. Use var.slack_secret_arn with an AWS Secrets Manager ARN instead. Plaintext path still works but will be removed in a future version."
+  }
+}
+
+# =============================================================================
 # Conditional trigger permissions for orchestrator (opt-in per trigger type)
 # =============================================================================
 
@@ -552,13 +563,20 @@ resource "aws_iam_role_policy" "glue_trigger" {
   name  = "glue-trigger"
   role  = aws_iam_role.lambda["orchestrator"].id
 
+  lifecycle {
+    precondition {
+      condition     = length(var.glue_job_arns) > 0
+      error_message = "glue_job_arns must be non-empty when enable_glue_trigger is true."
+    }
+  }
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
         Effect   = "Allow"
         Action   = ["glue:StartJobRun", "glue:GetJobRun"]
-        Resource = "*"
+        Resource = var.glue_job_arns
       },
       {
         Sid    = "GlueLogVerification"
@@ -580,12 +598,19 @@ resource "aws_iam_role_policy" "emr_trigger" {
   name  = "emr-trigger"
   role  = aws_iam_role.lambda["orchestrator"].id
 
+  lifecycle {
+    precondition {
+      condition     = length(var.emr_cluster_arns) > 0
+      error_message = "emr_cluster_arns must be non-empty when enable_emr_trigger is true."
+    }
+  }
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
       Action   = ["elasticmapreduce:AddJobFlowSteps", "elasticmapreduce:DescribeStep"]
-      Resource = "*"
+      Resource = var.emr_cluster_arns
     }]
   })
 }
@@ -597,12 +622,19 @@ resource "aws_iam_role_policy" "emr_serverless_trigger" {
   name  = "emr-serverless-trigger"
   role  = aws_iam_role.lambda["orchestrator"].id
 
+  lifecycle {
+    precondition {
+      condition     = length(var.emr_serverless_app_arns) > 0
+      error_message = "emr_serverless_app_arns must be non-empty when enable_emr_serverless_trigger is true."
+    }
+  }
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
       Action   = ["emr-serverless:StartJobRun", "emr-serverless:GetJobRun"]
-      Resource = "*"
+      Resource = var.emr_serverless_app_arns
     }]
   })
 }
@@ -614,12 +646,19 @@ resource "aws_iam_role_policy" "sfn_trigger" {
   name  = "sfn-trigger"
   role  = aws_iam_role.lambda["orchestrator"].id
 
+  lifecycle {
+    precondition {
+      condition     = length(var.sfn_trigger_arns) > 0
+      error_message = "sfn_trigger_arns must be non-empty when enable_sfn_trigger is true."
+    }
+  }
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
       Action   = ["states:StartExecution", "states:DescribeExecution"]
-      Resource = "*"
+      Resource = var.sfn_trigger_arns
     }]
   })
 }
@@ -630,6 +669,13 @@ resource "aws_iam_role_policy" "lambda_trigger" {
   count = var.enable_lambda_trigger ? 1 : 0
   name  = "lambda-trigger"
   role  = aws_iam_role.lambda["orchestrator"].id
+
+  lifecycle {
+    precondition {
+      condition     = length(var.lambda_trigger_arns) > 0
+      error_message = "lambda_trigger_arns must be non-empty when enable_lambda_trigger is true."
+    }
+  }
 
   policy = jsonencode({
     Version = "2012-10-17"

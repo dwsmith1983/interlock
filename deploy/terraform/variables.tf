@@ -139,5 +139,29 @@ variable "enable_lambda_trigger" {
 variable "lambda_trigger_arns" {
   description = "ARNs of Lambda functions the orchestrator may invoke as pipeline triggers"
   type        = list(string)
-  default     = ["*"]
+  default     = []
+}
+
+variable "glue_job_arns" {
+  description = "ARNs of Glue jobs that the orchestrator Lambda can start. Required when enable_glue_trigger is true."
+  type        = list(string)
+  default     = []
+}
+
+variable "emr_cluster_arns" {
+  description = "ARNs of EMR clusters the orchestrator can submit steps to. Required when enable_emr_trigger is true."
+  type        = list(string)
+  default     = []
+}
+
+variable "emr_serverless_app_arns" {
+  description = "ARNs of EMR Serverless applications. Required when enable_emr_serverless_trigger is true."
+  type        = list(string)
+  default     = []
+}
+
+variable "sfn_trigger_arns" {
+  description = "ARNs of Step Functions the orchestrator can start. Required when enable_sfn_trigger is true."
+  type        = list(string)
+  default     = []
 }
