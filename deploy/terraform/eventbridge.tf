@@ -91,6 +91,15 @@ resource "aws_cloudwatch_event_rule" "alert_events" {
       "TRIGGER_RECOVERED",
       "BASELINE_CAPTURE_FAILED",
       "PIPELINE_EXCLUDED",
+      "SENSOR_DEADLINE_EXPIRED",
+      "IRREGULAR_SCHEDULE_MISSED",
+      "RELATIVE_SLA_WARNING",
+      "RELATIVE_SLA_BREACH",
+      "DRY_RUN_WOULD_TRIGGER",
+      "DRY_RUN_LATE_DATA",
+      "DRY_RUN_SLA_PROJECTION",
+      "DRY_RUN_DRIFT",
+      "DRY_RUN_COMPLETED",
     ]
   })
 }
