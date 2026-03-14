@@ -16,6 +16,11 @@ resource "aws_dynamodb_table" "control" {
     type = "S"
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
   ttl {
     attribute_name = "ttl"
     enabled        = true
@@ -47,6 +52,11 @@ resource "aws_dynamodb_table" "joblog" {
   attribute {
     name = "SK"
     type = "S"
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
   }
 
   ttl {
@@ -92,6 +102,11 @@ resource "aws_dynamodb_table" "events" {
     type = "N"
   }
 
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
   global_secondary_index {
     name            = "GSI1"
     hash_key        = "eventType"
@@ -127,6 +142,11 @@ resource "aws_dynamodb_table" "rerun" {
   attribute {
     name = "SK"
     type = "S"
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
   }
 
   ttl {
