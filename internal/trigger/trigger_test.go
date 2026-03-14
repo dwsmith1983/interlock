@@ -38,6 +38,10 @@ func TestExecuteHTTP_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	cfg := &types.TriggerConfig{
 		Type: types.TriggerHTTP,
 		HTTP: &types.HTTPTriggerConfig{Method: "POST", URL: srv.URL},
@@ -82,6 +86,10 @@ func TestExecuteHTTP_ErrorBodyTruncated(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	cfg := &types.TriggerConfig{
 		Type: types.TriggerHTTP,
 		HTTP: &types.HTTPTriggerConfig{Method: "GET", URL: srv.URL},
@@ -109,6 +117,10 @@ func TestExecuteHTTP_ErrorBodySanitized(t *testing.T) {
 		_, _ = w.Write([]byte("bad\x00input\x1b[31mred"))
 	}))
 	defer srv.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
 
 	cfg := &types.TriggerConfig{
 		Type: types.TriggerHTTP,
@@ -153,6 +165,10 @@ func TestExecuteHTTP_EnvExpansionRestricted(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
 
 	cfg := &types.TriggerConfig{
 		Type: types.TriggerHTTP,
@@ -229,6 +245,10 @@ func TestExecuteHTTP_Returns_TriggerError_On4xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	cfg := &types.TriggerConfig{
 		Type: types.TriggerHTTP,
 		HTTP: &types.HTTPTriggerConfig{Method: "GET", URL: srv.URL},
@@ -248,6 +268,10 @@ func TestExecuteHTTP_Returns_TriggerError_On5xx(t *testing.T) {
 		_, _ = w.Write([]byte("service unavailable"))
 	}))
 	defer srv.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
 
 	cfg := &types.TriggerConfig{
 		Type: types.TriggerHTTP,

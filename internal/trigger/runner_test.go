@@ -144,6 +144,10 @@ func TestRunner_Execute_HTTPType(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	r := NewRunner()
 	_, err := r.Execute(context.Background(), &types.TriggerConfig{
 		Type: types.TriggerHTTP,
@@ -169,6 +173,10 @@ func TestRunner_Execute_AirflowType(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
 
 	r := NewRunner()
 	meta, err := r.Execute(context.Background(), &types.TriggerConfig{

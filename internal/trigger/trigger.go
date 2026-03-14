@@ -45,16 +45,25 @@ const maxErrorBodyBytes = 512
 const defaultTriggerTimeout = 30 * time.Second
 
 // defaultHTTPClient is shared across HTTP and Airflow triggers to reuse connections.
-var defaultHTTPClient = &http.Client{Timeout: defaultTriggerTimeout}
+// It uses an SSRF-safe transport that rejects private, loopback, and link-local addresses.
+var defaultHTTPClient = &http.Client{
+	Timeout:   defaultTriggerTimeout,
+	Transport: newSSRFSafeTransport(),
+}
 
 // resolveHTTPClient returns a client with the given timeout in seconds. If
 // timeoutSec is zero or matches the default, the shared defaultHTTPClient is
-// returned to reuse connections.
+// returned to reuse connections. When a custom timeout is required, the returned
+// client inherits the transport from defaultHTTPClient so that transport-level
+// settings (including SSRF protection and test overrides) are preserved.
 func resolveHTTPClient(timeoutSec int) *http.Client {
 	if timeoutSec > 0 {
 		timeout := time.Duration(timeoutSec) * time.Second
 		if timeout != defaultTriggerTimeout {
-			return &http.Client{Timeout: timeout}
+			return &http.Client{
+				Timeout:   timeout,
+				Transport: defaultHTTPClient.Transport,
+			}
 		}
 	}
 	return defaultHTTPClient

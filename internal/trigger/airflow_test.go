@@ -26,6 +26,10 @@ func TestExecuteAirflow_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	cfg := &types.AirflowTriggerConfig{
 		URL:   srv.URL,
 		DagID: "my_dag",
@@ -49,6 +53,10 @@ func TestExecuteAirflow_AuthHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	cfg := &types.AirflowTriggerConfig{
 		URL:     srv.URL,
 		DagID:   "test_dag",
@@ -66,6 +74,10 @@ func TestExecuteAirflow_ServerError(t *testing.T) {
 		_, _ = w.Write([]byte("internal error"))
 	}))
 	defer srv.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
 
 	cfg := &types.AirflowTriggerConfig{
 		URL:   srv.URL,
@@ -91,6 +103,10 @@ func TestCheckAirflowStatus_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-123", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "success", state)
@@ -105,6 +121,10 @@ func TestCheckAirflowStatus_Running(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-123", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "running", state)
@@ -118,6 +138,10 @@ func TestCheckAirflowStatus_Failed(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
 
 	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-123", nil)
 	require.NoError(t, err)
@@ -151,6 +175,10 @@ func TestExecuteAirflow_WithBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	cfg := &types.AirflowTriggerConfig{
 		URL:   srv.URL,
 		DagID: "my_dag",
@@ -183,6 +211,10 @@ func TestExecuteAirflow_MissingDagRunIDInResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	cfg := &types.AirflowTriggerConfig{
 		URL:   srv.URL,
 		DagID: "my_dag",
@@ -201,6 +233,10 @@ func TestExecuteAirflow_CustomTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	cfg := &types.AirflowTriggerConfig{
 		URL:     srv.URL,
 		DagID:   "my_dag",
@@ -218,6 +254,10 @@ func TestCheckAirflowStatus_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	_, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "status 500")
@@ -231,6 +271,10 @@ func TestCheckAirflowStatus_MissingStateField(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
 
 	_, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", nil)
 	assert.Error(t, err)
@@ -254,6 +298,10 @@ func TestExecuteAirflow_EnvExpansionRestricted(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
 
 	cfg := &types.AirflowTriggerConfig{
 		URL:     srv.URL,
@@ -287,6 +335,10 @@ func TestCheckAirflowStatus_EnvExpansionRestricted(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
 	headers := map[string]string{"Authorization": "Bearer ${INTERLOCK_TEST_VAR}/${SECRET_VAR}"}
 	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", headers)
 	require.NoError(t, err)
@@ -305,6 +357,10 @@ func TestCheckAirflowStatus_WithHeaders(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
 
 	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", map[string]string{
 		"Authorization": "Bearer test-token",
