@@ -161,7 +161,7 @@ func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule,
 	source := types.EventSource
 	detailStr := string(detailJSON)
 
-	_, err = d.EventBridge.PutEvents(ctx, &eventbridge.PutEventsInput{
+	out, err := d.EventBridge.PutEvents(ctx, &eventbridge.PutEventsInput{
 		Entries: []ebTypes.PutEventsRequestEntry{
 			{
 				Source:       &source,
@@ -173,6 +173,16 @@ func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule,
 	})
 	if err != nil {
 		return fmt.Errorf("publish %s event: %w", eventType, err)
+	}
+	if out.FailedEntryCount > 0 {
+		code, msg := "", ""
+		if len(out.Entries) > 0 && out.Entries[0].ErrorCode != nil {
+			code = *out.Entries[0].ErrorCode
+			if out.Entries[0].ErrorMessage != nil {
+				msg = *out.Entries[0].ErrorMessage
+			}
+		}
+		return fmt.Errorf("publish %s event: partial failure (code=%s, message=%s)", eventType, code, msg)
 	}
 	return nil
 }
