@@ -263,14 +263,18 @@ func RemapPerPeriodSensors(sensors map[string]map[string]interface{}, date strin
 	if compact != date {
 		suffixes = append(suffixes, "#"+compact)
 	}
+	additions := make(map[string]map[string]interface{})
 	for key, data := range sensors {
 		for _, suffix := range suffixes {
 			if strings.HasSuffix(key, suffix) {
 				base := strings.TrimSuffix(key, suffix)
-				sensors[base] = data
+				additions[base] = data
 				break
 			}
 		}
+	}
+	for k, v := range additions {
+		sensors[k] = v
 	}
 }
 
@@ -357,13 +361,12 @@ func capturePostRunBaseline(ctx context.Context, d *Deps, pipelineID, scheduleID
 
 	RemapPerPeriodSensors(sensors, date)
 
-	// Build baseline from post-run rule keys.
+	// Build baseline from post-run rule keys, namespaced by rule key
+	// to prevent field name collisions between different sensors.
 	baseline := make(map[string]interface{})
 	for _, rule := range cfg.PostRun.Rules {
 		if data, ok := sensors[rule.Key]; ok {
-			for k, v := range data {
-				baseline[k] = v
-			}
+			baseline[rule.Key] = data
 		}
 	}
 
@@ -498,7 +501,7 @@ func InjectDateArgs(tc *types.TriggerConfig, date string) {
 		if hourPart != "" {
 			payload["par_hour"] = hourPart
 		}
-		b, _ := json.Marshal(payload)
+		b, _ := json.Marshal(payload) // json.Marshal is infallible for map[string]string (no channels, funcs, or complex types)
 		tc.HTTP.Body = string(b)
 	}
 }

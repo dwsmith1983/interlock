@@ -50,18 +50,23 @@ func getValidatedConfig(ctx context.Context, d *Deps, pipelineID string) (*types
 }
 
 // HandleStreamEvent processes a DynamoDB stream event, routing each record
-// to the appropriate handler based on the SK prefix. Errors are logged but
-// do not fail the batch (returns nil) to prevent infinite retries.
-func HandleStreamEvent(ctx context.Context, d *Deps, event StreamEvent) error {
+// to the appropriate handler based on the SK prefix. Per-record errors are
+// collected as BatchItemFailures so the Lambda runtime can use DynamoDB's
+// ReportBatchItemFailures to retry only the failed records.
+func HandleStreamEvent(ctx context.Context, d *Deps, event StreamEvent) (events.DynamoDBEventResponse, error) {
+	var resp events.DynamoDBEventResponse
 	for i := range event.Records {
 		if err := handleRecord(ctx, d, event.Records[i]); err != nil {
 			d.Logger.Error("stream record error",
 				"error", err,
 				"eventID", event.Records[i].EventID,
 			)
+			resp.BatchItemFailures = append(resp.BatchItemFailures, events.DynamoDBBatchItemFailure{
+				ItemIdentifier: event.Records[i].EventID,
+			})
 		}
 	}
-	return nil
+	return resp, nil
 }
 
 // handleRecord extracts PK/SK and routes to the appropriate handler.

@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-03-13
+
+### Changed
+
+- **Shared HTTP client construction (DRY-2)** — Extracted `resolveHTTPClient()` replacing identical 7-line blocks in `ExecuteHTTP` and `ExecuteAirflow`.
+- **Shared SLA schedule creation loop (DRY-3)** — Extracted `createSLASchedules()` replacing duplicated warning/breach schedule loops in watchdog and sla-monitor.
+- **Split watchdog.go into focused files** — 1079-line monolith split into 5 files by domain: stale triggers, missed schedules, SLA alerting, and post-run monitoring (~200 lines each).
+
+### Security
+
+- **Command trigger shell injection eliminated (SEC-3)** — Replaced `sh -c` with direct `exec.CommandContext` + `strings.Fields` argument splitting. No shell interpretation of pipes, redirects, or variable expansion.
+
+## [0.9.2] - 2026-03-13
+
+### Fixed
+
+- **Drift detection silently skipped zero values (BUG-1)** — `ExtractFloat` returned 0 for both missing keys and actual zero values, causing the `prevCount > 0` guard to silently skip legitimate transitions like 5000→0 or 0→5000. New `ExtractFloatOk` distinguishes absent from zero. Shared `DetectDrift` function consolidates 3 duplicated drift comparison sites.
+- **RemapPerPeriodSensors map mutation during range (BUG-2)** — Adding keys during `range` iteration over a Go map is nondeterministic per the spec. Staging map now collects additions, merged after iteration.
+- **Orphaned rerun burns retry budget (BUG-3)** — `handleRerunRequest` wrote the rerun record before acquiring the trigger lock. If lock acquisition failed, the rerun record was left orphaned and permanently consumed retry budget. Reordered to lock-first, then write.
+- **Stream router discarded partial batch failures (BUG-4)** — `HandleStreamEvent` returned a single error, causing Lambda to retry the entire batch. Now returns `DynamoDBEventResponse` with per-record `BatchItemFailures` for partial retry via `ReportBatchItemFailures`.
+- **SLA_MET published when pipeline never ran (BUG-5)** — `handleSLACancel` published SLA_MET regardless of whether a trigger existed. Now checks for trigger existence first.
+- **Trigger deadline used SLA timezone instead of schedule timezone (BUG-6)** — `closeSensorTriggerWindow` read timezone from `cfg.SLA.Timezone` instead of `cfg.Schedule.Timezone`. Falls back to SLA timezone if schedule timezone is not set.
+- **Validation mode case-sensitive (BUG-8)** — `EvaluateRules` matched mode with `switch mode` so "any" fell through to the default ALL branch. Now uses `strings.ToUpper(mode)`.
+- **Epoch timestamp unit mismatch in rerun freshness (BUG-9)** — `checkSensorFreshness` compared raw epoch values without normalizing units. Timestamps below 1e12 (seconds) are now converted to milliseconds.
+- **Post-run baseline field collision (BUG-10)** — Baseline was stored as a flat map, so two rules with the same field name overwrote each other. Now namespaced by rule key. Clean break: existing flat baselines self-heal on next pipeline completion.
+- **publishEvent errors silently discarded in SLA reconcile (CQ-5)** — Replaced `_ = publishEvent(...)` with error-logged calls.
+
+### Security
+
+- **lambda_trigger_arns default changed to [] with precondition (SEC-1)** — Wildcard default removed; explicit ARN list required when triggers are enabled.
+- **Slack plaintext token deprecation warning (SEC-2)** — Terraform `check` block warns at plan time when plaintext token is used without Secrets Manager.
+- **Trigger IAM policy scoping (SEC-4)** — New variables `glue_job_arns`, `emr_cluster_arns`, `emr_serverless_app_arns`, `sfn_trigger_arns` (all default `[]`) with preconditions requiring non-empty values when the corresponding trigger is enabled.
+- **EventBridge bus resource policy (SEC-5)** — Restricts PutEvents to Lambda execution roles only.
+
 ## [0.9.1] - 2026-03-13
 
 ### Added

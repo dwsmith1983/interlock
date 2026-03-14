@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	ebTypes "github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
@@ -40,9 +41,10 @@ func (m *mockSFN) StartExecution(_ context.Context, input *sfn.StartExecutionInp
 // ---------------------------------------------------------------------------
 
 type mockEventBridge struct {
-	mu     sync.Mutex
-	events []*eventbridge.PutEventsInput
-	err    error
+	mu               sync.Mutex
+	events           []*eventbridge.PutEventsInput
+	err              error
+	failedEntryCount int32
 }
 
 func (m *mockEventBridge) PutEvents(_ context.Context, input *eventbridge.PutEventsInput, _ ...func(*eventbridge.Options)) (*eventbridge.PutEventsOutput, error) {
@@ -52,6 +54,16 @@ func (m *mockEventBridge) PutEvents(_ context.Context, input *eventbridge.PutEve
 		return nil, m.err
 	}
 	m.events = append(m.events, input)
+	if m.failedEntryCount > 0 {
+		errCode := "InternalError"
+		errMsg := "simulated partial failure"
+		return &eventbridge.PutEventsOutput{
+			FailedEntryCount: m.failedEntryCount,
+			Entries: []ebTypes.PutEventsResultEntry{
+				{ErrorCode: &errCode, ErrorMessage: &errMsg},
+			},
+		}, nil
+	}
 	return &eventbridge.PutEventsOutput{}, nil
 }
 

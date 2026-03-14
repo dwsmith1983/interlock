@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -49,15 +48,7 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 		req.Header.Set(k, os.Expand(v, safeEnvLookup))
 	}
 
-	client := defaultHTTPClient
-	if cfg.Timeout > 0 {
-		timeout := time.Duration(cfg.Timeout) * time.Second
-		if timeout != defaultTriggerTimeout {
-			client = &http.Client{Timeout: timeout}
-		}
-	}
-
-	resp, err := client.Do(req)
+	resp, err := resolveHTTPClient(cfg.Timeout).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("airflow trigger: request failed: %w", err)
 	}

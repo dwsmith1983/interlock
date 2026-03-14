@@ -521,6 +521,46 @@ func TestSLAMonitor_Cancel_RecalculatesWhenTimesNotProvided(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-5 characterization: SLA_MET published when pipeline never ran
+// ---------------------------------------------------------------------------
+
+func TestSLAMonitor_Cancel_NeverTriggered_PublishesMet(t *testing.T) {
+	// BUG-5 characterization: SLA_MET fires even with no trigger/job records.
+	// Pipeline was never started — there should be no SLA verdict at all.
+	sched := &mockScheduler{}
+	eb := &mockEventBridge{}
+	mock := newMockDDB()
+	s := &store.Store{
+		Client:       mock,
+		ControlTable: testControlTable,
+		JobLogTable:  "joblog",
+		RerunTable:   "rerun",
+	}
+	d := &lambda.Deps{
+		Store:              s,
+		Scheduler:          sched,
+		SchedulerGroupName: "interlock-sla",
+		EventBridge:        eb,
+		EventBusName:       "test-bus",
+		Logger:             slog.Default(),
+	}
+
+	// No trigger, no joblog — pipeline was never started
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:       "cancel",
+		PipelineID: "never-ran",
+		ScheduleID: "daily",
+		Date:       "2026-03-13",
+		WarningAt:  "2099-12-31T23:45:00Z",
+		BreachAt:   "2099-12-31T23:59:00Z",
+	})
+	require.NoError(t, err)
+	// BUG-5 fixed: AlertType still set for SFN flow, but no EventBridge event published
+	assert.Equal(t, "SLA_MET", out.AlertType, "AlertType should still be set for SFN state machine")
+	assert.Empty(t, eb.events, "no EventBridge events should be published when pipeline was never triggered")
+}
+
+// ---------------------------------------------------------------------------
 // Fire-alert tests
 // ---------------------------------------------------------------------------
 

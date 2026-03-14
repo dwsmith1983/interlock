@@ -3,6 +3,25 @@ resource "aws_cloudwatch_event_bus" "interlock" {
   tags = var.tags
 }
 
+resource "aws_cloudwatch_event_bus_policy" "interlock_bus" {
+  event_bus_name = aws_cloudwatch_event_bus.interlock.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowInterlockLambdas"
+        Effect    = "Allow"
+        Principal = {
+          AWS = [for name in local.lambda_names : aws_iam_role.lambda[name].arn]
+        }
+        Action   = "events:PutEvents"
+        Resource = aws_cloudwatch_event_bus.interlock.arn
+      }
+    ]
+  })
+}
+
 # Watchdog schedule
 resource "aws_cloudwatch_event_rule" "watchdog" {
   name                = "${var.environment}-interlock-watchdog"
@@ -100,6 +119,10 @@ resource "aws_cloudwatch_event_rule" "alert_events" {
       "DRY_RUN_SLA_PROJECTION",
       "DRY_RUN_DRIFT",
       "DRY_RUN_COMPLETED",
+      "DRY_RUN_WOULD_RERUN",
+      "DRY_RUN_RERUN_REJECTED",
+      "DRY_RUN_WOULD_RETRY",
+      "DRY_RUN_RETRY_EXHAUSTED",
     ]
   })
 }

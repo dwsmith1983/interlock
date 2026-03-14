@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -53,7 +54,7 @@ func main() {
 		Logger:          logger,
 	}
 
-	lambda.Start(func(ctx context.Context, event ilambda.StreamEvent) error {
+	lambda.Start(func(ctx context.Context, event ilambda.StreamEvent) (events.DynamoDBEventResponse, error) {
 		return ilambda.HandleStreamEvent(ctx, deps, event)
 	})
 }

@@ -448,6 +448,36 @@ func TestToFloat64_Unsupported(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// --- BUG-8 characterization: lowercase "any" treated as "ALL" ---
+
+func TestEvaluateRules_LowercaseAny_TreatedAsAll(t *testing.T) {
+	// BUG-8 FIXED: lowercase "any" now works via strings.ToUpper.
+	rules := []types.ValidationRule{
+		{Key: "s1", Check: types.CheckGTE, Field: "count", Value: float64(10)},
+		{Key: "s2", Check: types.CheckGTE, Field: "count", Value: float64(10)},
+	}
+	sensors := map[string]map[string]interface{}{
+		"s1": {"count": float64(20)}, // passes
+		"s2": {"count": float64(5)},  // fails
+	}
+	result := EvaluateRules("any", rules, sensors, time.Now())
+	assert.True(t, result.Passed, "BUG-8 FIXED: lowercase 'any' now works")
+}
+
+func TestEvaluateRules_MixedCaseAny_TreatedAsAll(t *testing.T) {
+	// BUG-8 FIXED: mixed-case "Any" now works via strings.ToUpper.
+	rules := []types.ValidationRule{
+		{Key: "s1", Check: types.CheckGTE, Field: "count", Value: float64(10)},
+		{Key: "s2", Check: types.CheckGTE, Field: "count", Value: float64(10)},
+	}
+	sensors := map[string]map[string]interface{}{
+		"s1": {"count": float64(20)},
+		"s2": {"count": float64(5)},
+	}
+	result := EvaluateRules("Any", rules, sensors, time.Now())
+	assert.True(t, result.Passed, "BUG-8 FIXED: lowercase 'any' now works")
+}
+
 // --- EvaluateRules default mode (not "ALL" or "ANY") ---
 
 func TestEvaluateRules_DefaultMode_FallsToALL(t *testing.T) {

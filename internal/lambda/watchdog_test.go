@@ -1875,9 +1875,9 @@ func TestWatchdog_PostRunSensorMissing(t *testing.T) {
 	// Seed COMPLETED trigger for today.
 	seedTriggerWithStatus(mock, "gold-revenue", today, types.TriggerStatusCompleted)
 
-	// Seed baseline (written at completion time).
+	// Seed baseline (written at completion time, namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#"+today, map[string]interface{}{
-		"sensor_count": float64(100),
+		"quality-check": map[string]interface{}{"sensor_count": float64(100)},
 	})
 
 	// Seed a success job event with timestamp 3h before now (well past the 1h timeout).
@@ -1925,9 +1925,9 @@ func TestWatchdog_PostRunSensorPresent(t *testing.T) {
 	// Seed COMPLETED trigger for today.
 	seedTriggerWithStatus(mock, "gold-revenue", today, types.TriggerStatusCompleted)
 
-	// Seed baseline.
+	// Seed baseline (namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#"+today, map[string]interface{}{
-		"sensor_count": float64(100),
+		"quality-check": map[string]interface{}{"sensor_count": float64(100)},
 	})
 
 	// Seed a success job event 3h before now.
@@ -3188,4 +3188,166 @@ func TestWatchdog_DryRun_SkipsAllSchedulingAndAlerts(t *testing.T) {
 		assert.NotContains(t, evtTypes, prohibited,
 			"dry-run pipeline must not produce %s events", prohibited)
 	}
+}
+
+// TestResolveTriggerDeadlineTime_UsesScheduleTimezone verifies that the trigger
+// deadline is resolved in the schedule's timezone, not the SLA timezone.
+// BUG-6: closeSensorTriggerWindow previously used cfg.SLA.Timezone exclusively,
+// ignoring cfg.Schedule.Timezone. The fix prefers Schedule.Timezone with SLA as
+// fallback.
+func TestResolveTriggerDeadlineTime_UsesScheduleTimezone(t *testing.T) {
+	tests := []struct {
+		name     string
+		deadline string
+		date     string
+		timezone string
+		wantHour int
+		wantMin  int
+		wantTZ   string
+	}{
+		{
+			name:     "daily deadline in US/Eastern",
+			deadline: "09:00",
+			date:     "2026-03-09",
+			timezone: "US/Eastern",
+			wantHour: 9,
+			wantMin:  0,
+			wantTZ:   "EDT",
+		},
+		{
+			name:     "daily deadline in Europe/Berlin",
+			deadline: "09:00",
+			date:     "2026-03-09",
+			timezone: "Europe/Berlin",
+			wantHour: 9,
+			wantMin:  0,
+			wantTZ:   "CET",
+		},
+		{
+			name:     "hourly deadline in Asia/Tokyo",
+			deadline: ":45",
+			date:     "2026-03-09T13",
+			timezone: "Asia/Tokyo",
+			wantHour: 14, // hour+1 for processing window
+			wantMin:  45,
+			wantTZ:   "JST",
+		},
+		{
+			name:     "empty timezone falls back to UTC",
+			deadline: "09:00",
+			date:     "2026-03-09",
+			timezone: "",
+			wantHour: 9,
+			wantMin:  0,
+			wantTZ:   "UTC",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := lambda.ResolveTriggerDeadlineTime(tt.deadline, tt.date, tt.timezone)
+			require.False(t, got.IsZero(), "expected non-zero time")
+			assert.Equal(t, tt.wantHour, got.Hour(), "hour mismatch")
+			assert.Equal(t, tt.wantMin, got.Minute(), "minute mismatch")
+			zoneName, _ := got.Zone()
+			assert.Equal(t, tt.wantTZ, zoneName, "timezone mismatch")
+		})
+	}
+}
+
+// TestCloseSensorTriggerWindow_PrefersScheduleTimezone is an integration-level
+// test verifying that closeSensorTriggerWindow resolves the trigger deadline in
+// the schedule timezone rather than the SLA timezone when both are set.
+//
+// BUG-6: With Schedule.Timezone="US/Eastern" (UTC-4 in March) and
+// SLA.Timezone="Asia/Tokyo" (UTC+9), a 09:00 trigger deadline should resolve
+// to 09:00 US/Eastern (13:00 UTC), NOT 09:00 Asia/Tokyo (00:00 UTC).
+func TestCloseSensorTriggerWindow_PrefersScheduleTimezone(t *testing.T) {
+	mock := newMockDDB()
+	d, _, ebMock := testDeps(mock)
+	schedMock := &mockScheduler{}
+	d.Scheduler = schedMock
+	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
+	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
+	d.SchedulerGroupName = "interlock-sla"
+
+	// Fix time at 13:30 UTC on 2026-03-09. In US/Eastern (EDT, UTC-4),
+	// this is 09:30 — past the 09:00 trigger deadline.
+	// In Asia/Tokyo (JST, UTC+9), 09:00 JST = 00:00 UTC on 2026-03-09,
+	// so 13:30 UTC is also past 09:00 JST.
+	//
+	// The critical test: at 12:30 UTC (08:30 Eastern), the deadline should
+	// NOT have expired in the schedule timezone (US/Eastern), even though it
+	// would have expired if resolved in Asia/Tokyo.
+	beforeDeadlineUTC := time.Date(2026, 3, 9, 12, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return beforeDeadlineUTC }
+	d.StartedAt = beforeDeadlineUTC.Add(-5 * time.Minute)
+
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "tz-bug6-pipeline"},
+		Schedule: types.ScheduleConfig{
+			Timezone: "US/Eastern", // EDT = UTC-4 in March
+			Trigger: &types.TriggerCondition{
+				Key:      "sensor-data",
+				Check:    "equals",
+				Field:    "ready",
+				Value:    true,
+				Deadline: "09:00", // 09:00 Eastern = 13:00 UTC
+			},
+			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+		},
+		SLA: &types.SLAConfig{
+			Deadline: "10:00",
+			Timezone: "Asia/Tokyo", // JST = UTC+9; 09:00 JST = 00:00 UTC
+		},
+		Validation: types.ValidationConfig{Trigger: "ALL"},
+		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+	}
+	seedConfig(mock, cfg)
+
+	err := lambda.HandleWatchdog(context.Background(), d)
+	require.NoError(t, err)
+
+	// At 12:30 UTC = 08:30 Eastern, the 09:00 Eastern deadline has NOT
+	// expired. No SENSOR_DEADLINE_EXPIRED event should be published.
+	// (Under the old buggy code that used SLA.Timezone=Asia/Tokyo,
+	// 09:00 JST = 00:00 UTC, so it would have considered the deadline
+	// expired and published the event.)
+	ebMock.mu.Lock()
+	for _, ev := range ebMock.events {
+		assert.NotEqual(t, string(types.EventSensorDeadlineExpired), *ev.Entries[0].DetailType,
+			"deadline should NOT be expired at 08:30 Eastern (12:30 UTC)")
+	}
+	ebMock.mu.Unlock()
+
+	// Now advance to 13:30 UTC = 09:30 Eastern — past the 09:00 Eastern deadline.
+	afterDeadlineUTC := time.Date(2026, 3, 9, 13, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return afterDeadlineUTC }
+	d.StartedAt = afterDeadlineUTC.Add(-5 * time.Minute)
+
+	// Reset mock state for fresh run.
+	mock2 := newMockDDB()
+	d2, _, ebMock2 := testDeps(mock2)
+	d2.Scheduler = &mockScheduler{}
+	d2.SLAMonitorARN = d.SLAMonitorARN
+	d2.SchedulerRoleARN = d.SchedulerRoleARN
+	d2.SchedulerGroupName = d.SchedulerGroupName
+	d2.NowFunc = func() time.Time { return afterDeadlineUTC }
+	d2.StartedAt = afterDeadlineUTC.Add(-5 * time.Minute)
+	seedConfig(mock2, cfg)
+
+	err = lambda.HandleWatchdog(context.Background(), d2)
+	require.NoError(t, err)
+
+	// At 13:30 UTC = 09:30 Eastern, the 09:00 Eastern deadline IS expired.
+	// SENSOR_DEADLINE_EXPIRED should be published.
+	ebMock2.mu.Lock()
+	defer ebMock2.mu.Unlock()
+	var found bool
+	for _, ev := range ebMock2.events {
+		if *ev.Entries[0].DetailType == string(types.EventSensorDeadlineExpired) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected SENSOR_DEADLINE_EXPIRED at 09:30 Eastern (13:30 UTC)")
 }

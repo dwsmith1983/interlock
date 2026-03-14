@@ -3,7 +3,6 @@ package lambda
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/dwsmith1983/interlock/internal/validation"
@@ -61,7 +60,7 @@ func handlePostRunSensorEvent(ctx context.Context, d *Deps, cfg *types.PipelineC
 
 	case types.TriggerStatusCompleted:
 		// Job completed — full post-run evaluation with baseline comparison.
-		return handlePostRunCompleted(ctx, d, cfg, pipelineID, scheduleID, date, sensorData)
+		return handlePostRunCompleted(ctx, d, cfg, pipelineID, scheduleID, date, sensorKey, sensorData)
 
 	default:
 		// FAILED_FINAL or unknown — skip.
@@ -82,20 +81,33 @@ func handlePostRunInflight(ctx context.Context, d *Deps, cfg *types.PipelineConf
 		return nil // No baseline yet — job hasn't completed once.
 	}
 
+	// Find matching post-run rule for this sensor key.
+	var ruleBaseline map[string]interface{}
+	for _, rule := range cfg.PostRun.Rules {
+		if strings.HasPrefix(sensorKey, rule.Key) {
+			if nested, ok := baseline[rule.Key].(map[string]interface{}); ok {
+				ruleBaseline = nested
+			}
+			break
+		}
+	}
+	if ruleBaseline == nil {
+		return nil // No baseline for this rule (stale or first run).
+	}
+
 	driftField := resolveDriftField(cfg.PostRun)
-	prevCount := ExtractFloat(baseline, driftField)
-	currCount := ExtractFloat(sensorData, driftField)
 	threshold := 0.0
 	if cfg.PostRun.DriftThreshold != nil {
 		threshold = *cfg.PostRun.DriftThreshold
 	}
-	if prevCount > 0 && currCount > 0 && math.Abs(currCount-prevCount) > threshold {
+	dr := DetectDrift(ruleBaseline, sensorData, driftField, threshold)
+	if dr.Drifted {
 		if err := publishEvent(ctx, d, string(types.EventPostRunDriftInflight), pipelineID, scheduleID, date,
-			fmt.Sprintf("inflight drift detected for %s: %.0f → %.0f (informational)", pipelineID, prevCount, currCount),
+			fmt.Sprintf("inflight drift detected for %s: %.0f → %.0f (informational)", pipelineID, dr.Previous, dr.Current),
 			map[string]interface{}{
-				"previousCount":  prevCount,
-				"currentCount":   currCount,
-				"delta":          currCount - prevCount,
+				"previousCount":  dr.Previous,
+				"currentCount":   dr.Current,
+				"delta":          dr.Delta,
 				"driftThreshold": threshold,
 				"driftField":     driftField,
 				"sensorKey":      sensorKey,
@@ -110,7 +122,7 @@ func handlePostRunInflight(ctx context.Context, d *Deps, cfg *types.PipelineConf
 // handlePostRunCompleted evaluates post-run rules after the job has completed.
 // Compares sensor values against the date-scoped baseline and triggers a rerun
 // if drift is detected.
-func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string, sensorData map[string]interface{}) error {
+func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, sensorKey string, sensorData map[string]interface{}) error {
 	// Read baseline captured at trigger completion.
 	baselineKey := "postrun-baseline#" + date
 	baseline, err := d.Store.GetSensorData(ctx, pipelineID, baselineKey)
@@ -120,44 +132,56 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 
 	// Check for data drift if baseline exists.
 	if baseline != nil {
-		driftField := resolveDriftField(cfg.PostRun)
-		prevCount := ExtractFloat(baseline, driftField)
-		currCount := ExtractFloat(sensorData, driftField)
-		threshold := 0.0
-		if cfg.PostRun.DriftThreshold != nil {
-			threshold = *cfg.PostRun.DriftThreshold
+		// Find matching post-run rule for this sensor key.
+		var ruleBaseline map[string]interface{}
+		for _, rule := range cfg.PostRun.Rules {
+			if strings.HasPrefix(sensorKey, rule.Key) {
+				if nested, ok := baseline[rule.Key].(map[string]interface{}); ok {
+					ruleBaseline = nested
+				}
+				break
+			}
 		}
-		if prevCount > 0 && currCount > 0 && math.Abs(currCount-prevCount) > threshold {
-			delta := currCount - prevCount
-			if err := publishEvent(ctx, d, string(types.EventPostRunDrift), pipelineID, scheduleID, date,
-				fmt.Sprintf("post-run drift detected for %s: %.0f → %.0f records", pipelineID, prevCount, currCount),
-				map[string]interface{}{
-					"previousCount":  prevCount,
-					"currentCount":   currCount,
-					"delta":          delta,
-					"driftThreshold": threshold,
-					"driftField":     driftField,
-					"source":         "post-run-stream",
-				}); err != nil {
-				d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDrift, "error", err)
-			}
 
-			// Trigger rerun via the existing circuit breaker path only if the
-			// execution date is not excluded by the pipeline's calendar config.
-			if isExcludedDate(cfg, date) {
-				if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleID, date,
-					fmt.Sprintf("post-run drift rerun skipped for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
-					d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
-				}
-				d.Logger.InfoContext(ctx, "post-run drift rerun skipped: execution date excluded by calendar",
-					"pipelineId", pipelineID, "date", date)
-			} else {
-				if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, scheduleID, date, "data-drift"); writeErr != nil {
-					d.Logger.WarnContext(ctx, "failed to write rerun request on post-run drift",
-						"pipelineId", pipelineID, "error", writeErr)
-				}
+		if ruleBaseline != nil {
+			driftField := resolveDriftField(cfg.PostRun)
+			threshold := 0.0
+			if cfg.PostRun.DriftThreshold != nil {
+				threshold = *cfg.PostRun.DriftThreshold
 			}
-			return nil
+			dr := DetectDrift(ruleBaseline, sensorData, driftField, threshold)
+			if dr.Drifted {
+				if err := publishEvent(ctx, d, string(types.EventPostRunDrift), pipelineID, scheduleID, date,
+					fmt.Sprintf("post-run drift detected for %s: %.0f → %.0f records", pipelineID, dr.Previous, dr.Current),
+					map[string]interface{}{
+						"previousCount":  dr.Previous,
+						"currentCount":   dr.Current,
+						"delta":          dr.Delta,
+						"driftThreshold": threshold,
+						"driftField":     driftField,
+						"sensorKey":      sensorKey,
+						"source":         "post-run-stream",
+					}); err != nil {
+					d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDrift, "error", err)
+				}
+
+				// Trigger rerun via the existing circuit breaker path only if the
+				// execution date is not excluded by the pipeline's calendar config.
+				if isExcludedDate(cfg, date) {
+					if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleID, date,
+						fmt.Sprintf("post-run drift rerun skipped for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
+						d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
+					}
+					d.Logger.InfoContext(ctx, "post-run drift rerun skipped: execution date excluded by calendar",
+						"pipelineId", pipelineID, "date", date)
+				} else {
+					if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, scheduleID, date, "data-drift"); writeErr != nil {
+						d.Logger.WarnContext(ctx, "failed to write rerun request on post-run drift",
+							"pipelineId", pipelineID, "error", writeErr)
+					}
+				}
+				return nil
+			}
 		}
 	}
 
