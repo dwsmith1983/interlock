@@ -100,6 +100,12 @@ variable "lambda_concurrency" {
   }
 }
 
+variable "kms_key_arn" {
+  description = "ARN of a KMS key for encrypting DynamoDB tables and SQS queues at rest. Empty = AWS-managed encryption."
+  type        = string
+  default     = ""
+}
+
 variable "sns_alarm_topic_arn" {
   description = "SNS topic ARN for CloudWatch alarm notifications (empty = alarms fire but no notifications)"
   type        = string

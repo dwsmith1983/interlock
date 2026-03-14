@@ -489,20 +489,56 @@ resource "aws_iam_role_policy" "sqs_dlq" {
   policy = data.aws_iam_policy_document.sqs_dlq.json
 }
 
+# -----------------------------------------------------------------------------
+# KMS — grant Lambda roles decrypt/encrypt access when a custom CMK is provided
+# -----------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "kms_sqs_stream_router" {
+  count = var.kms_key_arn != "" ? 1 : 0
+  name  = "kms-sqs"
+  role  = aws_iam_role.lambda["stream-router"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+      Resource = [var.kms_key_arn]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "kms_sqs_alert_dispatcher" {
+  count = var.kms_key_arn != "" ? 1 : 0
+  name  = "kms-sqs"
+  role  = aws_iam_role.lambda["alert-dispatcher"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+      Resource = [var.kms_key_arn]
+    }]
+  })
+}
+
 # =============================================================================
 # SQS Dead-Letter Queues for stream event source mappings
 # =============================================================================
 
 resource "aws_sqs_queue" "stream_router_control_dlq" {
-  name                      = "${var.environment}-interlock-sr-control-dlq"
-  message_retention_seconds = 1209600 # 14 days
-  tags                      = var.tags
+  name                              = "${var.environment}-interlock-sr-control-dlq"
+  message_retention_seconds         = 1209600 # 14 days
+  kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : "alias/aws/sqs"
+  kms_data_key_reuse_period_seconds = 300
+  tags                              = var.tags
 }
 
 resource "aws_sqs_queue" "stream_router_joblog_dlq" {
-  name                      = "${var.environment}-interlock-sr-joblog-dlq"
-  message_retention_seconds = 1209600 # 14 days
-  tags                      = var.tags
+  name                              = "${var.environment}-interlock-sr-joblog-dlq"
+  message_retention_seconds         = 1209600 # 14 days
+  kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : "alias/aws/sqs"
+  kms_data_key_reuse_period_seconds = 300
+  tags                              = var.tags
 }
 
 # =============================================================================

@@ -10,8 +10,8 @@ resource "aws_cloudwatch_event_bus_policy" "interlock_bus" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid       = "AllowInterlockLambdas"
-        Effect    = "Allow"
+        Sid    = "AllowInterlockLambdas"
+        Effect = "Allow"
         Principal = {
           AWS = [for name in local.lambda_names : aws_iam_role.lambda[name].arn]
         }

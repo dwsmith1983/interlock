@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.3] - 2026-03-13
+## [0.9.3] - 2026-03-14
 
 ### Changed
 
@@ -15,7 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Command trigger shell injection eliminated (SEC-3)** — Replaced `sh -c` with direct `exec.CommandContext` + `strings.Fields` argument splitting. No shell interpretation of pipes, redirects, or variable expansion.
+- **Encryption at rest for DynamoDB and SQS** — All DynamoDB tables now explicitly enable server-side encryption. SQS queues (alert queue, alert DLQ, stream-router DLQs) now use KMS encryption. New optional `kms_key_arn` variable for custom CMK when full key control and rotation are needed; defaults to AWS-managed keys (free, no configuration required).
+- **SSRF protection on trigger HTTP clients** — Custom `http.Transport` with dial-time IP validation rejects connections to private, loopback, link-local, and multicast addresses. Protects HTTP, Airflow, and Databricks triggers against targeting internal endpoints.
+- **EventBridge PutEvents partial failure detection** — `publishEvent` now checks `FailedEntryCount` on the response. Previously, partial failures were silently discarded.
+- **Command trigger shell injection eliminated** — Replaced `sh -c` with direct `exec.CommandContext` + `strings.Fields` argument splitting. No shell interpretation of pipes, redirects, or variable expansion.
 
 ## [0.9.2] - 2026-03-13
 

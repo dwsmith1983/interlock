@@ -3,16 +3,20 @@
 # -----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "alert_dlq" {
-  name                      = "${var.environment}-interlock-alert-dlq"
-  message_retention_seconds = 1209600 # 14 days
-  tags                      = var.tags
+  name                              = "${var.environment}-interlock-alert-dlq"
+  message_retention_seconds         = 1209600 # 14 days
+  kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : "alias/aws/sqs"
+  kms_data_key_reuse_period_seconds = 300
+  tags                              = var.tags
 }
 
 resource "aws_sqs_queue" "alert" {
-  name                       = "${var.environment}-interlock-alerts"
-  message_retention_seconds  = 86400 # 1 day
-  visibility_timeout_seconds = 60
-  tags                       = var.tags
+  name                              = "${var.environment}-interlock-alerts"
+  message_retention_seconds         = 86400 # 1 day
+  visibility_timeout_seconds        = 60
+  kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : "alias/aws/sqs"
+  kms_data_key_reuse_period_seconds = 300
+  tags                              = var.tags
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.alert_dlq.arn
