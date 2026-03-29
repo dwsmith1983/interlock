@@ -11,10 +11,7 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
-// HandleStreamEvent processes a DynamoDB stream event, routing each record
-// to the appropriate handler based on the SK prefix. Per-record errors are
-// collected as BatchItemFailures so the Lambda runtime can use DynamoDB's
-// ReportBatchItemFailures to retry only the failed records.
+// Deprecated: Use stream.HandleStreamEvent instead. Retained for test compatibility.
 func HandleStreamEvent(ctx context.Context, d *Deps, event StreamEvent) (events.DynamoDBEventResponse, error) {
 	var resp events.DynamoDBEventResponse
 	for i := range event.Records {

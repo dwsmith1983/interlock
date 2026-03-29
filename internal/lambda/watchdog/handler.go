@@ -3,35 +3,46 @@
 // and SLA breaches.
 package watchdog
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
 
-import lambda "github.com/dwsmith1983/interlock/internal/lambda"
+	lambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/pkg/types"
+)
 
 // HandleWatchdog runs periodic health checks.
 func HandleWatchdog(ctx context.Context, d *lambda.Deps) error {
-	if err := detectStaleTriggers(ctx, d); err != nil {
-		d.Logger.Error("stale trigger detection failed", "error", err)
+	checks := []struct {
+		name string
+		fn   func(context.Context, *lambda.Deps) error
+	}{
+		{"stale-triggers", detectStaleTriggers},
+		{"missed-schedules", detectMissedSchedules},
+		{"missed-inclusion-schedules", detectMissedInclusionSchedules},
+		{"sensor-trigger-reconciliation", reconcileSensorTriggers},
+		{"sla-scheduling", scheduleSLAAlerts},
+		{"trigger-deadlines", checkTriggerDeadlines},
+		{"post-run-sensors", detectMissingPostRunSensors},
+		{"relative-sla-breaches", detectRelativeSLABreaches},
 	}
-	if err := detectMissedSchedules(ctx, d); err != nil {
-		d.Logger.Error("missed schedule detection failed", "error", err)
+
+	var errs []error
+	var failed []string
+	for _, c := range checks {
+		if err := c.fn(ctx, d); err != nil {
+			d.Logger.Error(c.name+" failed", "error", err)
+			errs = append(errs, fmt.Errorf("%s: %w", c.name, err))
+			failed = append(failed, c.name)
+		}
 	}
-	if err := detectMissedInclusionSchedules(ctx, d); err != nil {
-		d.Logger.Error("missed inclusion schedule detection failed", "error", err)
-	}
-	if err := reconcileSensorTriggers(ctx, d); err != nil {
-		d.Logger.Error("sensor trigger reconciliation failed", "error", err)
-	}
-	if err := scheduleSLAAlerts(ctx, d); err != nil {
-		d.Logger.Error("proactive SLA scheduling failed", "error", err)
-	}
-	if err := checkTriggerDeadlines(ctx, d); err != nil {
-		d.Logger.Error("trigger deadline check failed", "error", err)
-	}
-	if err := detectMissingPostRunSensors(ctx, d); err != nil {
-		d.Logger.Error("post-run sensor absence detection failed", "error", err)
-	}
-	if err := detectRelativeSLABreaches(ctx, d); err != nil {
-		d.Logger.Error("relative SLA breach detection failed", "error", err)
+
+	if len(failed) > 0 {
+		_ = lambda.PublishEvent(ctx, d, string(types.EventWatchdogDegraded), "", "", "",
+			fmt.Sprintf("watchdog checks failed: %s", strings.Join(failed, ", ")))
+		return errors.Join(errs...)
 	}
 	return nil
 }

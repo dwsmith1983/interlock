@@ -11,7 +11,7 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// HandleEventSink writes an EventBridge event to the centralized events table.
+// Deprecated: Use sink.HandleEventSink instead. Retained for test compatibility.
 func HandleEventSink(ctx context.Context, d *Deps, input EventBridgeInput) error {
 	var detail types.InterlockEvent
 	if err := json.Unmarshal(input.Detail, &detail); err != nil {

@@ -17,8 +17,7 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// HandleAlertDispatcher processes SQS messages containing EventBridge alert events
-// and sends Slack notifications.
+// Deprecated: Use alert.HandleAlertDispatcher instead. Retained for test compatibility.
 func HandleAlertDispatcher(ctx context.Context, d *Deps, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
 	var failures []events.SQSBatchItemFailure
 
@@ -166,7 +165,7 @@ func saveThreadTs(ctx context.Context, d *Deps, pipelineID, scheduleID, date, th
 	}
 }
 
-// FormatAlertText builds the Slack message text from event detail.
+// Deprecated: Use alert.FormatAlertText instead. Retained for test compatibility.
 func FormatAlertText(detailType string, detail types.InterlockEvent) string {
 	emoji := alertEmoji(detailType)
 	header := fmt.Sprintf("%s *%s* | %s | %s", emoji, detailType, detail.PipelineID, detail.Date)

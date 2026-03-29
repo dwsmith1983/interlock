@@ -11,7 +11,7 @@ import (
 // handleSLAReconcile calculates deadlines and fires any alerts for deadlines
 // that have already passed.
 func handleSLAReconcile(ctx context.Context, d *lambda.Deps, input lambda.SLAMonitorInput) (lambda.SLAMonitorOutput, error) {
-	calc, err := lambda.HandleSLACalculate(input, d.Now())
+	calc, err := handleSLACalculate(input, d.Now())
 	if err != nil {
 		return lambda.SLAMonitorOutput{}, fmt.Errorf("reconcile: %w", err)
 	}

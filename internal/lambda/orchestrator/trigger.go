@@ -64,6 +64,33 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	}, nil
 }
 
+// triggerUnmarshalers maps each trigger type to a function that unmarshals
+// raw JSON into the corresponding typed field on TriggerConfig.
+var triggerUnmarshalers = map[types.TriggerType]func([]byte, *types.TriggerConfig) error{
+	types.TriggerHTTP:          unmarshalTo(func(tc *types.TriggerConfig, c *types.HTTPTriggerConfig) { tc.HTTP = c }),
+	types.TriggerCommand:       unmarshalTo(func(tc *types.TriggerConfig, c *types.CommandTriggerConfig) { tc.Command = c }),
+	types.TriggerAirflow:       unmarshalTo(func(tc *types.TriggerConfig, c *types.AirflowTriggerConfig) { tc.Airflow = c }),
+	types.TriggerGlue:          unmarshalTo(func(tc *types.TriggerConfig, c *types.GlueTriggerConfig) { tc.Glue = c }),
+	types.TriggerEMR:           unmarshalTo(func(tc *types.TriggerConfig, c *types.EMRTriggerConfig) { tc.EMR = c }),
+	types.TriggerEMRServerless: unmarshalTo(func(tc *types.TriggerConfig, c *types.EMRServerlessTriggerConfig) { tc.EMRServerless = c }),
+	types.TriggerStepFunction:  unmarshalTo(func(tc *types.TriggerConfig, c *types.StepFunctionTriggerConfig) { tc.StepFunction = c }),
+	types.TriggerDatabricks:    unmarshalTo(func(tc *types.TriggerConfig, c *types.DatabricksTriggerConfig) { tc.Databricks = c }),
+	types.TriggerLambda:        unmarshalTo(func(tc *types.TriggerConfig, c *types.LambdaTriggerConfig) { tc.Lambda = c }),
+}
+
+// unmarshalTo returns an unmarshaler that decodes JSON into a typed config
+// struct and assigns it to the appropriate TriggerConfig field.
+func unmarshalTo[T any](assign func(*types.TriggerConfig, *T)) func([]byte, *types.TriggerConfig) error {
+	return func(data []byte, tc *types.TriggerConfig) error {
+		var c T
+		if err := json.Unmarshal(data, &c); err != nil {
+			return err
+		}
+		assign(tc, &c)
+		return nil
+	}
+}
+
 // BuildTriggerConfig converts a JobConfig into a TriggerConfig by
 // JSON-marshalling the config map and unmarshalling it into the typed sub-struct.
 func BuildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
@@ -78,63 +105,12 @@ func BuildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 		return tc, fmt.Errorf("marshal job config: %w", err)
 	}
 
-	switch job.Type {
-	case types.TriggerHTTP:
-		var c types.HTTPTriggerConfig
-		if err := json.Unmarshal(data, &c); err != nil {
-			return tc, fmt.Errorf("unmarshal http config: %w", err)
-		}
-		tc.HTTP = &c
-	case types.TriggerCommand:
-		var c types.CommandTriggerConfig
-		if err := json.Unmarshal(data, &c); err != nil {
-			return tc, fmt.Errorf("unmarshal command config: %w", err)
-		}
-		tc.Command = &c
-	case types.TriggerAirflow:
-		var c types.AirflowTriggerConfig
-		if err := json.Unmarshal(data, &c); err != nil {
-			return tc, fmt.Errorf("unmarshal airflow config: %w", err)
-		}
-		tc.Airflow = &c
-	case types.TriggerGlue:
-		var c types.GlueTriggerConfig
-		if err := json.Unmarshal(data, &c); err != nil {
-			return tc, fmt.Errorf("unmarshal glue config: %w", err)
-		}
-		tc.Glue = &c
-	case types.TriggerEMR:
-		var c types.EMRTriggerConfig
-		if err := json.Unmarshal(data, &c); err != nil {
-			return tc, fmt.Errorf("unmarshal emr config: %w", err)
-		}
-		tc.EMR = &c
-	case types.TriggerEMRServerless:
-		var c types.EMRServerlessTriggerConfig
-		if err := json.Unmarshal(data, &c); err != nil {
-			return tc, fmt.Errorf("unmarshal emr-serverless config: %w", err)
-		}
-		tc.EMRServerless = &c
-	case types.TriggerStepFunction:
-		var c types.StepFunctionTriggerConfig
-		if err := json.Unmarshal(data, &c); err != nil {
-			return tc, fmt.Errorf("unmarshal step-function config: %w", err)
-		}
-		tc.StepFunction = &c
-	case types.TriggerDatabricks:
-		var c types.DatabricksTriggerConfig
-		if err := json.Unmarshal(data, &c); err != nil {
-			return tc, fmt.Errorf("unmarshal databricks config: %w", err)
-		}
-		tc.Databricks = &c
-	case types.TriggerLambda:
-		var c types.LambdaTriggerConfig
-		if err := json.Unmarshal(data, &c); err != nil {
-			return tc, fmt.Errorf("unmarshal lambda config: %w", err)
-		}
-		tc.Lambda = &c
-	default:
+	unmarshal, ok := triggerUnmarshalers[job.Type]
+	if !ok {
 		return tc, fmt.Errorf("unsupported trigger type: %s", job.Type)
+	}
+	if err := unmarshal(data, &tc); err != nil {
+		return tc, fmt.Errorf("unmarshal %s config: %w", job.Type, err)
 	}
 
 	return tc, nil

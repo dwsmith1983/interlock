@@ -18,19 +18,14 @@ import (
 func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonitorInput) (lambda.SLAMonitorOutput, error) {
 	if input.WarningAt == "" && input.BreachAt == "" {
 		if input.MaxDuration != "" && input.SensorArrivalAt != "" {
-			calc, err := lambda.HandleSLACalculate(lambda.SLAMonitorInput{
-				Mode:             "calculate",
-				MaxDuration:      input.MaxDuration,
-				SensorArrivalAt:  input.SensorArrivalAt,
-				ExpectedDuration: input.ExpectedDuration,
-			}, d.Now())
+			calc, err := handleRelativeSLACalculate(input)
 			if err != nil {
 				return lambda.SLAMonitorOutput{}, fmt.Errorf("cancel recalculate (relative): %w", err)
 			}
 			input.WarningAt = calc.WarningAt
 			input.BreachAt = calc.BreachAt
 		} else if input.Deadline != "" {
-			calc, err := lambda.HandleSLACalculate(input, d.Now())
+			calc, err := handleSLACalculate(input, d.Now())
 			if err != nil {
 				return lambda.SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
 			}

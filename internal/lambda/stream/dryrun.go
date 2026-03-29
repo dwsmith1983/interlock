@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
-	"github.com/dwsmith1983/interlock/internal/lambda/orchestrator"
 	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/dwsmith1983/interlock/pkg/validation"
 )
@@ -69,7 +68,7 @@ func handleDryRunTrigger(ctx context.Context, d *lambda.Deps, cfg *types.Pipelin
 	}
 
 	if cfg.PostRun != nil && len(cfg.PostRun.Rules) > 0 {
-		if baselineErr := orchestrator.CapturePostRunBaseline(ctx, d, pipelineID, scheduleID, date); baselineErr != nil {
+		if baselineErr := lambda.CapturePostRunBaseline(ctx, d, pipelineID, scheduleID, date); baselineErr != nil {
 			d.Logger.WarnContext(ctx, "dry-run: failed to capture post-run baseline",
 				"pipelineId", pipelineID, "error", baselineErr)
 		}

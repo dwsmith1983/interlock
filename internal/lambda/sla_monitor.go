@@ -5,23 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	schedulerTypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
+	pkgsla "github.com/dwsmith1983/interlock/pkg/sla"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// HandleSLAMonitor processes SLA monitor requests from Step Functions.
-// It supports five modes:
-//   - "calculate": computes warning and breach times from schedule config
-//   - "fire-alert": publishes an SLA alert event to EventBridge
-//   - "schedule":   creates one-time EventBridge Scheduler entries for warning/breach
-//   - "cancel":     deletes unfired schedules and publishes SLA_MET if applicable
-//   - "reconcile":  computes deadlines and fires any that have already passed (fallback)
+// Deprecated: Use sla.HandleSLAMonitor instead. Retained for test compatibility.
 func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
 	switch input.Mode {
 	case "calculate":
@@ -53,86 +47,17 @@ func HandleSLACalculate(input SLAMonitorInput, now time.Time) (SLAMonitorOutput,
 //
 // Returns full ISO 8601 timestamps required by Step Functions TimestampPath.
 func handleSLACalculate(input SLAMonitorInput, now time.Time) (SLAMonitorOutput, error) {
-	// Relative SLA path: maxDuration + sensorArrivalAt.
 	if input.MaxDuration != "" && input.SensorArrivalAt != "" {
 		return handleRelativeSLACalculate(input)
 	}
-
-	dur, err := time.ParseDuration(input.ExpectedDuration)
+	breach, warning, err := pkgsla.CalculateAbsoluteDeadline(
+		input.Date, input.Deadline, input.ExpectedDuration, input.Timezone, now)
 	if err != nil {
-		return SLAMonitorOutput{}, fmt.Errorf("parse expectedDuration %q: %w", input.ExpectedDuration, err)
+		return SLAMonitorOutput{}, err
 	}
-
-	loc := time.UTC
-	if input.Timezone != "" {
-		loc, err = time.LoadLocation(input.Timezone)
-		if err != nil {
-			return SLAMonitorOutput{}, fmt.Errorf("load timezone %q: %w", input.Timezone, err)
-		}
-	}
-
-	now = now.In(loc)
-
-	// Parse the execution date. Supports:
-	//   "2006-01-02"    — daily
-	//   "2006-01-02T15" — hourly (hour encoded in date)
-	baseDate := now
-	baseHour := -1 // -1 means "use current hour" for relative deadlines
-	if input.Date != "" {
-		datePart, hourPart := ParseExecutionDate(input.Date)
-		parsed, err := time.Parse("2006-01-02", datePart)
-		if err == nil {
-			if hourPart != "" {
-				h := 0
-				if parsed, atoiErr := strconv.Atoi(hourPart); atoiErr == nil {
-					h = parsed
-					baseHour = h
-				}
-				baseDate = time.Date(parsed.Year(), parsed.Month(), parsed.Day(),
-					h, 0, 0, 0, loc)
-			} else {
-				baseDate = time.Date(parsed.Year(), parsed.Month(), parsed.Day(),
-					now.Hour(), now.Minute(), 0, 0, loc)
-			}
-		}
-	}
-
-	// Parse deadline. Supports two formats:
-	//   "HH:MM" — absolute time of day (e.g., "02:00" for daily pipelines)
-	//   ":MM"   — minutes past current hour (e.g., ":30" for hourly pipelines)
-	var breachAt time.Time
-	dl := input.Deadline
-	if strings.HasPrefix(dl, ":") {
-		deadline, err := time.Parse("04", strings.TrimPrefix(dl, ":"))
-		if err != nil {
-			return SLAMonitorOutput{}, fmt.Errorf("parse deadline %q: %w", dl, err)
-		}
-		hour := baseDate.Hour()
-		breachAt = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
-			hour, deadline.Minute(), 0, 0, loc)
-		if baseHour >= 0 {
-			// Hourly pipeline: data for hour H is processed in hour H+1,
-			// so ":MM" means MM minutes into the processing window (H+1).
-			breachAt = breachAt.Add(time.Hour)
-		} else if breachAt.Before(now) {
-			breachAt = breachAt.Add(time.Hour)
-		}
-	} else {
-		deadline, err := time.Parse("15:04", dl)
-		if err != nil {
-			return SLAMonitorOutput{}, fmt.Errorf("parse deadline %q: %w", dl, err)
-		}
-		breachAt = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
-			deadline.Hour(), deadline.Minute(), 0, 0, loc)
-		if breachAt.Before(now) {
-			breachAt = breachAt.Add(24 * time.Hour)
-		}
-	}
-	warningAt := breachAt.Add(-dur)
-
 	return SLAMonitorOutput{
-		WarningAt: warningAt.UTC().Format(time.RFC3339),
-		BreachAt:  breachAt.UTC().Format(time.RFC3339),
+		WarningAt: warning.UTC().Format(time.RFC3339),
+		BreachAt:  breach.UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -141,33 +66,14 @@ func handleSLACalculate(input SLAMonitorInput, now time.Time) (SLAMonitorOutput,
 // if provided, otherwise defaults to 25% of maxDuration (i.e. warning
 // fires at 75% of the total allowed time).
 func handleRelativeSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
-	maxDur, err := time.ParseDuration(input.MaxDuration)
+	breach, warning, err := pkgsla.CalculateRelativeDeadline(
+		input.SensorArrivalAt, input.MaxDuration, input.ExpectedDuration)
 	if err != nil {
-		return SLAMonitorOutput{}, fmt.Errorf("parse maxDuration %q: %w", input.MaxDuration, err)
+		return SLAMonitorOutput{}, err
 	}
-
-	arrivalAt, err := time.Parse(time.RFC3339, input.SensorArrivalAt)
-	if err != nil {
-		return SLAMonitorOutput{}, fmt.Errorf("parse sensorArrivalAt %q: %w", input.SensorArrivalAt, err)
-	}
-
-	breachAt := arrivalAt.Add(maxDur)
-
-	// Warning offset: use expectedDuration if provided, otherwise 25% of maxDuration.
-	var warningOffset time.Duration
-	if input.ExpectedDuration != "" {
-		warningOffset, err = time.ParseDuration(input.ExpectedDuration)
-		if err != nil {
-			return SLAMonitorOutput{}, fmt.Errorf("parse expectedDuration %q: %w", input.ExpectedDuration, err)
-		}
-	} else {
-		warningOffset = maxDur / 4
-	}
-	warningAt := breachAt.Add(-warningOffset)
-
 	return SLAMonitorOutput{
-		WarningAt: warningAt.UTC().Format(time.RFC3339),
-		BreachAt:  breachAt.UTC().Format(time.RFC3339),
+		WarningAt: warning.UTC().Format(time.RFC3339),
+		BreachAt:  breach.UTC().Format(time.RFC3339),
 	}, nil
 }
 

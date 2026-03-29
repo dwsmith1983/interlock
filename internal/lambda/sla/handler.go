@@ -14,7 +14,7 @@ import (
 func HandleSLAMonitor(ctx context.Context, d *lambda.Deps, input lambda.SLAMonitorInput) (lambda.SLAMonitorOutput, error) {
 	switch input.Mode {
 	case "calculate":
-		return lambda.HandleSLACalculate(input, d.Now())
+		return handleSLACalculate(input, d.Now())
 	case "fire-alert":
 		return handleSLAFireAlert(ctx, d, input)
 	case "schedule":

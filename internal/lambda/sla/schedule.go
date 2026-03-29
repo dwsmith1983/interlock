@@ -10,7 +10,7 @@ import (
 // handleSLASchedule creates one-time EventBridge Scheduler entries for the
 // SLA warning and breach times.
 func handleSLASchedule(ctx context.Context, d *lambda.Deps, input lambda.SLAMonitorInput) (lambda.SLAMonitorOutput, error) {
-	calc, err := lambda.HandleSLACalculate(input, d.Now())
+	calc, err := handleSLACalculate(input, d.Now())
 	if err != nil {
 		return lambda.SLAMonitorOutput{}, fmt.Errorf("schedule: %w", err)
 	}
