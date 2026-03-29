@@ -19,7 +19,7 @@ func detectStaleTriggers(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("scan running triggers: %w", err)
 	}
 
-	now := d.now()
+	now := d.Now()
 	for _, tr := range triggers {
 		if !isStaleTrigger(tr, now) {
 			continue
@@ -44,7 +44,7 @@ func detectStaleTriggers(ctx context.Context, d *Deps) error {
 		if tr.TTL > 0 {
 			alertDetail["ttlExpired"] = time.Unix(tr.TTL, 0).UTC().Format(time.RFC3339)
 		}
-		if err := publishEvent(ctx, d, string(types.EventSFNTimeout), pipelineID, schedule, date,
+		if err := PublishEvent(ctx, d, string(types.EventSFNTimeout), pipelineID, schedule, date,
 			fmt.Sprintf("step function timed out for %s/%s/%s", pipelineID, schedule, date), alertDetail); err != nil {
 			d.Logger.Warn("failed to publish SFN timeout event", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
 		}
@@ -109,7 +109,7 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := d.now()
+	now := d.Now()
 
 	for id, cfg := range configs {
 		trigger := cfg.Schedule.Trigger
@@ -122,7 +122,7 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 			continue
 		}
 
-		if isExcluded(cfg, now) {
+		if IsExcluded(cfg, now) {
 			continue
 		}
 
@@ -133,7 +133,7 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 			continue
 		}
 
-		scheduleID := resolveScheduleID(cfg)
+		scheduleID := ResolveScheduleID(cfg)
 
 		for sensorKey, sensorData := range sensors {
 			if !strings.HasPrefix(sensorKey, trigger.Key) {
@@ -166,7 +166,7 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 			// Guard against re-triggering completed pipelines whose trigger
 			// record was deleted by DynamoDB TTL. Check the joblog for a
 			// terminal event before acquiring a new lock.
-			if isJobTerminal(ctx, d, id, scheduleID, date) {
+			if IsJobTerminal(ctx, d, id, scheduleID, date) {
 				continue
 			}
 
@@ -180,7 +180,7 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 				continue
 			}
 
-			if err := startSFN(ctx, d, cfg, id, scheduleID, date); err != nil {
+			if err := StartSFN(ctx, d, cfg, id, scheduleID, date); err != nil {
 				if relErr := d.Store.ReleaseTriggerLock(ctx, id, scheduleID, date); relErr != nil {
 					d.Logger.Warn("failed to release lock after SFN start failure during reconciliation", "error", relErr)
 				}
@@ -193,7 +193,7 @@ func reconcileSensorTriggers(ctx context.Context, d *Deps) error {
 				"source":     "reconciliation",
 				"actionHint": "watchdog recovered missed sensor trigger",
 			}
-			if err := publishEvent(ctx, d, string(types.EventTriggerRecovered), id, scheduleID, date,
+			if err := PublishEvent(ctx, d, string(types.EventTriggerRecovered), id, scheduleID, date,
 				fmt.Sprintf("trigger recovered for %s/%s/%s", id, scheduleID, date), alertDetail); err != nil {
 				d.Logger.Warn("failed to publish trigger recovered event", "error", err, "pipeline", id, "schedule", scheduleID, "date", date)
 			}

@@ -56,7 +56,7 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := d.now()
+	now := d.Now()
 	today := now.Format("2006-01-02")
 
 	for id, cfg := range configs {
@@ -71,21 +71,21 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		}
 
 		// Skip calendar-excluded days.
-		if isExcluded(cfg, now) {
+		if IsExcluded(cfg, now) {
 			continue
 		}
 
 		// Only alert for schedules that should have fired after this Lambda
 		// started. Prevents retroactive alerts after fresh deploys.
 		if !d.StartedAt.IsZero() {
-			loc := resolveTimezone(cfg.Schedule.Timezone)
+			loc := ResolveTimezone(cfg.Schedule.Timezone)
 			if lastFire := lastCronFire(cfg.Schedule.Cron, now, loc); !lastFire.IsZero() && lastFire.Before(d.StartedAt) {
 				continue
 			}
 		}
 
 		// Resolve schedule ID for cron pipelines.
-		scheduleID := resolveScheduleID(cfg)
+		scheduleID := ResolveScheduleID(cfg)
 
 		// Check if any TRIGGER# row exists for today (covers both daily
 		// and per-hour trigger rows, e.g. "2026-03-04" and "2026-03-04T00").
@@ -102,7 +102,7 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		// Check if we are past the expected start time. If the pipeline
 		// has a schedule time configured, only alert after that time.
 		if cfg.Schedule.Time != "" {
-			loc := resolveTimezone(cfg.Schedule.Timezone)
+			loc := ResolveTimezone(cfg.Schedule.Timezone)
 			localNow := now.In(loc)
 			expectedStart, err := time.ParseInLocation("2006-01-02 15:04", today+" "+cfg.Schedule.Time, loc)
 			if err == nil && localNow.Before(expectedStart) {
@@ -118,7 +118,7 @@ func detectMissedSchedules(ctx context.Context, d *Deps) error {
 		if cfg.Schedule.Time != "" {
 			alertDetail["expectedTime"] = cfg.Schedule.Time
 		}
-		if err := publishEvent(ctx, d, string(types.EventScheduleMissed), id, scheduleID, today,
+		if err := PublishEvent(ctx, d, string(types.EventScheduleMissed), id, scheduleID, today,
 			fmt.Sprintf("missed schedule for %s on %s", id, today), alertDetail); err != nil {
 			d.Logger.Warn("failed to publish missed schedule event", "error", err, "pipeline", id, "schedule", scheduleID, "date", today)
 		}
@@ -143,7 +143,7 @@ func detectMissedInclusionSchedules(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := d.now()
+	now := d.Now()
 
 	for id, cfg := range configs {
 		if cfg.Schedule.Include == nil || len(cfg.Schedule.Include.Dates) == 0 {
@@ -156,7 +156,7 @@ func detectMissedInclusionSchedules(ctx context.Context, d *Deps) error {
 		}
 
 		// Skip calendar-excluded days.
-		if isExcluded(cfg, now) {
+		if IsExcluded(cfg, now) {
 			continue
 		}
 
@@ -165,11 +165,11 @@ func detectMissedInclusionSchedules(ctx context.Context, d *Deps) error {
 			continue
 		}
 
-		scheduleID := resolveScheduleID(cfg)
+		scheduleID := ResolveScheduleID(cfg)
 
 		// Resolve today in the pipeline's timezone so the grace-period
 		// guard fires correctly when UTC date != pipeline-local date.
-		tzLoc := resolveTimezone(cfg.Schedule.Timezone)
+		tzLoc := ResolveTimezone(cfg.Schedule.Timezone)
 		today := now.In(tzLoc).Format("2006-01-02")
 
 		for _, date := range pastDates {
@@ -214,7 +214,7 @@ func detectMissedInclusionSchedules(ctx context.Context, d *Deps) error {
 				"source":     "watchdog",
 				"actionHint": fmt.Sprintf("inclusion date %s expected to have a trigger — none found", date),
 			}
-			if err := publishEvent(ctx, d, string(types.EventIrregularScheduleMissed), id, scheduleID, date,
+			if err := PublishEvent(ctx, d, string(types.EventIrregularScheduleMissed), id, scheduleID, date,
 				fmt.Sprintf("missed inclusion schedule for %s on %s", id, date), alertDetail); err != nil {
 				d.Logger.Warn("failed to publish irregular schedule missed event", "error", err, "pipeline", id, "date", date)
 			}

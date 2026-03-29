@@ -28,10 +28,10 @@ func ResolveTriggerLockTTL() time.Duration {
 	return time.Duration(sec)*time.Second + TriggerLockBuffer
 }
 
-// getValidatedConfig loads a pipeline config and validates its retry/timeout
+// GetValidatedConfig loads a pipeline config and validates its retry/timeout
 // fields. Returns nil (with a warning log) if validation fails, signalling the
 // caller to skip processing for this pipeline.
-func getValidatedConfig(ctx context.Context, d *Deps, pipelineID string) (*types.PipelineConfig, error) {
+func GetValidatedConfig(ctx context.Context, d *Deps, pipelineID string) (*types.PipelineConfig, error) {
 	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
 	if err != nil {
 		return nil, err
@@ -71,7 +71,7 @@ func HandleStreamEvent(ctx context.Context, d *Deps, event StreamEvent) (events.
 
 // handleRecord extracts PK/SK and routes to the appropriate handler.
 func handleRecord(ctx context.Context, d *Deps, record events.DynamoDBEventRecord) error {
-	pk, sk := extractKeys(record)
+	pk, sk := ExtractKeys(record)
 	if pk == "" || sk == "" {
 		return fmt.Errorf("record missing PK or SK")
 	}
@@ -138,7 +138,7 @@ func parseJobSK(sk string) (schedule, date string, err error) {
 
 // handleJobSuccess publishes a job-completed event to EventBridge.
 func handleJobSuccess(ctx context.Context, d *Deps, pipelineID, schedule, date string) error {
-	return publishEvent(ctx, d, string(types.EventJobCompleted), pipelineID, schedule, date,
+	return PublishEvent(ctx, d, string(types.EventJobCompleted), pipelineID, schedule, date,
 		fmt.Sprintf("job completed for %s", pipelineID))
 }
 
@@ -150,7 +150,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 		return fmt.Errorf("unexpected PK format: %q", pk)
 	}
 
-	cfg, err := getValidatedConfig(ctx, d, pipelineID)
+	cfg, err := GetValidatedConfig(ctx, d, pipelineID)
 	if err != nil {
 		return fmt.Errorf("load config for %q: %w", pipelineID, err)
 	}
@@ -170,19 +170,19 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	sensorKey := strings.TrimPrefix(sk, "SENSOR#")
 	if !strings.HasPrefix(sensorKey, trigger.Key) {
 		// Trigger key doesn't match — check if this sensor matches a post-run rule.
-		if cfg.PostRun != nil && matchesPostRunRule(sensorKey, cfg.PostRun.Rules) {
-			sensorData := extractSensorData(record.Change.NewImage)
+		if cfg.PostRun != nil && MatchesPostRunRule(sensorKey, cfg.PostRun.Rules) {
+			sensorData := ExtractSensorData(record.Change.NewImage)
 			return handlePostRunSensorEvent(ctx, d, cfg, pipelineID, sensorKey, sensorData)
 		}
 		return nil
 	}
 
 	// Extract sensor data from the stream record's NewImage.
-	sensorData := extractSensorData(record.Change.NewImage)
+	sensorData := ExtractSensorData(record.Change.NewImage)
 
 	// Capture current time once for consistent use across rule evaluation,
 	// calendar checks, and execution date resolution.
-	now := d.now()
+	now := d.Now()
 
 	// Build a validation rule from the trigger condition and evaluate it.
 	rule := types.ValidationRule{
@@ -202,14 +202,14 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	}
 
 	// Check calendar exclusions (wall-clock date).
-	if isExcluded(cfg, now) {
+	if IsExcluded(cfg, now) {
 		d.Logger.Info("pipeline excluded by calendar",
 			"pipelineId", pipelineID,
 			"date", now.Format("2006-01-02"),
 		)
-		scheduleIDForEvent := resolveScheduleID(cfg)
+		scheduleIDForEvent := ResolveScheduleID(cfg)
 		dateForEvent := ResolveExecutionDate(sensorData, now)
-		if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleIDForEvent, dateForEvent,
+		if pubErr := PublishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleIDForEvent, dateForEvent,
 			fmt.Sprintf("sensor trigger suppressed for %s: wall-clock date excluded by calendar", pipelineID)); pubErr != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
 		}
@@ -217,7 +217,7 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	}
 
 	// Resolve schedule ID and date.
-	scheduleID := resolveScheduleID(cfg)
+	scheduleID := ResolveScheduleID(cfg)
 	date := ResolveExecutionDate(sensorData, now)
 
 	// Dry-run mode: observe and record what would happen, but never start SFN.
@@ -254,14 +254,14 @@ func handleSensorEvent(ctx context.Context, d *Deps, pk, sk string, record event
 	}
 
 	// Start Step Function execution.
-	if err := startSFN(ctx, d, cfg, pipelineID, scheduleID, date); err != nil {
+	if err := StartSFN(ctx, d, cfg, pipelineID, scheduleID, date); err != nil {
 		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, scheduleID, date); relErr != nil {
 			d.Logger.Warn("failed to release lock after SFN start failure", "error", relErr)
 		}
 		return fmt.Errorf("start SFN for %q: %w", pipelineID, err)
 	}
 
-	if err := publishEvent(ctx, d, string(types.EventJobTriggered), pipelineID, scheduleID, date,
+	if err := PublishEvent(ctx, d, string(types.EventJobTriggered), pipelineID, scheduleID, date,
 		fmt.Sprintf("stream trigger fired for %s", pipelineID)); err != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobTriggered, "error", err)
 	}

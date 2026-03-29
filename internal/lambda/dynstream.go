@@ -15,8 +15,8 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// extractKeys returns the PK and SK string values from a DynamoDB stream record.
-func extractKeys(record events.DynamoDBEventRecord) (pk, sk string) {
+// ExtractKeys returns the PK and SK string values from a DynamoDB stream record.
+func ExtractKeys(record events.DynamoDBEventRecord) (pk, sk string) {
 	keys := record.Change.Keys
 	if pkAttr, ok := keys["PK"]; ok && pkAttr.DataType() == events.DataTypeString {
 		pk = pkAttr.String()
@@ -27,11 +27,11 @@ func extractKeys(record events.DynamoDBEventRecord) (pk, sk string) {
 	return pk, sk
 }
 
-// extractSensorData converts a DynamoDB stream NewImage to a plain map
+// ExtractSensorData converts a DynamoDB stream NewImage to a plain map
 // suitable for validation rule evaluation. If the item uses the canonical
 // ControlRecord format (sensor fields nested inside a "data" map attribute),
 // the "data" map is unwrapped so fields are accessible at the top level.
-func extractSensorData(newImage map[string]events.DynamoDBAttributeValue) map[string]interface{} {
+func ExtractSensorData(newImage map[string]events.DynamoDBAttributeValue) map[string]interface{} {
 	if newImage == nil {
 		return nil
 	}
@@ -43,7 +43,7 @@ func extractSensorData(newImage map[string]events.DynamoDBAttributeValue) map[st
 		if skipKeys[k] {
 			continue
 		}
-		result[k] = convertAttributeValue(av)
+		result[k] = ConvertAttributeValue(av)
 	}
 
 	// Unwrap the "data" map if present (canonical ControlRecord sensor format).
@@ -53,8 +53,8 @@ func extractSensorData(newImage map[string]events.DynamoDBAttributeValue) map[st
 	return result
 }
 
-// convertAttributeValue converts a DynamoDB stream attribute value to a Go native type.
-func convertAttributeValue(av events.DynamoDBAttributeValue) interface{} {
+// ConvertAttributeValue converts a DynamoDB stream attribute value to a Go native type.
+func ConvertAttributeValue(av events.DynamoDBAttributeValue) interface{} {
 	switch av.DataType() {
 	case events.DataTypeString:
 		return av.String()
@@ -75,14 +75,14 @@ func convertAttributeValue(av events.DynamoDBAttributeValue) interface{} {
 		m := av.Map()
 		out := make(map[string]interface{}, len(m))
 		for k, v := range m {
-			out[k] = convertAttributeValue(v)
+			out[k] = ConvertAttributeValue(v)
 		}
 		return out
 	case events.DataTypeList:
 		l := av.List()
 		out := make([]interface{}, len(l))
 		for i, v := range l {
-			out[i] = convertAttributeValue(v)
+			out[i] = ConvertAttributeValue(v)
 		}
 		return out
 	default:
@@ -127,18 +127,18 @@ func normalizeDate(s string) string {
 	return s
 }
 
-// resolveScheduleID returns "cron" if the pipeline uses a cron schedule,
+// ResolveScheduleID returns "cron" if the pipeline uses a cron schedule,
 // otherwise returns "stream".
-func resolveScheduleID(cfg *types.PipelineConfig) string {
+func ResolveScheduleID(cfg *types.PipelineConfig) string {
 	if cfg.Schedule.Cron != "" {
 		return "cron"
 	}
 	return "stream"
 }
 
-// publishEvent sends an event to EventBridge. It is safe to call when
+// PublishEvent sends an event to EventBridge. It is safe to call when
 // EventBridge is nil or EventBusName is empty (returns nil with no action).
-func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule, date, message string, detail ...map[string]interface{}) error {
+func PublishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule, date, message string, detail ...map[string]interface{}) error {
 	if d.EventBridge == nil || d.EventBusName == "" {
 		return nil
 	}
@@ -148,7 +148,7 @@ func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule,
 		ScheduleID: schedule,
 		Date:       date,
 		Message:    message,
-		Timestamp:  d.now(),
+		Timestamp:  d.Now(),
 	}
 	if len(detail) > 0 && detail[0] != nil {
 		evt.Detail = detail[0]
@@ -187,9 +187,9 @@ func publishEvent(ctx context.Context, d *Deps, eventType, pipelineID, schedule,
 	return nil
 }
 
-// resolveTimezone loads the time.Location for the given timezone name.
+// ResolveTimezone loads the time.Location for the given timezone name.
 // Returns time.UTC if tz is empty or cannot be loaded.
-func resolveTimezone(tz string) *time.Location {
+func ResolveTimezone(tz string) *time.Location {
 	if tz == "" {
 		return time.UTC
 	}
@@ -248,9 +248,9 @@ func PastInclusionDates(dates []string, now time.Time) []string {
 	return past
 }
 
-// isExcludedTime is the core calendar exclusion check. It evaluates
+// IsExcludedTime is the core calendar exclusion check. It evaluates
 // whether the given time falls on a weekend or a specifically excluded date.
-func isExcludedTime(excl *types.ExclusionConfig, t time.Time) bool {
+func IsExcludedTime(excl *types.ExclusionConfig, t time.Time) bool {
 	if excl == nil {
 		return false
 	}
@@ -269,33 +269,33 @@ func isExcludedTime(excl *types.ExclusionConfig, t time.Time) bool {
 	return false
 }
 
-// isExcludedDate checks calendar exclusions against a job's execution date
+// IsExcludedDate checks calendar exclusions against a job's execution date
 // (not wall-clock time). dateStr supports "YYYY-MM-DD" and "YYYY-MM-DDTHH".
-func isExcludedDate(cfg *types.PipelineConfig, dateStr string) bool {
+func IsExcludedDate(cfg *types.PipelineConfig, dateStr string) bool {
 	excl := cfg.Schedule.Exclude
 	if excl == nil || len(dateStr) < 10 {
 		return false
 	}
-	loc := resolveTimezone(cfg.Schedule.Timezone)
+	loc := ResolveTimezone(cfg.Schedule.Timezone)
 	t, err := time.ParseInLocation("2006-01-02", dateStr[:10], loc)
 	if err != nil {
 		return false
 	}
-	return isExcludedTime(excl, t)
+	return IsExcludedTime(excl, t)
 }
 
-// isExcluded checks whether the pipeline should be excluded from running
+// IsExcluded checks whether the pipeline should be excluded from running
 // based on calendar exclusions (weekends and specific dates).
 // When no timezone is configured, now is used as-is (preserving its
 // original location, which is UTC in AWS Lambda).
-func isExcluded(cfg *types.PipelineConfig, now time.Time) bool {
+func IsExcluded(cfg *types.PipelineConfig, now time.Time) bool {
 	excl := cfg.Schedule.Exclude
 	if excl == nil {
 		return false
 	}
 	t := now
 	if cfg.Schedule.Timezone != "" {
-		t = now.In(resolveTimezone(cfg.Schedule.Timezone))
+		t = now.In(ResolveTimezone(cfg.Schedule.Timezone))
 	}
-	return isExcludedTime(excl, t)
+	return IsExcludedTime(excl, t)
 }

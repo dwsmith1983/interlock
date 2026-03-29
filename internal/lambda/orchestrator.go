@@ -53,10 +53,10 @@ func handleEvaluate(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 
 	RemapPerPeriodSensors(sensors, input.Date)
 
-	result := validation.EvaluateRules(cfg.Validation.Trigger, cfg.Validation.Rules, sensors, d.now())
+	result := validation.EvaluateRules(cfg.Validation.Trigger, cfg.Validation.Rules, sensors, d.Now())
 
 	if result.Passed {
-		if err := publishEvent(ctx, d, string(types.EventValidationPassed), input.PipelineID, input.ScheduleID, input.Date, "all validation rules passed"); err != nil {
+		if err := PublishEvent(ctx, d, string(types.EventValidationPassed), input.PipelineID, input.ScheduleID, input.Date, "all validation rules passed"); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventValidationPassed, "error", err)
 		}
 	}
@@ -103,7 +103,7 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 
 	runID := extractRunID(metadata)
 
-	if err := publishEvent(ctx, d, string(types.EventJobTriggered), input.PipelineID, input.ScheduleID, input.Date, fmt.Sprintf("triggered %s job", cfg.Job.Type)); err != nil {
+	if err := PublishEvent(ctx, d, string(types.EventJobTriggered), input.PipelineID, input.ScheduleID, input.Date, fmt.Sprintf("triggered %s job", cfg.Job.Type)); err != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobTriggered, "error", err)
 	}
 
@@ -184,7 +184,7 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventFail, input.RunID, 0, result.Message, writeOpts...); err != nil {
 			d.Logger.Warn("failed to write polled job failure joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
 		}
-		if err := publishEvent(ctx, d, string(types.EventJobFailed), input.PipelineID, input.ScheduleID, input.Date, "job failed: "+result.Message); err != nil {
+		if err := PublishEvent(ctx, d, string(types.EventJobFailed), input.PipelineID, input.ScheduleID, input.Date, "job failed: "+result.Message); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobFailed, "error", err)
 		}
 		return OrchestratorOutput{Mode: "check-job", Event: "fail"}, nil
@@ -219,7 +219,7 @@ func handleValidationExhausted(ctx context.Context, d *Deps, input OrchestratorI
 		return OrchestratorOutput{}, fmt.Errorf("write validation-exhausted joblog: %w", err)
 	}
 
-	if err := publishEvent(ctx, d, string(types.EventValidationExhausted), input.PipelineID, input.ScheduleID, input.Date, "evaluation window exhausted without passing"); err != nil {
+	if err := PublishEvent(ctx, d, string(types.EventValidationExhausted), input.PipelineID, input.ScheduleID, input.Date, "evaluation window exhausted without passing"); err != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventValidationExhausted, "error", err)
 	}
 
@@ -237,7 +237,7 @@ func handleJobPollExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 		return OrchestratorOutput{}, fmt.Errorf("write job-poll-exhausted joblog: %w", err)
 	}
 
-	if err := publishEvent(ctx, d, string(types.EventJobPollExhausted), input.PipelineID, input.ScheduleID, input.Date,
+	if err := PublishEvent(ctx, d, string(types.EventJobPollExhausted), input.PipelineID, input.ScheduleID, input.Date,
 		"job poll window exhausted"); err != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobPollExhausted, "error", err)
 	}
@@ -293,7 +293,7 @@ func handleTriggerExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 		return OrchestratorOutput{}, fmt.Errorf("write trigger-exhausted joblog: %w", err)
 	}
 
-	if err := publishEvent(ctx, d, string(types.EventRetryExhausted), input.PipelineID, input.ScheduleID, input.Date,
+	if err := PublishEvent(ctx, d, string(types.EventRetryExhausted), input.PipelineID, input.ScheduleID, input.Date,
 		fmt.Sprintf("trigger retries exhausted for %s: %s", input.PipelineID, errMsg)); err != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRetryExhausted, "error", err)
 	}
@@ -329,7 +329,7 @@ func handleCompleteTrigger(ctx context.Context, d *Deps, input OrchestratorInput
 		if err := capturePostRunBaseline(ctx, d, input.PipelineID, input.ScheduleID, input.Date); err != nil {
 			d.Logger.WarnContext(ctx, "failed to capture post-run baseline",
 				"pipeline", input.PipelineID, "error", err)
-			if pubErr := publishEvent(ctx, d, string(types.EventBaselineCaptureFailed), input.PipelineID, input.ScheduleID, input.Date,
+			if pubErr := PublishEvent(ctx, d, string(types.EventBaselineCaptureFailed), input.PipelineID, input.ScheduleID, input.Date,
 				fmt.Sprintf("baseline capture failed for %s: %v", input.PipelineID, err)); pubErr != nil {
 				d.Logger.WarnContext(ctx, "failed to publish baseline capture failure event", "error", pubErr)
 			}
@@ -379,7 +379,7 @@ func capturePostRunBaseline(ctx context.Context, d *Deps, pipelineID, scheduleID
 		return fmt.Errorf("write baseline: %w", err)
 	}
 
-	if err := publishEvent(ctx, d, string(types.EventPostRunBaselineCaptured), pipelineID, scheduleID, date,
+	if err := PublishEvent(ctx, d, string(types.EventPostRunBaselineCaptured), pipelineID, scheduleID, date,
 		fmt.Sprintf("post-run baseline captured for %s", pipelineID)); err != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunBaselineCaptured, "error", err)
 	}

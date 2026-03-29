@@ -149,7 +149,7 @@ func getThreadTs(ctx context.Context, d *Deps, pipelineID, scheduleID, date stri
 // saveThreadTs persists a Slack thread timestamp for future message threading.
 // Errors are logged but don't fail the message.
 func saveThreadTs(ctx context.Context, d *Deps, pipelineID, scheduleID, date, threadTs, channelID string) {
-	ttl := d.now().Add(time.Duration(d.EventsTTLDays) * 24 * time.Hour).Unix()
+	ttl := d.Now().Add(time.Duration(d.EventsTTLDays) * 24 * time.Hour).Unix()
 	_, err := d.Store.Client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &d.Store.EventsTable,
 		Item: map[string]ddbtypes.AttributeValue{
@@ -157,7 +157,7 @@ func saveThreadTs(ctx context.Context, d *Deps, pipelineID, scheduleID, date, th
 			"SK":        &ddbtypes.AttributeValueMemberS{Value: fmt.Sprintf("THREAD#%s#%s", scheduleID, date)},
 			"threadTs":  &ddbtypes.AttributeValueMemberS{Value: threadTs},
 			"channelId": &ddbtypes.AttributeValueMemberS{Value: channelID},
-			"createdAt": &ddbtypes.AttributeValueMemberS{Value: d.now().UTC().Format(time.RFC3339)},
+			"createdAt": &ddbtypes.AttributeValueMemberS{Value: d.Now().UTC().Format(time.RFC3339)},
 			"ttl":       &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttl)},
 		},
 	})

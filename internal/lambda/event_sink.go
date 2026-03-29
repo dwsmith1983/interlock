@@ -23,10 +23,10 @@ func HandleEventSink(ctx context.Context, d *Deps, input EventBridgeInput) error
 	if !detail.Timestamp.IsZero() {
 		tsMillis = detail.Timestamp.UnixMilli()
 	} else {
-		tsMillis = d.now().UnixMilli()
+		tsMillis = d.Now().UnixMilli()
 	}
 
-	now := d.now()
+	now := d.Now()
 	ttlDays := d.EventsTTLDays
 	if ttlDays <= 0 {
 		ttlDays = 90

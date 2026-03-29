@@ -25,7 +25,7 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		return err
 	}
 
-	cfg, err := getValidatedConfig(ctx, d, pipelineID)
+	cfg, err := GetValidatedConfig(ctx, d, pipelineID)
 	if err != nil {
 		return fmt.Errorf("load config for %q: %w", pipelineID, err)
 	}
@@ -41,11 +41,11 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 	}
 
 	// --- Calendar exclusion check (execution date) ---
-	if isExcludedDate(cfg, date) {
+	if IsExcludedDate(cfg, date) {
 		if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventRerunRejected, "", 0, "excluded by calendar"); err != nil {
 			d.Logger.Warn("failed to write rerun-rejected joblog for calendar exclusion", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
 		}
-		if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, schedule, date,
+		if pubErr := PublishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, schedule, date,
 			fmt.Sprintf("rerun blocked for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
 		}
@@ -87,7 +87,7 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 			types.JobEventRerunRejected, "", 0, limitLabel); err != nil {
 			d.Logger.Warn("failed to write rerun-rejected joblog for limit exceeded", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
 		}
-		if err := publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
+		if err := PublishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
 			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, limitLabel)); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunRejected, "error", err)
 		}
@@ -121,7 +121,7 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 			types.JobEventRerunRejected, "", 0, rejectReason); err != nil {
 			d.Logger.Warn("failed to write rerun-rejected joblog for circuit breaker", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
 		}
-		if err := publishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
+		if err := PublishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
 			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, rejectReason)); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunRejected, "error", err)
 		}
@@ -137,7 +137,7 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		return fmt.Errorf("reset trigger lock for %q: %w", pipelineID, err)
 	}
 	if !acquired {
-		if pubErr := publishEvent(ctx, d, string(types.EventInfraFailure), pipelineID, schedule, date,
+		if pubErr := PublishEvent(ctx, d, string(types.EventInfraFailure), pipelineID, schedule, date,
 			fmt.Sprintf("lock reset failed for rerun of %s", pipelineID)); pubErr != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "error", pubErr)
 		}
@@ -168,13 +168,13 @@ func handleRerunRequest(ctx context.Context, d *Deps, pk, sk string, record even
 		d.Logger.Warn("failed to write rerun-accepted joblog", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
 	}
 
-	if pubErr := publishEvent(ctx, d, string(types.EventRerunAccepted), pipelineID, schedule, date,
+	if pubErr := PublishEvent(ctx, d, string(types.EventRerunAccepted), pipelineID, schedule, date,
 		fmt.Sprintf("rerun accepted for %s (reason: %s)", pipelineID, reason)); pubErr != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunAccepted, "error", pubErr)
 	}
 
-	execName := truncateExecName(fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, d.now().Unix()))
-	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
+	execName := TruncateExecName(fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, d.Now().Unix()))
+	if err := StartSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
 		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); relErr != nil {
 			d.Logger.Warn("failed to release lock after SFN start failure", "error", relErr)
 		}
@@ -200,7 +200,7 @@ func parseRerunRequestSK(sk string) (schedule, date string, err error) {
 // handleJobFailure processes a job failure or timeout by either re-running
 // the pipeline (if under the retry limit) or marking it as permanently failed.
 func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, jobEvent string) error {
-	cfg, err := getValidatedConfig(ctx, d, pipelineID)
+	cfg, err := GetValidatedConfig(ctx, d, pipelineID)
 	if err != nil {
 		return fmt.Errorf("load config for %q: %w", pipelineID, err)
 	}
@@ -237,7 +237,7 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 
 	if rerunCount >= maxRetries {
 		// Retry limit reached — publish exhaustion event and mark as final failure.
-		if err := publishEvent(ctx, d, string(types.EventRetryExhausted), pipelineID, schedule, date,
+		if err := PublishEvent(ctx, d, string(types.EventRetryExhausted), pipelineID, schedule, date,
 			fmt.Sprintf("retry limit reached (%d/%d) for %s", rerunCount, maxRetries, pipelineID)); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRetryExhausted, "error", err)
 		}
@@ -258,11 +258,11 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 
 	// Calendar exclusion check: skip retry if the execution date is excluded.
 	// Mark trigger as terminal so the lock doesn't silently expire via TTL.
-	if isExcludedDate(cfg, date) {
+	if IsExcludedDate(cfg, date) {
 		if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, types.TriggerStatusFailedFinal); err != nil {
 			d.Logger.WarnContext(ctx, "failed to set trigger status after calendar exclusion", "error", err)
 		}
-		if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, schedule, date,
+		if pubErr := PublishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, schedule, date,
 			fmt.Sprintf("job failure retry skipped for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
 		}
@@ -286,8 +286,8 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 	}
 
 	// Use a unique execution name that includes the rerun attempt number.
-	execName := truncateExecName(fmt.Sprintf("%s-%s-%s-rerun-%d", pipelineID, schedule, date, attempt))
-	if err := startSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
+	execName := TruncateExecName(fmt.Sprintf("%s-%s-%s-rerun-%d", pipelineID, schedule, date, attempt))
+	if err := StartSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
 		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); relErr != nil {
 			d.Logger.Warn("failed to release lock after SFN start failure", "error", relErr)
 		}
@@ -308,8 +308,8 @@ func handleJobFailure(ctx context.Context, d *Deps, pipelineID, schedule, date, 
 // side effects. Mirrors the production handleRerunRequest logic.
 func handleDryRunRerunRequest(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string, record events.DynamoDBEventRecord) error {
 	// Calendar exclusion check.
-	if isExcludedDate(cfg, date) {
-		if pubErr := publishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
+	if IsExcludedDate(cfg, date) {
+		if pubErr := PublishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
 			fmt.Sprintf("dry-run: rerun rejected for %s: execution date %s excluded by calendar", pipelineID, date),
 			map[string]interface{}{
 				"reason": "excluded by calendar",
@@ -347,7 +347,7 @@ func handleDryRunRerunRequest(ctx context.Context, d *Deps, cfg *types.PipelineC
 	}
 
 	if count >= budget {
-		if pubErr := publishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
+		if pubErr := PublishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
 			fmt.Sprintf("dry-run: rerun rejected for %s: limit exceeded (%d/%d)", pipelineID, count, budget),
 			map[string]interface{}{
 				"reason":     "limit exceeded",
@@ -374,7 +374,7 @@ func handleDryRunRerunRequest(ctx context.Context, d *Deps, cfg *types.PipelineC
 			return fmt.Errorf("dry-run: check sensor freshness for %q: %w", pipelineID, freshErr)
 		}
 		if !fresh {
-			if pubErr := publishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
+			if pubErr := PublishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
 				fmt.Sprintf("dry-run: rerun rejected for %s: previous run succeeded and no sensor data has changed", pipelineID),
 				map[string]interface{}{
 					"reason":         "circuit breaker",
@@ -387,7 +387,7 @@ func handleDryRunRerunRequest(ctx context.Context, d *Deps, cfg *types.PipelineC
 	}
 
 	// All checks pass — publish would-rerun event.
-	if pubErr := publishEvent(ctx, d, string(types.EventDryRunWouldRerun), pipelineID, schedule, date,
+	if pubErr := PublishEvent(ctx, d, string(types.EventDryRunWouldRerun), pipelineID, schedule, date,
 		fmt.Sprintf("dry-run: would rerun %s (reason: %s)", pipelineID, reason),
 		map[string]interface{}{
 			"reason":         reason,
@@ -427,7 +427,7 @@ func handleDryRunJobFailure(ctx context.Context, d *Deps, cfg *types.PipelineCon
 	}
 
 	if rerunCount >= maxRetries {
-		if pubErr := publishEvent(ctx, d, string(types.EventDryRunRetryExhausted), pipelineID, schedule, date,
+		if pubErr := PublishEvent(ctx, d, string(types.EventDryRunRetryExhausted), pipelineID, schedule, date,
 			fmt.Sprintf("dry-run: retry limit reached (%d/%d) for %s", rerunCount, maxRetries, pipelineID),
 			map[string]interface{}{
 				"retries":    rerunCount,
@@ -439,8 +439,8 @@ func handleDryRunJobFailure(ctx context.Context, d *Deps, cfg *types.PipelineCon
 	}
 
 	// Calendar exclusion check.
-	if isExcludedDate(cfg, date) {
-		if pubErr := publishEvent(ctx, d, string(types.EventDryRunRetryExhausted), pipelineID, schedule, date,
+	if IsExcludedDate(cfg, date) {
+		if pubErr := PublishEvent(ctx, d, string(types.EventDryRunRetryExhausted), pipelineID, schedule, date,
 			fmt.Sprintf("dry-run: retry skipped for %s: execution date %s excluded by calendar", pipelineID, date),
 			map[string]interface{}{
 				"reason":     "excluded by calendar",
@@ -453,7 +453,7 @@ func handleDryRunJobFailure(ctx context.Context, d *Deps, cfg *types.PipelineCon
 	}
 
 	// Under budget — publish would-retry event.
-	if pubErr := publishEvent(ctx, d, string(types.EventDryRunWouldRetry), pipelineID, schedule, date,
+	if pubErr := PublishEvent(ctx, d, string(types.EventDryRunWouldRetry), pipelineID, schedule, date,
 		fmt.Sprintf("dry-run: would retry %s (%d/%d)", pipelineID, rerunCount, maxRetries),
 		map[string]interface{}{
 			"retries":    rerunCount,
@@ -569,7 +569,7 @@ func checkLateDataArrival(ctx context.Context, d *Deps, pipelineID, schedule, da
 		d.Logger.Warn("failed to write late-data-arrival joblog", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
 	}
 
-	if err := publishEvent(ctx, d, string(types.EventLateDataArrival), pipelineID, schedule, date,
+	if err := PublishEvent(ctx, d, string(types.EventLateDataArrival), pipelineID, schedule, date,
 		fmt.Sprintf("late data arrival for %s: sensor updated after job completion", pipelineID)); err != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventLateDataArrival, "error", err)
 	}

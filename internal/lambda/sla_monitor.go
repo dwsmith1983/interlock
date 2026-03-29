@@ -25,7 +25,7 @@ import (
 func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
 	switch input.Mode {
 	case "calculate":
-		return handleSLACalculate(input, d.now())
+		return handleSLACalculate(input, d.Now())
 	case "fire-alert":
 		return handleSLAFireAlert(ctx, d, input)
 	case "schedule":
@@ -182,7 +182,7 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 			d.Logger.InfoContext(ctx, "suppressing SLA alert (pipeline already finished)",
 				"pipeline", input.PipelineID, "date", input.Date, "triggerStatus", tr.Status, "alertType", input.AlertType)
 			suppressed = true
-		case isJobTerminal(ctx, d, input.PipelineID, input.ScheduleID, input.Date):
+		case IsJobTerminal(ctx, d, input.PipelineID, input.ScheduleID, input.Date):
 			// Joblog fallback: trigger row may be nil (cron pipeline), RUNNING
 			// (not yet updated), or TTL-expired. Check joblog as secondary signal.
 			d.Logger.InfoContext(ctx, "suppressing SLA alert (terminal joblog event found)",
@@ -190,16 +190,16 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 			suppressed = true
 		}
 		if suppressed {
-			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.now().UTC().Format(time.RFC3339)}, nil
+			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.Now().UTC().Format(time.RFC3339)}, nil
 		}
 	}
 
 	if input.AlertType == "SLA_WARNING" && input.BreachAt != "" {
 		breachAt, err := time.Parse(time.RFC3339, input.BreachAt)
-		if err == nil && !d.now().UTC().Before(breachAt) {
+		if err == nil && !d.Now().UTC().Before(breachAt) {
 			d.Logger.InfoContext(ctx, "suppressing SLA_WARNING (past breach time)",
 				"pipeline", input.PipelineID, "breachAt", input.BreachAt)
-			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.now().UTC().Format(time.RFC3339)}, nil
+			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.Now().UTC().Format(time.RFC3339)}, nil
 		}
 	}
 
@@ -231,13 +231,13 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 
 	msg := fmt.Sprintf("pipeline %s: %s", input.PipelineID, input.AlertType)
 
-	if err := publishEvent(ctx, d, input.AlertType, input.PipelineID, input.ScheduleID, input.Date, msg, alertDetail); err != nil {
+	if err := PublishEvent(ctx, d, input.AlertType, input.PipelineID, input.ScheduleID, input.Date, msg, alertDetail); err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("publish SLA event: %w", err)
 	}
 
 	return SLAMonitorOutput{
 		AlertType: input.AlertType,
-		FiredAt:   d.now().UTC().Format(time.RFC3339),
+		FiredAt:   d.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -245,7 +245,7 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 // SLA warning and breach times. Each schedule invokes this Lambda with
 // mode "fire-alert" at the exact timestamp, then auto-deletes.
 func handleSLASchedule(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
-	calc, err := handleSLACalculate(input, d.now())
+	calc, err := handleSLACalculate(input, d.Now())
 	if err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("schedule: %w", err)
 	}
@@ -284,7 +284,7 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 			input.WarningAt = calc.WarningAt
 			input.BreachAt = calc.BreachAt
 		} else if input.Deadline != "" {
-			calc, err := handleSLACalculate(input, d.now())
+			calc, err := handleSLACalculate(input, d.Now())
 			if err != nil {
 				return SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
 			}
@@ -313,7 +313,7 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 	// Determine final SLA status: binary MET or BREACH.
 	// WARNING is not a valid completion outcome — if the job finished, it either
 	// beat the breach deadline (MET) or missed it (BREACH).
-	now := d.now().UTC()
+	now := d.Now().UTC()
 	alertType := string(types.EventSLAMet)
 	if input.BreachAt != "" {
 		breachAt, _ := time.Parse(time.RFC3339, input.BreachAt)
@@ -343,7 +343,7 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 		"alertType", alertType,
 	)
 	if publish {
-		if err := publishEvent(ctx, d, alertType, input.PipelineID, input.ScheduleID, input.Date,
+		if err := PublishEvent(ctx, d, alertType, input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: %s", input.PipelineID, alertType)); err != nil {
 			return SLAMonitorOutput{}, fmt.Errorf("publish SLA cancel verdict: %w", err)
 		}
@@ -434,12 +434,12 @@ func createSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, da
 // that have already passed. Fallback for environments without EventBridge
 // Scheduler configured.
 func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
-	calc, err := handleSLACalculate(input, d.now())
+	calc, err := handleSLACalculate(input, d.Now())
 	if err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("reconcile: %w", err)
 	}
 
-	now := d.now().UTC()
+	now := d.Now().UTC()
 	warningAt, _ := time.Parse(time.RFC3339, calc.WarningAt)
 	breachAt, _ := time.Parse(time.RFC3339, calc.BreachAt)
 
@@ -453,14 +453,14 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 	var alertType string
 	switch {
 	case now.After(breachAt) || now.Equal(breachAt):
-		if err := publishEvent(ctx, d, "SLA_BREACH", input.PipelineID, input.ScheduleID, input.Date,
+		if err := PublishEvent(ctx, d, "SLA_BREACH", input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: SLA_BREACH", input.PipelineID), reconcileDetail); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", "SLA_BREACH", "error", err)
 		}
 		alertType = "SLA_BREACH"
 	case now.After(warningAt) || now.Equal(warningAt):
 		// Past warning but before breach — fire warning only
-		if err := publishEvent(ctx, d, "SLA_WARNING", input.PipelineID, input.ScheduleID, input.Date,
+		if err := PublishEvent(ctx, d, "SLA_WARNING", input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: SLA_WARNING", input.PipelineID), reconcileDetail); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", "SLA_WARNING", "error", err)
 		}
@@ -477,9 +477,9 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 	}, nil
 }
 
-// isJobTerminal checks the joblog for a terminal event (success, fail, timeout).
+// IsJobTerminal checks the joblog for a terminal event (success, fail, timeout).
 // Returns true if the pipeline has finished processing for the given date.
-func isJobTerminal(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) bool {
+func IsJobTerminal(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) bool {
 	rec, err := d.Store.GetLatestJobEvent(ctx, pipelineID, scheduleID, date)
 	if err != nil {
 		d.Logger.WarnContext(ctx, "joblog lookup failed, not suppressing",
