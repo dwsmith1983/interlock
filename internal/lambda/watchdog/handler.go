@@ -40,8 +40,10 @@ func HandleWatchdog(ctx context.Context, d *lambda.Deps) error {
 	}
 
 	if len(failed) > 0 {
-		_ = lambda.PublishEvent(ctx, d, string(types.EventWatchdogDegraded), "", "", "",
-			fmt.Sprintf("watchdog checks failed: %s", strings.Join(failed, ", ")))
+		if pubErr := lambda.PublishEvent(ctx, d, string(types.EventWatchdogDegraded), "", "", "",
+			fmt.Sprintf("watchdog checks failed: %s", strings.Join(failed, ", "))); pubErr != nil {
+			d.Logger.Error("failed to publish watchdog degraded event", "error", pubErr)
+		}
 		return errors.Join(errs...)
 	}
 	return nil

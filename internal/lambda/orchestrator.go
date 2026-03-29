@@ -335,34 +335,9 @@ func capturePostRunBaseline(ctx context.Context, d *Deps, pipelineID, scheduleID
 	return nil
 }
 
-// triggerUnmarshalers maps each trigger type to a function that unmarshals
-// raw JSON into the corresponding typed field on TriggerConfig.
-var triggerUnmarshalers = map[types.TriggerType]func([]byte, *types.TriggerConfig) error{
-	types.TriggerHTTP:          unmarshalTo(func(tc *types.TriggerConfig, c *types.HTTPTriggerConfig) { tc.HTTP = c }),
-	types.TriggerCommand:       unmarshalTo(func(tc *types.TriggerConfig, c *types.CommandTriggerConfig) { tc.Command = c }),
-	types.TriggerAirflow:       unmarshalTo(func(tc *types.TriggerConfig, c *types.AirflowTriggerConfig) { tc.Airflow = c }),
-	types.TriggerGlue:          unmarshalTo(func(tc *types.TriggerConfig, c *types.GlueTriggerConfig) { tc.Glue = c }),
-	types.TriggerEMR:           unmarshalTo(func(tc *types.TriggerConfig, c *types.EMRTriggerConfig) { tc.EMR = c }),
-	types.TriggerEMRServerless: unmarshalTo(func(tc *types.TriggerConfig, c *types.EMRServerlessTriggerConfig) { tc.EMRServerless = c }),
-	types.TriggerStepFunction:  unmarshalTo(func(tc *types.TriggerConfig, c *types.StepFunctionTriggerConfig) { tc.StepFunction = c }),
-	types.TriggerDatabricks:    unmarshalTo(func(tc *types.TriggerConfig, c *types.DatabricksTriggerConfig) { tc.Databricks = c }),
-	types.TriggerLambda:        unmarshalTo(func(tc *types.TriggerConfig, c *types.LambdaTriggerConfig) { tc.Lambda = c }),
-}
-
-// unmarshalTo returns an unmarshaler that decodes JSON into a typed config
-// struct and assigns it to the appropriate TriggerConfig field.
-func unmarshalTo[T any](assign func(*types.TriggerConfig, *T)) func([]byte, *types.TriggerConfig) error {
-	return func(data []byte, tc *types.TriggerConfig) error {
-		var c T
-		if err := json.Unmarshal(data, &c); err != nil {
-			return err
-		}
-		assign(tc, &c)
-		return nil
-	}
-}
-
 // buildTriggerConfig converts a JobConfig into a TriggerConfig.
+// It delegates to the canonical TriggerUnmarshalers registry defined in
+// trigger_registry.go.
 func buildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 	tc := types.TriggerConfig{Type: job.Type}
 
@@ -375,7 +350,7 @@ func buildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 		return tc, fmt.Errorf("marshal job config: %w", err)
 	}
 
-	unmarshal, ok := triggerUnmarshalers[job.Type]
+	unmarshal, ok := TriggerUnmarshalers[job.Type]
 	if !ok {
 		return tc, fmt.Errorf("unsupported trigger type: %s", job.Type)
 	}
