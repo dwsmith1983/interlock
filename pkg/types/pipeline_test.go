@@ -355,6 +355,49 @@ func TestPipelineConfig_DeepCopy(t *testing.T) {
 			"mutating copy's exclusion dates must not affect original")
 	})
 
+	t.Run("pointer field isolation (*int and *float64)", func(t *testing.T) {
+		driftReruns := 3
+		manualReruns := 2
+		codeRetries := 1
+		pollWindow := 300
+		driftThreshold := 0.05
+
+		cfg := types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "ptr-test"},
+			Schedule: types.ScheduleConfig{
+				Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+			},
+			Validation: types.ValidationConfig{Trigger: "ALL"},
+			Job: types.JobConfig{
+				Type:                 "glue",
+				MaxDriftReruns:       &driftReruns,
+				MaxManualReruns:      &manualReruns,
+				MaxCodeRetries:       &codeRetries,
+				JobPollWindowSeconds: &pollWindow,
+			},
+			PostRun: &types.PostRunConfig{
+				DriftThreshold: &driftThreshold,
+				Rules:          []types.ValidationRule{{Key: "s1", Check: "exists"}},
+			},
+		}
+
+		cp := cfg.DeepCopy()
+
+		// Mutate pointer values via the copy.
+		*cp.Job.MaxDriftReruns = 99
+		*cp.Job.MaxManualReruns = 99
+		*cp.Job.MaxCodeRetries = 99
+		*cp.Job.JobPollWindowSeconds = 99
+		*cp.PostRun.DriftThreshold = 99.9
+
+		// Originals must be unaffected.
+		assert.Equal(t, 3, *cfg.Job.MaxDriftReruns, "MaxDriftReruns shared")
+		assert.Equal(t, 2, *cfg.Job.MaxManualReruns, "MaxManualReruns shared")
+		assert.Equal(t, 1, *cfg.Job.MaxCodeRetries, "MaxCodeRetries shared")
+		assert.Equal(t, 300, *cfg.Job.JobPollWindowSeconds, "JobPollWindowSeconds shared")
+		assert.Equal(t, 0.05, *cfg.PostRun.DriftThreshold, "DriftThreshold shared")
+	})
+
 	t.Run("nil optional fields", func(t *testing.T) {
 		var cfg types.PipelineConfig
 		require.NoError(t, yaml.Unmarshal([]byte(minimalPipelineYAML), &cfg))

@@ -128,8 +128,19 @@ type PostRunConfig struct {
 	DriftField     string            `yaml:"driftField,omitempty" json:"driftField,omitempty"`         // sensor field for drift comparison; default "sensor_count"
 }
 
-// DeepCopy returns a deep copy of the PipelineConfig. Pointer fields, slices,
-// and maps are copied so mutations to the copy do not affect the original.
+func shallowCopyMap(src map[string]interface{}) map[string]interface{} {
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// DeepCopy returns a deep copy of the PipelineConfig. Struct-typed fields,
+// pointer fields, slices, and maps are copied so mutations to the copy do not
+// affect the original. The interface{}-typed Value fields on ValidationRule and
+// TriggerCondition are shallow-copied; in practice these hold YAML-decoded
+// primitives (string, float64, bool).
 func (c *PipelineConfig) DeepCopy() *PipelineConfig {
 	cp := *c
 
@@ -176,11 +187,17 @@ func (c *PipelineConfig) DeepCopy() *PipelineConfig {
 		cp.Job.MaxCodeRetries = &v
 	}
 
-	// Job.Config map — JSON roundtrip for map[string]interface{} (unavoidable for dynamic maps)
+	// Job.Config map — JSON roundtrip for map[string]interface{} with shallow-copy fallback.
 	if c.Job.Config != nil {
-		cp.Job.Config = make(map[string]interface{}, len(c.Job.Config))
-		data, _ := json.Marshal(c.Job.Config)
-		_ = json.Unmarshal(data, &cp.Job.Config)
+		data, err := json.Marshal(c.Job.Config)
+		if err == nil {
+			cp.Job.Config = make(map[string]interface{}, len(c.Job.Config))
+			if err := json.Unmarshal(data, &cp.Job.Config); err != nil {
+				cp.Job.Config = shallowCopyMap(c.Job.Config)
+			}
+		} else {
+			cp.Job.Config = shallowCopyMap(c.Job.Config)
+		}
 	}
 
 	// PostRun

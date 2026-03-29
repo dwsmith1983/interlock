@@ -76,6 +76,16 @@ func TestCalculateAbsoluteDeadline(t *testing.T) {
 			wantErr:          true,
 		},
 		{
+			name:             "empty date uses now for base",
+			date:             "",
+			deadline:         "08:00",
+			expectedDuration: "30m",
+			timezone:         "UTC",
+			now:              time.Date(2026, 3, 28, 6, 0, 0, 0, time.UTC),
+			wantBreach:       time.Date(2026, 3, 28, 8, 0, 0, 0, time.UTC),
+			wantWarning:      time.Date(2026, 3, 28, 7, 30, 0, 0, time.UTC),
+		},
+		{
 			name:             "invalid expectedDuration",
 			date:             "2026-03-28",
 			deadline:         "08:00",
