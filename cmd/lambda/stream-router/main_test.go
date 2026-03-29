@@ -20,11 +20,11 @@ func TestValidateEnv_MissingVars(t *testing.T) {
 
 func TestValidateEnv_AllSet(t *testing.T) {
 	envVars := map[string]string{
-		"CONTROL_TABLE":    "ctl",
-		"JOBLOG_TABLE":     "jl",
-		"RERUN_TABLE":      "rr",
+		"CONTROL_TABLE":     "ctl",
+		"JOBLOG_TABLE":      "jl",
+		"RERUN_TABLE":       "rr",
 		"STATE_MACHINE_ARN": "arn:aws:states:us-east-1:123:stateMachine:test",
-		"EVENT_BUS_NAME":   "bus",
+		"EVENT_BUS_NAME":    "bus",
 	}
 	for k, v := range envVars {
 		t.Setenv(k, v)

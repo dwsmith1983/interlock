@@ -131,7 +131,7 @@ func TestCalculateRelativeDeadline(t *testing.T) {
 			arrivalAt:        baseArrival.Format(time.RFC3339),
 			maxDuration:      "2h",
 			expectedDuration: "30m",
-			wantBreach:       baseArrival.Add(2 * time.Hour),           // 12:00
+			wantBreach:       baseArrival.Add(2 * time.Hour),                // 12:00
 			wantWarning:      baseArrival.Add(2*time.Hour - 30*time.Minute), // 11:30
 		},
 		{
@@ -139,7 +139,7 @@ func TestCalculateRelativeDeadline(t *testing.T) {
 			arrivalAt:        baseArrival.Format(time.RFC3339),
 			maxDuration:      "2h",
 			expectedDuration: "",
-			wantBreach:       baseArrival.Add(2 * time.Hour),           // 12:00
+			wantBreach:       baseArrival.Add(2 * time.Hour),                // 12:00
 			wantWarning:      baseArrival.Add(2*time.Hour - 30*time.Minute), // 12:00 - 25% of 2h = 11:30
 		},
 		{

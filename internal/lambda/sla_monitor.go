@@ -394,4 +394,3 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 		FiredAt:   now.Format(time.RFC3339),
 	}, nil
 }
-

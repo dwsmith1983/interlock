@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dwsmith1983/interlock/pkg/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // detectStaleTriggers scans for TRIGGER# rows with status=RUNNING and

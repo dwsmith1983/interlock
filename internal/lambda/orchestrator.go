@@ -13,8 +13,9 @@ import (
 )
 
 // HandleOrchestrator is the entry point for the orchestrator Lambda.
-// Deprecated: Production callers should use orchestrator.HandleOrchestrator.
 // Retained for backward compatibility with existing tests.
+//
+// Deprecated: Production callers should use orchestrator.HandleOrchestrator.
 func HandleOrchestrator(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
 	switch input.Mode {
 	case "evaluate":
@@ -378,8 +379,9 @@ func extractRunID(metadata map[string]interface{}) string {
 
 // InjectDateArgs parses the execution date and injects --par_day (and --par_hour
 // for hourly dates) into Glue trigger arguments.
-// Deprecated: Production callers should use orchestrator.InjectDateArgs.
 // Retained for backward compatibility with existing tests.
+//
+// Deprecated: Production callers should use orchestrator.InjectDateArgs.
 func InjectDateArgs(tc *types.TriggerConfig, date string) {
 	datePart, hourPart := ParseExecutionDate(date)
 	parDay := strings.ReplaceAll(datePart, "-", "")

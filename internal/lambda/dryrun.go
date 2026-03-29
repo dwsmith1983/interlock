@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dwsmith1983/interlock/pkg/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // handleDryRunTrigger processes a sensor event for a dry-run pipeline.

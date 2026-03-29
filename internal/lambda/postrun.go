@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dwsmith1983/interlock/pkg/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // defaultDriftField is the sensor field used for drift comparison when
