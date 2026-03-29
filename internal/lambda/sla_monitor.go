@@ -39,6 +39,12 @@ func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAM
 	}
 }
 
+// HandleSLACalculate is the exported entry point for SLA calculation.
+// Used by the stream sub-package for dry-run SLA projections.
+func HandleSLACalculate(input SLAMonitorInput, now time.Time) (SLAMonitorOutput, error) {
+	return handleSLACalculate(input, now)
+}
+
 // handleSLACalculate computes warning and breach times. Supports two modes:
 //
 //  1. Schedule-based (deadline): breachAt = deadline, warningAt = deadline - expectedDuration.
@@ -394,6 +400,12 @@ func createOneTimeSchedule(ctx context.Context, d *Deps, name, timestamp string,
 	return nil
 }
 
+// CreateSLASchedules is the exported entry point for creating SLA schedules.
+// Used by the watchdog sub-package for proactive SLA scheduling.
+func CreateSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, date string, calc SLAMonitorOutput, onConflictSkip bool) error {
+	return createSLASchedules(ctx, d, pipelineID, scheduleID, date, calc, onConflictSkip)
+}
+
 // createSLASchedules creates warning and breach one-time schedules.
 // Returns an error on the first schedule creation failure. If onConflictSkip
 // is true, ConflictException errors are silently skipped (idempotent retries).
@@ -477,24 +489,3 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 	}, nil
 }
 
-// IsJobTerminal checks the joblog for a terminal event (success, fail, timeout).
-// Returns true if the pipeline has finished processing for the given date.
-func IsJobTerminal(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) bool {
-	rec, err := d.Store.GetLatestJobEvent(ctx, pipelineID, scheduleID, date)
-	if err != nil {
-		d.Logger.WarnContext(ctx, "joblog lookup failed, not suppressing",
-			"pipeline", pipelineID, "error", err)
-		return false
-	}
-	if rec == nil {
-		return false
-	}
-	switch rec.Event {
-	case types.JobEventSuccess, types.JobEventFail, types.JobEventTimeout,
-		types.JobEventInfraTriggerExhausted, types.JobEventValidationExhausted,
-		types.JobEventJobPollExhausted:
-		return true
-	default:
-		return false
-	}
-}

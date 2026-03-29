@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/lambda/stream"
 	"github.com/dwsmith1983/interlock/internal/store"
 )
 
@@ -55,6 +56,6 @@ func main() {
 	}
 
 	lambda.Start(func(ctx context.Context, event ilambda.StreamEvent) (events.DynamoDBEventResponse, error) {
-		return ilambda.HandleStreamEvent(ctx, deps, event)
+		return stream.HandleStreamEvent(ctx, deps, event)
 	})
 }

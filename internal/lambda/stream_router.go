@@ -3,51 +3,13 @@ package lambda
 import (
 	"context"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	"github.com/dwsmith1983/interlock/pkg/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
-
-// ResolveTriggerLockTTL returns the trigger lock TTL based on the
-// SFN_TIMEOUT_SECONDS env var plus a 30-minute buffer. Defaults to
-// 4h30m if the env var is not set or invalid.
-func ResolveTriggerLockTTL() time.Duration {
-	s := os.Getenv("SFN_TIMEOUT_SECONDS")
-	if s == "" {
-		return DefaultTriggerLockTTL
-	}
-	sec, err := strconv.Atoi(s)
-	if err != nil || sec <= 0 {
-		return DefaultTriggerLockTTL
-	}
-	return time.Duration(sec)*time.Second + TriggerLockBuffer
-}
-
-// GetValidatedConfig loads a pipeline config and validates its retry/timeout
-// fields. Returns nil (with a warning log) if validation fails, signalling the
-// caller to skip processing for this pipeline.
-func GetValidatedConfig(ctx context.Context, d *Deps, pipelineID string) (*types.PipelineConfig, error) {
-	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
-	if err != nil {
-		return nil, err
-	}
-	if cfg == nil {
-		return nil, nil
-	}
-	if errs := validation.ValidatePipelineConfig(cfg); len(errs) > 0 {
-		d.Logger.Warn("invalid pipeline config, skipping",
-			"pipelineId", pipelineID,
-			"errors", errs,
-		)
-		return nil, nil
-	}
-	return cfg, nil
-}
 
 // HandleStreamEvent processes a DynamoDB stream event, routing each record
 // to the appropriate handler based on the SK prefix. Per-record errors are

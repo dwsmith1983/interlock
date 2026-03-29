@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/lambda/sla"
 	"github.com/dwsmith1983/interlock/internal/store"
 )
 
@@ -52,6 +53,6 @@ func main() {
 	}
 
 	lambda.Start(func(ctx context.Context, input ilambda.SLAMonitorInput) (ilambda.SLAMonitorOutput, error) {
-		return ilambda.HandleSLAMonitor(ctx, deps, input)
+		return sla.HandleSLAMonitor(ctx, deps, input)
 	})
 }

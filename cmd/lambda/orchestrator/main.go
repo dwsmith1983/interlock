@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/lambda/orchestrator"
 	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -75,6 +76,6 @@ func main() {
 	}
 
 	lambda.Start(func(ctx context.Context, input ilambda.OrchestratorInput) (ilambda.OrchestratorOutput, error) {
-		return ilambda.HandleOrchestrator(ctx, deps, input)
+		return orchestrator.HandleOrchestrator(ctx, deps, input)
 	})
 }

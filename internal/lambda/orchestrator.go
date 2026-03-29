@@ -8,12 +8,13 @@ import (
 	"strings"
 
 	"github.com/dwsmith1983/interlock/internal/store"
-	"github.com/dwsmith1983/interlock/pkg/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // HandleOrchestrator is the entry point for the orchestrator Lambda.
-// It dispatches to one of five modes: evaluate, trigger, check-job, post-run, validation-exhausted.
+// Deprecated: Production callers should use orchestrator.HandleOrchestrator.
+// Retained for backward compatibility with existing tests.
 func HandleOrchestrator(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
 	switch input.Mode {
 	case "evaluate":
@@ -93,8 +94,6 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 	metadata, err := d.TriggerRunner.Execute(ctx, &triggerCfg)
 	if err != nil {
 		errMsg := fmt.Sprintf("trigger execute: %v", err)
-		// Log infra failure to joblog for audit trail, then return Lambda error
-		// so Step Functions Retry handles exponential backoff.
 		if writeErr := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventInfraTriggerFailure, "", 0, errMsg); writeErr != nil {
 			d.Logger.WarnContext(ctx, "failed to write infra trigger failure to joblog", "error", writeErr, "pipeline", input.PipelineID)
 		}
@@ -107,9 +106,6 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobTriggered, "error", err)
 	}
 
-	// Non-polling triggers (http, command, lambda) complete synchronously
-	// during Execute. Write success to joblog immediately and set a sentinel
-	// runId so the Step Functions CheckJob JSONPath resolves.
 	if metadata == nil {
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
 			types.JobEventSuccess, "sync", 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type)); err != nil {
@@ -127,9 +123,7 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 	}, nil
 }
 
-// handleCheckJob queries the job log for the latest event. If no event exists
-// and a StatusChecker is configured, it polls the trigger API directly and
-// writes terminal results (succeeded/failed) to the job log.
+// handleCheckJob queries the job log for the latest event.
 func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
 	record, err := d.Store.GetLatestJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date)
 	if err != nil {
@@ -137,8 +131,6 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 	}
 
 	if record != nil {
-		// Only return terminal events; skip intermediate events like
-		// infra-trigger-failure so the StatusChecker can poll actual job status.
 		switch record.Event {
 		case types.JobEventSuccess, types.JobEventFail, types.JobEventTimeout:
 			return OrchestratorOutput{
@@ -148,7 +140,6 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		}
 	}
 
-	// No terminal joblog entry — try polling the trigger API directly.
 	if d.StatusChecker == nil || len(input.Metadata) == 0 {
 		return OrchestratorOutput{Mode: "check-job"}, nil
 	}
@@ -172,9 +163,6 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventSuccess, input.RunID, 0, ""); err != nil {
 			d.Logger.Warn("failed to write polled job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
 		}
-		// JOB_COMPLETED is published by the stream-router when the JOB#
-		// record arrives via DynamoDB stream (handleJobSuccess). Publishing
-		// here as well would cause duplicate alerts for polled jobs.
 		return OrchestratorOutput{Mode: "check-job", Event: "success"}, nil
 	case "failed":
 		var writeOpts []store.JobEventOption
@@ -189,7 +177,6 @@ func handleCheckJob(ctx context.Context, d *Deps, input OrchestratorInput) (Orch
 		}
 		return OrchestratorOutput{Mode: "check-job", Event: "fail"}, nil
 	default:
-		// Still running — return no event so SFN loops back to WaitForJob.
 		return OrchestratorOutput{Mode: "check-job"}, nil
 	}
 }
@@ -248,36 +235,6 @@ func handleJobPollExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 	}, nil
 }
 
-// RemapPerPeriodSensors adds base-key aliases for per-period sensor keys.
-// For example, sensor "hourly-status#20260303T07" becomes accessible under
-// key "hourly-status" when the execution date is "2026-03-03T07". This allows
-// validation rules with key "hourly-status" to match per-period sensor records.
-// Handles both normalized (2026-03-03) and compact (20260303) date formats.
-func RemapPerPeriodSensors(sensors map[string]map[string]interface{}, date string) {
-	if date == "" {
-		return
-	}
-	// Build candidate suffixes: the normalized date and compact form.
-	suffixes := []string{"#" + date}
-	compact := strings.ReplaceAll(date, "-", "")
-	if compact != date {
-		suffixes = append(suffixes, "#"+compact)
-	}
-	additions := make(map[string]map[string]interface{})
-	for key, data := range sensors {
-		for _, suffix := range suffixes {
-			if strings.HasSuffix(key, suffix) {
-				base := strings.TrimSuffix(key, suffix)
-				additions[base] = data
-				break
-			}
-		}
-	}
-	for k, v := range additions {
-		sensors[k] = v
-	}
-}
-
 // handleTriggerExhausted publishes RETRY_EXHAUSTED when trigger retries are
 // exhausted, writes a joblog entry for audit, and releases the trigger lock
 // so the pipeline can be re-triggered.
@@ -287,7 +244,6 @@ func handleTriggerExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 		errMsg = cause
 	}
 
-	// Dual-write: joblog entry (audit) + EventBridge event (alerting).
 	if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
 		types.JobEventInfraTriggerExhausted, "", 0, errMsg); err != nil {
 		return OrchestratorOutput{}, fmt.Errorf("write trigger-exhausted joblog: %w", err)
@@ -298,7 +254,6 @@ func handleTriggerExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRetryExhausted, "error", err)
 	}
 
-	// Release lock so pipeline can be re-triggered.
 	if err := d.Store.ReleaseTriggerLock(ctx, input.PipelineID, input.ScheduleID, input.Date); err != nil {
 		d.Logger.WarnContext(ctx, "failed to release trigger lock after exhaustion",
 			"pipeline", input.PipelineID, "error", err)
@@ -311,9 +266,6 @@ func handleTriggerExhausted(ctx context.Context, d *Deps, input OrchestratorInpu
 }
 
 // handleCompleteTrigger sets the trigger row to its terminal status.
-// Success → COMPLETED; fail/timeout → FAILED_FINAL.
-// On success with PostRun configured, captures a date-scoped baseline snapshot
-// of all sensors for later drift comparison by the stream-based post-run evaluator.
 func handleCompleteTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
 	status := types.TriggerStatusCompleted
 	if input.Event != types.JobEventSuccess {
@@ -324,7 +276,6 @@ func handleCompleteTrigger(ctx context.Context, d *Deps, input OrchestratorInput
 		return OrchestratorOutput{}, fmt.Errorf("set trigger status: %w", err)
 	}
 
-	// On success, capture post-run baseline for drift detection.
 	if input.Event == types.JobEventSuccess {
 		if err := capturePostRunBaseline(ctx, d, input.PipelineID, input.ScheduleID, input.Date); err != nil {
 			d.Logger.WarnContext(ctx, "failed to capture post-run baseline",
@@ -343,8 +294,7 @@ func handleCompleteTrigger(ctx context.Context, d *Deps, input OrchestratorInput
 }
 
 // capturePostRunBaseline reads all sensors and writes a date-scoped baseline
-// snapshot if the pipeline has PostRun config. The baseline is stored as
-// "postrun-baseline#<date>" so drift detection can compare against it.
+// snapshot if the pipeline has PostRun config.
 func capturePostRunBaseline(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) error {
 	cfg, err := d.Store.GetConfig(ctx, pipelineID)
 	if err != nil {
@@ -361,8 +311,6 @@ func capturePostRunBaseline(ctx context.Context, d *Deps, pipelineID, scheduleID
 
 	RemapPerPeriodSensors(sensors, date)
 
-	// Build baseline from post-run rule keys, namespaced by rule key
-	// to prevent field name collisions between different sensors.
 	baseline := make(map[string]interface{})
 	for _, rule := range cfg.PostRun.Rules {
 		if data, ok := sensors[rule.Key]; ok {
@@ -387,8 +335,7 @@ func capturePostRunBaseline(ctx context.Context, d *Deps, pipelineID, scheduleID
 	return nil
 }
 
-// buildTriggerConfig converts a JobConfig into a TriggerConfig by
-// JSON-marshalling the config map and unmarshalling it into the typed sub-struct.
+// buildTriggerConfig converts a JobConfig into a TriggerConfig.
 func buildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 	tc := types.TriggerConfig{Type: job.Type}
 
@@ -468,7 +415,6 @@ func extractRunID(metadata map[string]interface{}) string {
 	if metadata == nil {
 		return ""
 	}
-	// Priority order of common identifier keys across trigger types.
 	for _, key := range []string{"runId", "jobRunId", "glue_job_run_id", "executionArn", "stepId", "dagRunId"} {
 		if v, ok := metadata[key]; ok {
 			if s, ok := v.(string); ok && s != "" {
@@ -480,8 +426,9 @@ func extractRunID(metadata map[string]interface{}) string {
 }
 
 // InjectDateArgs parses the execution date and injects --par_day (and --par_hour
-// for hourly dates) into Glue trigger arguments. For HTTP triggers with no
-// explicit body, injects a JSON body with par_day and par_hour.
+// for hourly dates) into Glue trigger arguments.
+// Deprecated: Production callers should use orchestrator.InjectDateArgs.
+// Retained for backward compatibility with existing tests.
 func InjectDateArgs(tc *types.TriggerConfig, date string) {
 	datePart, hourPart := ParseExecutionDate(date)
 	parDay := strings.ReplaceAll(datePart, "-", "")
@@ -501,17 +448,7 @@ func InjectDateArgs(tc *types.TriggerConfig, date string) {
 		if hourPart != "" {
 			payload["par_hour"] = hourPart
 		}
-		b, _ := json.Marshal(payload) // json.Marshal is infallible for map[string]string (no channels, funcs, or complex types)
+		b, _ := json.Marshal(payload)
 		tc.HTTP.Body = string(b)
 	}
-}
-
-// ParseExecutionDate splits a composite date into date and hour parts.
-// "2026-03-03T10" -> ("2026-03-03", "10")
-// "2026-03-03"    -> ("2026-03-03", "")
-func ParseExecutionDate(date string) (datePart, hourPart string) {
-	if idx := strings.Index(date, "T"); idx >= 0 {
-		return date[:idx], date[idx+1:]
-	}
-	return date, ""
 }

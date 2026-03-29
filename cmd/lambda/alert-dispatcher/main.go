@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/lambda/alert"
 	"github.com/dwsmith1983/interlock/internal/store"
 )
 
@@ -81,6 +82,6 @@ func main() {
 	}
 
 	lambda.Start(func(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
-		return ilambda.HandleAlertDispatcher(ctx, deps, sqsEvent)
+		return alert.HandleAlertDispatcher(ctx, deps, sqsEvent)
 	})
 }

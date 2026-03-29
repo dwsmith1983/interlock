@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/lambda/watchdog"
 	"github.com/dwsmith1983/interlock/internal/store"
 )
 
@@ -60,6 +61,6 @@ func main() {
 	}
 
 	lambda.Start(func(ctx context.Context) error {
-		return ilambda.HandleWatchdog(ctx, deps)
+		return watchdog.HandleWatchdog(ctx, deps)
 	})
 }
