@@ -237,12 +237,20 @@ interlock/
 │   ├── watchdog/            # Missed schedule + stale run detection
 │   ├── event-sink/          # EventBridge → events table
 │   └── alert-dispatcher/    # SQS → Slack (Bot API with threading)
-├── pkg/types/               # Public domain types (pipeline config, events, DynamoDB keys)
+├── pkg/
+│   ├── types/               # Public domain types (pipeline config, events, DynamoDB keys)
+│   ├── validation/          # Declarative validation rule engine
+│   └── sla/                 # Pure SLA deadline calculations
 ├── internal/
-│   ├── lambda/              # Lambda handler logic + shared types
+│   ├── lambda/              # Shared types, interfaces, utilities
+│   │   ├── orchestrator/    # Evaluate, trigger, check-job handlers
+│   │   ├── stream/          # DynamoDB stream routing, reruns, post-run
+│   │   ├── watchdog/        # Stale trigger + missed schedule detection
+│   │   ├── sla/             # SLA deadline calculation + alerts
+│   │   ├── alert/           # Slack notification formatting
+│   │   └── sink/            # EventBridge event persistence
 │   ├── store/               # DynamoDB storage layer (3-table design)
 │   ├── config/              # Pipeline YAML config loading
-│   ├── validation/          # Declarative validation rule engine
 │   ├── trigger/             # Trigger execution (8 types)
 │   └── calendar/            # Calendar exclusion registry
 ├── deploy/

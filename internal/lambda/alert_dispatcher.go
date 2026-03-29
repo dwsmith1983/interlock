@@ -17,8 +17,7 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// HandleAlertDispatcher processes SQS messages containing EventBridge alert events
-// and sends Slack notifications.
+// Deprecated: Use alert.HandleAlertDispatcher instead. Retained for test compatibility.
 func HandleAlertDispatcher(ctx context.Context, d *Deps, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
 	var failures []events.SQSBatchItemFailure
 
@@ -149,7 +148,7 @@ func getThreadTs(ctx context.Context, d *Deps, pipelineID, scheduleID, date stri
 // saveThreadTs persists a Slack thread timestamp for future message threading.
 // Errors are logged but don't fail the message.
 func saveThreadTs(ctx context.Context, d *Deps, pipelineID, scheduleID, date, threadTs, channelID string) {
-	ttl := d.now().Add(time.Duration(d.EventsTTLDays) * 24 * time.Hour).Unix()
+	ttl := d.Now().Add(time.Duration(d.EventsTTLDays) * 24 * time.Hour).Unix()
 	_, err := d.Store.Client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &d.Store.EventsTable,
 		Item: map[string]ddbtypes.AttributeValue{
@@ -157,7 +156,7 @@ func saveThreadTs(ctx context.Context, d *Deps, pipelineID, scheduleID, date, th
 			"SK":        &ddbtypes.AttributeValueMemberS{Value: fmt.Sprintf("THREAD#%s#%s", scheduleID, date)},
 			"threadTs":  &ddbtypes.AttributeValueMemberS{Value: threadTs},
 			"channelId": &ddbtypes.AttributeValueMemberS{Value: channelID},
-			"createdAt": &ddbtypes.AttributeValueMemberS{Value: d.now().UTC().Format(time.RFC3339)},
+			"createdAt": &ddbtypes.AttributeValueMemberS{Value: d.Now().UTC().Format(time.RFC3339)},
 			"ttl":       &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttl)},
 		},
 	})
@@ -166,7 +165,7 @@ func saveThreadTs(ctx context.Context, d *Deps, pipelineID, scheduleID, date, th
 	}
 }
 
-// FormatAlertText builds the Slack message text from event detail.
+// Deprecated: Use alert.FormatAlertText instead. Retained for test compatibility.
 func FormatAlertText(detailType string, detail types.InterlockEvent) string {
 	emoji := alertEmoji(detailType)
 	header := fmt.Sprintf("%s *%s* | %s | %s", emoji, detailType, detail.PipelineID, detail.Date)

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dwsmith1983/interlock/internal/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // handleDryRunTrigger processes a sensor event for a dry-run pipeline.
@@ -37,7 +37,7 @@ func handleDryRunTrigger(ctx context.Context, d *Deps, cfg *types.PipelineConfig
 		}
 		lateBy := now.Sub(triggeredAt)
 
-		if pubErr := publishEvent(ctx, d, string(types.EventDryRunLateData), pipelineID, scheduleID, date,
+		if pubErr := PublishEvent(ctx, d, string(types.EventDryRunLateData), pipelineID, scheduleID, date,
 			fmt.Sprintf("dry-run: late data arrived %.0fm after trigger point for %s", lateBy.Minutes(), pipelineID),
 			map[string]interface{}{
 				"triggeredAt": triggeredAtStr,
@@ -83,7 +83,7 @@ func handleDryRunTrigger(ctx context.Context, d *Deps, cfg *types.PipelineConfig
 	}
 
 	// Publish WOULD_TRIGGER event.
-	if pubErr := publishEvent(ctx, d, string(types.EventDryRunWouldTrigger), pipelineID, scheduleID, date,
+	if pubErr := PublishEvent(ctx, d, string(types.EventDryRunWouldTrigger), pipelineID, scheduleID, date,
 		fmt.Sprintf("dry-run: would trigger %s at %s", pipelineID, now.Format(time.RFC3339)),
 		map[string]interface{}{
 			"triggeredAt":    now.UTC().Format(time.RFC3339),
@@ -112,7 +112,7 @@ func handleDryRunTrigger(ctx context.Context, d *Deps, cfg *types.PipelineConfig
 		completedDetail["slaStatus"] = "n/a"
 	}
 
-	if pubErr := publishEvent(ctx, d, string(types.EventDryRunCompleted), pipelineID, scheduleID, date,
+	if pubErr := PublishEvent(ctx, d, string(types.EventDryRunCompleted), pipelineID, scheduleID, date,
 		fmt.Sprintf("dry-run: observation complete for %s/%s", pipelineID, date),
 		completedDetail); pubErr != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunCompleted, "error", pubErr)
@@ -196,7 +196,7 @@ func publishDryRunSLAProjection(ctx context.Context, d *Deps, cfg *types.Pipelin
 
 	detail["status"] = verdict.Status
 
-	if pubErr := publishEvent(ctx, d, string(types.EventDryRunSLAProjection), pipelineID, scheduleID, date, message, detail); pubErr != nil {
+	if pubErr := PublishEvent(ctx, d, string(types.EventDryRunSLAProjection), pipelineID, scheduleID, date, message, detail); pubErr != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunSLAProjection, "error", pubErr)
 	}
 
@@ -206,8 +206,8 @@ func publishDryRunSLAProjection(ctx context.Context, d *Deps, cfg *types.Pipelin
 // handleDryRunPostRunSensor handles post-run sensor events for dry-run pipelines.
 // Compares sensor data against the baseline captured at WOULD_TRIGGER time.
 func handleDryRunPostRunSensor(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, sensorKey string, sensorData map[string]interface{}) error {
-	scheduleID := resolveScheduleID(cfg)
-	date := ResolveExecutionDate(sensorData, d.now())
+	scheduleID := ResolveScheduleID(cfg)
+	date := ResolveExecutionDate(sensorData, d.Now())
 
 	// Check DRY_RUN# marker — if nil, no trigger happened yet.
 	marker, err := d.Store.GetDryRunMarker(ctx, pipelineID, scheduleID, date)
@@ -243,14 +243,14 @@ func handleDryRunPostRunSensor(ctx context.Context, d *Deps, cfg *types.Pipeline
 	}
 
 	// Compare drift.
-	driftField := resolveDriftField(cfg.PostRun)
+	driftField := ResolveDriftField(cfg.PostRun)
 	threshold := 0.0
 	if cfg.PostRun.DriftThreshold != nil {
 		threshold = *cfg.PostRun.DriftThreshold
 	}
 	dr := DetectDrift(ruleBaseline, sensorData, driftField, threshold)
 	if dr.Drifted {
-		if pubErr := publishEvent(ctx, d, string(types.EventDryRunDrift), pipelineID, scheduleID, date,
+		if pubErr := PublishEvent(ctx, d, string(types.EventDryRunDrift), pipelineID, scheduleID, date,
 			fmt.Sprintf("dry-run: drift detected for %s: %.0f → %.0f — would re-run", pipelineID, dr.Previous, dr.Current),
 			map[string]interface{}{
 				"previousCount":  dr.Previous,

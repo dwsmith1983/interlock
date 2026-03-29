@@ -3244,7 +3244,7 @@ func TestResolveTriggerDeadlineTime_UsesScheduleTimezone(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := lambda.ResolveTriggerDeadlineTime(tt.deadline, tt.date, tt.timezone)
+			got := lambda.ExportedResolveTriggerDeadlineTime(tt.deadline, tt.date, tt.timezone)
 			require.False(t, got.IsZero(), "expected non-zero time")
 			assert.Equal(t, tt.wantHour, got.Hour(), "hour mismatch")
 			assert.Equal(t, tt.wantMin, got.Minute(), "minute mismatch")

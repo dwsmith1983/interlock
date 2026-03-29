@@ -5,24 +5,24 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dwsmith1983/interlock/internal/validation"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // defaultDriftField is the sensor field used for drift comparison when
 // PostRunConfig.DriftField is not set.
 const defaultDriftField = "sensor_count"
 
-func resolveDriftField(cfg *types.PostRunConfig) string {
+func ResolveDriftField(cfg *types.PostRunConfig) string {
 	if cfg.DriftField != "" {
 		return cfg.DriftField
 	}
 	return defaultDriftField
 }
 
-// matchesPostRunRule returns true if the sensor key matches any post-run rule key
+// MatchesPostRunRule returns true if the sensor key matches any post-run rule key
 // (prefix match to support per-period sensor keys).
-func matchesPostRunRule(sensorKey string, rules []types.ValidationRule) bool {
+func MatchesPostRunRule(sensorKey string, rules []types.ValidationRule) bool {
 	for _, rule := range rules {
 		if strings.HasPrefix(sensorKey, rule.Key) {
 			return true
@@ -40,8 +40,8 @@ func handlePostRunSensorEvent(ctx context.Context, d *Deps, cfg *types.PipelineC
 		return handleDryRunPostRunSensor(ctx, d, cfg, pipelineID, sensorKey, sensorData)
 	}
 
-	scheduleID := resolveScheduleID(cfg)
-	date := ResolveExecutionDate(sensorData, d.now())
+	scheduleID := ResolveScheduleID(cfg)
+	date := ResolveExecutionDate(sensorData, d.Now())
 
 	// Consistent read to handle race where sensor stream event arrives
 	// before SFN sets trigger to COMPLETED.
@@ -95,14 +95,14 @@ func handlePostRunInflight(ctx context.Context, d *Deps, cfg *types.PipelineConf
 		return nil // No baseline for this rule (stale or first run).
 	}
 
-	driftField := resolveDriftField(cfg.PostRun)
+	driftField := ResolveDriftField(cfg.PostRun)
 	threshold := 0.0
 	if cfg.PostRun.DriftThreshold != nil {
 		threshold = *cfg.PostRun.DriftThreshold
 	}
 	dr := DetectDrift(ruleBaseline, sensorData, driftField, threshold)
 	if dr.Drifted {
-		if err := publishEvent(ctx, d, string(types.EventPostRunDriftInflight), pipelineID, scheduleID, date,
+		if err := PublishEvent(ctx, d, string(types.EventPostRunDriftInflight), pipelineID, scheduleID, date,
 			fmt.Sprintf("inflight drift detected for %s: %.0f → %.0f (informational)", pipelineID, dr.Previous, dr.Current),
 			map[string]interface{}{
 				"previousCount":  dr.Previous,
@@ -144,14 +144,14 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 		}
 
 		if ruleBaseline != nil {
-			driftField := resolveDriftField(cfg.PostRun)
+			driftField := ResolveDriftField(cfg.PostRun)
 			threshold := 0.0
 			if cfg.PostRun.DriftThreshold != nil {
 				threshold = *cfg.PostRun.DriftThreshold
 			}
 			dr := DetectDrift(ruleBaseline, sensorData, driftField, threshold)
 			if dr.Drifted {
-				if err := publishEvent(ctx, d, string(types.EventPostRunDrift), pipelineID, scheduleID, date,
+				if err := PublishEvent(ctx, d, string(types.EventPostRunDrift), pipelineID, scheduleID, date,
 					fmt.Sprintf("post-run drift detected for %s: %.0f → %.0f records", pipelineID, dr.Previous, dr.Current),
 					map[string]interface{}{
 						"previousCount":  dr.Previous,
@@ -167,8 +167,8 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 
 				// Trigger rerun via the existing circuit breaker path only if the
 				// execution date is not excluded by the pipeline's calendar config.
-				if isExcludedDate(cfg, date) {
-					if pubErr := publishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleID, date,
+				if IsExcludedDate(cfg, date) {
+					if pubErr := PublishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleID, date,
 						fmt.Sprintf("post-run drift rerun skipped for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
 						d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
 					}
@@ -192,15 +192,15 @@ func handlePostRunCompleted(ctx context.Context, d *Deps, cfg *types.PipelineCon
 	}
 	RemapPerPeriodSensors(sensors, date)
 
-	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, d.now())
+	result := validation.EvaluateRules("ALL", cfg.PostRun.Rules, sensors, d.Now())
 
 	if result.Passed {
-		if err := publishEvent(ctx, d, string(types.EventPostRunPassed), pipelineID, scheduleID, date,
+		if err := PublishEvent(ctx, d, string(types.EventPostRunPassed), pipelineID, scheduleID, date,
 			fmt.Sprintf("post-run validation passed for %s", pipelineID)); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunPassed, "error", err)
 		}
 	} else {
-		if err := publishEvent(ctx, d, string(types.EventPostRunFailed), pipelineID, scheduleID, date,
+		if err := PublishEvent(ctx, d, string(types.EventPostRunFailed), pipelineID, scheduleID, date,
 			fmt.Sprintf("post-run validation failed for %s", pipelineID)); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunFailed, "error", err)
 		}

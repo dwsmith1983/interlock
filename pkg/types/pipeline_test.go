@@ -260,3 +260,163 @@ func TestPipelineConfig_CalendarSchedule(t *testing.T) {
 
 	assert.Nil(t, cfg.PostRun)
 }
+
+func TestPipelineConfig_DeepCopy(t *testing.T) {
+	t.Run("fully populated config", func(t *testing.T) {
+		var cfg types.PipelineConfig
+		require.NoError(t, yaml.Unmarshal([]byte(samplePipelineYAML), &cfg))
+
+		cp := cfg.DeepCopy()
+
+		// The copy must equal the original in every field.
+		assert.Equal(t, cfg.Pipeline, cp.Pipeline)
+		assert.Equal(t, cfg.Schedule.Cron, cp.Schedule.Cron)
+		assert.Equal(t, cfg.Schedule.Timezone, cp.Schedule.Timezone)
+		assert.Equal(t, cfg.Schedule.Calendar, cp.Schedule.Calendar)
+		assert.Equal(t, cfg.Schedule.Time, cp.Schedule.Time)
+		assert.Equal(t, cfg.Schedule.Evaluation, cp.Schedule.Evaluation)
+
+		require.NotNil(t, cp.Schedule.Exclude)
+		assert.Equal(t, cfg.Schedule.Exclude.Weekends, cp.Schedule.Exclude.Weekends)
+		assert.Equal(t, cfg.Schedule.Exclude.Holidays, cp.Schedule.Exclude.Holidays)
+		assert.Equal(t, cfg.Schedule.Exclude.Dates, cp.Schedule.Exclude.Dates)
+
+		require.NotNil(t, cp.SLA)
+		assert.Equal(t, cfg.SLA.Deadline, cp.SLA.Deadline)
+		assert.Equal(t, cfg.SLA.ExpectedDuration, cp.SLA.ExpectedDuration)
+		assert.Equal(t, cfg.SLA.Critical, cp.SLA.Critical)
+
+		assert.Equal(t, cfg.Validation.Trigger, cp.Validation.Trigger)
+		require.Len(t, cp.Validation.Rules, len(cfg.Validation.Rules))
+		for i := range cfg.Validation.Rules {
+			assert.Equal(t, cfg.Validation.Rules[i], cp.Validation.Rules[i])
+		}
+
+		assert.Equal(t, cfg.Job.Type, cp.Job.Type)
+		assert.Equal(t, cfg.Job.MaxRetries, cp.Job.MaxRetries)
+		assert.Equal(t, cfg.Job.Config["jobName"], cp.Job.Config["jobName"])
+
+		require.NotNil(t, cp.PostRun)
+		require.Len(t, cp.PostRun.Rules, len(cfg.PostRun.Rules))
+		assert.Equal(t, cfg.PostRun.Rules[0], cp.PostRun.Rules[0])
+
+		assert.Equal(t, cfg.DryRun, cp.DryRun)
+
+		// --- Mutation: changing the copy must NOT affect the original ---
+
+		// Mutate a validation rule in the copy.
+		cp.Validation.Rules[0].Key = "SENSOR#mutated"
+		assert.Equal(t, "SENSOR#upstream-complete", cfg.Validation.Rules[0].Key,
+			"mutating copy's validation rule must not affect original")
+
+		// Mutate Job.Config map in the copy.
+		cp.Job.Config["jobName"] = "mutated-job"
+		assert.Equal(t, "gold-revenue-etl", cfg.Job.Config["jobName"],
+			"mutating copy's job config must not affect original")
+
+		// Mutate PostRun rules in the copy.
+		cp.PostRun.Rules[0].Key = "SENSOR#mutated-postrun"
+		assert.Equal(t, "SENSOR#output-count", cfg.PostRun.Rules[0].Key,
+			"mutating copy's postRun rule must not affect original")
+
+		// Mutate SLA in the copy.
+		cp.SLA.Deadline = "23:59"
+		assert.Equal(t, "08:00", cfg.SLA.Deadline,
+			"mutating copy's SLA must not affect original")
+	})
+
+	t.Run("stream-triggered with trigger pointer", func(t *testing.T) {
+		var cfg types.PipelineConfig
+		require.NoError(t, yaml.Unmarshal([]byte(streamTriggeredYAML), &cfg))
+
+		cp := cfg.DeepCopy()
+
+		require.NotNil(t, cp.Schedule.Trigger)
+		assert.Equal(t, cfg.Schedule.Trigger.Key, cp.Schedule.Trigger.Key)
+
+		// Mutate the trigger key in the copy.
+		cp.Schedule.Trigger.Key = "SENSOR#mutated-trigger"
+		assert.Equal(t, "SENSOR#raw-orders-landed", cfg.Schedule.Trigger.Key,
+			"mutating copy's trigger must not affect original")
+	})
+
+	t.Run("calendar with exclusion dates", func(t *testing.T) {
+		var cfg types.PipelineConfig
+		require.NoError(t, yaml.Unmarshal([]byte(calendarScheduleYAML), &cfg))
+
+		cp := cfg.DeepCopy()
+
+		require.NotNil(t, cp.Schedule.Exclude)
+		require.Len(t, cp.Schedule.Exclude.Dates, 2)
+
+		// Mutate exclusion dates in the copy.
+		cp.Schedule.Exclude.Dates[0] = "2099-12-31"
+		assert.Equal(t, "2026-01-01", cfg.Schedule.Exclude.Dates[0],
+			"mutating copy's exclusion dates must not affect original")
+	})
+
+	t.Run("pointer field isolation (*int and *float64)", func(t *testing.T) {
+		driftReruns := 3
+		manualReruns := 2
+		codeRetries := 1
+		pollWindow := 300
+		driftThreshold := 0.05
+
+		cfg := types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "ptr-test"},
+			Schedule: types.ScheduleConfig{
+				Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
+			},
+			Validation: types.ValidationConfig{Trigger: "ALL"},
+			Job: types.JobConfig{
+				Type:                 "glue",
+				MaxDriftReruns:       &driftReruns,
+				MaxManualReruns:      &manualReruns,
+				MaxCodeRetries:       &codeRetries,
+				JobPollWindowSeconds: &pollWindow,
+			},
+			PostRun: &types.PostRunConfig{
+				DriftThreshold: &driftThreshold,
+				Rules:          []types.ValidationRule{{Key: "s1", Check: "exists"}},
+			},
+		}
+
+		cp := cfg.DeepCopy()
+
+		// Mutate pointer values via the copy.
+		*cp.Job.MaxDriftReruns = 99
+		*cp.Job.MaxManualReruns = 99
+		*cp.Job.MaxCodeRetries = 99
+		*cp.Job.JobPollWindowSeconds = 99
+		*cp.PostRun.DriftThreshold = 99.9
+
+		// Originals must be unaffected.
+		assert.Equal(t, 3, *cfg.Job.MaxDriftReruns, "MaxDriftReruns shared")
+		assert.Equal(t, 2, *cfg.Job.MaxManualReruns, "MaxManualReruns shared")
+		assert.Equal(t, 1, *cfg.Job.MaxCodeRetries, "MaxCodeRetries shared")
+		assert.Equal(t, 300, *cfg.Job.JobPollWindowSeconds, "JobPollWindowSeconds shared")
+		assert.Equal(t, 0.05, *cfg.PostRun.DriftThreshold, "DriftThreshold shared")
+	})
+
+	t.Run("nil optional fields", func(t *testing.T) {
+		var cfg types.PipelineConfig
+		require.NoError(t, yaml.Unmarshal([]byte(minimalPipelineYAML), &cfg))
+
+		// Precondition: these fields are nil on the minimal config.
+		require.Nil(t, cfg.SLA)
+		require.Nil(t, cfg.PostRun)
+		require.Nil(t, cfg.Schedule.Trigger)
+		require.Nil(t, cfg.Schedule.Exclude)
+
+		cp := cfg.DeepCopy()
+
+		assert.Nil(t, cp.SLA)
+		assert.Nil(t, cp.PostRun)
+		assert.Nil(t, cp.Schedule.Trigger)
+		assert.Nil(t, cp.Schedule.Exclude)
+
+		// Verify non-nil fields still copied correctly.
+		assert.Equal(t, "bronze-ingest", cp.Pipeline.ID)
+		assert.Len(t, cp.Validation.Rules, 1)
+	})
+}

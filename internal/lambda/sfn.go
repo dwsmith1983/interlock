@@ -29,8 +29,8 @@ type sfnConfig struct {
 	SLA                       *types.SLAConfig `json:"sla,omitempty"`
 }
 
-// buildSFNConfig converts a PipelineConfig into the config block for the SFN input.
-func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
+// BuildSFNConfig converts a PipelineConfig into the config block for the SFN input.
+func BuildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
 	sc := sfnConfig{
 		EvaluationIntervalSeconds: DefaultEvalIntervalSec,
 		EvaluationWindowSeconds:   DefaultEvalWindowSec,
@@ -60,34 +60,34 @@ func buildSFNConfig(cfg *types.PipelineConfig) sfnConfig {
 	return sc
 }
 
-// truncateExecName ensures an SFN execution name does not exceed the 80-character
+// TruncateExecName ensures an SFN execution name does not exceed the 80-character
 // AWS limit. When truncation is needed the suffix (date + timestamp) is preserved
 // by trimming characters from the beginning of the name.
-func truncateExecName(name string) string {
+func TruncateExecName(name string) string {
 	if len(name) <= SFNExecNameMaxLen {
 		return name
 	}
 	return name[len(name)-SFNExecNameMaxLen:]
 }
 
-// startSFN starts a Step Function execution with a unique execution name.
+// StartSFN starts a Step Function execution with a unique execution name.
 // The name includes a Unix timestamp suffix to avoid ExecutionAlreadyExists
 // errors when a previous execution for the same pipeline/schedule/date failed.
-func startSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string) error {
-	name := truncateExecName(fmt.Sprintf("%s-%s-%s-%d", pipelineID, scheduleID, date, d.now().Unix()))
-	return startSFNWithName(ctx, d, cfg, pipelineID, scheduleID, date, name)
+func StartSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string) error {
+	name := TruncateExecName(fmt.Sprintf("%s-%s-%s-%d", pipelineID, scheduleID, date, d.Now().Unix()))
+	return StartSFNWithName(ctx, d, cfg, pipelineID, scheduleID, date, name)
 }
 
-// startSFNWithName starts a Step Function execution with a custom execution name.
+// StartSFNWithName starts a Step Function execution with a custom execution name.
 // Defense-in-depth: refuses to start if the pipeline is in dry-run mode.
-func startSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, name string) error {
+func StartSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, name string) error {
 	if cfg.DryRun {
-		d.Logger.Warn("startSFNWithName called for dry-run pipeline, suppressing execution",
+		d.Logger.Warn("StartSFNWithName called for dry-run pipeline, suppressing execution",
 			"pipelineId", pipelineID, "schedule", scheduleID, "date", date)
 		return nil
 	}
 
-	sc := buildSFNConfig(cfg)
+	sc := BuildSFNConfig(cfg)
 
 	// Warn if the sum of evaluation + poll windows exceeds the SFN timeout.
 	totalWindowSec := sc.EvaluationWindowSeconds + sc.JobPollWindowSeconds

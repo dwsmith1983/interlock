@@ -36,7 +36,7 @@ func TestPublishEvent_PartialFailure(t *testing.T) {
 		NowFunc:      func() time.Time { return time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
 
-	err := publishEvent(context.Background(), d, "test.event", "pipeline-1", "cron", "2025-01-01", "test message")
+	err := PublishEvent(context.Background(), d, "test.event", "pipeline-1", "cron", "2025-01-01", "test message")
 	if err == nil {
 		t.Fatal("expected error for partial failure, got nil")
 	}

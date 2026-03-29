@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/dwsmith1983/interlock/internal/config"
-	"github.com/dwsmith1983/interlock/internal/validation"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

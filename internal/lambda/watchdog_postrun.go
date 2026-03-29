@@ -26,7 +26,7 @@ func detectMissingPostRunSensors(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := d.now()
+	now := d.Now()
 	today := now.Format("2006-01-02")
 
 	for id, cfg := range configs {
@@ -39,7 +39,7 @@ func detectMissingPostRunSensors(ctx context.Context, d *Deps) error {
 			continue
 		}
 
-		scheduleID := resolveScheduleID(cfg)
+		scheduleID := ResolveScheduleID(cfg)
 
 		// Only check pipelines with a COMPLETED trigger for today.
 		tr, err := d.Store.GetTrigger(ctx, id, scheduleID, today)
@@ -120,7 +120,7 @@ func detectMissingPostRunSensors(ctx context.Context, d *Deps) error {
 			"ruleKeys":      strings.Join(ruleKeys, ", "),
 			"actionHint":    "post-run sensor data has not arrived within the expected timeout",
 		}
-		if err := publishEvent(ctx, d, string(types.EventPostRunSensorMissing), id, scheduleID, today,
+		if err := PublishEvent(ctx, d, string(types.EventPostRunSensorMissing), id, scheduleID, today,
 			fmt.Sprintf("post-run sensor missing for %s on %s", id, today), alertDetail); err != nil {
 			d.Logger.Warn("failed to publish post-run sensor missing event", "error", err, "pipeline", id, "schedule", scheduleID, "date", today)
 		}
@@ -231,7 +231,7 @@ func detectRelativeSLABreaches(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := d.now()
+	now := d.Now()
 	datesToCheck := []string{
 		now.Format("2006-01-02"),
 		now.AddDate(0, 0, -1).Format("2006-01-02"),
@@ -254,7 +254,7 @@ func detectRelativeSLABreaches(ctx context.Context, d *Deps) error {
 			continue
 		}
 
-		scheduleID := resolveScheduleID(cfg)
+		scheduleID := ResolveScheduleID(cfg)
 
 		for _, checkDate := range datesToCheck {
 			checkRelativeSLAForDate(ctx, d, id, cfg, scheduleID, checkDate, maxDur, now)
@@ -305,7 +305,7 @@ func checkRelativeSLAForDate(ctx context.Context, d *Deps, id string, cfg *types
 	if tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal) {
 		return
 	}
-	if isJobTerminal(ctx, d, id, scheduleID, checkDate) {
+	if IsJobTerminal(ctx, d, id, scheduleID, checkDate) {
 		return
 	}
 
@@ -329,7 +329,7 @@ func checkRelativeSLAForDate(ctx context.Context, d *Deps, id string, cfg *types
 		"breachAt":        breachAt.UTC().Format(time.RFC3339),
 		"actionHint":      "relative SLA breached — pipeline has exceeded maxDuration since first sensor arrival",
 	}
-	if err := publishEvent(ctx, d, string(types.EventRelativeSLABreach), id, scheduleID, checkDate,
+	if err := PublishEvent(ctx, d, string(types.EventRelativeSLABreach), id, scheduleID, checkDate,
 		fmt.Sprintf("relative SLA breach for %s on %s", id, checkDate), alertDetail); err != nil {
 		d.Logger.Warn("failed to publish relative SLA breach event",
 			"error", err, "pipeline", id, "date", checkDate)

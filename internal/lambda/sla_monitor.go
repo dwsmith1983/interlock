@@ -5,27 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	schedulerTypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
+	pkgsla "github.com/dwsmith1983/interlock/pkg/sla"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// HandleSLAMonitor processes SLA monitor requests from Step Functions.
-// It supports five modes:
-//   - "calculate": computes warning and breach times from schedule config
-//   - "fire-alert": publishes an SLA alert event to EventBridge
-//   - "schedule":   creates one-time EventBridge Scheduler entries for warning/breach
-//   - "cancel":     deletes unfired schedules and publishes SLA_MET if applicable
-//   - "reconcile":  computes deadlines and fires any that have already passed (fallback)
+// Deprecated: Use sla.HandleSLAMonitor instead. Retained for test compatibility.
 func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
 	switch input.Mode {
 	case "calculate":
-		return handleSLACalculate(input, d.now())
+		return handleSLACalculate(input, d.Now())
 	case "fire-alert":
 		return handleSLAFireAlert(ctx, d, input)
 	case "schedule":
@@ -39,6 +33,12 @@ func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAM
 	}
 }
 
+// HandleSLACalculate is the exported entry point for SLA calculation.
+// Used by the stream sub-package for dry-run SLA projections.
+func HandleSLACalculate(input SLAMonitorInput, now time.Time) (SLAMonitorOutput, error) {
+	return handleSLACalculate(input, now)
+}
+
 // handleSLACalculate computes warning and breach times. Supports two modes:
 //
 //  1. Schedule-based (deadline): breachAt = deadline, warningAt = deadline - expectedDuration.
@@ -47,86 +47,17 @@ func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAM
 //
 // Returns full ISO 8601 timestamps required by Step Functions TimestampPath.
 func handleSLACalculate(input SLAMonitorInput, now time.Time) (SLAMonitorOutput, error) {
-	// Relative SLA path: maxDuration + sensorArrivalAt.
 	if input.MaxDuration != "" && input.SensorArrivalAt != "" {
 		return handleRelativeSLACalculate(input)
 	}
-
-	dur, err := time.ParseDuration(input.ExpectedDuration)
+	breach, warning, err := pkgsla.CalculateAbsoluteDeadline(
+		input.Date, input.Deadline, input.ExpectedDuration, input.Timezone, now)
 	if err != nil {
-		return SLAMonitorOutput{}, fmt.Errorf("parse expectedDuration %q: %w", input.ExpectedDuration, err)
+		return SLAMonitorOutput{}, err
 	}
-
-	loc := time.UTC
-	if input.Timezone != "" {
-		loc, err = time.LoadLocation(input.Timezone)
-		if err != nil {
-			return SLAMonitorOutput{}, fmt.Errorf("load timezone %q: %w", input.Timezone, err)
-		}
-	}
-
-	now = now.In(loc)
-
-	// Parse the execution date. Supports:
-	//   "2006-01-02"    — daily
-	//   "2006-01-02T15" — hourly (hour encoded in date)
-	baseDate := now
-	baseHour := -1 // -1 means "use current hour" for relative deadlines
-	if input.Date != "" {
-		datePart, hourPart := ParseExecutionDate(input.Date)
-		parsed, err := time.Parse("2006-01-02", datePart)
-		if err == nil {
-			if hourPart != "" {
-				h := 0
-				if parsed, atoiErr := strconv.Atoi(hourPart); atoiErr == nil {
-					h = parsed
-					baseHour = h
-				}
-				baseDate = time.Date(parsed.Year(), parsed.Month(), parsed.Day(),
-					h, 0, 0, 0, loc)
-			} else {
-				baseDate = time.Date(parsed.Year(), parsed.Month(), parsed.Day(),
-					now.Hour(), now.Minute(), 0, 0, loc)
-			}
-		}
-	}
-
-	// Parse deadline. Supports two formats:
-	//   "HH:MM" — absolute time of day (e.g., "02:00" for daily pipelines)
-	//   ":MM"   — minutes past current hour (e.g., ":30" for hourly pipelines)
-	var breachAt time.Time
-	dl := input.Deadline
-	if strings.HasPrefix(dl, ":") {
-		deadline, err := time.Parse("04", strings.TrimPrefix(dl, ":"))
-		if err != nil {
-			return SLAMonitorOutput{}, fmt.Errorf("parse deadline %q: %w", dl, err)
-		}
-		hour := baseDate.Hour()
-		breachAt = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
-			hour, deadline.Minute(), 0, 0, loc)
-		if baseHour >= 0 {
-			// Hourly pipeline: data for hour H is processed in hour H+1,
-			// so ":MM" means MM minutes into the processing window (H+1).
-			breachAt = breachAt.Add(time.Hour)
-		} else if breachAt.Before(now) {
-			breachAt = breachAt.Add(time.Hour)
-		}
-	} else {
-		deadline, err := time.Parse("15:04", dl)
-		if err != nil {
-			return SLAMonitorOutput{}, fmt.Errorf("parse deadline %q: %w", dl, err)
-		}
-		breachAt = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
-			deadline.Hour(), deadline.Minute(), 0, 0, loc)
-		if breachAt.Before(now) {
-			breachAt = breachAt.Add(24 * time.Hour)
-		}
-	}
-	warningAt := breachAt.Add(-dur)
-
 	return SLAMonitorOutput{
-		WarningAt: warningAt.UTC().Format(time.RFC3339),
-		BreachAt:  breachAt.UTC().Format(time.RFC3339),
+		WarningAt: warning.UTC().Format(time.RFC3339),
+		BreachAt:  breach.UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -135,33 +66,14 @@ func handleSLACalculate(input SLAMonitorInput, now time.Time) (SLAMonitorOutput,
 // if provided, otherwise defaults to 25% of maxDuration (i.e. warning
 // fires at 75% of the total allowed time).
 func handleRelativeSLACalculate(input SLAMonitorInput) (SLAMonitorOutput, error) {
-	maxDur, err := time.ParseDuration(input.MaxDuration)
+	breach, warning, err := pkgsla.CalculateRelativeDeadline(
+		input.SensorArrivalAt, input.MaxDuration, input.ExpectedDuration)
 	if err != nil {
-		return SLAMonitorOutput{}, fmt.Errorf("parse maxDuration %q: %w", input.MaxDuration, err)
+		return SLAMonitorOutput{}, err
 	}
-
-	arrivalAt, err := time.Parse(time.RFC3339, input.SensorArrivalAt)
-	if err != nil {
-		return SLAMonitorOutput{}, fmt.Errorf("parse sensorArrivalAt %q: %w", input.SensorArrivalAt, err)
-	}
-
-	breachAt := arrivalAt.Add(maxDur)
-
-	// Warning offset: use expectedDuration if provided, otherwise 25% of maxDuration.
-	var warningOffset time.Duration
-	if input.ExpectedDuration != "" {
-		warningOffset, err = time.ParseDuration(input.ExpectedDuration)
-		if err != nil {
-			return SLAMonitorOutput{}, fmt.Errorf("parse expectedDuration %q: %w", input.ExpectedDuration, err)
-		}
-	} else {
-		warningOffset = maxDur / 4
-	}
-	warningAt := breachAt.Add(-warningOffset)
-
 	return SLAMonitorOutput{
-		WarningAt: warningAt.UTC().Format(time.RFC3339),
-		BreachAt:  breachAt.UTC().Format(time.RFC3339),
+		WarningAt: warning.UTC().Format(time.RFC3339),
+		BreachAt:  breach.UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -182,7 +94,7 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 			d.Logger.InfoContext(ctx, "suppressing SLA alert (pipeline already finished)",
 				"pipeline", input.PipelineID, "date", input.Date, "triggerStatus", tr.Status, "alertType", input.AlertType)
 			suppressed = true
-		case isJobTerminal(ctx, d, input.PipelineID, input.ScheduleID, input.Date):
+		case IsJobTerminal(ctx, d, input.PipelineID, input.ScheduleID, input.Date):
 			// Joblog fallback: trigger row may be nil (cron pipeline), RUNNING
 			// (not yet updated), or TTL-expired. Check joblog as secondary signal.
 			d.Logger.InfoContext(ctx, "suppressing SLA alert (terminal joblog event found)",
@@ -190,16 +102,16 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 			suppressed = true
 		}
 		if suppressed {
-			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.now().UTC().Format(time.RFC3339)}, nil
+			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.Now().UTC().Format(time.RFC3339)}, nil
 		}
 	}
 
 	if input.AlertType == "SLA_WARNING" && input.BreachAt != "" {
 		breachAt, err := time.Parse(time.RFC3339, input.BreachAt)
-		if err == nil && !d.now().UTC().Before(breachAt) {
+		if err == nil && !d.Now().UTC().Before(breachAt) {
 			d.Logger.InfoContext(ctx, "suppressing SLA_WARNING (past breach time)",
 				"pipeline", input.PipelineID, "breachAt", input.BreachAt)
-			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.now().UTC().Format(time.RFC3339)}, nil
+			return SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.Now().UTC().Format(time.RFC3339)}, nil
 		}
 	}
 
@@ -231,13 +143,13 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 
 	msg := fmt.Sprintf("pipeline %s: %s", input.PipelineID, input.AlertType)
 
-	if err := publishEvent(ctx, d, input.AlertType, input.PipelineID, input.ScheduleID, input.Date, msg, alertDetail); err != nil {
+	if err := PublishEvent(ctx, d, input.AlertType, input.PipelineID, input.ScheduleID, input.Date, msg, alertDetail); err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("publish SLA event: %w", err)
 	}
 
 	return SLAMonitorOutput{
 		AlertType: input.AlertType,
-		FiredAt:   d.now().UTC().Format(time.RFC3339),
+		FiredAt:   d.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -245,7 +157,7 @@ func handleSLAFireAlert(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 // SLA warning and breach times. Each schedule invokes this Lambda with
 // mode "fire-alert" at the exact timestamp, then auto-deletes.
 func handleSLASchedule(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
-	calc, err := handleSLACalculate(input, d.now())
+	calc, err := handleSLACalculate(input, d.Now())
 	if err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("schedule: %w", err)
 	}
@@ -284,7 +196,7 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 			input.WarningAt = calc.WarningAt
 			input.BreachAt = calc.BreachAt
 		} else if input.Deadline != "" {
-			calc, err := handleSLACalculate(input, d.now())
+			calc, err := handleSLACalculate(input, d.Now())
 			if err != nil {
 				return SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
 			}
@@ -313,7 +225,7 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 	// Determine final SLA status: binary MET or BREACH.
 	// WARNING is not a valid completion outcome — if the job finished, it either
 	// beat the breach deadline (MET) or missed it (BREACH).
-	now := d.now().UTC()
+	now := d.Now().UTC()
 	alertType := string(types.EventSLAMet)
 	if input.BreachAt != "" {
 		breachAt, _ := time.Parse(time.RFC3339, input.BreachAt)
@@ -343,7 +255,7 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 		"alertType", alertType,
 	)
 	if publish {
-		if err := publishEvent(ctx, d, alertType, input.PipelineID, input.ScheduleID, input.Date,
+		if err := PublishEvent(ctx, d, alertType, input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: %s", input.PipelineID, alertType)); err != nil {
 			return SLAMonitorOutput{}, fmt.Errorf("publish SLA cancel verdict: %w", err)
 		}
@@ -394,6 +306,12 @@ func createOneTimeSchedule(ctx context.Context, d *Deps, name, timestamp string,
 	return nil
 }
 
+// CreateSLASchedules is the exported entry point for creating SLA schedules.
+// Used by the watchdog sub-package for proactive SLA scheduling.
+func CreateSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, date string, calc SLAMonitorOutput, onConflictSkip bool) error {
+	return createSLASchedules(ctx, d, pipelineID, scheduleID, date, calc, onConflictSkip)
+}
+
 // createSLASchedules creates warning and breach one-time schedules.
 // Returns an error on the first schedule creation failure. If onConflictSkip
 // is true, ConflictException errors are silently skipped (idempotent retries).
@@ -434,12 +352,12 @@ func createSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, da
 // that have already passed. Fallback for environments without EventBridge
 // Scheduler configured.
 func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
-	calc, err := handleSLACalculate(input, d.now())
+	calc, err := handleSLACalculate(input, d.Now())
 	if err != nil {
 		return SLAMonitorOutput{}, fmt.Errorf("reconcile: %w", err)
 	}
 
-	now := d.now().UTC()
+	now := d.Now().UTC()
 	warningAt, _ := time.Parse(time.RFC3339, calc.WarningAt)
 	breachAt, _ := time.Parse(time.RFC3339, calc.BreachAt)
 
@@ -453,14 +371,14 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 	var alertType string
 	switch {
 	case now.After(breachAt) || now.Equal(breachAt):
-		if err := publishEvent(ctx, d, "SLA_BREACH", input.PipelineID, input.ScheduleID, input.Date,
+		if err := PublishEvent(ctx, d, "SLA_BREACH", input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: SLA_BREACH", input.PipelineID), reconcileDetail); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", "SLA_BREACH", "error", err)
 		}
 		alertType = "SLA_BREACH"
 	case now.After(warningAt) || now.Equal(warningAt):
 		// Past warning but before breach — fire warning only
-		if err := publishEvent(ctx, d, "SLA_WARNING", input.PipelineID, input.ScheduleID, input.Date,
+		if err := PublishEvent(ctx, d, "SLA_WARNING", input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: SLA_WARNING", input.PipelineID), reconcileDetail); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", "SLA_WARNING", "error", err)
 		}
@@ -475,26 +393,4 @@ func handleSLAReconcile(ctx context.Context, d *Deps, input SLAMonitorInput) (SL
 		BreachAt:  calc.BreachAt,
 		FiredAt:   now.Format(time.RFC3339),
 	}, nil
-}
-
-// isJobTerminal checks the joblog for a terminal event (success, fail, timeout).
-// Returns true if the pipeline has finished processing for the given date.
-func isJobTerminal(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) bool {
-	rec, err := d.Store.GetLatestJobEvent(ctx, pipelineID, scheduleID, date)
-	if err != nil {
-		d.Logger.WarnContext(ctx, "joblog lookup failed, not suppressing",
-			"pipeline", pipelineID, "error", err)
-		return false
-	}
-	if rec == nil {
-		return false
-	}
-	switch rec.Event {
-	case types.JobEventSuccess, types.JobEventFail, types.JobEventTimeout,
-		types.JobEventInfraTriggerExhausted, types.JobEventValidationExhausted,
-		types.JobEventJobPollExhausted:
-		return true
-	default:
-		return false
-	}
 }

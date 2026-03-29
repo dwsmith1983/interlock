@@ -11,7 +11,7 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// HandleEventSink writes an EventBridge event to the centralized events table.
+// Deprecated: Use sink.HandleEventSink instead. Retained for test compatibility.
 func HandleEventSink(ctx context.Context, d *Deps, input EventBridgeInput) error {
 	var detail types.InterlockEvent
 	if err := json.Unmarshal(input.Detail, &detail); err != nil {
@@ -23,10 +23,10 @@ func HandleEventSink(ctx context.Context, d *Deps, input EventBridgeInput) error
 	if !detail.Timestamp.IsZero() {
 		tsMillis = detail.Timestamp.UnixMilli()
 	} else {
-		tsMillis = d.now().UnixMilli()
+		tsMillis = d.Now().UnixMilli()
 	}
 
-	now := d.now()
+	now := d.Now()
 	ttlDays := d.EventsTTLDays
 	if ttlDays <= 0 {
 		ttlDays = 90

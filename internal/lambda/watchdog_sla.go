@@ -24,7 +24,7 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := d.now()
+	now := d.Now()
 
 	for id, cfg := range configs {
 		if cfg.SLA == nil {
@@ -36,11 +36,11 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 			continue
 		}
 
-		if isExcluded(cfg, now) {
+		if IsExcluded(cfg, now) {
 			continue
 		}
 
-		scheduleID := resolveScheduleID(cfg)
+		scheduleID := ResolveScheduleID(cfg)
 		date := resolveWatchdogSLADate(cfg, now)
 
 		// Sensor-triggered daily pipelines run T+1: data for today completes
@@ -64,7 +64,7 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 			continue
 		case tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal):
 			continue
-		case isJobTerminal(ctx, d, id, scheduleID, date):
+		case IsJobTerminal(ctx, d, id, scheduleID, date):
 			continue
 		}
 
@@ -115,7 +115,7 @@ func checkTriggerDeadlines(ctx context.Context, d *Deps) error {
 		return fmt.Errorf("load configs: %w", err)
 	}
 
-	now := d.now()
+	now := d.Now()
 
 	for id, cfg := range configs {
 		if cfg.Schedule.Trigger == nil || cfg.Schedule.Trigger.Deadline == "" {
@@ -127,11 +127,11 @@ func checkTriggerDeadlines(ctx context.Context, d *Deps) error {
 			continue
 		}
 
-		if isExcluded(cfg, now) {
+		if IsExcluded(cfg, now) {
 			continue
 		}
 
-		scheduleID := resolveScheduleID(cfg)
+		scheduleID := ResolveScheduleID(cfg)
 		triggerDate := resolveTriggerDeadlineDate(cfg, now)
 
 		triggerRec, err := d.Store.GetTrigger(ctx, id, scheduleID, triggerDate)
@@ -143,7 +143,7 @@ func checkTriggerDeadlines(ctx context.Context, d *Deps) error {
 			continue
 		}
 
-		if isJobTerminal(ctx, d, id, scheduleID, triggerDate) {
+		if IsJobTerminal(ctx, d, id, scheduleID, triggerDate) {
 			continue
 		}
 
@@ -189,7 +189,7 @@ func resolveTriggerDeadlineDate(cfg *types.PipelineConfig, now time.Time) string
 // Unlike handleSLACalculate, this does NOT roll forward when the time is past.
 // Returns zero time on parse errors.
 func resolveTriggerDeadlineTime(deadline, date, timezone string) time.Time {
-	loc := resolveTimezone(timezone)
+	loc := ResolveTimezone(timezone)
 
 	if strings.HasPrefix(deadline, ":") {
 		// Relative (hourly): ":MM" — deadline is in the NEXT hour after the
@@ -267,7 +267,7 @@ func closeSensorTriggerWindow(ctx context.Context, d *Deps, pipelineID, schedule
 		"triggerDeadline": cfg.Schedule.Trigger.Deadline,
 		"actionHint":      "auto-trigger window closed — use RERUN_REQUEST to restart",
 	}
-	if err := publishEvent(ctx, d, string(types.EventSensorDeadlineExpired), pipelineID, scheduleID, date,
+	if err := PublishEvent(ctx, d, string(types.EventSensorDeadlineExpired), pipelineID, scheduleID, date,
 		fmt.Sprintf("trigger deadline expired for %s/%s/%s", pipelineID, scheduleID, date), alertDetail); err != nil {
 		d.Logger.Warn("failed to publish sensor deadline expired event", "error", err, "pipeline", pipelineID)
 	}

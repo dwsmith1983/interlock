@@ -30,8 +30,8 @@ type Deps struct {
 	Logger             *slog.Logger
 }
 
-// now returns the current time using NowFunc if set, otherwise time.Now.
-func (d *Deps) now() time.Time {
+// Now returns the current time using NowFunc if set, otherwise time.Now.
+func (d *Deps) Now() time.Time {
 	if d.NowFunc != nil {
 		return d.NowFunc()
 	}

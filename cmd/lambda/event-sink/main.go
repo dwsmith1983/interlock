@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/lambda/sink"
 	"github.com/dwsmith1983/interlock/internal/store"
 )
 
@@ -50,6 +51,6 @@ func main() {
 	}
 
 	lambda.Start(func(ctx context.Context, input ilambda.EventBridgeInput) error {
-		return ilambda.HandleEventSink(ctx, deps, input)
+		return sink.HandleEventSink(ctx, deps, input)
 	})
 }

@@ -1,14 +1,19 @@
 ---
 title: Watchdog
 weight: 3
-description: Detects stale trigger executions, missed cron schedules, and missing post-run sensors.
+description: Detects stale triggers, missed schedules, SLA gaps, trigger deadline expiry, and missing post-run sensors.
 ---
 
-The watchdog is one of four Lambda functions in the Interlock framework. It runs independently on an EventBridge schedule (default: every 5 minutes) and detects three classes of silent failures:
+The watchdog is one of six Lambda functions in the Interlock framework. It runs independently on an EventBridge schedule (default: every 5 minutes) and runs eight checks in a table-driven loop to detect silent failures:
 
 1. **Stale triggers** -- a Step Function execution started but never completed (timeout, infrastructure failure)
 2. **Missed schedules** -- a cron-scheduled pipeline's expected start time passed with no trigger record
-3. **Missing post-run sensors** -- a pipeline completed but the expected post-run sensor never arrived
+3. **Missed inclusion schedules** -- a pipeline with an inclusion calendar has no trigger on a scheduled date
+4. **Sensor-trigger reconciliation** -- a sensor-triggered pipeline's conditions are met but no trigger exists (self-heals missed triggers)
+5. **SLA scheduling** -- proactively ensures EventBridge Scheduler entries exist for pipelines with SLA configs
+6. **Trigger deadlines** -- a sensor-triggered pipeline's auto-trigger window has expired with no trigger
+7. **Missing post-run sensors** -- a pipeline completed but the expected post-run sensor never arrived
+8. **Relative SLA breaches** -- a pipeline with `maxDuration` SLA has exceeded its time budget since first sensor arrival
 
 In STAMP terms, these are safety constraint violations caused by _what didn't happen_ rather than what went wrong.
 
@@ -195,7 +200,20 @@ variable "watchdog_schedule" {
 
 ## Error Handling
 
-Both detection scans run independently. An error in stale trigger detection does not prevent missed schedule detection from running. Errors are logged but do not cause the Lambda invocation to fail, which prevents EventBridge from retrying with potentially stale state.
+All eight checks run independently in sequence. An error in any check does not prevent the remaining checks from running. Errors are collected into an aggregate error and returned to the Lambda runtime.
+
+When one or more checks fail, the watchdog publishes a `WATCHDOG_DEGRADED` event to EventBridge listing the failed check names. This allows operators to detect partial watchdog failures through the standard alerting pipeline.
+
+```json
+{
+  "source": "interlock",
+  "detail-type": "WATCHDOG_DEGRADED",
+  "detail": {
+    "message": "watchdog checks failed: stale-triggers, sla-scheduling",
+    "timestamp": "2026-03-01T12:30:00Z"
+  }
+}
+```
 
 ## Relationship to Step Functions
 

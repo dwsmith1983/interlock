@@ -5,14 +5,8 @@ package lambda
 
 import (
 	"time"
-
-	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// IsExcludedDate re-exports isExcludedDate for white-box unit testing from
-// the external test package (package lambda_test).
-var IsExcludedDate func(cfg *types.PipelineConfig, dateStr string) bool = isExcludedDate
-
-// ResolveTriggerDeadlineTime re-exports resolveTriggerDeadlineTime for
+// ExportedResolveTriggerDeadlineTime re-exports resolveTriggerDeadlineTime for
 // white-box unit testing from the external test package (package lambda_test).
-var ResolveTriggerDeadlineTime func(deadline, date, timezone string) time.Time = resolveTriggerDeadlineTime
+var ExportedResolveTriggerDeadlineTime func(deadline, date, timezone string) time.Time = resolveTriggerDeadlineTime
