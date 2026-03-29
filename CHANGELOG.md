@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-03-29
+
+### Refactored
+
+- **Split `internal/lambda/` into handler-aligned sub-packages** — Monolithic package replaced with focused sub-packages: `orchestrator/`, `stream/`, `watchdog/`, `sla/`, `alert/`, `sink/`.
+- **Extracted shared utilities into focused root files** — Common logic moved to dedicated files: publish, date, exclusion, sensor, schedule, config, terminal.
+- **Trigger config registry** — Replaced `buildTriggerConfig` switch statement with generic registry map (`trigger_registry.go`).
+- **SLA deadline calculations wired through `pkg/sla/`** — Pure functions for SLA deadline resolution, decoupled from Lambda handler context.
+
+### Added
+
+- **`pkg/sla/` package** — Pure SLA deadline calculation functions usable across packages.
+- **`PipelineConfig.DeepCopy()` method** — Safe config cache isolation without JSON marshal/unmarshal roundtrip.
+- **`EventWatchdogDegraded` event type** — Watchdog health observability event for degraded-state detection.
+- **Smoke tests for all 6 `cmd/lambda/` packages** — `ValidateEnv` coverage for every Lambda entry point.
+
+### Fixed
+
+- **`HandleWatchdog` silent error suppression** — Now returns aggregate errors via `errors.Join` instead of silently returning nil.
+- **`HandleWatchdog` degraded-state signaling** — Publishes `WATCHDOG_DEGRADED` event when checks fail.
+- **Config cache isolation** — Uses typed `DeepCopy()` instead of JSON marshal/unmarshal roundtrip, eliminating silent data loss on unexported fields.
+
 ## [0.9.3] - 2026-03-14
 
 ### Changed

@@ -127,11 +127,18 @@ When a Scheduler entry fires, it invokes this Lambda to publish the correspondin
 
 ### watchdog
 
-Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs three independent scans:
+Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs eight independent checks in a table-driven loop:
 
 1. **Stale triggers** -- scans for `TRIGGER#` records with `RUNNING` status whose TTL has expired. Publishes `SFN_TIMEOUT` events and sets status to `FAILED_FINAL`.
 2. **Missed schedules** -- loads all cron-scheduled pipeline configs, checks for missing `TRIGGER#` records for today's date. Publishes `SCHEDULE_MISSED` events for pipelines past their expected start time.
-3. **Missing post-run sensors** -- for pipelines with `postRun` config and a completed trigger, checks whether post-run sensors have arrived within the `sensorTimeout` grace period. Publishes `POST_RUN_SENSOR_MISSING` events.
+3. **Missed inclusion schedules** -- checks pipelines with inclusion calendar config for missing triggers on scheduled dates. Publishes `IRREGULAR_SCHEDULE_MISSED` events.
+4. **Sensor-trigger reconciliation** -- re-evaluates trigger conditions for sensor-triggered pipelines. Self-heals missed triggers caused by silent completion-write failures.
+5. **SLA scheduling** -- proactively creates EventBridge Scheduler entries for pipelines with SLA configs, ensuring warnings and breaches fire even when data never arrives.
+6. **Trigger deadlines** -- evaluates trigger deadlines for sensor-triggered pipelines. Closes the auto-trigger window and publishes `SENSOR_DEADLINE_EXPIRED` when the deadline passes with no trigger.
+7. **Missing post-run sensors** -- for pipelines with `postRun` config and a completed trigger, checks whether post-run sensors have arrived within the `sensorTimeout` grace period. Publishes `POST_RUN_SENSOR_MISSING` events.
+8. **Relative SLA breaches** -- checks pipelines with `maxDuration` SLA config for breaches relative to the first sensor arrival time.
+
+If any check fails, the watchdog publishes a `WATCHDOG_DEGRADED` event listing the failed checks and returns an aggregate error. Individual check failures do not prevent the remaining checks from running.
 
 See [Watchdog](../watchdog) for the full algorithm.
 
