@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"time"
 
@@ -80,20 +79,7 @@ func (c *ConfigCache) refresh(ctx context.Context) (map[string]*types.PipelineCo
 func copyConfigs(src map[string]*types.PipelineConfig) map[string]*types.PipelineConfig {
 	dst := make(map[string]*types.PipelineConfig, len(src))
 	for k, v := range src {
-		data, err := json.Marshal(v)
-		if err != nil {
-			// Marshal of a known struct should never fail; shallow-copy as fallback.
-			cp := *v
-			dst[k] = &cp
-			continue
-		}
-		var cp types.PipelineConfig
-		if err := json.Unmarshal(data, &cp); err != nil {
-			shallow := *v
-			dst[k] = &shallow
-			continue
-		}
-		dst[k] = &cp
+		dst[k] = v.DeepCopy()
 	}
 	return dst
 }

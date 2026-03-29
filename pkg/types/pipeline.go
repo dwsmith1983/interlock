@@ -1,6 +1,11 @@
 // Package types defines the public domain types for the Interlock STAMP-based safety framework.
 package types
 
+import (
+	"encoding/json"
+	"slices"
+)
+
 // PipelineConfig is the full configuration for a pipeline, loaded from YAML.
 type PipelineConfig struct {
 	Pipeline   PipelineIdentity `yaml:"pipeline" json:"pipeline"`
@@ -121,4 +126,77 @@ type PostRunConfig struct {
 	SensorTimeout  string            `yaml:"sensorTimeout,omitempty" json:"sensorTimeout,omitempty"`   // e.g. "2h"; default 2h
 	DriftThreshold *float64          `yaml:"driftThreshold,omitempty" json:"driftThreshold,omitempty"` // minimum absolute delta to trigger drift; default 0 (any change)
 	DriftField     string            `yaml:"driftField,omitempty" json:"driftField,omitempty"`         // sensor field for drift comparison; default "sensor_count"
+}
+
+// DeepCopy returns a deep copy of the PipelineConfig. Pointer fields, slices,
+// and maps are copied so mutations to the copy do not affect the original.
+func (c *PipelineConfig) DeepCopy() *PipelineConfig {
+	cp := *c
+
+	// Schedule pointer fields
+	if c.Schedule.Trigger != nil {
+		t := *c.Schedule.Trigger
+		cp.Schedule.Trigger = &t
+	}
+	if c.Schedule.Exclude != nil {
+		ex := *c.Schedule.Exclude
+		ex.Dates = slices.Clone(c.Schedule.Exclude.Dates)
+		cp.Schedule.Exclude = &ex
+	}
+	if c.Schedule.Include != nil {
+		inc := *c.Schedule.Include
+		inc.Dates = slices.Clone(c.Schedule.Include.Dates)
+		cp.Schedule.Include = &inc
+	}
+
+	// SLA
+	if c.SLA != nil {
+		s := *c.SLA
+		cp.SLA = &s
+	}
+
+	// Validation rules slice
+	cp.Validation.Rules = slices.Clone(c.Validation.Rules)
+
+	// Job pointer fields
+	if c.Job.JobPollWindowSeconds != nil {
+		v := *c.Job.JobPollWindowSeconds
+		cp.Job.JobPollWindowSeconds = &v
+	}
+	if c.Job.MaxDriftReruns != nil {
+		v := *c.Job.MaxDriftReruns
+		cp.Job.MaxDriftReruns = &v
+	}
+	if c.Job.MaxManualReruns != nil {
+		v := *c.Job.MaxManualReruns
+		cp.Job.MaxManualReruns = &v
+	}
+	if c.Job.MaxCodeRetries != nil {
+		v := *c.Job.MaxCodeRetries
+		cp.Job.MaxCodeRetries = &v
+	}
+
+	// Job.Config map — JSON roundtrip for map[string]interface{} (unavoidable for dynamic maps)
+	if c.Job.Config != nil {
+		cp.Job.Config = make(map[string]interface{}, len(c.Job.Config))
+		data, _ := json.Marshal(c.Job.Config)
+		_ = json.Unmarshal(data, &cp.Job.Config)
+	}
+
+	// PostRun
+	if c.PostRun != nil {
+		pr := *c.PostRun
+		pr.Rules = slices.Clone(c.PostRun.Rules)
+		if c.PostRun.Evaluation != nil {
+			ev := *c.PostRun.Evaluation
+			pr.Evaluation = &ev
+		}
+		if c.PostRun.DriftThreshold != nil {
+			v := *c.PostRun.DriftThreshold
+			pr.DriftThreshold = &v
+		}
+		cp.PostRun = &pr
+	}
+
+	return &cp
 }
