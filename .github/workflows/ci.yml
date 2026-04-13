@@ -44,4 +44,4 @@ jobs:
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
 
       - name: Run quality gate
-        run: make lint
+        run: make audit
