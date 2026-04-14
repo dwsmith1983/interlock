@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Dead-letter queue subsystem** (`internal/dlq/`) — Typed error classification (transient vs permanent), SQS routing with slog fallback when SQS is unreachable, ULID-based record IDs, and per-record metrics counter interface. Includes no-op router for testing and dry-run modes.
+- **Stream batch handler** (`internal/handler/`) — Implements AWS `ReportBatchItemFailures` for partial batch processing. Uses `SequenceNumber` (not `EventID`) per AWS contract. Enforces accounting invariant: processed + dlq_routed + batch_failures == total.
+- **Lambda context middleware** (`internal/aws/lambda/`) — Derives `context.WithTimeout` from Lambda's remaining execution time minus a configurable safety buffer (default 500ms). Floors at 50ms to prevent zero/negative timeouts.
+- **OpenTelemetry initialization** (`internal/telemetry/`) — OTLP gRPC trace and metric exporters with graceful no-op fallback when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset. Defines 6 application metrics: records processed, stage duration, rules evaluated, DLQ routed, worker pool active, circuit breaker state.
+- **Structured logging with correlation IDs** (`internal/telemetry/`) — slog handler wrapper that injects `correlation_id` from context into every log record. JSON output with source location.
+- **Circuit breaker for HTTP evaluators** (`internal/client/`) — Wraps external HTTP calls with `sony/gobreaker`. Configurable trip thresholds, nil-safe defaults, and state introspection.
+- **Exponential backoff retry** (`internal/resilience/`) — Context-aware retry with jitter clamping to [0, 1], proper `time.NewTimer` cleanup (no timer leaks), and configurable max retries/delay.
+- **Bounded worker pool** (`internal/concurrency/`) — Thin wrapper around `errgroup` + `semaphore.Weighted` for bounded concurrent processing within Lambda executions.
+- **CI quality gates** — Makefile `audit` target running `go vet`, `staticcheck`, and `go test -race`. GitHub Actions workflow updated to use `make audit` as a blocking gate.
+
+### Dependencies
+
+- `go.opentelemetry.io/otel` v1.43.0 (traces + metrics)
+- `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc` (OTLP gRPC trace export)
+- `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc` (OTLP gRPC metric export)
+- `github.com/sony/gobreaker` (circuit breaker)
+- `github.com/oklog/ulid/v2` (DLQ record IDs)
+- `golang.org/x/sync` (errgroup + semaphore for worker pool)
+
 ## [0.9.4] - 2026-03-29
 
 ### Refactored

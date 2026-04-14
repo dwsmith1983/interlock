@@ -249,6 +249,13 @@ interlock/
 │   │   ├── sla/             # SLA deadline calculation + alerts
 │   │   ├── alert/           # Slack notification formatting
 │   │   └── sink/            # EventBridge event persistence
+│   ├── aws/lambda/          # Lambda context middleware (timeout derivation)
+│   ├── handler/             # Stream batch processing (ReportBatchItemFailures)
+│   ├── dlq/                 # Dead-letter queue routing, error classification
+│   ├── telemetry/           # OpenTelemetry + structured logging with correlation IDs
+│   ├── client/              # Circuit breaker for external HTTP calls
+│   ├── resilience/          # Exponential backoff retry with jitter
+│   ├── concurrency/         # Bounded worker pool (errgroup + semaphore)
 │   ├── store/               # DynamoDB storage layer (3-table design)
 │   ├── config/              # Pipeline YAML config loading
 │   ├── trigger/             # Trigger execution (8 types)
@@ -267,12 +274,21 @@ interlock/
 ```bash
 make test            # Run all tests
 make build-lambda    # Build 6 Lambda handlers (linux/arm64)
-make lint            # go fmt + go vet
+make lint            # go vet + staticcheck + go test -race
+make audit           # Full quality gate (same as lint, CI blocking)
 ```
+
+### Observability
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to enable OpenTelemetry trace and metric export (e.g., to Jaeger or Grafana). When unset, telemetry gracefully degrades to no-op providers with zero overhead.
+
+Application metrics: `interlock.records.processed`, `interlock.stage.duration`, `interlock.rules.evaluated`, `interlock.dlq.routed`, `interlock.worker_pool.active`, `interlock.circuit_breaker.state`.
+
+All structured logs include `correlation_id` for cross-service tracing when the context carries one.
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.25+
 - AWS CLI v2 + Terraform >= 1.5 (for deployment)
 - Slack Bot token with `chat:write` scope (for alert notifications)
 
