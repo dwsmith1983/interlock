@@ -7,13 +7,13 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.5
 	github.com/aws/aws-sdk-go-v2/config v1.32.9
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.32
-	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.64.0
+	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.65.0
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.55.0
 	github.com/aws/aws-sdk-go-v2/service/emr v1.57.5
 	github.com/aws/aws-sdk-go-v2/service/emrserverless v1.39.2
 	github.com/aws/aws-sdk-go-v2/service/eventbridge v1.45.19
 	github.com/aws/aws-sdk-go-v2/service/glue v1.137.0
-	github.com/aws/aws-sdk-go-v2/service/lambda v1.88.2
+	github.com/aws/aws-sdk-go-v2/service/lambda v1.88.5
 	github.com/aws/aws-sdk-go-v2/service/scheduler v1.17.19
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.3
 	github.com/aws/aws-sdk-go-v2/service/sfn v1.40.6
@@ -34,7 +34,7 @@ require (
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.6 // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.8 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.9 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.17 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.21 // indirect
