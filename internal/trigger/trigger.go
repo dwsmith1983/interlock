@@ -1,7 +1,6 @@
 package trigger
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/dwsmith1983/interlock/internal/resilience"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -104,12 +104,17 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 		method = "POST"
 	}
 
-	var body io.Reader
+	var bodyStr string
 	if cfg.Body != "" {
-		body = bytes.NewBufferString(os.Expand(cfg.Body, safeEnvLookup))
+		bodyStr = os.Expand(cfg.Body, safeEnvLookup)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, cfg.URL, body)
+	var bodyReader io.Reader
+	if bodyStr != "" {
+		bodyReader = strings.NewReader(bodyStr)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, cfg.URL, bodyReader)
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
@@ -119,20 +124,52 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 		req.Header.Set(k, os.Expand(v, safeEnvLookup))
 	}
 
-	resp, err := resolveHTTPClient(cfg.Timeout).Do(req)
+	httpClient := resolveHTTPClient(cfg.Timeout)
+
+	var resp *http.Response
+	var lastStatusCode int
+	var lastBody []byte
+	retryCfg := resilience.RetryConfig{
+		MaxRetries:   2,
+		BaseDelay:    200 * time.Millisecond,
+		MaxDelay:     2 * time.Second,
+		JitterFactor: 0.3,
+	}
+
+	err = resilience.Retry(ctx, retryCfg, func() error {
+		// Reset request body for retry so retries don't send an empty body.
+		if bodyStr != "" {
+			req.Body = io.NopCloser(strings.NewReader(bodyStr))
+		}
+
+		var doErr error
+		resp, doErr = httpClient.Do(req)
+		if doErr != nil {
+			return doErr // network errors are retried
+		}
+
+		if resp.StatusCode >= 500 {
+			lastStatusCode = resp.StatusCode
+			lastBody, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return fmt.Errorf("server error %d", resp.StatusCode) // transient, retry
+		}
+		return nil // success or 4xx — stop retrying
+	})
+
 	if err != nil {
+		if lastStatusCode >= 500 {
+			msg := fmt.Sprintf("trigger returned status %d: %s", lastStatusCode, sanitizeBody(lastBody))
+			return NewTriggerError(types.FailureTransient, msg, nil)
+		}
 		return fmt.Errorf("trigger request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 		respBody, _ := io.ReadAll(resp.Body)
 		msg := fmt.Sprintf("trigger returned status %d: %s", resp.StatusCode, sanitizeBody(respBody))
-		category := types.FailureTransient
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			category = types.FailurePermanent
-		}
-		return NewTriggerError(category, msg, nil)
+		return NewTriggerError(types.FailurePermanent, msg, nil)
 	}
 
 	return nil

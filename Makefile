@@ -1,7 +1,7 @@
-.PHONY: test build-lambda lint fmt vet clean
+.PHONY: test build-lambda lint fmt vet clean audit
 
 test:
-	go test ./...
+	go test -race -count=1 ./...
 
 build-lambda:
 	bash deploy/build.sh
@@ -12,9 +12,15 @@ fmt:
 vet:
 	go vet ./...
 
-lint: fmt vet
+lint:
+	golangci-lint run ./...
+	go test -race -count=1 ./...
+
+audit:
+	golangci-lint run ./...
+	go test -race -count=1 -vet=off ./...
 
 clean:
 	rm -rf deploy/dist/
 
-.DEFAULT_GOAL := test
+.DEFAULT_GOAL := build-lambda

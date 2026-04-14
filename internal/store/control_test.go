@@ -36,6 +36,7 @@ func TestGetConfig_Found(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil config")
+		return
 	}
 	if got.Pipeline.ID != "gold-revenue" {
 		t.Errorf("Pipeline.ID = %q, want %q", got.Pipeline.ID, "gold-revenue")
@@ -98,6 +99,7 @@ func TestPutConfig_RoundTrip(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected non-nil config after put")
+		return
 	}
 	if got.Pipeline.ID != "bronze-ingest" {
 		t.Errorf("Pipeline.ID = %q, want %q", got.Pipeline.ID, "bronze-ingest")
@@ -735,6 +737,7 @@ func TestGetTrigger_Found(t *testing.T) {
 	}
 	if rec == nil {
 		t.Fatal("expected non-nil record")
+		return
 	}
 	if rec.PK != pk {
 		t.Errorf("PK = %q, want %q", rec.PK, pk)
@@ -1144,6 +1147,7 @@ func TestWriteDryRunMarker(t *testing.T) {
 	}
 	if rec == nil {
 		t.Fatal("expected non-nil record")
+		return
 	}
 
 	// Verify PK/SK.

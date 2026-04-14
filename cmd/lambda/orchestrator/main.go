@@ -15,9 +15,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
+	"github.com/dwsmith1983/interlock/internal/config"
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/orchestrator"
 	"github.com/dwsmith1983/interlock/internal/store"
+	"github.com/dwsmith1983/interlock/internal/telemetry"
 	"github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -62,6 +64,19 @@ func main() {
 	}
 	cache := store.NewConfigCache(s, 5*time.Minute)
 
+	// Validate hardening config at cold start (result unused; circuit breaker lives in trigger).
+	if _, err = config.LoadHardening(); err != nil {
+		logger.Error("failed to load hardening config", "error", err)
+		os.Exit(1)
+	}
+
+	tel, telShutdown, err := telemetry.NewTelemetry(context.Background(), "interlock-orchestrator")
+	if err != nil {
+		logger.Error("failed to init telemetry", "error", err)
+		os.Exit(1)
+	}
+	_ = telShutdown // shutdown reserved for Lambda container termination, not per-invocation
+
 	runner := trigger.NewRunner()
 	deps := &ilambda.Deps{
 		Store:           s,
@@ -76,6 +91,11 @@ func main() {
 	}
 
 	lambda.Start(func(ctx context.Context, input ilambda.OrchestratorInput) (ilambda.OrchestratorOutput, error) {
+		defer func() {
+			if err := tel.Flush(context.Background()); err != nil {
+				logger.Warn("telemetry flush failed", "error", err)
+			}
+		}()
 		return orchestrator.HandleOrchestrator(ctx, deps, input)
 	})
 }

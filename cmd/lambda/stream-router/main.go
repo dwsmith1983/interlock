@@ -20,6 +20,7 @@ import (
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/stream"
 	"github.com/dwsmith1983/interlock/internal/store"
+	"github.com/dwsmith1983/interlock/internal/telemetry"
 )
 
 func main() {
@@ -45,6 +46,13 @@ func main() {
 	}
 	cache := store.NewConfigCache(s, 5*time.Minute)
 
+	tel, telShutdown, err := telemetry.NewTelemetry(context.Background(), "interlock-stream-router")
+	if err != nil {
+		logger.Error("failed to init telemetry", "error", err)
+		os.Exit(1)
+	}
+	_ = telShutdown // shutdown reserved for Lambda container termination, not per-invocation
+
 	deps := &ilambda.Deps{
 		Store:           s,
 		ConfigCache:     cache,
@@ -56,6 +64,11 @@ func main() {
 	}
 
 	lambda.Start(func(ctx context.Context, event ilambda.StreamEvent) (events.DynamoDBEventResponse, error) {
+		defer func() {
+			if err := tel.Flush(context.Background()); err != nil {
+				logger.Warn("telemetry flush failed", "error", err)
+			}
+		}()
 		return stream.HandleStreamEvent(ctx, deps, event)
 	})
 }
