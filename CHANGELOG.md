@@ -17,7 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Circuit breaker for HTTP evaluators** (`internal/client/`) — Wraps external HTTP calls with `sony/gobreaker`. Configurable trip thresholds, nil-safe defaults, and state introspection.
 - **Exponential backoff retry** (`internal/resilience/`) — Context-aware retry with jitter clamping to [0, 1], proper `time.NewTimer` cleanup (no timer leaks), and configurable max retries/delay.
 - **Bounded worker pool** (`internal/concurrency/`) — Thin wrapper around `errgroup` + `semaphore.Weighted` for bounded concurrent processing within Lambda executions.
-- **CI quality gates** — Makefile `audit` target running `go vet`, `staticcheck`, and `go test -race`. GitHub Actions workflow updated to use `make audit` as a blocking gate.
+- **CI quality gates** — Makefile `audit` target using `golangci-lint` (reads `.golangci.yml`) and `go test -race`. GitHub Actions workflow updated to use `make audit` as a blocking gate.
+- **DLQ audit tracker** (`internal/audit/`) — Record lifecycle tracking with RWMutex-protected state map, valid transition enforcement (PENDING→ACKED/REJECTED), duplicate detection, and reconciliation reporting for data loss detection.
+- **Hardening config** (`internal/config/`) — Centralized env-var-based configuration for timeouts, worker pools, DLQ, and circuit breaker thresholds with validation at startup.
+- **Pipeline stage decorators** (`internal/pipeline/`) — Composable `WithTimeout` and `Compose` decorators for pipeline stage wrapping. Context pre-cancellation check avoids unnecessary goroutine allocation.
+- **Serverless health checks** (`internal/handler/`) — EventBridge `__ping__` handler with pluggable `HealthChecker` interface returning provider connectivity status.
+- **CPU profiler** (`internal/handler/`) — Captures pprof CPU profiles on `__profile__` payloads and uploads to S3 with collision-resistant timestamped keys.
+- **Integration and fault injection tests** (`tests/integration/`) — Mixed-batch stream processing, DLQ router failures, circuit breaker state transitions, retry exhaustion, and context cancellation under fault injection.
+
+### Changed
+
+- **HTTP trigger retry** — `ExecuteHTTP` retries transient failures (5xx, network errors) with exponential backoff. Request body resets between attempts. Permanent errors (4xx) skip retry.
+- **Alert dispatcher circuit breaker** — Slack HTTP client wrapped with gobreaker to prevent cascade during Slack outages.
+- **Stream router correlation IDs** — Per-record correlation IDs injected into context for structured log tracing across services.
+- **Telemetry flush per invocation** — OTel providers flush (not shutdown) per Lambda invocation to survive environment reuse across warm starts.
 
 ### Dependencies
 

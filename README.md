@@ -274,7 +274,7 @@ interlock/
 ```bash
 make test            # Run all tests
 make build-lambda    # Build 6 Lambda handlers (linux/arm64)
-make lint            # go vet + staticcheck + go test -race
+make lint            # golangci-lint + go test -race
 make audit           # Full quality gate (same as lint, CI blocking)
 ```
 
