@@ -10,27 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  changes:
-    name: Detect changes
-    runs-on: ubuntu-latest
-    outputs:
-      go: ${{ steps.filter.outputs.go }}
-    steps:
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            go:
-              - '**.go'
-              - 'go.mod'
-              - 'go.sum'
-              - 'Makefile'
-              - '.github/workflows/ci.yml'
-
   quality-gate:
     name: Quality Gate
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
