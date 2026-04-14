@@ -64,7 +64,11 @@ func main() {
 	}
 
 	lambda.Start(func(ctx context.Context, event ilambda.StreamEvent) (events.DynamoDBEventResponse, error) {
-		defer tel.Flush(context.Background())
+		defer func() {
+			if err := tel.Flush(context.Background()); err != nil {
+				logger.Warn("telemetry flush failed", "error", err)
+			}
+		}()
 		return stream.HandleStreamEvent(ctx, deps, event)
 	})
 }

@@ -8,7 +8,7 @@ import (
 // HealthResult reports the outcome of a serverless health check invocation.
 type HealthResult struct {
 	Status    string            `json:"status"`
-	Checks   map[string]string `json:"checks"`
+	Checks    map[string]string `json:"checks"`
 	Timestamp time.Time         `json:"timestamp"`
 }
 
@@ -24,7 +24,7 @@ type HealthChecker interface {
 func HandlePing(ctx context.Context, checkers []HealthChecker) HealthResult {
 	result := HealthResult{
 		Status:    "healthy",
-		Checks:   make(map[string]string, len(checkers)),
+		Checks:    make(map[string]string, len(checkers)),
 		Timestamp: time.Now().UTC(),
 	}
 

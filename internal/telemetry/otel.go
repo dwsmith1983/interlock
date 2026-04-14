@@ -20,11 +20,11 @@ import (
 
 // Application metric names.
 const (
-	MetricRecordsProcessed   = "interlock.records.processed"
-	MetricStageDuration      = "interlock.stage.duration"
-	MetricRulesEvaluated     = "interlock.rules.evaluated"
-	MetricDLQRouted          = "interlock.dlq.routed"
-	MetricWorkerPoolActive   = "interlock.worker_pool.active"
+	MetricRecordsProcessed    = "interlock.records.processed"
+	MetricStageDuration       = "interlock.stage.duration"
+	MetricRulesEvaluated      = "interlock.rules.evaluated"
+	MetricDLQRouted           = "interlock.dlq.routed"
+	MetricWorkerPoolActive    = "interlock.worker_pool.active"
 	MetricCircuitBreakerState = "interlock.circuit_breaker.state"
 )
 

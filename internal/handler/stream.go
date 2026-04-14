@@ -49,11 +49,11 @@ func ProcessBatch(
 				logger.WarnContext(ctx, "failed to marshal original record", "event_id", rec.EventID, "error", marshalErr.Error())
 			}
 			dlqRecord := dlq.Record{
-				ID:            dlq.GenerateID(),
+				ID:             dlq.GenerateID(),
 				OriginalRecord: original,
-				ErrorMessage:  err.Error(),
-				ErrorType:     dlq.ErrorTypeUnknown,
-				CorrelationID: rec.EventID,
+				ErrorMessage:   err.Error(),
+				ErrorType:      dlq.ErrorTypeUnknown,
+				CorrelationID:  rec.EventID,
 			}
 
 			routeErr := router.Route(ctx, dlqRecord)

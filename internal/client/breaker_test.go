@@ -36,12 +36,12 @@ func tripConfig() client.BreakerConfig {
 }
 
 func TestBreakerClient_SuccessPassesThrough(t *testing.T) {
-	mock := &mockHTTP{resp: &http.Response{StatusCode: 200}}
+	mock := &mockHTTP{resp: &http.Response{StatusCode: http.StatusOK}}
 	bc := client.NewBreakerClient(mock, client.DefaultBreakerConfig("test"))
 
 	resp, err := bc.Do(&http.Request{})
 	require.NoError(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestBreakerClient_FailuresTrip(t *testing.T) {
@@ -64,7 +64,7 @@ func TestBreakerClient_OpenRejectsImmediately(t *testing.T) {
 
 	// Now open — should reject without calling inner
 	mock.err = nil
-	mock.resp = &http.Response{StatusCode: 200}
+	mock.resp = &http.Response{StatusCode: http.StatusOK}
 	_, err := bc.Do(&http.Request{})
 
 	require.Error(t, err)
@@ -84,15 +84,15 @@ func TestBreakerClient_HalfOpenAllowsLimited(t *testing.T) {
 
 	// Now in half-open, one success should close it
 	mock.err = nil
-	mock.resp = &http.Response{StatusCode: 200}
+	mock.resp = &http.Response{StatusCode: http.StatusOK}
 	resp, err := bc.Do(&http.Request{})
 	require.NoError(t, err)
-	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, gobreaker.StateClosed, bc.State())
 }
 
 func TestBreakerClient_StateReflectsCurrent(t *testing.T) {
-	mock := &mockHTTP{resp: &http.Response{StatusCode: 200}}
+	mock := &mockHTTP{resp: &http.Response{StatusCode: http.StatusOK}}
 	bc := client.NewBreakerClient(mock, client.DefaultBreakerConfig("test"))
 
 	assert.Equal(t, gobreaker.StateClosed, bc.State())

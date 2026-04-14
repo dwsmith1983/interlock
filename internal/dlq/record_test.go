@@ -4,9 +4,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/dwsmith1983/interlock/internal/dlq"
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
-	"github.com/dwsmith1983/interlock/internal/dlq"
 )
 
 func TestGenerateID_ConcurrentUniquenessAndOrdering(t *testing.T) {

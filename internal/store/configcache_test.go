@@ -262,6 +262,7 @@ func TestConfigCache_Get_SinglePipeline(t *testing.T) {
 	}
 	if cfg == nil {
 		t.Fatal("expected non-nil config")
+		return
 	}
 	if cfg.Pipeline.Owner != "found-it" {
 		t.Errorf("owner = %q, want %q", cfg.Pipeline.Owner, "found-it")
@@ -450,6 +451,7 @@ func TestConfigCache_GetAll_ReturnsDeepCopyNested(t *testing.T) {
 	cfg1 := configs1["nested-pipe"]
 	if cfg1 == nil {
 		t.Fatal("expected nested-pipe config, got nil")
+		return
 	}
 
 	// Mutate nested map (simulates what InjectDateArgs does).
@@ -468,6 +470,7 @@ func TestConfigCache_GetAll_ReturnsDeepCopyNested(t *testing.T) {
 	cfg2 := configs2["nested-pipe"]
 	if cfg2 == nil {
 		t.Fatal("expected nested-pipe config on second call, got nil")
+		return
 	}
 
 	// Verify Job.Config map was not corrupted.

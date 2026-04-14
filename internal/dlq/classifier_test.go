@@ -6,8 +6,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/dwsmith1983/interlock/internal/dlq"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestClassify_ErrorScenarios(t *testing.T) {

@@ -130,6 +130,7 @@ func TestGetLatestJobEvent_Found(t *testing.T) {
 	}
 	if rec == nil {
 		t.Fatal("expected non-nil record")
+		return
 	}
 	if rec.RunID != "run-new" {
 		t.Errorf("RunID = %q, want %q", rec.RunID, "run-new")

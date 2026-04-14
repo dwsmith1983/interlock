@@ -91,7 +91,11 @@ func main() {
 	}
 
 	lambda.Start(func(ctx context.Context, input ilambda.OrchestratorInput) (ilambda.OrchestratorOutput, error) {
-		defer tel.Flush(context.Background())
+		defer func() {
+			if err := tel.Flush(context.Background()); err != nil {
+				logger.Warn("telemetry flush failed", "error", err)
+			}
+		}()
 		return orchestrator.HandleOrchestrator(ctx, deps, input)
 	})
 }

@@ -83,13 +83,13 @@ func TestFaultInjection_CircuitBreakerOpens(t *testing.T) {
 		Interval:    0,
 		Timeout:     1 * time.Second,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			return counts.ConsecutiveFailures >= uint32(tripAfter)
+			return counts.ConsecutiveFailures >= tripAfter
 		},
 	}
 	bc := client.NewBreakerClient(inner, cfg)
 
 	// Drive the breaker to open state with tripAfter failures.
-	req, _ := http.NewRequest(http.MethodGet, "http://localhost/test", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://localhost/test", http.NoBody)
 	for range tripAfter {
 		_, err := bc.Do(req)
 		require.Error(t, err)

@@ -5,10 +5,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/dwsmith1983/interlock/internal/dlq"
 	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/dwsmith1983/interlock/internal/dlq"
 )
 
 func TestWALManager_CrashRecovery(t *testing.T) {
@@ -38,14 +38,14 @@ func TestWALManager_AckAndRejectUpdatesPending(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		id := dlq.GenerateID()
 		ids = append(ids, id)
-		manager.Route(ctx, dlq.Record{ID: id})
+		_ = manager.Route(ctx, dlq.Record{ID: id})
 	}
 
 	for i := 0; i < 50; i++ {
-		manager.Ack(ctx, ids[i])
+		_ = manager.Ack(ctx, ids[i])
 	}
 	for i := 50; i < 80; i++ {
-		manager.Reject(ctx, ids[i])
+		_ = manager.Reject(ctx, ids[i])
 	}
 
 	assert.Equal(t, int64(20), manager.Pending(), "Pending should be 20 after 50 acks and 30 rejects")
