@@ -86,6 +86,24 @@ func NewTelemetry(ctx context.Context, serviceName string) (*Telemetry, func(), 
 	return &Telemetry{tp: tp, mp: mp}, shutdown, nil
 }
 
+// Flush forces export of pending spans and metrics without shutting down.
+func (t *Telemetry) Flush(ctx context.Context) error {
+	// Only SDK providers have ForceFlush; noop providers don't need it.
+	type flusher interface{ ForceFlush(context.Context) error }
+	var errs []error
+	if f, ok := t.tp.(flusher); ok {
+		if err := f.ForceFlush(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if f, ok := t.mp.(flusher); ok {
+		if err := f.ForceFlush(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // Tracer returns a named tracer from the provider.
 func (t *Telemetry) Tracer(name string) trace.Tracer {
 	return t.tp.Tracer(name)

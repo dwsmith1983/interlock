@@ -30,6 +30,9 @@ func DefaultRetryConfig() RetryConfig {
 func Retry(ctx context.Context, cfg RetryConfig, fn func() error) error {
 	var lastErr error
 	for attempt := range cfg.MaxRetries + 1 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		lastErr = fn()
 		if lastErr == nil {
 			return nil

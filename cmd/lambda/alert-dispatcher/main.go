@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
+	"github.com/dwsmith1983/interlock/internal/client"
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/alert"
 	"github.com/dwsmith1983/interlock/internal/store"
@@ -51,7 +52,7 @@ func main() {
 		SlackBotToken:  os.Getenv("SLACK_BOT_TOKEN"),
 		SlackChannelID: os.Getenv("SLACK_CHANNEL_ID"),
 		EventsTTLDays:  ttl,
-		HTTPClient:     &http.Client{Timeout: 10 * time.Second},
+		HTTPClient:     client.NewBreakerClient(&http.Client{Timeout: 10 * time.Second}, client.DefaultBreakerConfig("slack-api")),
 		Logger:         logger,
 	}
 
