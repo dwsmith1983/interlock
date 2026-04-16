@@ -34,7 +34,7 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 		}
 	}
 
-	if d.Scheduler != nil {
+	if d.Scheduler != nil && !lambda.SkipScheduler() {
 		for _, suffix := range []string{"warning", "breach"} {
 			name := SLAScheduleName(input.PipelineID, input.ScheduleID, input.Date, suffix)
 			_, err := d.Scheduler.DeleteSchedule(ctx, &scheduler.DeleteScheduleInput{
@@ -48,6 +48,9 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 				}
 			}
 		}
+	} else if lambda.SkipScheduler() {
+		d.Logger.InfoContext(ctx, "SKIP_SCHEDULER set, no-op DeleteSchedule for SLA cancel",
+			"pipeline", input.PipelineID, "date", input.Date)
 	}
 
 	now := d.Now().UTC()

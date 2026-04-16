@@ -21,6 +21,12 @@ func handleSLASchedule(ctx context.Context, d *lambda.Deps, input lambda.SLAMoni
 		return calc, nil
 	}
 
+	if lambda.SkipScheduler() {
+		d.Logger.InfoContext(ctx, "SKIP_SCHEDULER set, no-op CreateSchedule for SLA",
+			"pipeline", input.PipelineID, "warningAt", calc.WarningAt, "breachAt", calc.BreachAt)
+		return calc, nil
+	}
+
 	if err := lambda.CreateSLASchedules(ctx, d, input.PipelineID, input.ScheduleID, input.Date, calc, false); err != nil {
 		return lambda.SLAMonitorOutput{}, err
 	}
