@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -14,6 +15,15 @@ import (
 	pkgsla "github.com/dwsmith1983/interlock/pkg/sla"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
+
+// SkipScheduler reports whether the EventBridge Scheduler integration is
+// disabled via the SKIP_SCHEDULER=true environment variable. Used for
+// environments without EventBridge Scheduler support (e.g. LocalStack
+// Community). When true, all scheduler.* calls are treated as successful
+// no-ops so the rest of the SLA logic continues unaffected.
+func SkipScheduler() bool {
+	return os.Getenv("SKIP_SCHEDULER") == "true"
+}
 
 // Deprecated: Use sla.HandleSLAMonitor instead. Retained for test compatibility.
 func HandleSLAMonitor(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMonitorOutput, error) {
@@ -168,6 +178,12 @@ func handleSLASchedule(ctx context.Context, d *Deps, input SLAMonitorInput) (SLA
 		return calc, nil
 	}
 
+	if SkipScheduler() {
+		d.Logger.InfoContext(ctx, "SKIP_SCHEDULER set, no-op CreateSchedule for SLA",
+			"pipeline", input.PipelineID, "warningAt", calc.WarningAt, "breachAt", calc.BreachAt)
+		return calc, nil
+	}
+
 	if err := createSLASchedules(ctx, d, input.PipelineID, input.ScheduleID, input.Date, calc, false); err != nil {
 		return SLAMonitorOutput{}, err
 	}
@@ -205,7 +221,7 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 		}
 	}
 
-	if d.Scheduler != nil {
+	if d.Scheduler != nil && !SkipScheduler() {
 		for _, suffix := range []string{"warning", "breach"} {
 			name := slaScheduleName(input.PipelineID, input.ScheduleID, input.Date, suffix)
 			_, err := d.Scheduler.DeleteSchedule(ctx, &scheduler.DeleteScheduleInput{
@@ -220,6 +236,9 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 				}
 			}
 		}
+	} else if SkipScheduler() {
+		d.Logger.InfoContext(ctx, "SKIP_SCHEDULER set, no-op DeleteSchedule for SLA cancel",
+			"pipeline", input.PipelineID, "date", input.Date)
 	}
 
 	// Determine final SLA status: binary MET or BREACH.
@@ -277,6 +296,12 @@ func slaScheduleName(pipelineID, scheduleID, date, suffix string) string {
 // createOneTimeSchedule creates a one-time EventBridge Scheduler entry that
 // invokes the SLA monitor Lambda at the given timestamp with the given payload.
 func createOneTimeSchedule(ctx context.Context, d *Deps, name, timestamp string, payload SLAMonitorInput) error {
+	if SkipScheduler() {
+		d.Logger.InfoContext(ctx, "SKIP_SCHEDULER set, no-op CreateSchedule",
+			"name", name, "timestamp", timestamp)
+		return nil
+	}
+
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)

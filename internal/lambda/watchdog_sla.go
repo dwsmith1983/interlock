@@ -18,6 +18,10 @@ func scheduleSLAAlerts(ctx context.Context, d *Deps) error {
 	if d.Scheduler == nil {
 		return nil
 	}
+	if SkipScheduler() {
+		d.Logger.Info("SKIP_SCHEDULER set, no-op proactive SLA scheduling")
+		return nil
+	}
 
 	configs, err := d.ConfigCache.GetAll(ctx)
 	if err != nil {
