@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **LocalStack Community deployment** (`deploy/localstack/`) — Build script (auto-detects host arch arm64/amd64), Python deploy script using boto3 to match production Terraform resource shape, and Makefile targets for full local E2E testing. Creates DynamoDB tables with streams, EventBridge custom bus + rules, SQS alert queue, 6 Lambda functions, Step Functions state machine, IAM dummy roles, and event source mappings. Enables running real interlock Lambdas locally against LocalStack for integration testing without AWS costs.
+- **`SKIP_SCHEDULER` env var** — `sla-monitor` Lambda no-ops EventBridge Scheduler calls (`CreateSchedule`, `DeleteSchedule`) when `SKIP_SCHEDULER=true`. Allows deployment to LocalStack Community (Scheduler is Pro-only) while preserving production behavior. Guards applied in `internal/lambda/sla_monitor.go`, `internal/lambda/sla/`, and `internal/lambda/watchdog/`.
 - **Dead-letter queue subsystem** (`internal/dlq/`) — Typed error classification (transient vs permanent), SQS routing with slog fallback when SQS is unreachable, ULID-based record IDs, and per-record metrics counter interface. Includes no-op router for testing and dry-run modes.
 - **Stream batch handler** (`internal/handler/`) — Implements AWS `ReportBatchItemFailures` for partial batch processing. Uses `SequenceNumber` (not `EventID`) per AWS contract. Enforces accounting invariant: processed + dlq_routed + batch_failures == total.
 - **Lambda context middleware** (`internal/aws/lambda/`) — Derives `context.WithTimeout` from Lambda's remaining execution time minus a configurable safety buffer (default 500ms). Floors at 50ms to prevent zero/negative timeouts.

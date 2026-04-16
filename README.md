@@ -278,6 +278,16 @@ make lint            # golangci-lint + go test -race
 make audit           # Full quality gate (same as lint, CI blocking)
 ```
 
+### Local Development with LocalStack
+
+Run the full Interlock stack locally against [LocalStack](https://localstack.cloud/) Community — real Lambdas, real DynamoDB streams, real Step Functions, real EventBridge — without an AWS account. EventBridge Scheduler is skipped (Pro-only feature); the `sla-monitor` Lambda no-ops scheduler calls when `SKIP_SCHEDULER=true`, which the deploy sets by default. Prerequisites: Docker, Go 1.25+, Python 3.11+, and `boto3` (`pip install -r deploy/localstack/requirements.txt`).
+
+```bash
+make -f deploy/localstack/Makefile localstack-all
+```
+
+See [`deploy/localstack/README.md`](deploy/localstack/README.md) for the full resource map, teardown commands, and smoke-test details.
+
 ### Observability
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` to enable OpenTelemetry trace and metric export (e.g., to Jaeger or Grafana). When unset, telemetry gracefully degrades to no-op providers with zero overhead.

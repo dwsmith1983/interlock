@@ -291,7 +291,7 @@ def ensure_alert_queue() -> tuple[str, str]:
         if e.response["Error"]["Code"] in (
             "QueueAlreadyExists",
             "ResourceAlreadyExistsException",
-        ) or "exists" in str(e).lower():
+        ):
             queue_url = sqs.get_queue_url(QueueName=ALERT_QUEUE_NAME)["QueueUrl"]
             print(f"  [sqs] queue {ALERT_QUEUE_NAME} already exists")
         else:
@@ -431,11 +431,20 @@ def _lambda_env(handler: str, sfn_arn: str | None) -> dict[str, str]:
 
     if handler == "sla-monitor":
         # EventBridge Scheduler is Pro-only; tell the Lambda to no-op
-        # schedule-creation paths.
+        # schedule-creation paths. Dummy ARNs satisfy the envcheck guard so
+        # the Lambda can boot against LocalStack Community.
         base["SKIP_SCHEDULER"] = "true"
+        base["SLA_MONITOR_ARN"] = (
+            f"arn:aws:lambda:{REGION}:{DUMMY_ACCOUNT_ID}:function:{PREFIX}-sla-monitor"
+        )
+        base["SCHEDULER_ROLE_ARN"] = (
+            f"arn:aws:iam::{DUMMY_ACCOUNT_ID}:role/dummy-scheduler-role"
+        )
+        base["SCHEDULER_GROUP_NAME"] = "default"
     if handler == "alert-dispatcher":
-        # Optional; not required for smoke test
-        base.setdefault("SLACK_CHANNEL_ID", "")
+        # envcheck.go requires SLACK_CHANNEL_ID to be non-empty; use a dummy
+        # value for LocalStack. Real deployments get this from Terraform vars.
+        base["SLACK_CHANNEL_ID"] = "C000000LOCAL"
         base.setdefault("SLACK_BOT_TOKEN", "")
         base.setdefault("SLACK_SECRET_ARN", "")
 
@@ -571,17 +580,22 @@ def ensure_sqs_mapping(queue_arn: str, function_name: str) -> None:
 def delete_all_mappings() -> None:
     lam = _client("lambda")
     try:
-        resp = lam.list_event_source_mappings()
+        paginator = lam.get_paginator("list_event_source_mappings")
+        pages = paginator.paginate()
     except ClientError:
         return
-    for m in resp.get("EventSourceMappings", []):
-        fn = m.get("FunctionArn", "")
-        if PREFIX in fn:
-            try:
-                lam.delete_event_source_mapping(UUID=m["UUID"])
-                print(f"  [esm] deleted {m['UUID']}")
-            except ClientError:
-                pass
+    try:
+        for page in pages:
+            for m in page.get("EventSourceMappings", []):
+                fn = m.get("FunctionArn", "")
+                if PREFIX in fn:
+                    try:
+                        lam.delete_event_source_mapping(UUID=m["UUID"])
+                        print(f"  [esm] deleted {m['UUID']}")
+                    except ClientError:
+                        pass
+    except ClientError:
+        return
 
 
 # ---------------------------------------------------------------------------
