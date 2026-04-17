@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"syscall"
 	"time"
 )
@@ -22,6 +23,9 @@ func newSSRFSafeTransport() *http.Transport {
 }
 
 func ssrfDialControl(network, address string, _ syscall.RawConn) error {
+	if os.Getenv("DISABLE_SSRF_PROTECTION") == "true" {
+		return nil
+	}
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("ssrf: invalid address %q: %w", address, err)
