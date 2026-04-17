@@ -377,8 +377,58 @@ def ensure_event_rule_to_alerts(alert_queue_arn: str) -> None:
     print(f"  [events] rule {RULE_ALERT_EVENTS} -> alert SQS")
 
 
+RULE_WATCHDOG_SCHEDULE = f"{PREFIX}-watchdog-schedule"
+
+
+def ensure_watchdog_schedule(watchdog_arn: str) -> None:
+    """Create a 1-minute EventBridge schedule rule for the watchdog Lambda.
+
+    This replaces the production Terraform ``aws_cloudwatch_event_rule`` for
+    the watchdog. Running every minute in LocalStack ensures the watchdog
+    fires during the E2E test window.
+    """
+    events = _client("events")
+    events.put_rule(
+        Name=RULE_WATCHDOG_SCHEDULE,
+        ScheduleExpression="rate(1 minute)",
+        State="ENABLED",
+        Description="Invoke watchdog Lambda every minute for local E2E testing",
+    )
+    events.put_targets(
+        Rule=RULE_WATCHDOG_SCHEDULE,
+        Targets=[{"Id": "watchdog", "Arn": watchdog_arn}],
+    )
+    # Grant EventBridge permission to invoke the Lambda
+    lam = _client("lambda")
+    try:
+        lam.add_permission(
+            FunctionName=f"{PREFIX}-watchdog",
+            StatementId="watchdog-schedule",
+            Action="lambda:InvokeFunction",
+            Principal="events.amazonaws.com",
+        )
+    except ClientError:
+        pass  # Permission may already exist
+    print(f"  [events] watchdog schedule rule (rate 1 min)")
+
+
 def delete_event_resources() -> None:
     events = _client("events")
+    # Clean up watchdog schedule (default bus, not custom)
+    for rule_name_default_bus in (RULE_WATCHDOG_SCHEDULE,):
+        try:
+            targets = events.list_targets_by_rule(Rule=rule_name_default_bus)
+            ids = [t["Id"] for t in targets.get("Targets", [])]
+            if ids:
+                events.remove_targets(Rule=rule_name_default_bus, Ids=ids)
+            events.delete_rule(Name=rule_name_default_bus)
+            print(f"  [events] deleted rule {rule_name_default_bus}")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ResourceNotFoundException":
+                pass
+            else:
+                raise
+
     for rule_name in (RULE_ALL_EVENTS, RULE_ALERT_EVENTS):
         try:
             targets = events.list_targets_by_rule(Rule=rule_name, EventBusName=EVENT_BUS_NAME)
@@ -716,6 +766,7 @@ def cmd_deploy() -> None:
     print("--> EventBridge rules")
     ensure_event_rule_to_sink(lambda_arns["event-sink"])
     ensure_event_rule_to_alerts(alert_queue_arn)
+    ensure_watchdog_schedule(lambda_arns["watchdog"])
 
     print("--> Event source mappings")
     ensure_stream_mapping(stream_arns[TABLE_CONTROL], f"{PREFIX}-stream-router")
