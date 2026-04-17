@@ -429,6 +429,11 @@ def _lambda_env(handler: str, sfn_arn: str | None) -> dict[str, str]:
         base["STATE_MACHINE_ARN"] = sfn_arn
     base["SFN_TIMEOUT_SECONDS"] = "3600"
 
+    if handler == "orchestrator":
+        # Allow HTTP triggers to reach Docker-internal addresses (mock-job-server).
+        # Production never sets this; SSRF protection stays active in real AWS.
+        base["DISABLE_SSRF_PROTECTION"] = "true"
+
     if handler == "sla-monitor":
         # EventBridge Scheduler is Pro-only; tell the Lambda to no-op
         # schedule-creation paths. Dummy ARNs satisfy the envcheck guard so
