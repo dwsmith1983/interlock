@@ -1,8 +1,8 @@
 # Interlock
 
-STAMP-based safety framework for data pipeline reliability. Interlock prevents pipelines from executing when preconditions aren't safe — like a physical interlock mechanism.
+STAMP-based safety controller for data pipeline reliability. Interlock prevents pipelines from executing when preconditions aren't safe — like a physical interlock mechanism. Sensors report readiness, a controller evaluates safety constraints, and actuators trigger jobs only when it's safe.
 
-The framework applies [Leveson's Systems-Theoretic Accident Model](https://mitpress.mit.edu/9780262016629/engineering-a-safer-world/) to data engineering: pipelines have **declarative validation rules** (feedback), **sensor data in DynamoDB** (process models), and **conditional execution** (safe control actions).
+Built on [Leveson's Systems-Theoretic Accident Model](https://mitpress.mit.edu/9780262016629/engineering-a-safer-world/) (STAMP): pipelines have **declarative validation rules** (safety constraints), **sensor data in DynamoDB** (process models), and **conditional execution** (safe control actions).
 
 ## What Interlock Is (and Isn't)
 
@@ -33,6 +33,21 @@ Sensor data → DynamoDB Stream → stream-router Lambda → Step Functions
                                event-sink          SQS alert queue  CloudWatch
                                (→ events table)    (→ alert-dispatcher → Slack)
 ```
+
+### Safety Model (STAMP)
+
+Interlock maps directly to STAMP's control-theoretic safety structure. Each component has a defined role in the feedback loop that prevents unsafe pipeline execution:
+
+| STAMP Concept | Interlock Component | Role |
+|---------------|---------------------|------|
+| Controlled Process | User's pipeline or job | The workload being safeguarded (Glue, EMR, Airflow DAG, Databricks, etc.) |
+| Actuator | Trigger | Fires the job via REST call, AWS SDK, or subprocess — only when the controller says go |
+| Controller | orchestrator Lambda (coordinated by Step Functions) | Evaluates validation rules against sensor state; decides whether to trigger |
+| Sensor | DynamoDB sensor records | External processes write readiness signals (status, counts, timestamps, lag) to the control table |
+| Feedback | Post-run drift detection, job logs, SLA monitoring | Monitors completed jobs for late data, source drift, SLA breaches, and silent failures |
+| Safety Constraint | Validation rules (declarative YAML) | The preconditions that must be satisfied before the actuator fires |
+
+The safety loop: sensors report the current state of upstream dependencies → the controller evaluates declarative constraints against that state → the actuator triggers the job only when all constraints pass → feedback mechanisms monitor the completed job and detect post-completion issues (drift, late data, SLA breaches) that may require a re-run.
 
 ### Declarative Validation Rules
 
@@ -205,6 +220,114 @@ No Step Function executions, no job triggers, no rerun requests. Remove `dryRun:
 | `step-function` | AWS SDK | AWS Step Functions executions |
 | `databricks` | HTTP (REST 2.1) | Databricks job runs |
 | `lambda` | AWS SDK | Direct Lambda invocation |
+
+## Pipeline Patterns
+
+The sensor model is Interlock's universal interface. Whether your pipeline is batch, streaming rollup, ad-hoc, or depends on other pipelines — the pattern is the same: write sensor data to the control table, define validation rules, and let Interlock decide when it's safe to run.
+
+The examples below show the relevant sections. A complete config also requires `pipeline:`, `job:`, and optionally `postRun:` and `dryRun:` fields — see [Pipeline Configuration](#pipeline-configuration) for a full example.
+
+### Batch Precondition
+
+Wait for an upstream job to report completion and a minimum row count before triggering a downstream ETL:
+
+```yaml
+schedule:
+  cron: "0 8 * * *"
+  evaluation:
+    window: 1h
+    interval: 5m
+validation:
+  trigger: "ALL"
+  rules:
+    - key: upstream-complete
+      check: equals
+      field: status
+      value: ready
+    - key: row-count
+      check: gte
+      field: count
+      value: 1000
+```
+
+### Streaming Rollup Safety
+
+A Kafka consumer processes transactions throughout the day. At close-of-business, a batch rollup must only run when the stream has caught up. The consumer writes lag and record count sensors to the control table:
+
+```yaml
+# schedule.trigger starts evaluation when lag drops below threshold;
+# validation.rules re-check at each interval until the window closes
+schedule:
+  trigger:
+    key: consumer-lag
+    check: lte
+    field: lag_seconds
+    value: 30
+  evaluation:
+    window: 30m
+    interval: 2m
+validation:
+  trigger: "ALL"
+  rules:
+    - key: consumer-lag
+      check: lte
+      field: lag_seconds
+      value: 30
+    - key: record-count
+      check: gte
+      field: count
+      value: 5000
+    - key: cutoff-status
+      check: equals
+      field: status
+      value: closed
+```
+
+### Cross-Pipeline Dependency
+
+Upstream pipeline handlers write success sensors directly to the downstream pipeline's control table entry (`PK = PIPELINE#<downstream-id>`). No special cross-pipeline machinery — it's just a sensor write to the right partition key:
+
+```yaml
+# silver-daily pipeline — waits for all 24 hourly runs to complete
+schedule:
+  trigger:
+    key: daily-status
+    check: equals
+    field: all_hours_complete
+    value: true
+validation:
+  trigger: "ALL"
+  rules:
+    - key: daily-status
+      check: equals
+      field: all_hours_complete
+      value: true
+```
+
+See [interlock-aws-example](https://github.com/dwsmith1983/interlock-aws-example) for the full bronze → silver-hourly → silver-daily dependency chain.
+
+### Ad-Hoc / Irregular Schedule
+
+For pipelines that run on specific business dates (month-end close, quarterly reporting) rather than a fixed cron. Use an inclusion calendar with a relative SLA measured from first sensor arrival:
+
+```yaml
+schedule:
+  include:
+    dates:
+      - "2026-01-31"
+      - "2026-02-28"
+      - "2026-03-31"
+  trigger:
+    key: month-end-ready
+    check: equals
+    field: status
+    value: ready
+  evaluation:
+    window: 8h
+    interval: 10m
+sla:
+  maxDuration: 4h
+```
 
 ## Deployment
 
