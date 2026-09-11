@@ -46,8 +46,9 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 
 	// Non-polling triggers (http, command, lambda) complete synchronously
 	// during Execute. Write success to joblog immediately and set a sentinel
-	// runId so the Step Functions CheckJob JSONPath resolves.
-	if metadata == nil {
+	// runId so the Step Functions CheckJob JSONPath resolves. An empty
+	// (non-nil) map carries no run identity either, so it takes the same path.
+	if len(metadata) == 0 {
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
 			types.JobEventSuccess, "sync", 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type)); err != nil {
 			d.Logger.Warn("failed to write sync job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
@@ -92,19 +93,10 @@ func BuildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 }
 
 // ExtractRunID searches trigger metadata for a recognisable run identifier.
+// The key list is owned by the parent lambda package so the two orchestrator
+// implementations cannot drift apart.
 func ExtractRunID(metadata map[string]interface{}) string {
-	if metadata == nil {
-		return ""
-	}
-	// Priority order of common identifier keys across trigger types.
-	for _, key := range []string{"runId", "jobRunId", "glue_job_run_id", "executionArn", "stepId", "dagRunId"} {
-		if v, ok := metadata[key]; ok {
-			if s, ok := v.(string); ok && s != "" {
-				return s
-			}
-		}
-	}
-	return ""
+	return lambda.ExtractRunID(metadata)
 }
 
 // InjectDateArgs parses the execution date and injects --par_day (and --par_hour
