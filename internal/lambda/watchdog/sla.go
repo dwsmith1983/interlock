@@ -45,13 +45,7 @@ func scheduleSLAAlerts(ctx context.Context, d *lambda.Deps) error {
 		scheduleID := lambda.ResolveScheduleID(cfg)
 		date := resolveWatchdogSLADate(cfg, now)
 
-		slaDate := date
-		if cfg.Schedule.Cron == "" && !strings.HasPrefix(cfg.SLA.Deadline, ":") {
-			t, err := time.Parse("2006-01-02", date)
-			if err == nil {
-				slaDate = t.AddDate(0, 0, 1).Format("2006-01-02")
-			}
-		}
+		slaDate := lambda.ResolveSLADate(cfg, date)
 
 		tr, err := d.Store.GetTrigger(ctx, id, scheduleID, date)
 		switch {
