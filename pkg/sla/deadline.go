@@ -35,13 +35,19 @@ func CalculateAbsoluteDeadline(date, deadline, expectedDuration, timezone string
 
 	now = now.In(loc)
 
-	// Parse the execution date.
+	// Parse the execution date. hasExplicitDate records whether the caller
+	// supplied a parseable execution date. When it did, the deadline is
+	// anchored to that date and must NOT roll forward: rolling forward makes a
+	// run that finished after its deadline look like it met the SLA, makes the
+	// reconcile breach branch unreachable, and schedules breach alerts a day late.
 	baseDate := now
 	baseHour := -1
+	hasExplicitDate := false
 	if date != "" {
 		datePart, hourPart := parseExecutionDate(date)
 		parsed, parseErr := time.Parse("2006-01-02", datePart)
 		if parseErr == nil {
+			hasExplicitDate = true
 			if hourPart != "" {
 				h := 0
 				if hVal, atoiErr := strconv.Atoi(hourPart); atoiErr == nil {
@@ -67,8 +73,10 @@ func CalculateAbsoluteDeadline(date, deadline, expectedDuration, timezone string
 		breach = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
 			hour, dl.Minute(), 0, 0, loc)
 		if baseHour >= 0 {
+			// Composite date "YYYY-MM-DDThh": data for hour hh completes in hh+1.
 			breach = breach.Add(time.Hour)
-		} else if breach.Before(now) {
+		} else if !hasExplicitDate && breach.Before(now) {
+			// No execution date: anchor to the next occurrence after now.
 			breach = breach.Add(time.Hour)
 		}
 	} else {
@@ -78,8 +86,11 @@ func CalculateAbsoluteDeadline(date, deadline, expectedDuration, timezone string
 		}
 		breach = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
 			dl.Hour(), dl.Minute(), 0, 0, loc)
-		if breach.Before(now) {
-			breach = breach.Add(24 * time.Hour)
+		if !hasExplicitDate && breach.Before(now) {
+			// No execution date: anchor to the next occurrence after now.
+			// AddDate keeps the wall-clock time across DST transitions;
+			// Add(24*time.Hour) would shift it by an hour.
+			breach = breach.AddDate(0, 0, 1)
 		}
 	}
 

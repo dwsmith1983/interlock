@@ -159,8 +159,9 @@ func checkTriggerDeadlines(ctx context.Context, d *Deps) error {
 // resolveWatchdogSLADate determines the execution date for SLA scheduling.
 //   - Hourly pipelines (relative deadline like ":30"): previous hour composite
 //     date, e.g. "2026-03-05T13" when the clock is 14:xx.
-//   - Daily pipelines (absolute deadline like "02:00"): today's date,
-//     so handleSLACalculate rolls the deadline forward to the next occurrence.
+//   - Daily pipelines (absolute deadline like "02:00"): today's date. The
+//     deadline is anchored to that date; sensor-triggered daily pipelines get
+//     slaDate shifted to T+1 below because their data completes the next day.
 func resolveWatchdogSLADate(cfg *types.PipelineConfig, now time.Time) string {
 	if strings.HasPrefix(cfg.SLA.Deadline, ":") {
 		prev := now.Add(-time.Hour)
