@@ -18,14 +18,15 @@ import (
 )
 
 // configItem builds the control-table row that store.GetConfig expects.
-// pipelineID mirrors store.GetConfig(ctx, pipelineID) for readability at
-// each call site; every test in this file uses pipeline "p".
-//
-//nolint:unparam // always called with "p"
-func configItem(pipelineID string, cfg types.PipelineConfig) map[string]ddbtypes.AttributeValue {
-	data, _ := json.Marshal(cfg)
+// Every test in this file uses pipeline "p".
+func configItem(t *testing.T, cfg types.PipelineConfig) map[string]ddbtypes.AttributeValue {
+	t.Helper()
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
 	return map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
 		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
 		"config": &ddbtypes.AttributeValueMemberS{Value: string(data)},
 	}
@@ -86,7 +87,7 @@ func TestEvaluate_AlwaysEmitsStatus(t *testing.T) {
 			name: "GetAllSensors failure",
 			fake: &storetest.FakeDynamo{
 				GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
-					return &dynamodb.GetItemOutput{Item: configItem("p", goodCfg)}, nil
+					return &dynamodb.GetItemOutput{Item: configItem(t, goodCfg)}, nil
 				},
 				QueryFn: func(context.Context, *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
 					return nil, errors.New("dynamodb: request limit exceeded")
@@ -99,7 +100,7 @@ func TestEvaluate_AlwaysEmitsStatus(t *testing.T) {
 			name: "rules not satisfied",
 			fake: &storetest.FakeDynamo{
 				GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
-					return &dynamodb.GetItemOutput{Item: configItem("p", goodCfg)}, nil
+					return &dynamodb.GetItemOutput{Item: configItem(t, goodCfg)}, nil
 				},
 			},
 			wantStatus: "not_ready",
@@ -172,7 +173,7 @@ func TestTrigger_FailuresReturnLambdaError(t *testing.T) {
 			name: "unsupported trigger type",
 			fake: &storetest.FakeDynamo{
 				GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
-					return &dynamodb.GetItemOutput{Item: configItem("p", badTypeCfg)}, nil
+					return &dynamodb.GetItemOutput{Item: configItem(t, badTypeCfg)}, nil
 				},
 			},
 			wantErrSub: "unsupported trigger type",
@@ -249,7 +250,7 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 			cfg := tt.cfg
 			fake := &storetest.FakeDynamo{
 				GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
-					return &dynamodb.GetItemOutput{Item: configItem("p", cfg)}, nil
+					return &dynamodb.GetItemOutput{Item: configItem(t, cfg)}, nil
 				},
 			}
 			d := testDeps(fake)
