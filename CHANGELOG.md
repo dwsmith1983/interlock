@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-12
+
 ### Added
 
 - **LocalStack Community deployment** (`deploy/localstack/`) — Build script (auto-detects host arch arm64/amd64), Python deploy script using boto3 to match production Terraform resource shape, and Makefile targets for full local E2E testing. Creates DynamoDB tables with streams, EventBridge custom bus + rules, SQS alert queue, 6 Lambda functions, Step Functions state machine, IAM dummy roles, and event source mappings. Enables running real interlock Lambdas locally against LocalStack for integration testing without AWS costs.
@@ -507,6 +509,7 @@ Initial release of the Interlock STAMP-based safety framework for data pipeline 
 
 Released under the [Elastic License 2.0](LICENSE).
 
+[0.10.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.10.0
 [0.9.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.9.0
 [0.8.0]: https://github.com/dwsmith1983/interlock/releases/tag/v0.8.0
 [0.7.4]: https://github.com/dwsmith1983/interlock/releases/tag/v0.7.4
