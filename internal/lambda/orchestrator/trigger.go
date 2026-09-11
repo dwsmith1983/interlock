@@ -13,17 +13,24 @@ import (
 // handleTrigger builds a TriggerConfig from the JobConfig, executes it,
 // publishes JOB_TRIGGERED, and returns the run ID.
 func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
+	// Configuration failures return a Lambda error rather than a partial
+	// result: the HasTriggerResult Choice tests IsPresent on $.triggerResult,
+	// so a partial result would send the execution to CheckJob, which
+	// dereferences $.triggerResult.runId and raises an uncatchable
+	// States.Runtime while the trigger lock stays RUNNING. A Lambda error is
+	// retried by the Trigger state and then caught by TriggerRetryExhausted,
+	// which releases the lock.
 	cfg, err := d.Store.GetConfig(ctx, input.PipelineID)
 	if err != nil {
-		return lambda.OrchestratorOutput{Mode: "trigger", Error: err.Error()}, nil
+		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger get config: %w", err)
 	}
 	if cfg == nil {
-		return lambda.OrchestratorOutput{Mode: "trigger", Error: fmt.Sprintf("config not found for pipeline %q", input.PipelineID)}, nil
+		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger: config not found for pipeline %q", input.PipelineID)
 	}
 
 	triggerCfg, err := BuildTriggerConfig(cfg.Job)
 	if err != nil {
-		return lambda.OrchestratorOutput{Mode: "trigger", Error: fmt.Sprintf("build trigger config: %v", err)}, nil
+		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger build config: %w", err)
 	}
 	InjectDateArgs(&triggerCfg, input.Date)
 
