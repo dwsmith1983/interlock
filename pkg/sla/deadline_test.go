@@ -94,6 +94,62 @@ func TestCalculateAbsoluteDeadline(t *testing.T) {
 			now:              time.Date(2026, 3, 28, 6, 0, 0, 0, time.UTC),
 			wantErr:          true,
 		},
+		{
+			name:             "explicit date does not roll forward when deadline already passed",
+			date:             "2026-06-15",
+			deadline:         "14:00",
+			expectedDuration: "15m",
+			timezone:         "UTC",
+			now:              time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC),
+			wantBreach:       time.Date(2026, 6, 15, 14, 0, 0, 0, time.UTC),
+			wantWarning:      time.Date(2026, 6, 15, 13, 45, 0, 0, time.UTC),
+		},
+		{
+			name:             "explicit hourly date does not roll forward when deadline already passed",
+			date:             "2026-06-15T10",
+			deadline:         ":30",
+			expectedDuration: "10m",
+			timezone:         "UTC",
+			now:              time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC),
+			wantBreach:       time.Date(2026, 6, 15, 11, 30, 0, 0, time.UTC),
+			wantWarning:      time.Date(2026, 6, 15, 11, 20, 0, 0, time.UTC),
+		},
+		{
+			name:             "empty date rolls forward one day when deadline already passed",
+			date:             "",
+			deadline:         "08:00",
+			expectedDuration: "30m",
+			timezone:         "UTC",
+			now:              time.Date(2026, 3, 28, 9, 0, 0, 0, time.UTC),
+			wantBreach:       time.Date(2026, 3, 29, 8, 0, 0, 0, time.UTC),
+			wantWarning:      time.Date(2026, 3, 29, 7, 30, 0, 0, time.UTC),
+		},
+		{
+			name:             "empty date with minute deadline rolls forward one hour when passed",
+			date:             "",
+			deadline:         ":15",
+			expectedDuration: "5m",
+			timezone:         "UTC",
+			now:              time.Date(2026, 3, 28, 9, 30, 0, 0, time.UTC),
+			wantBreach:       time.Date(2026, 3, 28, 10, 15, 0, 0, time.UTC),
+			wantWarning:      time.Date(2026, 3, 28, 10, 10, 0, 0, time.UTC),
+		},
+		{
+			name:             "empty date roll-forward preserves wall clock across DST spring forward",
+			date:             "",
+			deadline:         "08:00",
+			expectedDuration: "30m",
+			timezone:         "America/New_York",
+			now:              time.Date(2026, 3, 7, 14, 0, 0, 0, time.UTC), // 09:00 EST
+			wantBreach: func() time.Time {
+				loc, _ := time.LoadLocation("America/New_York")
+				return time.Date(2026, 3, 8, 8, 0, 0, 0, loc)
+			}(),
+			wantWarning: func() time.Time {
+				loc, _ := time.LoadLocation("America/New_York")
+				return time.Date(2026, 3, 8, 7, 30, 0, 0, loc)
+			}(),
+		},
 	}
 
 	for _, tt := range tests {

@@ -70,7 +70,7 @@ type OrchestratorOutput struct {
 	Mode     string                 `json:"mode"`
 	Status   string                 `json:"status,omitempty"` // "passed" or "not_ready"
 	Results  interface{}            `json:"results,omitempty"`
-	RunID    string                 `json:"runId,omitempty"`
+	RunID    string                 `json:"runId"` // always emitted: SFN CheckJob dereferences $.triggerResult.runId
 	JobType  string                 `json:"jobType,omitempty"`
 	Event    string                 `json:"event,omitempty"` // success, fail, timeout
 	Error    string                 `json:"error,omitempty"`

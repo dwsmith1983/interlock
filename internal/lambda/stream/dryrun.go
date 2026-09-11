@@ -147,7 +147,7 @@ func publishDryRunSLAProjection(ctx context.Context, d *lambda.Deps, cfg *types.
 			Mode:             "calculate",
 			PipelineID:       pipelineID,
 			ScheduleID:       scheduleID,
-			Date:             date,
+			Date:             lambda.ResolveSLADate(cfg, date),
 			Deadline:         cfg.SLA.Deadline,
 			ExpectedDuration: cfg.SLA.ExpectedDuration,
 			Timezone:         cfg.SLA.Timezone,

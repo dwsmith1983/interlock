@@ -620,10 +620,15 @@ func TestWatchdog_ScheduleSLAAlerts_CreatesSchedules(t *testing.T) {
 	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
 	d.SchedulerGroupName = "interlock-sla"
 
-	// Use a daily absolute deadline ("02:00") — handleSLACalculate rolls it
-	// forward when past, so breach is always in the future regardless of
-	// when this test runs. Hourly ":MM" deadlines are time-dependent and
-	// would fail if the previous hour's breach is already past.
+	// Deterministic clock: 00:30 UTC is before the 02:00 SLA deadline, so the
+	// breach is in the future and proactive schedules are created. Without this
+	// the test depends on the wall clock (deadlines are no longer rolled
+	// forward a day when they have already passed).
+	fixedNow := time.Date(2026, 3, 10, 0, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+	d.StartedAt = fixedNow.Add(-24 * time.Hour)
+
+	// Daily absolute deadline ("02:00") with a fixed clock before the deadline.
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},
 		Schedule: types.ScheduleConfig{
@@ -688,6 +693,14 @@ func TestWatchdog_ScheduleSLAAlerts_ConflictSkips(t *testing.T) {
 	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
 	d.SchedulerGroupName = "interlock-sla"
 
+	// Deterministic clock: 00:30 UTC is before the 02:00 SLA deadline, so the
+	// breach is in the future and proactive schedules are created. Without this
+	// the test depends on the wall clock (deadlines are no longer rolled
+	// forward a day when they have already passed).
+	fixedNow := time.Date(2026, 3, 10, 0, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+	d.StartedAt = fixedNow.Add(-24 * time.Hour)
+
 	// Use daily deadline to avoid time-dependent breach-past skip.
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},
@@ -716,6 +729,14 @@ func TestWatchdog_ScheduleSLAAlerts_DailyPipeline(t *testing.T) {
 	d.SLAMonitorARN = "arn:aws:lambda:us-east-1:123:function:sla-monitor"
 	d.SchedulerRoleARN = "arn:aws:iam::123:role/scheduler-role"
 	d.SchedulerGroupName = "interlock-sla"
+
+	// Deterministic clock: 00:30 UTC is before the 02:00 SLA deadline, so the
+	// breach is in the future and proactive schedules are created. Without this
+	// the test depends on the wall clock (deadlines are no longer rolled
+	// forward a day when they have already passed).
+	fixedNow := time.Date(2026, 3, 10, 0, 30, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return fixedNow }
+	d.StartedAt = fixedNow.Add(-24 * time.Hour)
 
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "silver-cdr-day"},

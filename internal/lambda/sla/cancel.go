@@ -25,7 +25,21 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 			input.WarningAt = calc.WarningAt
 			input.BreachAt = calc.BreachAt
 		} else if input.Deadline != "" {
-			calc, err := handleSLACalculate(input, d.Now())
+			calcInput := input
+			if d.Store != nil {
+				cfg, cfgErr := d.Store.GetConfig(ctx, input.PipelineID)
+				switch {
+				case cfgErr != nil:
+					d.Logger.WarnContext(ctx, "config lookup failed in cancel, using unshifted SLA date",
+						"pipeline", input.PipelineID, "error", cfgErr)
+				case cfg == nil:
+					d.Logger.WarnContext(ctx, "config not found in cancel, using unshifted SLA date",
+						"pipeline", input.PipelineID)
+				default:
+					calcInput.Date = lambda.ResolveSLADate(cfg, input.Date)
+				}
+			}
+			calc, err := handleSLACalculate(calcInput, d.Now())
 			if err != nil {
 				return lambda.SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
 			}
@@ -63,7 +77,12 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 	}
 
 	publish := true
-	if d.Store != nil {
+	if input.WarningAt == "" && input.BreachAt == "" {
+		d.Logger.WarnContext(ctx, "no SLA deadline could be determined, skipping verdict",
+			"pipeline", input.PipelineID, "date", input.Date)
+		publish = false
+	}
+	if publish && d.Store != nil {
 		tr, err := d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
 		if err != nil {
 			d.Logger.WarnContext(ctx, "trigger lookup failed in cancel, proceeding with verdict",

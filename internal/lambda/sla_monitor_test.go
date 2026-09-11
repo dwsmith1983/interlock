@@ -68,7 +68,8 @@ func TestSLAMonitor_Calculate_Midnight(t *testing.T) {
 }
 
 func TestSLAMonitor_Calculate_ReturnsRFC3339(t *testing.T) {
-	d := &lambda.Deps{Logger: slog.Default()}
+	now := time.Date(2026, 6, 15, 6, 0, 0, 0, time.UTC)
+	d := &lambda.Deps{Logger: slog.Default(), NowFunc: func() time.Time { return now }}
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 		Mode:             "calculate",
 		PipelineID:       "gold-orders",
@@ -113,31 +114,49 @@ func TestSLAMonitor_Calculate_RelativeDeadline(t *testing.T) {
 	}
 }
 
-func TestSLAMonitor_Calculate_DailyDeadlineRollsForward(t *testing.T) {
-	// Daily pipeline with execution date in the past and a small-hour deadline.
-	// The SLA deadline "02:00" for date 2026-03-04 means 2026-03-05T02:00:00Z
-	// (next day) because 2026-03-04T02:00 is already past.
-	d := &lambda.Deps{Logger: slog.Default()}
+func TestSLAMonitor_Calculate_ExplicitDateDoesNotRollForward(t *testing.T) {
+	// A daily pipeline's SLA deadline is anchored to its execution date. Even
+	// when that deadline is already past, the breach time must stay on the
+	// execution date, otherwise a late run is scored against tomorrow's deadline.
+	now := time.Date(2026, 3, 5, 9, 0, 0, 0, time.UTC)
+	d := &lambda.Deps{Logger: slog.Default(), NowFunc: func() time.Time { return now }}
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 		Mode:             "calculate",
 		PipelineID:       "silver-cdr-day",
-		Date:             "2024-01-15",
+		Date:             "2026-03-04",
 		Deadline:         "02:00",
 		ExpectedDuration: "30m",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// breachAt should NOT be 2024-01-15T02:00:00Z (in the past).
-	// It should roll forward by 24h to 2024-01-16T02:00:00Z.
-	if out.BreachAt == "2024-01-15T02:00:00Z" {
-		t.Errorf("breachAt = %q, should have rolled forward past now", out.BreachAt)
+	if out.BreachAt != "2026-03-04T02:00:00Z" {
+		t.Errorf("breachAt = %q, want %q", out.BreachAt, "2026-03-04T02:00:00Z")
 	}
-	if out.BreachAt != "2024-01-16T02:00:00Z" {
-		t.Errorf("breachAt = %q, want %q", out.BreachAt, "2024-01-16T02:00:00Z")
+	if out.WarningAt != "2026-03-04T01:30:00Z" {
+		t.Errorf("warningAt = %q, want %q", out.WarningAt, "2026-03-04T01:30:00Z")
 	}
-	if out.WarningAt != "2024-01-16T01:30:00Z" {
-		t.Errorf("warningAt = %q, want %q", out.WarningAt, "2024-01-16T01:30:00Z")
+}
+
+func TestSLAMonitor_Calculate_NoDateRollsForward(t *testing.T) {
+	// With no execution date the deadline is anchored to "now", so a deadline
+	// that already passed today rolls forward to tomorrow.
+	now := time.Date(2026, 3, 5, 9, 0, 0, 0, time.UTC)
+	d := &lambda.Deps{Logger: slog.Default(), NowFunc: func() time.Time { return now }}
+	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
+		Mode:             "calculate",
+		PipelineID:       "silver-cdr-day",
+		Deadline:         "02:00",
+		ExpectedDuration: "30m",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.BreachAt != "2026-03-06T02:00:00Z" {
+		t.Errorf("breachAt = %q, want %q", out.BreachAt, "2026-03-06T02:00:00Z")
+	}
+	if out.WarningAt != "2026-03-06T01:30:00Z" {
+		t.Errorf("warningAt = %q, want %q", out.WarningAt, "2026-03-06T01:30:00Z")
 	}
 }
 
@@ -492,6 +511,7 @@ func TestSLAMonitor_Cancel_RecalculatesWhenTimesNotProvided(t *testing.T) {
 		EventBridge:        eb,
 		EventBusName:       "test-bus",
 		Logger:             slog.Default(),
+		NowFunc:            func() time.Time { return time.Date(2026, 12, 31, 23, 45, 0, 0, time.UTC) },
 	}
 
 	// Cancel with deadline/expectedDuration instead of warningAt/breachAt.
@@ -998,7 +1018,8 @@ func TestSLAMonitor_Reconcile_Breach(t *testing.T) {
 }
 
 func TestSLAMonitor_Reconcile_ReturnsDeadlines(t *testing.T) {
-	d := &lambda.Deps{Logger: slog.Default()}
+	now := time.Date(2026, 6, 15, 6, 0, 0, 0, time.UTC)
+	d := &lambda.Deps{Logger: slog.Default(), NowFunc: func() time.Time { return now }}
 
 	out, err := lambda.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 		Mode:             "reconcile",

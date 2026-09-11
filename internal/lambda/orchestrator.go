@@ -101,13 +101,13 @@ func handleTrigger(ctx context.Context, d *Deps, input OrchestratorInput) (Orche
 		return OrchestratorOutput{}, fmt.Errorf("%s", errMsg)
 	}
 
-	runID := extractRunID(metadata)
+	runID := ExtractRunID(metadata)
 
 	if err := PublishEvent(ctx, d, string(types.EventJobTriggered), input.PipelineID, input.ScheduleID, input.Date, fmt.Sprintf("triggered %s job", cfg.Job.Type)); err != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobTriggered, "error", err)
 	}
 
-	if metadata == nil {
+	if len(metadata) == 0 {
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
 			types.JobEventSuccess, "sync", 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type)); err != nil {
 			d.Logger.Warn("failed to write sync job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
@@ -362,16 +362,34 @@ func buildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 	return tc, nil
 }
 
-// extractRunID searches trigger metadata for a recognisable run identifier.
-func extractRunID(metadata map[string]interface{}) string {
-	if metadata == nil {
-		return ""
-	}
-	for _, key := range []string{"runId", "jobRunId", "glue_job_run_id", "executionArn", "stepId", "dagRunId"} {
-		if v, ok := metadata[key]; ok {
-			if s, ok := v.(string); ok && s != "" {
-				return s
-			}
+// runIDMetadataKeys lists the trigger-metadata keys that carry a remote run
+// identifier, in priority order. The first six are the keys emitted by the
+// executors in internal/trigger; the remaining generic keys are retained for
+// backward compatibility with records written by older versions.
+var runIDMetadataKeys = []string{
+	"glue_job_run_id",
+	"emr_step_id",
+	"emr_sl_job_run_id",
+	"sfn_execution_arn",
+	"airflow_dag_run_id",
+	"databricks_run_id",
+	"runId",
+	"jobRunId",
+	"executionArn",
+	"stepId",
+	"dagRunId",
+}
+
+// ExtractRunID searches trigger metadata for a recognisable run identifier.
+// A nil map is safe: indexing a nil map returns the zero value.
+func ExtractRunID(metadata map[string]interface{}) string {
+	for _, key := range runIDMetadataKeys {
+		v, ok := metadata[key]
+		if !ok {
+			continue
+		}
+		if s, ok := v.(string); ok && s != "" {
+			return s
 		}
 	}
 	return ""
