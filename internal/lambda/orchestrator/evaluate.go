@@ -21,14 +21,18 @@ const statusError = "error"
 func handleEvaluate(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
 	cfg, err := d.Store.GetConfig(ctx, input.PipelineID)
 	if err != nil {
+		d.Logger.ErrorContext(ctx, "evaluate failed", "pipelineId", input.PipelineID, "error", err)
 		return lambda.OrchestratorOutput{Mode: "evaluate", Status: statusError, Error: err.Error()}, nil
 	}
 	if cfg == nil {
-		return lambda.OrchestratorOutput{Mode: "evaluate", Status: statusError, Error: fmt.Sprintf("config not found for pipeline %q", input.PipelineID)}, nil
+		notFoundErr := fmt.Sprintf("config not found for pipeline %q", input.PipelineID)
+		d.Logger.ErrorContext(ctx, "evaluate failed", "pipelineId", input.PipelineID, "error", notFoundErr)
+		return lambda.OrchestratorOutput{Mode: "evaluate", Status: statusError, Error: notFoundErr}, nil
 	}
 
 	sensors, err := d.Store.GetAllSensors(ctx, input.PipelineID)
 	if err != nil {
+		d.Logger.ErrorContext(ctx, "evaluate failed", "pipelineId", input.PipelineID, "error", err)
 		return lambda.OrchestratorOutput{Mode: "evaluate", Status: statusError, Error: err.Error()}, nil
 	}
 
