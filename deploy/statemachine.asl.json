@@ -397,6 +397,7 @@
         "deadline.$": "$.config.sla.deadline",
         "expectedDuration.$": "$.config.sla.expectedDuration",
         "maxDuration.$": "$.config.sla.maxDuration",
+        "timezone.$": "$.config.sla.timezone",
         "sensorArrivalAt.$": "$.sensorArrivalAt"
       },
       "ResultPath": "$.slaResult",
@@ -451,6 +452,7 @@
         "deadline.$": "$.config.sla.deadline",
         "expectedDuration.$": "$.config.sla.expectedDuration",
         "maxDuration.$": "$.config.sla.maxDuration",
+        "timezone.$": "$.config.sla.timezone",
         "sensorArrivalAt.$": "$.sensorArrivalAt"
       },
       "ResultPath": "$.slaResult",
