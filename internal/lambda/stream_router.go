@@ -12,6 +12,11 @@ import (
 )
 
 // Deprecated: Use stream.HandleStreamEvent instead. Retained for test compatibility.
+// This copy still carries known bugs C3 (ItemIdentifier uses EventID instead
+// of the record SequenceNumber) and H11 (no EventName check, so REMOVE
+// records reach the write handlers). The ItemIdentifier assertions in
+// stream_router_test.go encode the C3 bug rather than the correct contract;
+// the live implementation is internal/lambda/stream.
 func HandleStreamEvent(ctx context.Context, d *Deps, event StreamEvent) (events.DynamoDBEventResponse, error) {
 	var resp events.DynamoDBEventResponse
 	for i := range event.Records {
