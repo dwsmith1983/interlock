@@ -242,6 +242,66 @@ func TestHandleRecord_SkipsRemoveRecords(t *testing.T) {
 	}
 }
 
+// TestIsTTLExpiry pins the UserIdentity shape DynamoDB's TTL deleter sets on
+// records it removes itself, versus an operator- or application-driven
+// delete (nil UserIdentity, or a non-Service identity such as an assumed
+// role).
+func TestIsTTLExpiry(t *testing.T) {
+	tests := []struct {
+		name         string
+		userIdentity *events.DynamoDBUserIdentity
+		want         bool
+	}{
+		{name: "nil user identity", userIdentity: nil, want: false},
+		{
+			name: "ttl service identity",
+			userIdentity: &events.DynamoDBUserIdentity{
+				Type:        "Service",
+				PrincipalID: "dynamodb.amazonaws.com",
+			},
+			want: true,
+		},
+		{
+			name:         "assumed role identity",
+			userIdentity: &events.DynamoDBUserIdentity{Type: "AssumedRole"},
+			want:         false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record := events.DynamoDBEventRecord{UserIdentity: tt.userIdentity}
+			if got := isTTLExpiry(record); got != tt.want {
+				t.Errorf("isTTLExpiry() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHandleRecord_RemoveWithoutKeysStillErrors pins the order of operations
+// in handleRecord: key extraction happens before the REMOVE guard, so a
+// REMOVE record with no PK/SK still returns the "missing PK or SK" error
+// instead of being silently skipped.
+func TestHandleRecord_RemoveWithoutKeysStillErrors(t *testing.T) {
+	d := &lambda.Deps{Logger: discardLogger()}
+	record := events.DynamoDBEventRecord{
+		EventID:   "evt-remove-no-keys",
+		EventName: "REMOVE",
+		Change: events.DynamoDBStreamRecord{
+			SequenceNumber: "1",
+			Keys:           map[string]events.DynamoDBAttributeValue{},
+		},
+	}
+
+	err := handleRecord(context.Background(), d, record)
+	if err == nil {
+		t.Fatal("handleRecord returned nil error, want an error for missing PK or SK")
+	}
+	if !strings.Contains(err.Error(), "missing PK or SK") {
+		t.Errorf("handleRecord error = %q, want it to contain %q", err.Error(), "missing PK or SK")
+	}
+}
+
 // TestHandleRecord_ConfigChangesInvalidateCache pins the one delete the router
 // must still act on: a CONFIG row that disappears has to drop out of the
 // cache, otherwise the router keeps triggering a pipeline whose config no
