@@ -554,6 +554,21 @@ resource "aws_lambda_event_source_mapping" "control_stream" {
   maximum_retry_attempts         = 3
   function_response_types        = ["ReportBatchItemFailures"]
 
+  # Defense in depth. The primary guard is in handleRecord
+  # (internal/lambda/stream/handler.go), which skips REMOVE records; these
+  # filters stop them being delivered or billed at all. Multiple filter blocks
+  # are OR-ed: writes always pass, and deletes pass only for the CONFIG row so
+  # the handler can still invalidate the config cache. Operator deletes and TTL
+  # expiries of SENSOR#, JOB#, RERUN_REQUEST# and TRIGGER# rows never arrive.
+  filter_criteria {
+    filter {
+      pattern = jsonencode({ eventName = ["INSERT", "MODIFY"] })
+    }
+    filter {
+      pattern = jsonencode({ eventName = ["REMOVE"], dynamodb = { Keys = { SK = { S = ["CONFIG"] } } } })
+    }
+  }
+
   destination_config {
     on_failure {
       destination_arn = aws_sqs_queue.stream_router_control_dlq.arn
@@ -569,6 +584,16 @@ resource "aws_lambda_event_source_mapping" "joblog_stream" {
   bisect_batch_on_function_error = true
   maximum_retry_attempts         = 3
   function_response_types        = ["ReportBatchItemFailures"]
+
+  # Only writes. Unlike the control table, the joblog table holds no CONFIG
+  # rows (store.ScanConfigs scans the control table only), so there is no
+  # CONFIG-delete escape hatch to add here. This filter also stops the 30-day
+  # JOB# TTL expiries from invoking the function.
+  filter_criteria {
+    filter {
+      pattern = jsonencode({ eventName = ["INSERT", "MODIFY"] })
+    }
+  }
 
   destination_config {
     on_failure {
