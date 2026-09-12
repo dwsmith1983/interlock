@@ -27,9 +27,13 @@ func HandleStreamEvent(ctx context.Context, d *lambda.Deps, event lambda.StreamE
 			d.Logger.Error("stream record error",
 				"error", err,
 				"eventID", event.Records[i].EventID,
+				"sequenceNumber", event.Records[i].Change.SequenceNumber,
 			)
+			// AWS matches ReportBatchItemFailures identifiers against the
+			// stream record SequenceNumber. Returning the EventID makes the
+			// identifier unrecognisable and re-drives the entire batch.
 			resp.BatchItemFailures = append(resp.BatchItemFailures, events.DynamoDBBatchItemFailure{
-				ItemIdentifier: event.Records[i].EventID,
+				ItemIdentifier: event.Records[i].Change.SequenceNumber,
 			})
 		}
 	}
