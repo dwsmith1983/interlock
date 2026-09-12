@@ -601,18 +601,35 @@ def _find_mapping(lam, source_arn: str, function_name: str) -> str | None:
     return items[0]["UUID"] if items else None
 
 
-def ensure_stream_mapping(stream_arn: str, function_name: str) -> None:
+# Mirrors the filter_criteria blocks on the aws_lambda_event_source_mapping
+# resources in deploy/terraform/lambda.tf. Filters are OR-ed: writes always
+# pass, and deletes pass only for the CONFIG row so the stream router can
+# still invalidate its config cache.
+_FILTER_WRITES = {"eventName": ["INSERT", "MODIFY"]}
+_FILTER_CONFIG_DELETE = {
+    "eventName": ["REMOVE"],
+    "dynamodb": {"Keys": {"SK": {"S": ["CONFIG"]}}},
+}
+
+
+def ensure_stream_mapping(
+    stream_arn: str, function_name: str, *, allow_config_delete: bool = False
+) -> None:
     lam = _client("lambda")
     existing = _find_mapping(lam, stream_arn, function_name)
     if existing:
         print(f"  [esm] mapping {stream_arn} -> {function_name} already exists")
         return
+    patterns: list[dict[str, Any]] = [_FILTER_WRITES]
+    if allow_config_delete:
+        patterns.append(_FILTER_CONFIG_DELETE)
     lam.create_event_source_mapping(
         EventSourceArn=stream_arn,
         FunctionName=function_name,
         StartingPosition="LATEST",
         BatchSize=10,
         FunctionResponseTypes=["ReportBatchItemFailures"],
+        FilterCriteria={"Filters": [{"Pattern": json.dumps(p)} for p in patterns]},
     )
     print(f"  [esm] created mapping {stream_arn} -> {function_name}")
 
@@ -769,7 +786,9 @@ def cmd_deploy() -> None:
     ensure_watchdog_schedule(lambda_arns["watchdog"])
 
     print("--> Event source mappings")
-    ensure_stream_mapping(stream_arns[TABLE_CONTROL], f"{PREFIX}-stream-router")
+    ensure_stream_mapping(
+        stream_arns[TABLE_CONTROL], f"{PREFIX}-stream-router", allow_config_delete=True
+    )
     ensure_stream_mapping(stream_arns[TABLE_JOBLOG], f"{PREFIX}-stream-router")
     ensure_sqs_mapping(alert_queue_arn, f"{PREFIX}-alert-dispatcher")
 

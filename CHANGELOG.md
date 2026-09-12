@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stream router reported the wrong batch-item identifier** — `stream.HandleStreamEvent` returned `ItemIdentifier: EventID` in `BatchItemFailures`. AWS matches `ReportBatchItemFailures` identifiers against the DynamoDB stream record `SequenceNumber`, so an unrecognised identifier made Lambda treat the entire batch as failed and re-drive every record in it. The handler now returns `record.Change.SequenceNumber` and logs it alongside the event ID (the event ID remains the log correlation ID) — but partial-batch reporting only checkpoints at the *first* failed record and still re-drives that record and every later one in the batch, so this narrows the replay of non-idempotent `WriteJobEvent`/`PublishEvent` side effects rather than eliminating it; making those handlers idempotent remains a separate follow-up.
+- **Stream router acted on REMOVE records** — `handleRecord` never checked `EventName`, so a deleted row reached the write handlers with a nil `NewImage`. Deleting a `RERUN_REQUEST#` row (those rows have no TTL and are never cleaned up) started a rerun with `reason="manual"`; deleting a `SENSOR#` row — including the `postrun-baseline#` delete the rerun path issues itself — could publish `POST_RUN_PASSED`/`POST_RUN_FAILED` verdicts from absent data; and 30-day `JOB#` TTL expiries invoked the function for nothing. REMOVE records are now skipped and logged at info with the key, event ID and whether the delete came from DynamoDB's TTL process, with the single exception of `SK = CONFIG`, which still invalidates the config cache so a deleted pipeline config drops out immediately. Defense in depth: both DynamoDB event source mappings in `deploy/terraform/lambda.tf` now carry `filter_criteria` (writes always pass; REMOVE passes only for the control table's `CONFIG` row), so filtered records are neither delivered nor billed. **Operators must run `terraform apply` to pick up the new event source mapping filters**; the handler guard protects deployments in the meantime. `deploy/localstack/deploy.py` applies the equivalent `FilterCriteria`, but only when a mapping is created — tear down and redeploy an existing LocalStack stack to pick them up.
+
 ## [0.10.0] - 2026-09-12
 
 ### Added
