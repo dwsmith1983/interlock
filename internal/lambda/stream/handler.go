@@ -44,9 +44,11 @@ func HandleStreamEvent(ctx context.Context, d *lambda.Deps, event lambda.StreamE
 				"eventID", event.Records[i].EventID,
 				"sequenceNumber", event.Records[i].Change.SequenceNumber,
 			)
-			// AWS matches ReportBatchItemFailures identifiers against the
-			// stream record SequenceNumber. Returning the EventID makes the
-			// identifier unrecognisable and re-drives the entire batch.
+			// AWS matches each BatchItemFailures identifier against the record
+			// SequenceNumber and checkpoints at the lowest one returned,
+			// re-driving that record and every later record in the batch. An
+			// unrecognised identifier (such as the EventID) instead falls back
+			// to re-driving the entire batch.
 			resp.BatchItemFailures = append(resp.BatchItemFailures, events.DynamoDBBatchItemFailure{
 				ItemIdentifier: event.Records[i].Change.SequenceNumber,
 			})
