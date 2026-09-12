@@ -1,6 +1,6 @@
 // Package storetest provides test doubles for the store package. It is used
-// only from _test.go files (internal/lambda/orchestrator, deploy); no
-// production code imports it.
+// only from _test.go files (internal/lambda/orchestrator, internal/lambda/sla,
+// internal/lambda/stream, deploy); no production code imports it.
 package storetest
 
 import (
