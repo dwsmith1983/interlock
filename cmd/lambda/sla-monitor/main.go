@@ -51,6 +51,7 @@ func main() {
 		SchedulerGroupName: os.Getenv("SCHEDULER_GROUP_NAME"),
 		Logger:             logger,
 	}
+	ilambda.ApplyE2EHooks(deps, cfg)
 
 	lambda.Start(func(ctx context.Context, input ilambda.SLAMonitorInput) (ilambda.SLAMonitorOutput, error) {
 		return sla.HandleSLAMonitor(ctx, deps, input)

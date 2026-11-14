@@ -49,6 +49,7 @@ func main() {
 		EventsTTLDays: ttlDays,
 		Logger:        logger,
 	}
+	ilambda.ApplyE2EHooks(deps, cfg)
 
 	lambda.Start(func(ctx context.Context, input ilambda.EventBridgeInput) error {
 		return sink.HandleEventSink(ctx, deps, input)
