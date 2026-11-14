@@ -7,17 +7,24 @@ shape so code behaves the same locally.
 
 Skipped relative to production (Pro-only or not useful locally):
   - EventBridge Scheduler (Pro-only). Sla-monitor Lambdas get SKIP_SCHEDULER=true
-    so their schedule-creation paths no-op.
+    so their schedule-creation paths no-op (except under --e2e, below).
   - CloudWatch alarms / alarm-driven EventBridge rules.
   - KMS-encrypted SQS queues (LocalStack community uses a stubbed KMS).
 
+`deploy --e2e` targets Lambdas built with EXTRA_TAGS=e2e: every Lambda reads
+time from the mock server (E2E_MOCK_URL), schedules land in the schedules
+table instead of EventBridge Scheduler, and the watchdog rule and alert SQS
+mapping are left out because the e2e harness drives both itself.
+
 Usage:
-    python deploy.py deploy     # create all resources (idempotent)
-    python deploy.py teardown   # delete all resources
-    python deploy.py smoke      # sanity-check what was deployed
+    python deploy.py deploy         # create all resources (idempotent)
+    python deploy.py deploy --e2e   # same, wired for the e2e harness
+    python deploy.py teardown       # delete all resources
+    python deploy.py smoke          # sanity-check what was deployed
 """
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
@@ -73,6 +80,12 @@ TABLE_CONTROL = f"{PREFIX}-control"
 TABLE_JOBLOG = f"{PREFIX}-joblog"
 TABLE_EVENTS = f"{PREFIX}-events"
 TABLE_RERUN = f"{PREFIX}-rerun"
+# e2e only: stands in for EventBridge Scheduler (see internal/e2ehooks)
+TABLE_SCHEDULES = f"{PREFIX}-schedules"
+
+# e2e only: the mock clock and job server, as Lambdas reach it
+E2E_MOCK_URL = os.environ.get("E2E_MOCK_URL", "http://mock:8080")
+E2E_JOB_CHECK_INTERVAL_SECONDS = "5"
 
 # EventBridge
 EVENT_BUS_NAME = f"{PREFIX}-events"
@@ -288,9 +301,28 @@ def ensure_tables() -> dict[str, str]:
     return stream_arns
 
 
+def ensure_schedules_table() -> None:
+    """Create the e2e schedules table: hash key `name` only, no stream, no TTL."""
+    ddb = _client("dynamodb")
+    try:
+        ddb.create_table(
+            TableName=TABLE_SCHEDULES,
+            BillingMode="PAY_PER_REQUEST",
+            KeySchema=[{"AttributeName": "name", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "name", "AttributeType": "S"}],
+        )
+        print(f"  [ddb] created table {TABLE_SCHEDULES}")
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ResourceInUseException":
+            raise
+        print(f"  [ddb] table {TABLE_SCHEDULES} already exists")
+    waiter = ddb.get_waiter("table_exists")
+    waiter.wait(TableName=TABLE_SCHEDULES, WaiterConfig={"Delay": 1, "MaxAttempts": 30})
+
+
 def delete_tables() -> None:
     ddb = _client("dynamodb")
-    for table_name in (TABLE_CONTROL, TABLE_JOBLOG, TABLE_RERUN, TABLE_EVENTS):
+    for table_name in (TABLE_CONTROL, TABLE_JOBLOG, TABLE_RERUN, TABLE_EVENTS, TABLE_SCHEDULES):
         try:
             ddb.delete_table(TableName=table_name)
             print(f"  [ddb] deleted table {table_name}")
@@ -491,10 +523,10 @@ def _zip_bytes(zip_path: Path) -> bytes:
     return zip_path.read_bytes()
 
 
-def _lambda_env(handler: str, sfn_arn: str | None) -> dict[str, str]:
+def _lambda_env(handler: str, sfn_arn: str | None, *, e2e: bool = False) -> dict[str, str]:
     """Environment variables for a Lambda. Matches production Terraform, plus
     AWS_ENDPOINT_URL so the Go SDK calls the LocalStack container instead of
-    real AWS.
+    real AWS. With e2e, also the hooks an EXTRA_TAGS=e2e build reads.
     """
     base = {
         # CRITICAL: force the AWS SDK inside the Lambda to talk to LocalStack
@@ -516,11 +548,14 @@ def _lambda_env(handler: str, sfn_arn: str | None) -> dict[str, str]:
         # Production never sets this; SSRF protection stays active in real AWS.
         base["DISABLE_SSRF_PROTECTION"] = "true"
 
-    if handler == "sla-monitor":
-        # EventBridge Scheduler is Pro-only; tell the Lambda to no-op
-        # schedule-creation paths. Dummy ARNs satisfy the envcheck guard so
-        # the Lambda can boot against LocalStack Community.
-        base["SKIP_SCHEDULER"] = "true"
+    if handler == "sla-monitor" or (e2e and handler == "watchdog"):
+        # EventBridge Scheduler is Pro-only, so outside e2e sla-monitor is
+        # told to no-op schedule-creation paths. Under e2e both Lambdas that
+        # schedule (sla-monitor, watchdog) write to the schedules table
+        # instead and need a target and role to record. Dummy ARNs satisfy
+        # the envcheck guard so sla-monitor can boot on LocalStack Community.
+        if not e2e:
+            base["SKIP_SCHEDULER"] = "true"
         base["SLA_MONITOR_ARN"] = (
             f"arn:aws:lambda:{REGION}:{DUMMY_ACCOUNT_ID}:function:{PREFIX}-sla-monitor"
         )
@@ -536,10 +571,15 @@ def _lambda_env(handler: str, sfn_arn: str | None) -> dict[str, str]:
         base.setdefault("SLACK_BOT_TOKEN", "")
         base.setdefault("SLACK_SECRET_ARN", "")
 
+    if e2e:
+        base["E2E_CLOCK_URL"] = f"{E2E_MOCK_URL}/clock"
+        base["E2E_SCHEDULE_TABLE"] = TABLE_SCHEDULES
+        base["JOB_CHECK_INTERVAL_SECONDS"] = E2E_JOB_CHECK_INTERVAL_SECONDS
+
     return base
 
 
-def ensure_lambdas(sfn_arn: str | None) -> dict[str, str]:
+def ensure_lambdas(sfn_arn: str | None, *, e2e: bool = False) -> dict[str, str]:
     """Create or update all 6 Lambdas. Returns {handler: function_arn}."""
     lam = _client("lambda")
     arch = detect_lambda_architecture()
@@ -564,7 +604,7 @@ def ensure_lambdas(sfn_arn: str | None) -> dict[str, str]:
         if not zip_path.exists():
             raise FileNotFoundError(f"missing build artifact: {zip_path} — run build.sh first")
         code_bytes = _zip_bytes(zip_path)
-        env = _lambda_env(handler, sfn_arn)
+        env = _lambda_env(handler, sfn_arn, e2e=e2e)
 
         try:
             resp = lam.create_function(
@@ -770,8 +810,8 @@ def delete_state_machine() -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_deploy() -> None:
-    print(f"==> Deploying Interlock to LocalStack at {ENDPOINT_URL}")
+def cmd_deploy(e2e: bool = False) -> None:
+    print(f"==> Deploying Interlock to LocalStack at {ENDPOINT_URL}" + (" (e2e)" if e2e else ""))
     print(f"==> Environment prefix: {PREFIX}")
     print(f"==> Lambda architecture: {detect_lambda_architecture()}")
     print(f"==> Lambda AWS_ENDPOINT_URL: {LAMBDA_ENDPOINT_URL}")
@@ -781,6 +821,8 @@ def cmd_deploy() -> None:
 
     print("--> DynamoDB tables")
     stream_arns = ensure_tables()
+    if e2e:
+        ensure_schedules_table()
 
     print("--> SQS queue")
     alert_queue_url, alert_queue_arn = ensure_alert_queue()
@@ -797,7 +839,7 @@ def cmd_deploy() -> None:
     )
 
     print("--> Lambda functions")
-    lambda_arns = ensure_lambdas(sfn_arn=predicted_sfn_arn)
+    lambda_arns = ensure_lambdas(sfn_arn=predicted_sfn_arn, e2e=e2e)
 
     print("--> Step Functions state machine")
     sfn_arn = ensure_state_machine(
@@ -807,7 +849,7 @@ def cmd_deploy() -> None:
     # In case the predicted ARN differs, update stream-router's env
     if sfn_arn != predicted_sfn_arn:
         lam = _client("lambda")
-        env = _lambda_env("stream-router", sfn_arn)
+        env = _lambda_env("stream-router", sfn_arn, e2e=e2e)
         lam.update_function_configuration(
             FunctionName=f"{PREFIX}-stream-router",
             Environment={"Variables": env},
@@ -816,14 +858,16 @@ def cmd_deploy() -> None:
     print("--> EventBridge rules")
     ensure_event_rule_to_sink(lambda_arns["event-sink"])
     ensure_event_rule_to_alerts(alert_queue_arn)
-    ensure_watchdog_schedule(lambda_arns["watchdog"])
+    if not e2e:  # the e2e harness invokes the watchdog itself
+        ensure_watchdog_schedule(lambda_arns["watchdog"])
 
     print("--> Event source mappings")
     ensure_stream_mapping(
         stream_arns[TABLE_CONTROL], f"{PREFIX}-stream-router", allow_config_delete=True
     )
     ensure_stream_mapping(stream_arns[TABLE_JOBLOG], f"{PREFIX}-stream-router")
-    ensure_sqs_mapping(alert_queue_arn, f"{PREFIX}-alert-dispatcher")
+    if not e2e:  # the e2e harness reads the alerts queue itself
+        ensure_sqs_mapping(alert_queue_arn, f"{PREFIX}-alert-dispatcher")
 
     print("==> Deploy complete")
 
@@ -853,10 +897,10 @@ def cmd_smoke() -> None:
         print(f"  FAIL: expected {expected_fns}, got {interlock_fns}")
         sys.exit(1)
 
-    # 2. 4 DynamoDB tables present
+    # 2. 4 DynamoDB tables present (the e2e schedules table is not counted)
     ddb = _client("dynamodb")
     tables = ddb.list_tables().get("TableNames", [])
-    interlock_tables = sorted(t for t in tables if PREFIX in t)
+    interlock_tables = sorted(t for t in tables if PREFIX in t and t != TABLE_SCHEDULES)
     expected_tables = sorted([TABLE_CONTROL, TABLE_JOBLOG, TABLE_EVENTS, TABLE_RERUN])
     print(f"  [ddb] found {len(interlock_tables)} tables: {interlock_tables}")
     if interlock_tables != expected_tables:
@@ -875,21 +919,28 @@ def cmd_smoke() -> None:
     print("==> Smoke test PASSED")
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    deploy = sub.add_parser("deploy", help="create all resources (idempotent)")
+    deploy.add_argument(
+        "--e2e", action="store_true", help="wire the stack for the e2e harness"
+    )
+    sub.add_parser("teardown", help="delete all resources")
+    sub.add_parser("smoke", help="sanity-check what was deployed")
+    return parser.parse_args(argv)
+
+
 def main() -> None:
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
-    cmd = sys.argv[1]
-    if cmd == "deploy":
-        cmd_deploy()
-    elif cmd == "teardown":
+    args = parse_args()
+    if args.command == "deploy":
+        cmd_deploy(e2e=args.e2e)
+    elif args.command == "teardown":
         cmd_teardown()
-    elif cmd == "smoke":
-        cmd_smoke()
     else:
-        print(f"unknown command: {cmd}")
-        print(__doc__)
-        sys.exit(1)
+        cmd_smoke()
 
 
 if __name__ == "__main__":
