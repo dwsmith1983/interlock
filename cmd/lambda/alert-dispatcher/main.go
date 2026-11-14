@@ -56,6 +56,7 @@ func main() {
 		HTTPClient:     client.NewBreakerClient(&http.Client{Timeout: 10 * time.Second}, client.DefaultBreakerConfig("slack-api")),
 		Logger:         logger,
 	}
+	ilambda.ApplyE2EHooks(deps, cfg)
 
 	// Override Slack token from Secrets Manager when configured.
 	if secretARN := os.Getenv("SLACK_SECRET_ARN"); secretARN != "" {

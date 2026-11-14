@@ -62,6 +62,7 @@ func main() {
 		EventBusName:    os.Getenv("EVENT_BUS_NAME"),
 		Logger:          logger,
 	}
+	ilambda.ApplyE2EHooks(deps, cfg)
 
 	lambda.Start(func(ctx context.Context, event ilambda.StreamEvent) (events.DynamoDBEventResponse, error) {
 		defer func() {
