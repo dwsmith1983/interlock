@@ -497,9 +497,10 @@ def _lambda_env(handler: str, sfn_arn: str | None) -> dict[str, str]:
         )
         base["SCHEDULER_GROUP_NAME"] = "default"
     if handler == "alert-dispatcher":
-        # envcheck.go requires SLACK_CHANNEL_ID to be non-empty; use a dummy
-        # value for LocalStack. Real deployments get this from Terraform vars.
-        base["SLACK_CHANNEL_ID"] = "C000000LOCAL"
+        # No Slack token, so the dispatcher runs in logging-only mode and
+        # writes alerts to its log. The empty values mirror the Terraform
+        # defaults for the three Slack variables.
+        base.setdefault("SLACK_CHANNEL_ID", "")
         base.setdefault("SLACK_BOT_TOKEN", "")
         base.setdefault("SLACK_SECRET_ARN", "")
 

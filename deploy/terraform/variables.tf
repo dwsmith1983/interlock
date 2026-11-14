@@ -75,7 +75,7 @@ variable "slack_secret_arn" {
 }
 
 variable "slack_channel_id" {
-  description = "Slack channel ID for alert notifications"
+  description = "Slack channel ID for alert notifications (required when slack_bot_token or slack_secret_arn is set; all three empty = logging only)"
   type        = string
   default     = ""
 }

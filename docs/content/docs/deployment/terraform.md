@@ -116,7 +116,7 @@ terraform apply
 | `enable_lambda_trigger` | bool | `false` | Grant orchestrator Lambda permission to invoke Lambda functions |
 | `lambda_trigger_arns` | list(string) | `["*"]` | Lambda function ARNs the orchestrator may invoke (scoped IAM). Only used when `enable_lambda_trigger` is `true` |
 | `slack_bot_token` | string (sensitive) | `""` | Slack Bot API token with `chat:write` scope for alert-dispatcher |
-| `slack_channel_id` | string | `""` | Slack channel ID for alert notifications |
+| `slack_channel_id` | string | `""` | Slack channel ID for alert notifications (required when `slack_bot_token` or `slack_secret_arn` is set; all three empty = logging only) |
 | `slack_secret_arn` | string | `""` | AWS Secrets Manager ARN containing the Slack bot token. When set, alert-dispatcher reads the token from Secrets Manager instead of the `slack_bot_token` environment variable |
 | `events_table_ttl_days` | number | `90` | TTL in days for events table records |
 | `lambda_concurrency` | object | See below | Reserved concurrent executions per Lambda function |
