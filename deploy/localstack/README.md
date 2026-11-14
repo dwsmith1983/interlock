@@ -58,6 +58,24 @@ inside them calls LocalStack instead of real AWS.
 - **KMS-encrypted SQS** — the LocalStack stubbed KMS is not representative.
 - **Reserved concurrency, DLQs, secrets** — not meaningful for local smoke.
 
+## e2e mode
+
+`deploy.py deploy --e2e` wires the stack for the end-to-end harness. It
+expects Lambdas built with `EXTRA_TAGS=e2e bash deploy/localstack/build.sh`
+(tags `lambda.norpc,e2e`). Compared with a normal deploy it:
+
+- creates `local-interlock-schedules` (hash key `name`), where the e2e builds
+  of `sla-monitor` and `watchdog` record schedules instead of calling
+  EventBridge Scheduler, and drops `SKIP_SCHEDULER`;
+- sets `E2E_CLOCK_URL` (`$E2E_MOCK_URL/clock`, default
+  `http://mock:8080/clock`), `E2E_SCHEDULE_TABLE` and
+  `JOB_CHECK_INTERVAL_SECONDS=5` on every Lambda;
+- skips the watchdog schedule rule and the SQS to alert-dispatcher mapping,
+  since the harness invokes the watchdog and reads the alerts queue itself.
+
+Tear down first when switching an existing stack between modes: a redeploy
+does not remove the watchdog rule or the SQS mapping a normal deploy created.
+
 ## Verifying
 
 ```
@@ -67,7 +85,7 @@ python deploy/localstack/deploy.py smoke
 The smoke check ensures:
 
 1. All 6 Interlock Lambdas are present.
-2. All 4 DynamoDB tables are present.
+2. All 4 DynamoDB tables are present (the e2e schedules table is ignored).
 3. `stream-router` has `AWS_ENDPOINT_URL` set in its environment.
 
 ## Environment variables
@@ -77,3 +95,4 @@ The smoke check ensures:
 | `INTERLOCK_ENV`         | `local`                   | Prefix for all resource names |
 | `AWS_ENDPOINT_URL`      | `http://localhost:4566`   | LocalStack URL the deploy script talks to |
 | `LAMBDA_AWS_ENDPOINT_URL` | `http://localstack:4566` | The URL Lambdas use from inside their container |
+| `E2E_MOCK_URL`          | `http://mock:8080`        | Mock clock and job server, as Lambdas reach it (`--e2e` only) |
