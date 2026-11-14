@@ -85,12 +85,44 @@ ALERT_QUEUE_NAME = f"{PREFIX}-alerts"
 # Step Functions
 STATE_MACHINE_NAME = f"{PREFIX}-pipeline"
 
-# Alert-worthy detail-types — mirror production eventbridge.tf
+# Alert-worthy detail-types. Must match alert_events in
+# deploy/terraform/eventbridge.tf (deploy/alert_allowlist_test.go checks this).
 ALERT_DETAIL_TYPES = [
     "SLA_WARNING",
     "SLA_BREACH",
+    "SLA_MET",
     "JOB_FAILED",
     "VALIDATION_EXHAUSTED",
+    "RETRY_EXHAUSTED",
+    "INFRA_FAILURE",
+    "SFN_TIMEOUT",
+    "SCHEDULE_MISSED",
+    "DATA_DRIFT",
+    "JOB_POLL_EXHAUSTED",
+    "POST_RUN_DRIFT",
+    "POST_RUN_DRIFT_INFLIGHT",
+    "POST_RUN_FAILED",
+    "POST_RUN_SENSOR_MISSING",
+    "RERUN_ACCEPTED",
+    "RERUN_REJECTED",
+    "JOB_COMPLETED",
+    "LATE_DATA_ARRIVAL",
+    "TRIGGER_RECOVERED",
+    "BASELINE_CAPTURE_FAILED",
+    "PIPELINE_EXCLUDED",
+    "SENSOR_DEADLINE_EXPIRED",
+    "IRREGULAR_SCHEDULE_MISSED",
+    "RELATIVE_SLA_WARNING",
+    "RELATIVE_SLA_BREACH",
+    "DRY_RUN_WOULD_TRIGGER",
+    "DRY_RUN_LATE_DATA",
+    "DRY_RUN_SLA_PROJECTION",
+    "DRY_RUN_DRIFT",
+    "DRY_RUN_COMPLETED",
+    "DRY_RUN_WOULD_RERUN",
+    "DRY_RUN_RERUN_REJECTED",
+    "DRY_RUN_WOULD_RETRY",
+    "DRY_RUN_RETRY_EXHAUSTED",
 ]
 
 # ---------------------------------------------------------------------------
