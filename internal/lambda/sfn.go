@@ -4,11 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
+
+// JobCheckIntervalEnv names the env var that overrides
+// DefaultJobCheckIntervalSec, the wait between job status polls in the SFN
+// loop. Only an integer >= 1 takes effect; anything else keeps the default.
+const JobCheckIntervalEnv = "JOB_CHECK_INTERVAL_SECONDS"
 
 // SFNInput is the top-level input for the Step Function state machine.
 //
@@ -53,7 +60,7 @@ func BuildSFNConfig(cfg *types.PipelineConfig) SFNConfig {
 	sc := SFNConfig{
 		EvaluationIntervalSeconds: DefaultEvalIntervalSec,
 		EvaluationWindowSeconds:   DefaultEvalWindowSec,
-		JobCheckIntervalSeconds:   DefaultJobCheckIntervalSec,
+		JobCheckIntervalSeconds:   resolveJobCheckIntervalSec(),
 		JobPollWindowSeconds:      DefaultJobPollWindowSec,
 	}
 
@@ -83,6 +90,16 @@ func BuildSFNConfig(cfg *types.PipelineConfig) SFNConfig {
 	}
 
 	return sc
+}
+
+// resolveJobCheckIntervalSec returns the JobCheckIntervalEnv value when it is
+// an integer >= 1, otherwise DefaultJobCheckIntervalSec.
+func resolveJobCheckIntervalSec() int {
+	sec, err := strconv.Atoi(os.Getenv(JobCheckIntervalEnv))
+	if err != nil || sec < 1 {
+		return DefaultJobCheckIntervalSec
+	}
+	return sec
 }
 
 // BuildSFNInput assembles the full Step Functions execution input.
