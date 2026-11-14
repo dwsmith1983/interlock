@@ -40,7 +40,7 @@ func (c *ConfigCache) Get(ctx context.Context, pipelineID string) (*types.Pipeli
 // The returned map is a deep copy; callers cannot mutate cached values.
 func (c *ConfigCache) GetAll(ctx context.Context) (map[string]*types.PipelineConfig, error) {
 	c.mu.RLock()
-	if time.Since(c.loadedAt) < c.ttl && len(c.configs) > 0 {
+	if c.store.now().Sub(c.loadedAt) < c.ttl && len(c.configs) > 0 {
 		cp := copyConfigs(c.configs)
 		c.mu.RUnlock()
 		return cp, nil
@@ -61,7 +61,7 @@ func (c *ConfigCache) refresh(ctx context.Context) (map[string]*types.PipelineCo
 	defer c.mu.Unlock()
 
 	// Double-check after acquiring write lock.
-	if time.Since(c.loadedAt) < c.ttl && len(c.configs) > 0 {
+	if c.store.now().Sub(c.loadedAt) < c.ttl && len(c.configs) > 0 {
 		return copyConfigs(c.configs), nil
 	}
 
@@ -70,7 +70,7 @@ func (c *ConfigCache) refresh(ctx context.Context) (map[string]*types.PipelineCo
 		return nil, err
 	}
 	c.configs = configs
-	c.loadedAt = time.Now()
+	c.loadedAt = c.store.now()
 	return copyConfigs(configs), nil
 }
 
