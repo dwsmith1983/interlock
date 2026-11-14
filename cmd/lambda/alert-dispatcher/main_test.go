@@ -64,3 +64,19 @@ func TestSlackMode(t *testing.T) {
 		})
 	}
 }
+
+func TestLoggingOnlyWarning(t *testing.T) {
+	tests := []struct {
+		name      string
+		channelID string
+		want      string
+	}{
+		{name: "no channel keeps the generic warning", channelID: "", want: "no Slack token configured (SLACK_BOT_TOKEN / SLACK_SECRET_ARN); running in logging-only mode"},
+		{name: "channel without token says alerts are not delivered", channelID: "C12345", want: "SLACK_CHANNEL_ID is set but no Slack token is configured (SLACK_BOT_TOKEN / SLACK_SECRET_ARN); alerts are NOT delivered to Slack, logging-only mode"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, loggingOnlyWarning(tt.channelID))
+		})
+	}
+}

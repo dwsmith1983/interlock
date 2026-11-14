@@ -223,6 +223,8 @@ The module deploys an `alert-dispatcher` Lambda that reads from an SQS alert que
 | `slack_bot_token` | Bot token with `chat:write` scope (sensitive) |
 | `slack_channel_id` | Channel ID to post alerts to |
 
+With `slack_bot_token`, `slack_secret_arn` and `slack_channel_id` all empty, the dispatcher runs in logging-only mode and writes each alert to its log; once a token or secret is set, `slack_channel_id` is required, and `slack_secret_arn` (a Secrets Manager secret holding the token) is the preferred way to pass the token.
+
 **Message threading**: alerts for the same pipeline, schedule, and date are grouped into a single Slack thread. The first alert creates the thread; subsequent alerts reply in-thread. Thread records are stored in the events table and expire with the same TTL.
 
 **SLA warning suppression**: when an SLA breach has already occurred, the `fire-alert` handler suppresses the corresponding `SLA_WARNING` to prevent duplicate notifications.
