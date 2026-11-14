@@ -3,6 +3,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
@@ -27,4 +28,15 @@ type Store struct {
 	JobLogTable  string
 	RerunTable   string
 	EventsTable  string
+
+	// Now returns the current time. A nil Now means time.Now.
+	Now func() time.Time
+}
+
+// now returns s.Now() when set, else time.Now().
+func (s *Store) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
