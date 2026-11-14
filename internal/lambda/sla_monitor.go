@@ -2,10 +2,13 @@ package lambda
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -223,7 +226,7 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 
 	if d.Scheduler != nil && !SkipScheduler() {
 		for _, suffix := range []string{"warning", "breach"} {
-			name := slaScheduleName(input.PipelineID, input.ScheduleID, input.Date, suffix)
+			name := SLAScheduleName(input.PipelineID, input.ScheduleID, input.Date, suffix)
 			_, err := d.Scheduler.DeleteSchedule(ctx, &scheduler.DeleteScheduleInput{
 				Name:      aws.String(name),
 				GroupName: aws.String(d.SchedulerGroupName),
@@ -288,9 +291,39 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 	}, nil
 }
 
-// slaScheduleName returns a deterministic EventBridge Scheduler name for an SLA alert.
-func slaScheduleName(pipelineID, scheduleID, date, suffix string) string {
-	return fmt.Sprintf("%s-%s-%s-sla-%s", pipelineID, scheduleID, date, suffix)
+// maxScheduleNameLen is the EventBridge Scheduler limit on schedule names.
+const maxScheduleNameLen = 64
+
+// scheduleNameHashLen is how many hex characters of the SHA-256 prefix a
+// shortened schedule name carries.
+const scheduleNameHashLen = 8
+
+var (
+	validScheduleNameRe   = regexp.MustCompile(`^[0-9a-zA-Z_.-]+$`)
+	invalidScheduleCharRe = regexp.MustCompile(`[^0-9a-zA-Z_.-]`)
+)
+
+// SLAScheduleName returns a deterministic EventBridge Scheduler name for an
+// SLA alert. Names that already fit the Scheduler rules (1-64 characters of
+// [0-9a-zA-Z_.-]) are returned unchanged, so schedules created before this
+// rule stay deletable. Any other name becomes a hash of the raw name followed
+// by the tail of its sanitized form, which keeps the date and suffix visible.
+// Hashing the raw name keeps inputs such as "a/b" and "a:b" apart.
+func SLAScheduleName(pipelineID, scheduleID, date, suffix string) string {
+	raw := fmt.Sprintf("%s-%s-%s-sla-%s", pipelineID, scheduleID, date, suffix)
+	if len(raw) <= maxScheduleNameLen && validScheduleNameRe.MatchString(raw) {
+		return raw
+	}
+
+	sanitized := invalidScheduleCharRe.ReplaceAllString(raw, "-")
+	sum := sha256.Sum256([]byte(raw))
+	h := hex.EncodeToString(sum[:])[:scheduleNameHashLen]
+
+	tailLen := maxScheduleNameLen - scheduleNameHashLen - 1
+	if len(sanitized) > tailLen {
+		sanitized = sanitized[len(sanitized)-tailLen:]
+	}
+	return h + "-" + sanitized
 }
 
 // createOneTimeSchedule creates a one-time EventBridge Scheduler entry that
@@ -349,7 +382,7 @@ func createSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, da
 		{"warning", "SLA_WARNING", calc.WarningAt},
 		{"breach", "SLA_BREACH", calc.BreachAt},
 	} {
-		name := slaScheduleName(pipelineID, scheduleID, date, alert.suffix)
+		name := SLAScheduleName(pipelineID, scheduleID, date, alert.suffix)
 		payload := SLAMonitorInput{
 			Mode:       "fire-alert",
 			PipelineID: pipelineID,

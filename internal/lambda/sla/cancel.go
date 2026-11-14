@@ -50,7 +50,7 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 
 	if d.Scheduler != nil && !lambda.SkipScheduler() {
 		for _, suffix := range []string{"warning", "breach"} {
-			name := SLAScheduleName(input.PipelineID, input.ScheduleID, input.Date, suffix)
+			name := lambda.SLAScheduleName(input.PipelineID, input.ScheduleID, input.Date, suffix)
 			_, err := d.Scheduler.DeleteSchedule(ctx, &scheduler.DeleteScheduleInput{
 				Name:      aws.String(name),
 				GroupName: aws.String(d.SchedulerGroupName),
@@ -109,9 +109,4 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 		BreachAt:  input.BreachAt,
 		FiredAt:   now.Format(time.RFC3339),
 	}, nil
-}
-
-// SLAScheduleName returns a deterministic EventBridge Scheduler name for an SLA alert.
-func SLAScheduleName(pipelineID, scheduleID, date, suffix string) string {
-	return fmt.Sprintf("%s-%s-%s-sla-%s", pipelineID, scheduleID, date, suffix)
 }

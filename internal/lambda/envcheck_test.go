@@ -52,6 +52,16 @@ func TestValidateEnv_AlertDispatcherMissingEventsVars(t *testing.T) {
 	assert.Contains(t, err.Error(), "EVENTS_TTL_DAYS")
 }
 
+func TestValidateEnv_AlertDispatcherWithoutSlack(t *testing.T) {
+	// Slack is optional: Terraform defaults the Slack variables to "" and the
+	// dispatcher then runs in logging-only mode.
+	t.Setenv("EVENTS_TABLE", "events")
+	t.Setenv("EVENTS_TTL_DAYS", "90")
+	t.Setenv("SLACK_CHANNEL_ID", "")
+	err := ValidateEnv("alert-dispatcher")
+	require.NoError(t, err)
+}
+
 func TestValidateEnv_UnknownHandler(t *testing.T) {
 	err := ValidateEnv("unknown-handler")
 	require.NoError(t, err)

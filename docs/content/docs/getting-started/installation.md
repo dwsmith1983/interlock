@@ -27,7 +27,7 @@ cd interlock
 ./deploy/build.sh
 ```
 
-This produces zip files in the `dist/` directory for all four Lambda functions.
+This produces one zip file per Lambda function (six in total) in the `deploy/dist/` directory.
 
 ### 2. Reference the Module
 
@@ -38,7 +38,7 @@ module "interlock" {
   source = "github.com/dwsmith1983/interlock//deploy/terraform"
 
   environment    = "production"
-  dist_path      = "${path.module}/dist"
+  dist_path      = "path/to/interlock/deploy/dist"  # build output from step 1
   pipelines_path = "${path.module}/pipelines"
   calendars_path = "${path.module}/calendars"  # optional
 

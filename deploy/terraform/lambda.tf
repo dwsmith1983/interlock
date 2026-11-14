@@ -121,6 +121,13 @@ resource "aws_lambda_function" "alert_dispatcher" {
     )
   }
 
+  lifecycle {
+    precondition {
+      condition     = var.slack_channel_id != "" || (var.slack_bot_token == "" && var.slack_secret_arn == "")
+      error_message = "slack_channel_id is required when slack_bot_token or slack_secret_arn is set."
+    }
+  }
+
   depends_on = [aws_cloudwatch_log_group.lambda["alert-dispatcher"]]
 }
 
@@ -302,6 +309,7 @@ data "aws_iam_policy_document" "dynamodb_watchdog" {
     actions = [
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
     ]
     resources = [
       aws_dynamodb_table.control.arn,

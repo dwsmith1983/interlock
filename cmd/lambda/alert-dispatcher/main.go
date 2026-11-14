@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -77,12 +78,49 @@ func main() {
 		deps.SlackBotToken = token
 	}
 
-	if deps.SlackBotToken == "" {
-		logger.Error("no Slack token configured: set SLACK_BOT_TOKEN or SLACK_SECRET_ARN")
+	loggingOnly, err := slackMode(deps.SlackBotToken, deps.SlackChannelID, os.Getenv("SLACK_SECRET_ARN") != "")
+	if err != nil {
+		logger.Error("invalid Slack configuration", "error", err)
 		os.Exit(1)
+	}
+	if loggingOnly {
+		if deps.SlackChannelID != "" {
+			logger.Warn(loggingOnlyWarning(deps.SlackChannelID), "channel", deps.SlackChannelID)
+		} else {
+			logger.Warn(loggingOnlyWarning(deps.SlackChannelID))
+		}
 	}
 
 	lambda.Start(func(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
 		return alert.HandleAlertDispatcher(ctx, deps, sqsEvent)
 	})
+}
+
+// loggingOnlyWarning returns the startup warning for logging-only mode. A
+// channel without a token is likely an operator slip, so that case says
+// plainly that alerts are not reaching Slack.
+func loggingOnlyWarning(channelID string) string {
+	if channelID != "" {
+		return "SLACK_CHANNEL_ID is set but no Slack token is configured (SLACK_BOT_TOKEN / SLACK_SECRET_ARN); alerts are NOT delivered to Slack, logging-only mode"
+	}
+	return "no Slack token configured (SLACK_BOT_TOKEN / SLACK_SECRET_ARN); running in logging-only mode"
+}
+
+// slackMode decides how the dispatcher delivers alerts. With no token it runs
+// in logging-only mode, which is what the Terraform defaults produce. Two
+// cases are misconfigurations and must stop startup: a token without a
+// channel, since every Slack post would fail, and a configured
+// SLACK_SECRET_ARN whose secret is empty, since the operator asked for Slack
+// delivery and would otherwise lose it silently.
+func slackMode(token, channelID string, secretConfigured bool) (loggingOnly bool, err error) {
+	if token == "" && secretConfigured {
+		return false, errors.New("the secret named by SLACK_SECRET_ARN is empty")
+	}
+	if token == "" {
+		return true, nil
+	}
+	if channelID == "" {
+		return false, errors.New("a Slack token is configured but SLACK_CHANNEL_ID is empty")
+	}
+	return false, nil
 }
