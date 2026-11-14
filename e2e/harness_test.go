@@ -2,8 +2,9 @@
 
 // Package e2e drives the deployed Lambdas on LocalStack through the compose
 // stack in docker-compose.yml (run it with `make e2e`). The helpers below
-// write the inputs a producer would write, read the mock clock and job, and
-// read back what the Lambdas did.
+// write the inputs a producer would write, move the mock clock, stand in for
+// the EventBridge rule and Scheduler the e2e deploy leaves out, and read back
+// what the Lambdas did.
 //
 // Every scenario shares one stack and one forward-only clock. So each
 // scenario uses its own pipeline ID and its own simulated day, scenarios run
@@ -12,13 +13,16 @@ package e2e
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,27 +32,39 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	sfntypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // Resource names as deploy/localstack/deploy.py creates them (INTERLOCK_ENV=local).
 const (
-	prefix       = "local-interlock"
-	controlTable = prefix + "-control"
+	prefix          = "local-interlock"
+	controlTable    = prefix + "-control"
+	eventsTable     = prefix + "-events"
+	schedulesTable  = prefix + "-schedules"
+	alertQueue      = prefix + "-alerts"
+	watchdogFn      = prefix + "-watchdog"
+	stateMachineARN = "arn:aws:states:us-east-1:000000000000:stateMachine:" + prefix + "-pipeline"
 
 	// mockURLForLambdas is the mock as the Lambda containers reach it.
 	mockURLForLambdas = "http://mock:8080"
 
-	pollInterval = 500 * time.Millisecond
-	readyTimeout = 2 * time.Minute
-	callTimeout  = 30 * time.Second
+	pollInterval     = 500 * time.Millisecond
+	readyTimeout     = 2 * time.Minute
+	callTimeout      = 30 * time.Second
+	idleTimeout      = 2 * time.Minute // for running executions to park in a Wait state
+	alertWaitSeconds = 1               // SQS long-poll wait per receive
 )
 
 var (
 	mockURL   string
 	ddb       *dynamodb.Client
 	lambdaAPI *lambda.Client
+	sfnAPI    *sfn.Client
+	sqsAPI    *sqs.Client
 )
 
 // TestMain refuses to run outside the compose stack, then waits for
@@ -74,6 +90,7 @@ func setup() error {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
 	ddb, lambdaAPI = dynamodb.NewFromConfig(cfg), lambda.NewFromConfig(cfg)
+	sfnAPI, sqsAPI = sfn.NewFromConfig(cfg), sqs.NewFromConfig(cfg)
 
 	checks := []struct {
 		what  string
@@ -268,4 +285,323 @@ func triggerStatus(t *testing.T, pipeline, schedule, date string) string {
 		t.Fatalf("%s for %s has status %#v, want a string", sk, pipeline, out.Item["status"])
 	}
 	return s.Value
+}
+
+// advanceTo moves the simulated clock forward to at. It first waits until
+// the state machine has no Task in progress: every RUNNING execution is
+// parked in a Wait state (its latest history event is WaitStateEntered). That
+// still lets a scenario move the clock mid-run (an SLA warning while a job is
+// polling). It does not cover the stream- and EventBridge-fed Lambdas that
+// run outside the state machine (stream-router, event-sink):
+// tests wait for the effects of that work themselves before advancing. A
+// Wait can end on real time right after the check; with waits of seconds
+// that window is small but not zero. A direct invoke the test makes is
+// synchronous, so none is in flight here.
+func advanceTo(t *testing.T, at time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(idleTimeout)
+	for busy := busyExecutions(t); len(busy) > 0; busy = busyExecutions(t) {
+		if time.Now().After(deadline) {
+			t.Fatalf("advanceTo %s: executions not parked in a Wait state after %s: %v",
+				at.Format(time.RFC3339), idleTimeout, busy)
+		}
+		time.Sleep(pollInterval)
+	}
+	mockDo(t, http.MethodPost, "/clock/advance", map[string]string{"to": at.UTC().Format(time.RFC3339)}, http.StatusOK)
+}
+
+// busyExecutions lists the RUNNING executions whose latest history event is
+// not WaitStateEntered, as "name (event type)".
+func busyExecutions(t *testing.T) []string {
+	t.Helper()
+	var busy []string
+	for _, e := range runningExecutions(t) {
+		ctx, cancel := callCtx()
+		out, err := sfnAPI.GetExecutionHistory(ctx, &sfn.GetExecutionHistoryInput{
+			ExecutionArn: e.ExecutionArn, ReverseOrder: true, MaxResults: 1,
+		})
+		cancel()
+		if err != nil {
+			t.Fatalf("history of execution %s: %v", aws.ToString(e.Name), err)
+		}
+		latest := sfntypes.HistoryEventType("none")
+		if len(out.Events) > 0 {
+			latest = out.Events[0].Type
+		}
+		if latest != sfntypes.HistoryEventTypeWaitStateEntered {
+			busy = append(busy, fmt.Sprintf("%s (%s)", aws.ToString(e.Name), latest))
+		}
+	}
+	return busy
+}
+
+func runningExecutions(t *testing.T) []sfntypes.ExecutionListItem {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	var running []sfntypes.ExecutionListItem
+	p := sfn.NewListExecutionsPaginator(sfnAPI, &sfn.ListExecutionsInput{
+		StateMachineArn: aws.String(stateMachineARN), StatusFilter: sfntypes.ExecutionStatusRunning,
+	})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			t.Fatalf("list running executions: %v", err)
+		}
+		running = append(running, page.Executions...)
+	}
+	return running
+}
+
+// invoke calls a Lambda synchronously and fails on an invoke or function error.
+func invoke(t *testing.T, fn string, payload []byte) {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	out, err := lambdaAPI.Invoke(ctx, &lambda.InvokeInput{FunctionName: aws.String(fn), Payload: payload})
+	if err != nil {
+		t.Fatalf("invoke %s: %v", fn, err)
+	}
+	if out.FunctionError != nil {
+		t.Fatalf("invoke %s: %s: %s", fn, aws.ToString(out.FunctionError), out.Payload)
+	}
+}
+
+// invokeWatchdog runs one watchdog pass, standing in for its EventBridge rule.
+func invokeWatchdog(t *testing.T) {
+	t.Helper()
+	invoke(t, watchdogFn, []byte("{}"))
+}
+
+// event is one row event-sink wrote to the events table.
+type event struct {
+	Type string
+	Date string
+	At   time.Time // the publisher's (simulated) clock
+}
+
+// events returns the pipeline's events oldest first. event-sink keys them
+// PK=PIPELINE#<id>, SK=<unix millis>#<detail type>, so events stamped in the
+// same simulated millisecond sort by type, and two of the same type in the
+// same millisecond overwrite each other. Assert order only between events
+// that are causally ordered.
+func events(t *testing.T, pipeline string) []event {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	type row struct {
+		EventType string `dynamodbav:"eventType"`
+		Date      string `dynamodbav:"date"`
+		Timestamp int64  `dynamodbav:"timestamp"`
+	}
+	var out []event
+	p := dynamodb.NewQueryPaginator(ddb, &dynamodb.QueryInput{
+		TableName:              aws.String(eventsTable),
+		ConsistentRead:         aws.Bool(true),
+		KeyConditionExpression: aws.String("PK = :pk"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":pk": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipeline)},
+		},
+	})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			t.Fatalf("query events for %s: %v", pipeline, err)
+		}
+		var rows []row
+		if err := attributevalue.UnmarshalListOfMaps(page.Items, &rows); err != nil {
+			t.Fatalf("decode events for %s: %v", pipeline, err)
+		}
+		for _, r := range rows {
+			out = append(out, event{Type: r.EventType, Date: r.Date, At: time.UnixMilli(r.Timestamp).UTC()})
+		}
+	}
+	return out
+}
+
+func eventTypes(evs []event) []string {
+	out := make([]string, len(evs))
+	for i, e := range evs {
+		out[i] = e.Type
+	}
+	return out
+}
+
+// alert is one message from the alerts queue, from its EventBridge envelope.
+type alert struct {
+	Pipeline string
+	Date     string
+	Type     string
+}
+
+// alertLog keeps every alert drained from the shared queue, so a scenario
+// never loses one that another scenario's drain received.
+var alertLog struct {
+	mu      sync.Mutex
+	entries []alert
+}
+
+// alerts drains the alerts queue into alertLog, deleting each message, and
+// returns every alert seen so far for pipeline, oldest first. A drain stops
+// only after two consecutive empty long-poll receives, so a test may treat
+// an alert missing from the result as absent (once its publish has happened).
+func alerts(t *testing.T, pipeline string) []alert {
+	t.Helper()
+	alertLog.mu.Lock()
+	defer alertLog.mu.Unlock()
+	ctx, cancel := callCtx()
+	url, err := sqsAPI.GetQueueUrl(ctx, &sqs.GetQueueUrlInput{QueueName: aws.String(alertQueue)})
+	cancel()
+	if err != nil {
+		t.Fatalf("get %s url: %v", alertQueue, err)
+	}
+	for empty := 0; empty < 2; {
+		if receiveAlerts(t, url.QueueUrl) == 0 {
+			empty++
+		} else {
+			empty = 0
+		}
+	}
+	var mine []alert
+	for _, a := range alertLog.entries {
+		if a.Pipeline == pipeline {
+			mine = append(mine, a)
+		}
+	}
+	return mine
+}
+
+// receiveAlerts does one long-poll receive, moves what it got into alertLog
+// (alertLog.mu held) and deletes it, all under a fresh call context, and
+// returns how many messages it received.
+func receiveAlerts(t *testing.T, queueURL *string) int {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	out, err := sqsAPI.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+		QueueUrl: queueURL, MaxNumberOfMessages: 10, WaitTimeSeconds: alertWaitSeconds,
+	})
+	if err != nil {
+		t.Fatalf("receive from %s: %v", alertQueue, err)
+	}
+	for _, msg := range out.Messages {
+		alertLog.entries = append(alertLog.entries, parseAlert(t, aws.ToString(msg.Body)))
+		if _, err := sqsAPI.DeleteMessage(ctx, &sqs.DeleteMessageInput{QueueUrl: queueURL, ReceiptHandle: msg.ReceiptHandle}); err != nil {
+			t.Fatalf("delete alert: %v", err)
+		}
+	}
+	return len(out.Messages)
+}
+
+func parseAlert(t *testing.T, body string) alert {
+	t.Helper()
+	var env struct {
+		DetailType string               `json:"detail-type"`
+		Detail     types.InterlockEvent `json:"detail"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil || env.DetailType == "" {
+		t.Fatalf("alert body is not an interlock EventBridge event (%v): %s", err, body)
+	}
+	if env.Detail.PipelineID == "" {
+		t.Fatalf("alert %s has no pipelineId, so it would match no pipeline: %s", env.DetailType, body)
+	}
+	return alert{Pipeline: env.Detail.PipelineID, Date: env.Detail.Date, Type: env.DetailType}
+}
+
+// schedule is one item the e2ehooks TableScheduler recorded.
+type schedule struct {
+	Name       string `dynamodbav:"name"`
+	Expression string `dynamodbav:"expression"`
+	Timezone   string `dynamodbav:"timezone"`
+	State      string `dynamodbav:"state"`
+	TargetArn  string `dynamodbav:"targetArn"`
+	Input      string `dynamodbav:"input"`
+	at         time.Time
+}
+
+// fireDueSchedules stands in for EventBridge Scheduler. Every recorded
+// schedule that is enabled and whose at(...) time is at or before the mock's
+// now fires, earliest first (ties by name): the item is deleted (the stand-in
+// does not record ActionAfterCompletion, and a failed invoke must not leave
+// it for the next scenario), then its target is invoked with its input. An
+// empty state counts as enabled, the Scheduler default; the Lambdas never set
+// one. It returns how many schedules it scanned and how many it fired.
+func fireDueSchedules(t *testing.T) (scanned, fired int) {
+	t.Helper()
+	due, scanned := dueSchedules(t, mockNow(t))
+	for _, s := range due {
+		if s.TargetArn == "" {
+			t.Fatalf("schedule %s has no targetArn", s.Name)
+		}
+		ctx, cancel := callCtx()
+		_, err := ddb.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+			TableName: aws.String(schedulesTable),
+			Key:       map[string]ddbtypes.AttributeValue{"name": &ddbtypes.AttributeValueMemberS{Value: s.Name}},
+		})
+		cancel()
+		if err != nil {
+			t.Fatalf("delete schedule %s: %v", s.Name, err)
+		}
+		invoke(t, s.TargetArn, []byte(s.Input)) // its own call context
+	}
+	return scanned, len(due)
+}
+
+// dueSchedules scans the schedules table and returns the enabled schedules
+// due at now, earliest first (ties by name), and how many items it scanned.
+func dueSchedules(t *testing.T, now time.Time) (due []schedule, scanned int) {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	p := dynamodb.NewScanPaginator(ddb, &dynamodb.ScanInput{TableName: aws.String(schedulesTable), ConsistentRead: aws.Bool(true)})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			t.Fatalf("scan %s: %v", schedulesTable, err)
+		}
+		scanned += len(page.Items)
+		var batch []schedule
+		if err := attributevalue.UnmarshalListOfMaps(page.Items, &batch); err != nil {
+			t.Fatalf("decode schedules: %v", err)
+		}
+		for _, s := range batch {
+			if s.State != "" && s.State != "ENABLED" {
+				continue
+			}
+			at, err := parseScheduleTime(s.Expression, s.Timezone)
+			if err != nil {
+				t.Fatalf("schedule %s: %v", s.Name, err)
+			}
+			if !at.After(now) {
+				s.at = at
+				due = append(due, s)
+			}
+		}
+	}
+	slices.SortFunc(due, func(a, b schedule) int {
+		return cmp.Or(a.at.Compare(b.at), cmp.Compare(a.Name, b.Name))
+	})
+	return due, scanned
+}
+
+// parseScheduleTime reads a one-time "at(2006-01-02T15:04:05)" expression in
+// the IANA zone tz (UTC when empty).
+func parseScheduleTime(expr, tz string) (time.Time, error) {
+	inner, ok := strings.CutPrefix(expr, "at(")
+	inner, closed := strings.CutSuffix(inner, ")")
+	if !ok || !closed {
+		return time.Time{}, fmt.Errorf("%q is not an at(...) expression", expr)
+	}
+	loc := time.UTC
+	if tz != "" {
+		var err error
+		if loc, err = time.LoadLocation(tz); err != nil {
+			return time.Time{}, fmt.Errorf("timezone %q: %w", tz, err)
+		}
+	}
+	at, err := time.ParseInLocation("2006-01-02T15:04:05", inner, loc)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%q: %w", expr, err)
+	}
+	return at, nil
 }
