@@ -27,7 +27,7 @@ cd interlock
 ./deploy/build.sh
 ```
 
-This produces zip files in the `dist/` directory for all four Lambda functions.
+This produces one zip file per Lambda function (six in total) in the `deploy/dist/` directory.
 
 ### 2. Reference the Module
 

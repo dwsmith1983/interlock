@@ -11,13 +11,16 @@ rm -rf "$DIST_DIR"
 
 echo "==> Building Lambda handlers for linux/arm64"
 for handler in "${LAMBDA_HANDLERS[@]}"; do
-    out="$DIST_DIR/$handler/bootstrap"
-    mkdir -p "$(dirname "$out")"
+    out_dir="$DIST_DIR/$handler"
+    mkdir -p "$out_dir"
     CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
         go build -tags lambda.norpc -ldflags="-s -w" \
-        -o "$out" "$ROOT_DIR/cmd/lambda/$handler"
+        -o "$out_dir/bootstrap" "$ROOT_DIR/cmd/lambda/$handler"
+
+    # Zip the bootstrap binary (must be at the root of the zip, not in a subdir)
+    (cd "$out_dir" && zip -q "../$handler.zip" bootstrap)
     echo "    built $handler"
 done
 
 echo "==> Build complete"
-ls -la "$DIST_DIR/"*/bootstrap
+ls -lh "$DIST_DIR"/*.zip

@@ -302,6 +302,7 @@ data "aws_iam_policy_document" "dynamodb_watchdog" {
     actions = [
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
     ]
     resources = [
       aws_dynamodb_table.control.arn,

@@ -164,7 +164,7 @@ The module creates CloudWatch alarms across four categories. All alarms conditio
 | Lambda errors | One per function (6 total) | `Errors >= 1` per 5-minute period |
 | Step Functions failures | One for the pipeline state machine | `ExecutionsFailed >= 1` per 5-minute period |
 | DLQ depth | One per dead-letter queue (3 total) | `ApproximateNumberOfMessagesVisible >= 1` |
-| Stream iterator age | One per DynamoDB Stream mapping (2 total) | `IteratorAge >= 300,000ms` (5 minutes) |
+| Stream iterator age | One for the stream-router function (covers both the control and joblog streams) | `IteratorAge >= 300,000ms` (5 minutes) |
 
 CloudWatch alarm state changes are reshaped via EventBridge input transformers into `INFRA_ALARM` events and routed to both event-sink and alert-dispatcher. This means infrastructure alerts appear in the events table and Slack alongside pipeline lifecycle events — no additional Go code required.
 

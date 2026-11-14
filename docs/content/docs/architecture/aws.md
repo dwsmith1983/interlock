@@ -235,7 +235,7 @@ The Terraform module creates CloudWatch alarms across four categories to monitor
 | Lambda errors | 6 (one per function) | `Errors` | `>= 1` per 5-minute period |
 | SFN failures | 1 (pipeline state machine) | `ExecutionsFailed` | `>= 1` per 5-minute period |
 | DLQ depth | 3 (control, joblog, alert queues) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
-| Stream iterator age | 2 (control, joblog streams) | `IteratorAge` | `>= 300,000ms` (5 min) |
+| Stream iterator age | 1 (stream-router, covers the control and joblog streams) | `IteratorAge` | `>= 300,000ms` (5 min) |
 
 Alarm state changes are reshaped into `INFRA_ALARM` events via EventBridge input transformers and routed to event-sink and alert-dispatcher. Optionally, alarms also publish to an SNS topic via the `sns_alarm_topic_arn` variable.
 
@@ -317,7 +317,7 @@ deploy/
 # Deploy infrastructure
 cd deploy/terraform
 terraform init
-terraform apply -var="environment=prod" -var="dist_path=../../dist"
+terraform apply -var="environment=prod" -var="dist_path=../dist"
 ```
 
 Pipeline configs are loaded by the `config_loader.tf` module and written to the control table as `CONFIG` records.

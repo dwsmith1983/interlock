@@ -20,12 +20,6 @@ locals {
     alert      = aws_sqs_queue.alert_dlq
   }
 
-  # DynamoDB stream event source mappings keyed by table name.
-  stream_mappings = {
-    control = aws_lambda_event_source_mapping.control_stream
-    joblog  = aws_lambda_event_source_mapping.joblog_stream
-  }
-
   alarm_actions = var.sns_alarm_topic_arn != "" ? [var.sns_alarm_topic_arn] : []
 }
 
@@ -109,13 +103,11 @@ resource "aws_cloudwatch_metric_alarm" "dlq_messages" {
 }
 
 # =============================================================================
-# 4. DynamoDB Stream Iterator Age Alarms — detects stream processing lag
+# 4. DynamoDB Stream Iterator Age Alarm (stream-router, both streams)
 # =============================================================================
 
 resource "aws_cloudwatch_metric_alarm" "stream_iterator_age" {
-  for_each = local.stream_mappings
-
-  alarm_name          = "${var.environment}-interlock-stream-${each.key}-iterator-age"
+  alarm_name          = "${var.environment}-interlock-stream-router-iterator-age"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
   metric_name         = "IteratorAge"
@@ -123,12 +115,11 @@ resource "aws_cloudwatch_metric_alarm" "stream_iterator_age" {
   period              = 300
   statistic           = "Maximum"
   threshold           = 300000 # 5 minutes in milliseconds
-  alarm_description   = "DynamoDB ${each.key} stream iterator age exceeds 5 minutes"
+  alarm_description   = "Stream router iterator age exceeds 5 minutes (covers both the control and joblog DynamoDB streams)"
   treat_missing_data  = "notBreaching"
 
   dimensions = {
-    FunctionName       = aws_lambda_function.stream_router.function_name
-    EventSourceMapping = each.value.uuid
+    FunctionName = aws_lambda_function.stream_router.function_name
   }
 
   alarm_actions = local.alarm_actions

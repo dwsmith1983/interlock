@@ -250,7 +250,7 @@ The Terraform module creates CloudWatch alarms that monitor infrastructure healt
 | Lambda errors | 6 (one per function) | `Errors` | `>= 1` per 5-minute period |
 | Step Functions failures | 1 | `ExecutionsFailed` | `>= 1` per 5-minute period |
 | DLQ depth | 3 (control, joblog, alert) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
-| Stream iterator age | 2 (control, joblog) | `IteratorAge` | `>= 300,000ms` (5 minutes) |
+| Stream iterator age | 1 (stream-router, covers the control and joblog streams) | `IteratorAge` | `>= 300,000ms` (5 minutes) |
 
 ### How It Works
 
