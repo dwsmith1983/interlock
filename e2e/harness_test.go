@@ -45,6 +45,7 @@ const (
 	prefix          = "local-interlock"
 	controlTable    = prefix + "-control"
 	eventsTable     = prefix + "-events"
+	joblogTable     = prefix + "-joblog"
 	schedulesTable  = prefix + "-schedules"
 	alertQueue      = prefix + "-alerts"
 	watchdogFn      = prefix + "-watchdog"
@@ -346,6 +347,36 @@ func triggerStatus(t *testing.T, pipeline, date string) string {
 		t.Fatalf("%s for %s has status %#v, want a string", sk, pipeline, out.Item["status"])
 	}
 	return s.Value
+}
+
+// jobEvents returns the event of every JOB# row in the job log for pipeline,
+// oldest first: the sort key ends in the writer's (simulated) unix millis.
+func jobEvents(t *testing.T, pipeline string) []string {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	out, err := ddb.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(joblogTable),
+		ConsistentRead:         aws.Bool(true),
+		KeyConditionExpression: aws.String("PK = :pk"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":pk": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipeline)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("query %s for %s: %v", joblogTable, pipeline, err)
+	}
+	var rows []struct {
+		Event string `dynamodbav:"event"`
+	}
+	if err := attributevalue.UnmarshalListOfMaps(out.Items, &rows); err != nil {
+		t.Fatalf("decode job log for %s: %v", pipeline, err)
+	}
+	evs := make([]string, len(rows))
+	for i, r := range rows {
+		evs[i] = r.Event
+	}
+	return evs
 }
 
 // advanceTo moves the simulated clock forward to at. It first waits until
