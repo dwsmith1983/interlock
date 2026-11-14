@@ -2,6 +2,7 @@ package lambda_test
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
@@ -104,6 +105,54 @@ func TestBuildSFNInput_AlwaysEmitsDereferencedKeys(t *testing.T) {
 			}
 			if slaMap["timezone"] != "UTC" {
 				t.Errorf("config.sla.timezone = %v, want UTC default", slaMap["timezone"])
+			}
+		})
+	}
+}
+
+func TestBuildSFNConfig_JobCheckIntervalEnv(t *testing.T) {
+	tests := []struct {
+		name   string
+		value  string
+		set    bool
+		wantJC int
+	}{
+		{name: "valid override", value: "5", set: true, wantJC: 5},
+		{name: "unset", set: false, wantJC: lambda.DefaultJobCheckIntervalSec},
+		{name: "empty", value: "", set: true, wantJC: lambda.DefaultJobCheckIntervalSec},
+		{name: "zero", value: "0", set: true, wantJC: lambda.DefaultJobCheckIntervalSec},
+		{name: "negative", value: "-3", set: true, wantJC: lambda.DefaultJobCheckIntervalSec},
+		{name: "non-integer", value: "abc", set: true, wantJC: lambda.DefaultJobCheckIntervalSec},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Arrange: t.Setenv also restores the variable after the subtest,
+			// so "unset" clears it explicitly for a clean starting state.
+			t.Setenv(lambda.JobCheckIntervalEnv, "")
+			if !tt.set {
+				if err := os.Unsetenv(lambda.JobCheckIntervalEnv); err != nil {
+					t.Fatalf("unset %s: %v", lambda.JobCheckIntervalEnv, err)
+				}
+			} else {
+				t.Setenv(lambda.JobCheckIntervalEnv, tt.value)
+			}
+
+			// Act
+			got := lambda.BuildSFNConfig(baseConfig())
+
+			// Assert
+			if got.JobCheckIntervalSeconds != tt.wantJC {
+				t.Errorf("JobCheckIntervalSeconds = %d, want %d", got.JobCheckIntervalSeconds, tt.wantJC)
+			}
+			if got.EvaluationIntervalSeconds != 300 {
+				t.Errorf("EvaluationIntervalSeconds = %d, want 300", got.EvaluationIntervalSeconds)
+			}
+			if got.EvaluationWindowSeconds != 3600 {
+				t.Errorf("EvaluationWindowSeconds = %d, want 3600", got.EvaluationWindowSeconds)
+			}
+			if got.JobPollWindowSeconds != lambda.DefaultJobPollWindowSec {
+				t.Errorf("JobPollWindowSeconds = %d, want %d", got.JobPollWindowSeconds, lambda.DefaultJobPollWindowSec)
 			}
 		})
 	}
