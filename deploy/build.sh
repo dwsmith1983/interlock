@@ -6,6 +6,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
 LAMBDA_HANDLERS=(stream-router orchestrator sla-monitor watchdog event-sink alert-dispatcher)
 
+command -v zip >/dev/null || { echo "zip is required (apt install zip / brew install zip)" >&2; exit 1; }
+
 echo "==> Cleaning dist directory"
 rm -rf "$DIST_DIR"
 

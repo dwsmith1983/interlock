@@ -12,6 +12,7 @@ Interlock ships as a reusable Terraform module in `deploy/terraform/`. The modul
 - AWS CLI v2 configured with appropriate credentials
 - AWS provider >= 5.0
 - Go 1.24+ (to build Lambda binaries)
+- `zip` (used by `deploy/build.sh` to package each handler)
 
 ## Quick Start
 

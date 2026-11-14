@@ -115,7 +115,7 @@ module "interlock" {
   source = "github.com/dwsmith1983/interlock//deploy/terraform"
 
   environment    = "production"
-  dist_path      = "./dist"
+  dist_path      = "path/to/interlock/deploy/dist"  # output of ./deploy/build.sh
   pipelines_path = "./pipelines"
 
   tags = {
