@@ -35,9 +35,10 @@ func (s *Store) WriteJobEvent(ctx context.Context, pipelineID, schedule, date, e
 		opt(&o)
 	}
 
-	timestamp := fmt.Sprintf("%d", time.Now().UTC().UnixMilli())
+	now := s.now()
+	timestamp := fmt.Sprintf("%d", now.UTC().UnixMilli())
 	sk := types.JobSK(schedule, date, timestamp)
-	ttl := time.Now().Add(30 * 24 * time.Hour).Unix()
+	ttl := now.Add(30 * 24 * time.Hour).Unix()
 
 	item := map[string]ddbtypes.AttributeValue{
 		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},

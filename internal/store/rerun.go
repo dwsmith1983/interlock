@@ -26,7 +26,7 @@ func (s *Store) WriteRerun(ctx context.Context, pipelineID, schedule, date, reas
 	}
 
 	attempt := count
-	now := time.Now()
+	now := s.now()
 
 	rec := types.RerunRecord{
 		PK:          types.PipelinePK(pipelineID),

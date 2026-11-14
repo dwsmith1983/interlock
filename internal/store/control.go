@@ -257,7 +257,7 @@ func (s *Store) DeleteSensor(ctx context.Context, pipelineID, sensorKey string) 
 // The stream-router picks this up via DynamoDB streams and validates
 // via the circuit breaker before starting a new SFN execution.
 func (s *Store) WriteRerunRequest(ctx context.Context, pipelineID, schedule, date, reason string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := s.now().UTC().Format(time.RFC3339)
 	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &s.ControlTable,
 		Item: map[string]ddbtypes.AttributeValue{
@@ -277,7 +277,7 @@ func (s *Store) WriteRerunRequest(ctx context.Context, pipelineID, schedule, dat
 // The write is conditional (attribute_not_exists) so repeated calls are
 // idempotent — the original triggeredAt is preserved.
 func (s *Store) WriteDryRunMarker(ctx context.Context, pipelineID, schedule, date string, triggeredAt time.Time) (bool, error) {
-	ttlEpoch := time.Now().Add(7 * 24 * time.Hour).Unix()
+	ttlEpoch := s.now().Add(7 * 24 * time.Hour).Unix()
 	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &s.ControlTable,
 		Item: map[string]ddbtypes.AttributeValue{
@@ -329,7 +329,7 @@ func (s *Store) GetDryRunMarker(ctx context.Context, pipelineID, schedule, date 
 // schedule, and date. Returns true if the lock was acquired, false if it is
 // already held. The lock is set with a TTL for automatic expiration.
 func (s *Store) AcquireTriggerLock(ctx context.Context, pipelineID, schedule, date string, ttl time.Duration) (bool, error) {
-	ttlEpoch := time.Now().Add(ttl).Unix()
+	ttlEpoch := s.now().Add(ttl).Unix()
 
 	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &s.ControlTable,
@@ -450,7 +450,7 @@ func (s *Store) HasTriggerForDate(ctx context.Context, pipelineID, schedule, dat
 // more time than the original TTL allowed. Returns (true, nil) if the row
 // existed and was updated, (false, nil) if the row does not exist.
 func (s *Store) ResetTriggerLock(ctx context.Context, pipelineID, schedule, date string, ttl time.Duration) (bool, error) {
-	ttlEpoch := fmt.Sprintf("%d", time.Now().Add(ttl).Unix())
+	ttlEpoch := fmt.Sprintf("%d", s.now().Add(ttl).Unix())
 	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.ControlTable,
 		Key: map[string]ddbtypes.AttributeValue{

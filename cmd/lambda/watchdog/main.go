@@ -59,6 +59,7 @@ func main() {
 		StartedAt:          time.Now(),
 		Logger:             logger,
 	}
+	ilambda.ApplyE2EHooks(deps, cfg)
 
 	lambda.Start(func(ctx context.Context) error {
 		return watchdog.HandleWatchdog(ctx, deps)
