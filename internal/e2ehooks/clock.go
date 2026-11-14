@@ -1,8 +1,9 @@
 //go:build e2e
 
 // Package e2ehooks holds stand-ins that let the e2e harness drive the Lambdas
-// on a simulated clock. It is compiled only with -tags e2e; production
-// binaries never link it.
+// on a simulated clock and record EventBridge Scheduler schedules in a
+// DynamoDB table. It is compiled only with -tags e2e; production binaries
+// never link it.
 package e2ehooks
 
 import (
