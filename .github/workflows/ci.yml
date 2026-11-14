@@ -10,8 +10,41 @@ permissions:
   contents: read
 
 jobs:
-  quality-gate:
-    name: Quality Gate
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # code is an exclude list on purpose: Go tests read non-Go files (the
+      # ASL, Terraform and LocalStack deploy files), so anything that is not
+      # docs counts as code. With 'every', a file counts only when it matches
+      # '**' and none of the negated docs patterns. The quantifier applies to
+      # every filter; docs has a single pattern, so 'every' means any file
+      # under docs/.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          predicate-quantifier: 'every'
+          filters: |
+            code:
+              - '**'
+              - '!docs/**'
+              - '!**/*.md'
+              - '!LICENSE'
+            docs:
+              - 'docs/**'
+
+  lint:
+    name: Lint
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,8 +54,142 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install golangci-lint v2
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+      - name: Install golangci-lint v2.15.0
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
 
-      - name: Run quality gate
-        run: make audit
+      - name: Lint
+        run: make lint
+
+  test:
+    name: Test (race)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: make test
+
+  e2e-hooks:
+    name: E2E hooks
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet and test with -tags e2e
+        run: make e2e-check
+
+  build-guards:
+    name: Build guards
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check e2e hook wiring and linking
+        run: make guards
+
+  # Same build as docs.yml, without the upload, so a broken site fails the
+  # Quality Gate before merge.
+  docs-build:
+    name: Docs build
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    env:
+      HUGO_VERSION: "0.154.5"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Hugo
+        run: |
+          wget -O hugo.deb "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.deb"
+          sudo dpkg -i hugo.deb
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: docs/go.mod
+          cache-dependency-path: docs/go.sum
+
+      - name: Build site
+        working-directory: docs
+        run: hugo --gc --minify --baseURL "https://dwsmith1983.github.io/interlock/"
+
+  # The main ruleset requires this check by name. It runs on every PR, and
+  # passes only when each check succeeded, or was skipped because its paths
+  # did not change.
+  quality-gate:
+    name: Quality Gate
+    needs: [changes, lint, test, e2e-hooks, build-guards, docs-build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        env:
+          CODE: ${{ needs.changes.outputs.code }}
+          DOCS: ${{ needs.changes.outputs.docs }}
+          CHANGES: ${{ needs.changes.result }}
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+          E2E_HOOKS: ${{ needs.e2e-hooks.result }}
+          BUILD_GUARDS: ${{ needs.build-guards.result }}
+          DOCS_BUILD: ${{ needs.docs-build.result }}
+        run: |
+          status=0
+          echo "changes: $CHANGES (code=$CODE, docs=$DOCS)"
+          if [ "$CHANGES" != "success" ]; then
+            echo "FAIL: changes did not succeed"
+            status=1
+          fi
+          check_flag() {
+            if [ "$2" != "true" ] && [ "$2" != "false" ]; then
+              echo "FAIL: $1 output is '$2', expected true or false"
+              status=1
+            fi
+          }
+          check_flag code "$CODE"
+          check_flag docs "$DOCS"
+          # check <job> <result> <filter output that gates the job>
+          check() {
+            echo "$1: $2"
+            case "$2" in
+              success) ;;
+              skipped)
+                if [ "$3" != "false" ]; then
+                  echo "FAIL: $1 was skipped although its paths changed"
+                  status=1
+                fi
+                ;;
+              *)
+                echo "FAIL: $1 did not succeed"
+                status=1
+                ;;
+            esac
+          }
+          check lint "$LINT" "$CODE"
+          check test "$TEST" "$CODE"
+          check e2e-hooks "$E2E_HOOKS" "$CODE"
+          check build-guards "$BUILD_GUARDS" "$CODE"
+          check docs-build "$DOCS_BUILD" "$DOCS"
+          exit "$status"
