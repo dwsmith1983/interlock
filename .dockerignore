@@ -1,0 +1,19 @@
+# Build context for e2e/mock/Dockerfile and e2e/harness.Dockerfile. Patterns
+# without **/ match at the context root only.
+.git
+.github
+.idea
+.vscode
+.claude
+.superpowers
+.worktrees
+**/.terraform
+**/__pycache__
+**/.DS_Store
+deploy/dist
+deploy/localstack/dist
+docs
+**/*.out
+**/.env*
+**/*.tfstate*
+**/*.tfvars

@@ -4,6 +4,13 @@
 // on a simulated clock and record EventBridge Scheduler schedules in a
 // DynamoDB table. It is compiled only with -tags e2e; production binaries
 // never link it.
+//
+// The harness (e2e/, run by `make e2e`) must keep this contract:
+//   - the clock only moves forward within one deployment;
+//   - it is never advanced while an invocation is running;
+//   - the clock server is up before any Lambda cold starts and outlives
+//     every in-flight invocation (HTTPClock panics when it cannot read it);
+//   - LocalStack DynamoDB TTL stays off, so rows never expire on wall time.
 package e2ehooks
 
 import (

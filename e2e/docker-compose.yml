@@ -1,0 +1,68 @@
+# LocalStack end-to-end stack: `make e2e` from the repo root.
+#
+# LocalStack starts each Lambda in its own container on the interlock-e2e
+# network, which is why the network has a fixed name: those containers reach
+# LocalStack as `localstack` and the mock clock and job server as `mock`.
+# Nothing from the repo is mounted; the harness image copies the source.
+name: interlock-e2e
+
+networks:
+  e2e:
+    name: interlock-e2e
+
+services:
+  localstack:
+    image: localstack/localstack:3.7.2
+    networks: [e2e]
+    # Time to stop the Lambda containers it started before it is killed.
+    stop_grace_period: 30s
+    environment:
+      SERVICES: lambda,dynamodb,dynamodbstreams,events,sqs,stepfunctions,iam,logs
+      LAMBDA_DOCKER_NETWORK: interlock-e2e
+      DEBUG: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  mock:
+    build:
+      context: ..
+      dockerfile: e2e/mock/Dockerfile
+    networks: [e2e]
+    environment:
+      # A fixed simulated start, so its dates never match the real ones.
+      MOCK_CLOCK_START: "2026-03-02T09:00:00Z"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  harness:
+    build:
+      context: ..
+      dockerfile: e2e/harness.Dockerfile
+    networks: [e2e]
+    depends_on:
+      localstack:
+        condition: service_healthy
+      mock:
+        condition: service_healthy
+    environment:
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      E2E_MOCK_URL: http://mock:8080
+    command:
+      - bash
+      - -c
+      - >-
+        EXTRA_TAGS=e2e bash deploy/localstack/build.sh &&
+        python deploy/localstack/deploy.py deploy --e2e &&
+        go test -tags e2e -count=1 -v ./e2e/...

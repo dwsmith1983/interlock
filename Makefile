@@ -1,4 +1,4 @@
-.PHONY: test build-lambda lint fmt vet clean audit e2e-check guards
+.PHONY: test build-lambda lint fmt vet clean audit e2e-check guards e2e
 
 # Only e2e builds may link this package; audit checks both directions.
 E2EHOOKS_PKG := github.com/dwsmith1983/interlock/internal/e2ehooks
@@ -41,6 +41,15 @@ guards:
 	echo 'audit: ok: -tags e2e Lambda build links $(E2EHOOKS_PKG)'
 
 audit: lint test e2e-check guards
+
+# LocalStack end-to-end run (needs Docker). Always tears the stack down, also
+# on Ctrl-C or a CI cancel, and keeps the harness exit code. Not part of audit.
+E2E_COMPOSE := docker compose -f e2e/docker-compose.yml
+
+e2e:
+	@trap '$(E2E_COMPOSE) down -v --remove-orphans; exit 130' INT TERM; \
+	$(E2E_COMPOSE) up --build --abort-on-container-exit --exit-code-from harness; rc=$$?; \
+	trap - INT TERM; $(E2E_COMPOSE) down -v --remove-orphans; exit $$rc
 
 clean:
 	rm -rf deploy/dist/
