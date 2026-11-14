@@ -19,6 +19,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       docs: ${{ steps.filter.outputs.docs }}
+      deploy_scripts: ${{ steps.filter.outputs.deploy_scripts }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,8 +27,8 @@ jobs:
       # ASL, Terraform and LocalStack deploy files), so anything that is not
       # docs counts as code. With 'every', a file counts only when it matches
       # '**' and none of the negated docs patterns. The quantifier applies to
-      # every filter; docs has a single pattern, so 'every' means any file
-      # under docs/.
+      # every filter; docs and deploy_scripts each have a single pattern, so
+      # 'every' means any file under that directory.
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -40,6 +41,8 @@ jobs:
               - '!LICENSE'
             docs:
               - 'docs/**'
+            deploy_scripts:
+              - 'deploy/localstack/**'
 
   lint:
     name: Lint
@@ -108,6 +111,27 @@ jobs:
       - name: Check e2e hook wiring and linking
         run: make guards
 
+  deploy-scripts:
+    name: Deploy script tests
+    needs: changes
+    if: needs.changes.outputs.deploy_scripts == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: deploy/localstack/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r deploy/localstack/requirements.txt
+
+      - name: Run deploy.py unit tests
+        working-directory: deploy/localstack
+        run: python -m unittest -v test_deploy
+
   # Same build as docs.yml, without the upload, so a broken site fails the
   # Quality Gate before merge.
   docs-build:
@@ -141,7 +165,7 @@ jobs:
   # did not change.
   quality-gate:
     name: Quality Gate
-    needs: [changes, lint, test, e2e-hooks, build-guards, docs-build]
+    needs: [changes, lint, test, e2e-hooks, build-guards, docs-build, deploy-scripts]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -149,15 +173,17 @@ jobs:
         env:
           CODE: ${{ needs.changes.outputs.code }}
           DOCS: ${{ needs.changes.outputs.docs }}
+          DEPLOY_SCRIPTS: ${{ needs.changes.outputs.deploy_scripts }}
           CHANGES: ${{ needs.changes.result }}
           LINT: ${{ needs.lint.result }}
           TEST: ${{ needs.test.result }}
           E2E_HOOKS: ${{ needs.e2e-hooks.result }}
           BUILD_GUARDS: ${{ needs.build-guards.result }}
           DOCS_BUILD: ${{ needs.docs-build.result }}
+          DEPLOY_SCRIPTS_TESTS: ${{ needs.deploy-scripts.result }}
         run: |
           status=0
-          echo "changes: $CHANGES (code=$CODE, docs=$DOCS)"
+          echo "changes: $CHANGES (code=$CODE, docs=$DOCS, deploy_scripts=$DEPLOY_SCRIPTS)"
           if [ "$CHANGES" != "success" ]; then
             echo "FAIL: changes did not succeed"
             status=1
@@ -170,6 +196,7 @@ jobs:
           }
           check_flag code "$CODE"
           check_flag docs "$DOCS"
+          check_flag deploy_scripts "$DEPLOY_SCRIPTS"
           # check <job> <result> <filter output that gates the job>
           check() {
             echo "$1: $2"
@@ -192,4 +219,5 @@ jobs:
           check e2e-hooks "$E2E_HOOKS" "$CODE"
           check build-guards "$BUILD_GUARDS" "$CODE"
           check docs-build "$DOCS_BUILD" "$DOCS"
+          check deploy-scripts "$DEPLOY_SCRIPTS_TESTS" "$DEPLOY_SCRIPTS"
           exit "$status"
