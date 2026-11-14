@@ -111,6 +111,20 @@ jobs:
       - name: Check e2e hook wiring and linking
         run: make guards
 
+  # The LocalStack stack and the harness run in containers, so the job needs
+  # only the checkout. make e2e streams the compose logs and tears down.
+  e2e:
+    name: E2E (LocalStack)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the e2e suite
+        run: make e2e
+
   deploy-scripts:
     name: Deploy script tests
     needs: changes
@@ -165,7 +179,7 @@ jobs:
   # did not change.
   quality-gate:
     name: Quality Gate
-    needs: [changes, lint, test, e2e-hooks, build-guards, docs-build, deploy-scripts]
+    needs: [changes, lint, test, e2e-hooks, build-guards, e2e, docs-build, deploy-scripts]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -179,6 +193,7 @@ jobs:
           TEST: ${{ needs.test.result }}
           E2E_HOOKS: ${{ needs.e2e-hooks.result }}
           BUILD_GUARDS: ${{ needs.build-guards.result }}
+          E2E: ${{ needs.e2e.result }}
           DOCS_BUILD: ${{ needs.docs-build.result }}
           DEPLOY_SCRIPTS_TESTS: ${{ needs.deploy-scripts.result }}
         run: |
@@ -218,6 +233,7 @@ jobs:
           check test "$TEST" "$CODE"
           check e2e-hooks "$E2E_HOOKS" "$CODE"
           check build-guards "$BUILD_GUARDS" "$CODE"
+          check e2e "$E2E" "$CODE"
           check docs-build "$DOCS_BUILD" "$DOCS"
           check deploy-scripts "$DEPLOY_SCRIPTS_TESTS" "$DEPLOY_SCRIPTS"
           exit "$status"
