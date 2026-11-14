@@ -1580,7 +1580,7 @@ func TestSLAMonitor_Cancel_RecalculateError_Propagates(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSLAScheduleName_Deterministic(t *testing.T) {
-	// slaScheduleName is internal, but we verify determinism via schedule creation.
+	// Verify determinism through schedule creation, not by calling SLAScheduleName directly.
 	sched := &mockScheduler{}
 	d := &lambda.Deps{
 		Scheduler:          sched,
