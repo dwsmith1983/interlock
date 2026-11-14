@@ -403,7 +403,7 @@ make audit           # Full quality gate (same as lint, CI blocking)
 
 ### Local Development with LocalStack
 
-Run the full Interlock stack locally against [LocalStack](https://localstack.cloud/) Community — real Lambdas, real DynamoDB streams, real Step Functions, real EventBridge — without an AWS account. EventBridge Scheduler is skipped (Pro-only feature); the `sla-monitor` Lambda no-ops scheduler calls when `SKIP_SCHEDULER=true`, which the deploy sets by default. Prerequisites: Docker, Go 1.25+, Python 3.11+, and `boto3` (`pip install -r deploy/localstack/requirements.txt`).
+Run the full Interlock stack locally against [LocalStack](https://localstack.cloud/) Community (real Lambdas, DynamoDB streams, Step Functions and EventBridge) without an AWS account. EventBridge Scheduler is skipped (Pro-only feature); the `sla-monitor` Lambda no-ops scheduler calls when `SKIP_SCHEDULER=true`, which the deploy sets by default. Prerequisites: Docker, Go 1.26+, Python 3.11+, and `boto3` (`pip install -r deploy/localstack/requirements.txt`).
 
 ```bash
 make -f deploy/localstack/Makefile localstack-all
@@ -421,7 +421,7 @@ All structured logs include `correlation_id` for cross-service tracing when the 
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - AWS CLI v2 + Terraform >= 1.5 (for deployment)
 - Slack Bot token with `chat:write` scope (for alert notifications)
 
