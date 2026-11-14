@@ -29,6 +29,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
@@ -57,6 +58,10 @@ const (
 	callTimeout      = 30 * time.Second
 	idleTimeout      = 2 * time.Minute // for running executions to park in a Wait state
 	alertWaitSeconds = 1               // SQS long-poll wait per receive
+
+	lambdaLogPrefix = "/aws/lambda/"
+	logTailLines    = 200 // per Lambda log group, in the dump after a failure
+	logDumpTimeout  = time.Minute
 )
 
 var (
@@ -65,16 +70,69 @@ var (
 	lambdaAPI *lambda.Client
 	sfnAPI    *sfn.Client
 	sqsAPI    *sqs.Client
+	logsAPI   *cloudwatchlogs.Client
 )
 
 // TestMain refuses to run outside the compose stack, then waits for
-// LocalStack, the mock and the stream mappings deploy.py created.
+// LocalStack, the mock and the stream mappings deploy.py created. When a test
+// fails it prints the tail of every Lambda's log: the Lambdas run in
+// containers LocalStack starts, so their output is not in the compose logs.
 func TestMain(m *testing.M) {
 	if err := setup(); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: %v\n", err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if code != 0 {
+		dumpLambdaLogs(os.Stdout)
+	}
+	os.Exit(code)
+}
+
+// dumpLambdaLogs writes the last logTailLines events of each Lambda log group
+// to w. It reports errors instead of returning them: the run already failed.
+func dumpLambdaLogs(w io.Writer) {
+	ctx, cancel := context.WithTimeout(context.Background(), logDumpTimeout)
+	defer cancel()
+	groups := cloudwatchlogs.NewDescribeLogGroupsPaginator(logsAPI, &cloudwatchlogs.DescribeLogGroupsInput{
+		LogGroupNamePrefix: aws.String(lambdaLogPrefix),
+	})
+	for groups.HasMorePages() {
+		page, err := groups.NextPage(ctx)
+		if err != nil {
+			_, _ = fmt.Fprintf(w, "e2e: list Lambda log groups: %v\n", err)
+			return
+		}
+		for _, g := range page.LogGroups {
+			dumpLogGroup(ctx, w, aws.ToString(g.LogGroupName))
+		}
+	}
+}
+
+// dumpLogGroup writes the group's last logTailLines events, oldest first.
+func dumpLogGroup(ctx context.Context, w io.Writer, group string) {
+	type line struct {
+		at  int64
+		msg string
+	}
+	var lines []line
+	p := cloudwatchlogs.NewFilterLogEventsPaginator(logsAPI, &cloudwatchlogs.FilterLogEventsInput{LogGroupName: aws.String(group)})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			_, _ = fmt.Fprintf(w, "e2e: read %s: %v\n", group, err)
+			break
+		}
+		for _, e := range page.Events {
+			lines = append(lines, line{aws.ToInt64(e.Timestamp), strings.TrimRight(aws.ToString(e.Message), "\n")})
+		}
+	}
+	slices.SortStableFunc(lines, func(a, b line) int { return cmp.Compare(a.at, b.at) })
+	tail := lines[max(0, len(lines)-logTailLines):]
+	_, _ = fmt.Fprintf(w, "=== %s: last %d of %d log events\n", group, len(tail), len(lines))
+	for _, l := range tail {
+		_, _ = fmt.Fprintln(w, l.msg)
+	}
 }
 
 func setup() error {
@@ -91,6 +149,7 @@ func setup() error {
 	}
 	ddb, lambdaAPI = dynamodb.NewFromConfig(cfg), lambda.NewFromConfig(cfg)
 	sfnAPI, sqsAPI = sfn.NewFromConfig(cfg), sqs.NewFromConfig(cfg)
+	logsAPI = cloudwatchlogs.NewFromConfig(cfg)
 
 	checks := []struct {
 		what  string
@@ -259,13 +318,15 @@ func writeSensor(t *testing.T, pipeline, key string, data map[string]interface{}
 	putItem(t, item)
 }
 
-// triggerStatus is the status of the TRIGGER# row, or "" when there is none.
-// A row whose status is missing or not a string fails the test.
-func triggerStatus(t *testing.T, pipeline, schedule, date string) string {
+// triggerStatus is the status of the pipeline's TRIGGER# row for date, or ""
+// when there is none. Every e2e pipeline is sensor-triggered, so the row is
+// on the stream schedule. A row whose status is missing or not a string fails
+// the test.
+func triggerStatus(t *testing.T, pipeline, date string) string {
 	t.Helper()
 	ctx, cancel := callCtx()
 	defer cancel()
-	sk := types.TriggerSK(schedule, date)
+	sk := types.TriggerSK(streamSchedule, date)
 	out, err := ddb.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName:      aws.String(controlTable),
 		ConsistentRead: aws.Bool(true),
@@ -519,16 +580,19 @@ type schedule struct {
 	at         time.Time
 }
 
-// fireDueSchedules stands in for EventBridge Scheduler. Every recorded
-// schedule that is enabled and whose at(...) time is at or before the mock's
-// now fires, earliest first (ties by name): the item is deleted (the stand-in
-// does not record ActionAfterCompletion, and a failed invoke must not leave
-// it for the next scenario), then its target is invoked with its input. An
-// empty state counts as enabled, the Scheduler default; the Lambdas never set
-// one. It returns how many schedules it scanned and how many it fired.
-func fireDueSchedules(t *testing.T) (scanned, fired int) {
+// fireDueSchedules stands in for EventBridge Scheduler for one pipeline's
+// schedules: those whose target input names pipeline. Every one that is
+// enabled and whose at(...) time is at or before the mock's now fires,
+// earliest first (ties by name): the item is deleted (the stand-in does not
+// record ActionAfterCompletion, and a failed invoke must not leave it for the
+// next scenario), then its target is invoked with its input. An empty state
+// counts as enabled, the Scheduler default; the Lambdas never set one. It
+// returns how many of the pipeline's schedules it scanned and how many it
+// fired. Other pipelines' schedules are left alone, so a scenario never
+// fires, or counts, what another one left behind.
+func fireDueSchedules(t *testing.T, pipeline string) (scanned, fired int) {
 	t.Helper()
-	due, scanned := dueSchedules(t, mockNow(t))
+	due, scanned := dueSchedules(t, pipeline, mockNow(t))
 	for _, s := range due {
 		if s.TargetArn == "" {
 			t.Fatalf("schedule %s has no targetArn", s.Name)
@@ -547,9 +611,12 @@ func fireDueSchedules(t *testing.T) (scanned, fired int) {
 	return scanned, len(due)
 }
 
-// dueSchedules scans the schedules table and returns the enabled schedules
-// due at now, earliest first (ties by name), and how many items it scanned.
-func dueSchedules(t *testing.T, now time.Time) (due []schedule, scanned int) {
+// dueSchedules scans the schedules table for pipeline's schedules and returns
+// the enabled ones due at now, earliest first (ties by name), and how many of
+// the pipeline's schedules it scanned. A schedule belongs to the pipeline
+// named by the pipelineId in its target input (the SLA monitor payload); the
+// name is no key, since long names are hashed.
+func dueSchedules(t *testing.T, pipeline string, now time.Time) (due []schedule, scanned int) {
 	t.Helper()
 	ctx, cancel := callCtx()
 	defer cancel()
@@ -559,12 +626,15 @@ func dueSchedules(t *testing.T, now time.Time) (due []schedule, scanned int) {
 		if err != nil {
 			t.Fatalf("scan %s: %v", schedulesTable, err)
 		}
-		scanned += len(page.Items)
 		var batch []schedule
 		if err := attributevalue.UnmarshalListOfMaps(page.Items, &batch); err != nil {
 			t.Fatalf("decode schedules: %v", err)
 		}
 		for _, s := range batch {
+			if schedulePipeline(t, s) != pipeline {
+				continue
+			}
+			scanned++
 			if s.State != "" && s.State != "ENABLED" {
 				continue
 			}
@@ -582,6 +652,19 @@ func dueSchedules(t *testing.T, now time.Time) (due []schedule, scanned int) {
 		return cmp.Or(a.at.Compare(b.at), cmp.Compare(a.Name, b.Name))
 	})
 	return due, scanned
+}
+
+// schedulePipeline is the pipelineId in a schedule's target input. An input
+// that is not JSON or names no pipeline fails the test.
+func schedulePipeline(t *testing.T, s schedule) string {
+	t.Helper()
+	var in struct {
+		PipelineID string `json:"pipelineId"`
+	}
+	if err := json.Unmarshal([]byte(s.Input), &in); err != nil || in.PipelineID == "" {
+		t.Fatalf("schedule %s input names no pipeline (%v): %s", s.Name, err, s.Input)
+	}
+	return in.PipelineID
 }
 
 // parseScheduleTime reads a one-time "at(2006-01-02T15:04:05)" expression in

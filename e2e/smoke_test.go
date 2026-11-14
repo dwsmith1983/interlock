@@ -57,7 +57,7 @@ func TestHarnessSmoke(t *testing.T) {
 		return launches(t, smokePipeline) >= 1
 	})
 	waitFor(t, settleTimeout, "the trigger row to reach COMPLETED", func() bool {
-		return triggerStatus(t, smokePipeline, streamSchedule, date) == types.TriggerStatusCompleted
+		return triggerStatus(t, smokePipeline, date) == types.TriggerStatusCompleted
 	})
 	if n := launches(t, smokePipeline); n != 1 {
 		t.Fatalf("mock job launches = %d, want exactly 1", n)
@@ -81,7 +81,7 @@ func TestHarnessSmoke(t *testing.T) {
 	nextDate := next.Format(smokeDateLayout)
 	advanceTo(t, next)
 	invokeWatchdog(t)
-	if got := triggerStatus(t, smokePipeline, streamSchedule, nextDate); got != types.TriggerStatusFailedFinal {
+	if got := triggerStatus(t, smokePipeline, nextDate); got != types.TriggerStatusFailedFinal {
 		t.Fatalf("trigger status for %s after the watchdog = %q, want %q", nextDate, got, types.TriggerStatusFailedFinal)
 	}
 	waitFor(t, deliverTimeout, "exactly the first run's events then SENSOR_DEADLINE_EXPIRED", func() bool {
@@ -99,7 +99,7 @@ func TestHarnessSmoke(t *testing.T) {
 	}
 
 	// No SLA is configured, so nothing may have been scheduled.
-	if scanned, fired := fireDueSchedules(t); scanned != 0 || fired != 0 {
+	if scanned, fired := fireDueSchedules(t, smokePipeline); scanned != 0 || fired != 0 {
 		t.Fatalf("schedules scanned=%d fired=%d, want 0 and 0 for a pipeline without an SLA", scanned, fired)
 	}
 

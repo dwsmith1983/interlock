@@ -1,0 +1,23 @@
+name: E2E nightly
+
+# The ci.yml e2e job runs only when a pull request or push changes code. A
+# scheduled run has no diff for its paths filter to read, so this workflow
+# runs the same suite once a day, and on demand.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E (LocalStack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the e2e suite
+        run: make e2e
