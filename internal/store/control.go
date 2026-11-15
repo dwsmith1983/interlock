@@ -478,6 +478,34 @@ func (s *Store) ResetTriggerLock(ctx context.Context, pipelineID, schedule, date
 	return true, nil
 }
 
+// RefreshRunningTriggerLock gives a RUNNING trigger row a fresh TTL. Unlike
+// ResetTriggerLock it never changes the status: it returns (false, nil) when
+// the row is missing or already COMPLETED or FAILED_FINAL.
+func (s *Store) RefreshRunningTriggerLock(ctx context.Context, pipelineID, schedule, date string, ttl time.Duration) (bool, error) {
+	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.ControlTable,
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
+		},
+		ConditionExpression:      aws.String("attribute_exists(PK) AND #status = :running"),
+		UpdateExpression:         aws.String("SET #ttl = :ttl"),
+		ExpressionAttributeNames: map[string]string{"#status": "status", "#ttl": "ttl"},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":running": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+			":ttl":     &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", s.now().Add(ttl).Unix())},
+		},
+	})
+	if err != nil {
+		var ccfe *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &ccfe) {
+			return false, nil
+		}
+		return false, fmt.Errorf("refresh trigger lock %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return true, nil
+}
+
 // SetTriggerStatus updates only the status attribute of an existing trigger row,
 // preserving TTL and other attributes.
 func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date, status string) error {

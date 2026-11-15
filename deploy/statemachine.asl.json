@@ -349,10 +349,12 @@
         "pipelineId.$": "$.pipelineId",
         "scheduleId.$": "$.scheduleId",
         "date.$": "$.date",
-        "event.$": "$.checkJobResult.event"
+        "event.$": "$.checkJobResult.event",
+        "runId.$": "$.triggerResult.runId",
+        "executionName.$": "$$.Execution.Name"
       },
       "ResultPath": "$.completeTriggerResult",
-      "Next": "CheckCancelSLA",
+      "Next": "IsRetrying",
       "Retry": [
         {
           "ErrorEquals": [
@@ -373,6 +375,18 @@
           "Next": "CheckSLAForCompleteTriggerFailure"
         }
       ]
+    },
+    "IsRetrying": {
+      "Type": "Choice",
+      "Comment": "A started retry owns the SLA schedules, so skip CancelSLA",
+      "Choices": [
+        {
+          "Variable": "$.completeTriggerResult.status",
+          "StringEquals": "retrying",
+          "Next": "Done"
+        }
+      ],
+      "Default": "CheckCancelSLA"
     },
     "CheckSLAForCompleteTriggerFailure": {
       "Type": "Choice",

@@ -161,6 +161,7 @@ func TestASL_TopLevelStatesExist(t *testing.T) {
 		"JobPollExhausted",
 		"InjectTimeoutEvent",
 		"CompleteTrigger",
+		"IsRetrying",
 		"CheckCancelSLA",
 		"TriggerRetryExhausted",
 		"FailValidationExhausted",
@@ -338,10 +339,10 @@ func TestASL_JobPollingFlow(t *testing.T) {
 	}
 	assert.True(t, foundComplete, "IsJobDone should route to CompleteTrigger")
 
-	// CompleteTrigger → CheckCancelSLA (happy path)
+	// CompleteTrigger → IsRetrying
 	var complete taskState
 	require.NoError(t, json.Unmarshal(asl.States["CompleteTrigger"], &complete))
-	assert.Equal(t, "CheckCancelSLA", complete.Next)
+	assert.Equal(t, "IsRetrying", complete.Next)
 
 	// CompleteTrigger Catch routes to CheckSLAForCompleteTriggerFailure (not Done)
 	require.NotEmpty(t, complete.Catch)
@@ -490,4 +491,34 @@ func TestASL_CompleteTriggerFailurePath(t *testing.T) {
 	var failed stateBase
 	require.NoError(t, json.Unmarshal(raw, &failed))
 	assert.Equal(t, "Fail", failed.Type)
+}
+
+// TestASL_IsRetrying: when CompleteTrigger started the next attempt, that
+// execution owns the SLA schedules, so this one ends without CancelSLA.
+func TestASL_IsRetrying(t *testing.T) {
+	asl := loadASL(t)
+
+	var complete struct {
+		Parameters map[string]string `json:"Parameters"`
+	}
+	require.NoError(t, json.Unmarshal(asl.States["CompleteTrigger"], &complete))
+	assert.Equal(t, "$.triggerResult.runId", complete.Parameters["runId.$"])
+	assert.Equal(t, "$$.Execution.Name", complete.Parameters["executionName.$"])
+
+	var choice struct {
+		Type    string `json:"Type"`
+		Choices []struct {
+			Variable     string `json:"Variable"`
+			StringEquals string `json:"StringEquals"`
+			Next         string `json:"Next"`
+		} `json:"Choices"`
+		Default string `json:"Default"`
+	}
+	require.NoError(t, json.Unmarshal(asl.States["IsRetrying"], &choice))
+	assert.Equal(t, "Choice", choice.Type)
+	require.Len(t, choice.Choices, 1)
+	assert.Equal(t, "$.completeTriggerResult.status", choice.Choices[0].Variable)
+	assert.Equal(t, "retrying", choice.Choices[0].StringEquals)
+	assert.Equal(t, "Done", choice.Choices[0].Next)
+	assert.Equal(t, "CheckCancelSLA", choice.Default)
 }

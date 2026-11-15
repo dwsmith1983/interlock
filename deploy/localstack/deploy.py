@@ -831,9 +831,9 @@ def cmd_deploy(e2e: bool = False) -> None:
     ensure_event_bus()
 
     # Lambdas need to be created before Step Functions (SFN references their
-    # ARNs) but we also need SFN's ARN for the stream-router Lambda's
-    # STATE_MACHINE_ARN env var. We break the cycle by creating Lambdas first
-    # with a computed SFN ARN (deterministic from name).
+    # ARNs) but we also need SFN's ARN for the STATE_MACHINE_ARN env var of
+    # the Lambdas that start executions. We break the cycle by creating
+    # Lambdas first with a computed SFN ARN (deterministic from name).
     predicted_sfn_arn = (
         f"arn:aws:states:{REGION}:{DUMMY_ACCOUNT_ID}:stateMachine:{STATE_MACHINE_NAME}"
     )
@@ -846,14 +846,15 @@ def cmd_deploy(e2e: bool = False) -> None:
         orch_arn=lambda_arns["orchestrator"],
         sla_arn=lambda_arns["sla-monitor"],
     )
-    # In case the predicted ARN differs, update stream-router's env
+    # In case the predicted ARN differs, update the env of the Lambdas that
+    # start executions (first runs and reruns, failure retries, reconciler).
     if sfn_arn != predicted_sfn_arn:
         lam = _client("lambda")
-        env = _lambda_env("stream-router", sfn_arn, e2e=e2e)
-        lam.update_function_configuration(
-            FunctionName=f"{PREFIX}-stream-router",
-            Environment={"Variables": env},
-        )
+        for handler in ("stream-router", "orchestrator", "watchdog"):
+            lam.update_function_configuration(
+                FunctionName=f"{PREFIX}-{handler}",
+                Environment={"Variables": _lambda_env(handler, sfn_arn, e2e=e2e)},
+            )
 
     print("--> EventBridge rules")
     ensure_event_rule_to_sink(lambda_arns["event-sink"])

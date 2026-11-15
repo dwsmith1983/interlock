@@ -243,7 +243,7 @@ Each Lambda gets its own execution role with least-privilege policies:
 | Role | Permissions |
 |---|---|
 | stream-router | DynamoDB read/write (all 3 tables), DynamoDB Streams (control + joblog), Step Functions `StartExecution`, EventBridge `PutEvents`, SQS `SendMessage` (DLQs) |
-| orchestrator | DynamoDB read/write (all 3 tables), EventBridge `PutEvents`, conditional trigger permissions |
+| orchestrator | DynamoDB read/write (all 3 tables), Step Functions `StartExecution` (failure retries), EventBridge `PutEvents`, conditional trigger permissions |
 | sla-monitor | EventBridge `PutEvents` |
 | watchdog | DynamoDB read (all 3 tables), DynamoDB write (control only), EventBridge `PutEvents` |
 

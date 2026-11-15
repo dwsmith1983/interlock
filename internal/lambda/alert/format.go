@@ -3,45 +3,72 @@ package alert
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// FormatAlertText builds the Slack message text from event detail.
+// mrkdwn escapes the characters Slack mrkdwn treats as control characters, so
+// a value can neither mention (<!channel>) nor link.
+var mrkdwn = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
+func esc(v interface{}) string { return mrkdwn.Replace(fmt.Sprint(v)) }
+
+// FormatAlertText builds the Slack message text from event detail: a header,
+// the event's message, then any known detail fields. Every value is escaped.
 func FormatAlertText(detailType string, detail types.InterlockEvent) string {
 	emoji := alertEmoji(detailType)
-	header := fmt.Sprintf("%s *%s* | %s | %s", emoji, detailType, detail.PipelineID, detail.Date)
-
-	if len(detail.Detail) == 0 {
-		return header + "\n" + detail.Message
+	text := fmt.Sprintf("%s *%s* | %s | %s", emoji, detailType, esc(detail.PipelineID), esc(detail.Date))
+	if detail.Message != "" || len(detail.Detail) == 0 {
+		text += "\n" + esc(detail.Message)
 	}
 
 	var parts []string
 	if v, ok := detail.Detail["deadline"]; ok {
 		if breachAt, ok2 := detail.Detail["breachAt"]; ok2 {
-			parts = append(parts, fmt.Sprintf("Deadline %v (%v)", v, breachAt))
+			parts = append(parts, fmt.Sprintf("Deadline %s (%s)", esc(v), esc(breachAt)))
 		} else {
-			parts = append(parts, fmt.Sprintf("Deadline %v", v))
+			parts = append(parts, "Deadline "+esc(v))
 		}
 	}
-	if v, ok := detail.Detail["status"]; ok {
-		parts = append(parts, fmt.Sprintf("Status: %v", v))
-	}
-	if v, ok := detail.Detail["source"]; ok {
-		parts = append(parts, fmt.Sprintf("Source: %v", v))
-	}
-	if v, ok := detail.Detail["cron"]; ok {
-		parts = append(parts, fmt.Sprintf("Cron: %v", v))
+	for _, f := range []struct{ key, label string }{{"status", "Status"}, {"source", "Source"}, {"cron", "Cron"}} {
+		if v, ok := detail.Detail[f.key]; ok {
+			parts = append(parts, f.label+": "+esc(v))
+		}
 	}
 
-	text := header
 	if len(parts) > 0 {
 		text += "\n" + strings.Join(parts, " · ")
 	}
 	if hint, ok := detail.Detail["actionHint"]; ok {
-		text += fmt.Sprintf("\n→ %v", hint)
+		text += "\n→ " + esc(hint)
 	}
-	return text
+	return capText(text)
+}
+
+// maxSectionChars keeps the text under Slack's 3000-character section limit.
+const maxSectionChars = 2900
+
+// capText cuts text to maxSectionChars characters, marking the cut with
+// "...". It never splits a rune or an entity such as &lt;: every & left in
+// escaped text starts one.
+func capText(text string) string {
+	if utf8.RuneCountInString(text) <= maxSectionChars {
+		return text
+	}
+	const mark = "..."
+	kept, n := text, 0
+	for i := range text {
+		if n == maxSectionChars-len(mark) {
+			kept = text[:i]
+			break
+		}
+		n++
+	}
+	if amp := strings.LastIndexByte(kept, '&'); amp >= 0 && !strings.Contains(kept[amp:], ";") {
+		kept = kept[:amp]
+	}
+	return kept + mark
 }
 
 func alertEmoji(detailType string) string {

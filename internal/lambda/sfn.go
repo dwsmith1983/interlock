@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -121,6 +123,36 @@ func TruncateExecName(name string) string {
 		return name
 	}
 	return name[len(name)-SFNExecNameMaxLen:]
+}
+
+// retrySuffixRE matches the -r<N> suffix of a failure retry's execution name.
+// First runs, reconciler runs and requested reruns end in -<unix seconds> or
+// -rerun-<unix seconds>, so they never match.
+var retrySuffixRE = regexp.MustCompile(`-r(\d+)$`)
+
+// RetriesSoFar is N from the execution name's -r<N> suffix, or 0 without one.
+// A suffix too large to parse counts as no retries left.
+func RetriesSoFar(name string) int {
+	m := retrySuffixRE.FindStringSubmatch(name)
+	if m == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return math.MaxInt
+	}
+	return n
+}
+
+// NextExecName names the failure retry after current: its -r<N> suffix is
+// replaced by (or, when absent, appended as) -r<N+1>, within the Step
+// Functions name limit.
+func NextExecName(current string) string {
+	base := current
+	if loc := retrySuffixRE.FindStringIndex(current); loc != nil {
+		base = current[:loc[0]]
+	}
+	return TruncateExecName(fmt.Sprintf("%s-r%d", base, RetriesSoFar(current)+1))
 }
 
 // StartSFN starts a Step Function execution with a unique execution name.

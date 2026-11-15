@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -53,6 +54,39 @@ func (s *Store) WriteRerun(ctx context.Context, pipelineID, schedule, date, reas
 	}
 
 	return attempt, nil
+}
+
+// WriteRerunOnce writes the rerun record for one execution, keyed by its
+// name (SK RERUN#<schedule>#<date>#<execName>), unless that row already
+// exists. It returns false when the row was already there, so a retried
+// caller adds no second row. CountReruns and CountRerunsBySource count it like
+// any other rerun row.
+func (s *Store) WriteRerunOnce(ctx context.Context, pipelineID, schedule, date, execName, reason, sourceJobEvent string) (bool, error) {
+	now := s.now()
+	item, err := attributevalue.MarshalMap(types.RerunRecord{
+		PK:             types.PipelinePK(pipelineID),
+		SK:             "RERUN#" + schedule + "#" + date + "#" + execName,
+		Reason:         reason,
+		TriggeredAt:    now,
+		SourceJobEvent: sourceJobEvent,
+		TTL:            now.Add(rerunTTL).Unix(),
+	})
+	if err != nil {
+		return false, fmt.Errorf("marshal rerun %q/%s/%s %s: %w", pipelineID, schedule, date, execName, err)
+	}
+	_, err = s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           &s.RerunTable,
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(PK)"),
+	})
+	if err != nil {
+		var ccfe *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &ccfe) {
+			return false, nil
+		}
+		return false, fmt.Errorf("put rerun %q/%s/%s %s: %w", pipelineID, schedule, date, execName, err)
+	}
+	return true, nil
 }
 
 // CountReruns returns the number of rerun records for a pipeline schedule/date.

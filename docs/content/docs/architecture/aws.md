@@ -265,7 +265,7 @@ Each Lambda function has its own IAM role with least-privilege policies:
 | Function | DynamoDB | EventBridge | Other |
 |---|---|---|---|
 | stream-router | Read/write control, joblog, rerun + stream access | PutEvents | `states:StartExecution`, SQS SendMessage (DLQs) |
-| orchestrator | Read/write control, joblog, rerun | PutEvents | Conditional trigger permissions (Glue, EMR, etc.) |
+| orchestrator | Read/write control, joblog, rerun | PutEvents | `states:StartExecution` (failure retries), conditional trigger permissions (Glue, EMR, etc.) |
 | sla-monitor | None | PutEvents | `scheduler:CreateSchedule`, `scheduler:DeleteSchedule` |
 | watchdog | Read control, joblog, rerun; write control only | PutEvents | -- |
 | event-sink | Write events table | -- | -- |
