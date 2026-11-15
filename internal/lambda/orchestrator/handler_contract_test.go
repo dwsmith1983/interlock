@@ -1,11 +1,13 @@
 package orchestrator_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -67,13 +69,15 @@ func testDeps(fake *storetest.FakeDynamo) *lambda.Deps {
 	}
 }
 
-// fakeExecutor is a lambda.TriggerExecutor double.
+// fakeExecutor is a lambda.TriggerExecutor double that keeps the config it ran.
 type fakeExecutor struct {
 	meta map[string]interface{}
 	err  error
+	got  *types.TriggerConfig
 }
 
-func (f *fakeExecutor) Execute(context.Context, *types.TriggerConfig) (map[string]interface{}, error) {
+func (f *fakeExecutor) Execute(_ context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error) {
+	f.got = cfg
 	return f.meta, f.err
 }
 
@@ -231,8 +235,8 @@ func TestTrigger_FailuresReturnLambdaError(t *testing.T) {
 // TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata guards the CheckJob
 // Parameters, which dereference both $.triggerResult.runId and
 // $.triggerResult.metadata, and the run ID each trigger type reports under.
-// Jobs without a status API (http, command, lambda) record success at once
-// under the run ID.
+// An http job reports its own result, so the trigger writes no job log row
+// for it; command and lambda still record success at once under the run ID.
 func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 	const execName = "p-s-2026-03-01-1709280000"
 	now := time.Date(2026, 3, 1, 6, 0, 0, 0, time.UTC)
@@ -248,6 +252,8 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 		job         types.JobConfig
 		meta        map[string]interface{}
 		execName    string
+		date        string // default 2026-03-01
+		wantHour    string // par_hour in the default http body; hourly dates only
 		wantRunID   string
 		wantSuccess bool // a success row under wantRunID
 	}{
@@ -255,10 +261,10 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 			meta: map[string]interface{}{"glue_job_name": "my-etl", "glue_job_run_id": "jr_1"}, wantRunID: "jr_1"},
 		{name: "polling trigger without an API run ID", job: glue, execName: execName,
 			meta: map[string]interface{}{"glue_job_name": "my-etl"}, wantRunID: execName},
-		{name: "http uses the execution name", job: httpJob, execName: execName, wantRunID: execName, wantSuccess: true},
-		{name: "http with empty metadata", job: httpJob, execName: execName, meta: map[string]interface{}{}, wantRunID: execName,
-			wantSuccess: true},
-		{name: "http without an execution name", job: httpJob, wantRunID: fallback, wantSuccess: true},
+		{name: "http uses the execution name", job: httpJob, execName: execName, wantRunID: execName},
+		{name: "http with empty metadata", job: httpJob, execName: execName, meta: map[string]interface{}{}, wantRunID: execName},
+		{name: "http without an execution name", job: httpJob, wantRunID: fallback},
+		{name: "http hourly date", job: httpJob, execName: execName, date: "2026-03-01T05", wantHour: "05", wantRunID: execName},
 		{name: "command records success under the run ID", execName: execName, wantRunID: execName, wantSuccess: true,
 			job: job(types.TriggerCommand, map[string]interface{}{"command": "echo ok"})},
 		{name: "lambda records success under the run ID", execName: execName, wantRunID: execName, wantSuccess: true,
@@ -277,10 +283,12 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 			}
 			d := testDeps(fake)
 			d.NowFunc = func() time.Time { return now }
-			d.TriggerRunner = &fakeExecutor{meta: tt.meta}
+			exec := &fakeExecutor{meta: tt.meta}
+			d.TriggerRunner = exec
 
+			date := cmp.Or(tt.date, "2026-03-01")
 			out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-				Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01", ExecutionName: tt.execName,
+				Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: date, ExecutionName: tt.execName,
 			})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -307,6 +315,24 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 				}
 			} else if len(jobRows) != 0 {
 				t.Errorf("job log rows = %v, want none", jobRows)
+			}
+
+			if tt.job.Type == types.TriggerHTTP {
+				wantRun := types.RunIdentity{PipelineID: "p", ScheduleID: "s", Date: date, RunID: tt.wantRunID}
+				if exec.got.HTTP.Run != wantRun {
+					t.Errorf("HTTP.Run = %+v, want %+v", exec.got.HTTP.Run, wantRun)
+				}
+				var body map[string]string
+				wantBody := map[string]string{"par_day": "20260301", "pipelineId": "p", "scheduleId": "s", "date": date, "runId": tt.wantRunID}
+				if tt.wantHour != "" {
+					wantBody["par_hour"] = tt.wantHour
+				}
+				if !exec.got.HTTP.BodyGenerated {
+					t.Error("default body not marked generated: it would go through variable expansion")
+				}
+				if err := json.Unmarshal([]byte(exec.got.HTTP.Body), &body); err != nil || !maps.Equal(body, wantBody) {
+					t.Errorf("default body = %s (%v), want %v", exec.got.HTTP.Body, err, wantBody)
+				}
 			}
 		})
 	}

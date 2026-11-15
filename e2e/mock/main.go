@@ -24,10 +24,14 @@ import (
 
 const defaultJobStatus = http.StatusOK
 
+// runIDHeader is the run ID the http trigger sends with each launch.
+const runIDHeader = "X-Interlock-Run-Id"
+
 // job is one pipeline's scripted outcomes and the launches seen so far.
 type job struct {
 	launches int
 	bodies   []string
+	runIDs   []string
 	pending  []int
 }
 
@@ -151,6 +155,7 @@ func (s *server) runJob(w http.ResponseWriter, r *http.Request) {
 	j := s.jobFor(r.PathValue("pipeline"))
 	j.launches++
 	j.bodies = append(j.bodies, string(body))
+	j.runIDs = append(j.runIDs, r.Header.Get(runIDHeader))
 	status := defaultJobStatus
 	if len(j.pending) > 0 {
 		status, j.pending = j.pending[0], j.pending[1:]
@@ -166,11 +171,13 @@ func (s *server) getJob(w http.ResponseWriter, r *http.Request) {
 	resp := struct {
 		Launches int      `json:"launches"`
 		Bodies   []string `json:"bodies"`
+		RunIDs   []string `json:"runIds"`
 		Pending  []int    `json:"pending"`
-	}{Bodies: []string{}, Pending: []int{}}
+	}{Bodies: []string{}, RunIDs: []string{}, Pending: []int{}}
 	if j, ok := s.jobs[r.PathValue("pipeline")]; ok {
 		resp.Launches = j.launches
 		resp.Bodies = append(resp.Bodies, j.bodies...)
+		resp.RunIDs = append(resp.RunIDs, j.runIDs...)
 		resp.Pending = append(resp.Pending, j.pending...)
 	}
 	s.mu.Unlock()

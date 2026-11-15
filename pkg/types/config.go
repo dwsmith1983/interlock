@@ -23,6 +23,23 @@ type HTTPTriggerConfig struct {
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	Body    string            `yaml:"body,omitempty" json:"body,omitempty"`
 	Timeout int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	// Run identifies the launch. The orchestrator sets it; it is never
+	// configured. Each field is sent as an X-Interlock-* header and expands
+	// as an ${INTERLOCK_*} variable, so the job can build its JOB# row.
+	Run RunIdentity `yaml:"-" json:"-"`
+	// BodyGenerated marks a Body Interlock built itself (the default body).
+	// It is sent as is, without variable expansion.
+	BodyGenerated bool `yaml:"-" json:"-"`
+}
+
+// RunIdentity is what a job needs to report its result: the JOB# row's PK
+// (pipeline), SK (schedule and date, e.g. 2026-03-01 or 2026-03-01T05) and
+// runId.
+type RunIdentity struct {
+	PipelineID string
+	ScheduleID string
+	Date       string
+	RunID      string
 }
 
 // CommandTriggerConfig holds configuration for command triggers.

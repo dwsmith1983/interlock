@@ -57,6 +57,7 @@ func getClock(t *testing.T, h http.Handler) time.Time {
 type jobState struct {
 	Launches int      `json:"launches"`
 	Bodies   []string `json:"bodies"`
+	RunIDs   []string `json:"runIds"`
 	Pending  []int    `json:"pending"`
 }
 
@@ -169,9 +170,27 @@ func TestJobRunStatusQueue(t *testing.T) {
 			t.Errorf("run %d = %d %q, want %d %s", i+1, rec.Code, rec.Body.String(), want, wantBody)
 		}
 	}
-	want := jobState{Launches: 4, Bodies: []string{`{"n":0}`, `{"n":1}`, `{"n":2}`, `{"n":3}`}, Pending: []int{}}
+	want := jobState{Launches: 4, Bodies: []string{`{"n":0}`, `{"n":1}`, `{"n":2}`, `{"n":3}`}, RunIDs: []string{"", "", "", ""}, Pending: []int{}}
 	if got := getJob(t, h, "p1"); !reflect.DeepEqual(got, want) {
 		t.Errorf("state = %+v, want %+v", got, want)
+	}
+}
+
+// Each launch's X-Interlock-Run-Id is kept in launch order, so the harness
+// can report a result for the run the trigger named.
+func TestJobRecordsRunIDs(t *testing.T) {
+	h, _ := newTestServer()
+	for _, id := range []string{"run-a", "run-b"} {
+		req := httptest.NewRequest(http.MethodPost, "/jobs/p/run", strings.NewReader("{}"))
+		req.Header.Set("X-Interlock-Run-Id", id)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("run %s = %d %q", id, rec.Code, rec.Body.String())
+		}
+	}
+	if got := getJob(t, h, "p").RunIDs; !reflect.DeepEqual(got, []string{"run-a", "run-b"}) {
+		t.Errorf("runIds = %v, want [run-a run-b]", got)
 	}
 }
 
@@ -185,7 +204,7 @@ func TestJobPipelinesIndependentAndUnknownZero(t *testing.T) {
 		t.Errorf("launches a=%d b=%d, want 2 and 1", a.Launches, b.Launches)
 	}
 	rec := do(h, http.MethodGet, "/jobs/never", "")
-	if want := `{"launches":0,"bodies":[],"pending":[]}`; rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
+	if want := `{"launches":0,"bodies":[],"runIds":[],"pending":[]}`; rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
 		t.Errorf("unknown pipeline = %d %q, want 200 %s", rec.Code, rec.Body.String(), want)
 	}
 }

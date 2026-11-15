@@ -37,9 +37,8 @@ job:
     method: POST
     url: https://api.example.com/jobs/start
     headers:
-      Authorization: "Bearer ${TOKEN}"
-      Content-Type: application/json
-    body: '{"pipeline": "${PIPELINE}", "date": "${DATE}"}'
+      Authorization: "Bearer ${INTERLOCK_API_TOKEN}"
+    body: '{"pipeline": "${INTERLOCK_PIPELINE_ID}", "date": "${INTERLOCK_DATE}", "runId": "${INTERLOCK_RUN_ID}"}'
 ```
 
 | Field | Type | Description |
@@ -47,7 +46,95 @@ job:
 | `method` | string | HTTP method (`GET`, `POST`, `PUT`) |
 | `url` | string | Target URL |
 | `headers` | map | HTTP headers |
-| `body` | string | Request body (supports template variables) |
+| `body` | string | Request body (supports [template variables](#template-variables)) |
+
+#### Run identity
+
+Every request carries the run's identity in four headers, set after the
+configured `headers` so config cannot override them. The same values expand in
+`body` and header values:
+
+| Header | Variable | Value |
+|---|---|---|
+| `X-Interlock-Pipeline-Id` | `${INTERLOCK_PIPELINE_ID}` | pipeline ID |
+| `X-Interlock-Schedule-Id` | `${INTERLOCK_SCHEDULE_ID}` | schedule ID: `stream` for sensor-triggered pipelines, `cron` for cron ones |
+| `X-Interlock-Date` | `${INTERLOCK_DATE}` | execution date: `2026-03-01`, or `2026-03-01T05` for an hourly run |
+| `X-Interlock-Run-Id` | `${INTERLOCK_RUN_ID}` | run ID (the Step Functions execution name) |
+
+In `body` the identity variables are inserted JSON-escaped (whatever the
+pipeline ID holds, the body stays valid JSON), so use them inside JSON strings.
+Header values are inserted as they are. When IDs are not plain ASCII, read them
+from the body fields rather than the headers: net/http trims leading and
+trailing whitespace and sends raw bytes in headers. A pipeline ID containing a
+control character other than tab cannot be sent in a header at all, so its http
+launches fail.
+
+With no `body`, Interlock sends `par_day` (`20260301`), `par_hour` (`05`, hourly
+dates only), `pipelineId`, `scheduleId`, `date` and `runId` as a JSON object.
+
+The run ID is an identifier, not a secret: anything that can write to the joblog
+table can report a result for any run.
+
+#### Reporting the result
+
+A 2xx response only means the job was accepted. The run stays running until the
+job writes its result to the joblog table (Terraform output `joblog_table_name`,
+named `{environment}-interlock-joblog`):
+
+| Attribute | Value |
+|---|---|
+| `PK` | `PIPELINE#` followed by `X-Interlock-Pipeline-Id` |
+| `SK` | `JOB#<X-Interlock-Schedule-Id>#<X-Interlock-Date>#<unix millis, now>` |
+| `event` | `success`, `fail` or `timeout` |
+| `runId` | `X-Interlock-Run-Id` |
+| `ttl` | recommended: expiry in unix seconds (Interlock's own rows use now + 30 days) |
+| `error` | optional failure message |
+| `category` | optional failure category: `TRANSIENT`, `PERMANENT` or `TIMEOUT` |
+
+```sh
+aws dynamodb put-item --table-name prod-interlock-joblog --item '{
+  "PK": {"S": "PIPELINE#my-pipeline"},
+  "SK": {"S": "JOB#stream#2026-03-01#1772366400000"},
+  "event": {"S": "success"},
+  "runId": {"S": "<X-Interlock-Run-Id>"},
+  "ttl": {"N": "1774958400"}
+}'
+```
+
+The job needs `dynamodb:PutItem` on the joblog table. Scope it to the
+pipeline's own partition, and keep the statement to item-level actions:
+a `Scan` names no partition key, so `ForAllValues` on `dynamodb:LeadingKeys`
+does not restrict it.
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "dynamodb:PutItem",
+  "Resource": "arn:aws:dynamodb:<region>:<account>:table/<environment>-interlock-joblog",
+  "Condition": {
+    "ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["PIPELINE#my-pipeline"]}
+  }
+}
+```
+
+What a row does:
+
+- The run's job check reads only rows whose `runId` is its own run ID. The
+  newest `success`, `fail` or `timeout` row ends the run: `success` sets the
+  trigger to `COMPLETED`, `fail` and `timeout` set it to `FAILED_FINAL`.
+- The stream-router acts on every `JOB#` row, whatever its `runId`. `success`
+  publishes `JOB_COMPLETED`. `fail` and `timeout` start its failure rerun, a new
+  execution with a new run ID, until `maxRetries` reruns have run (`maxCodeRetries`,
+  default 1, for a `PERMANENT` failure); after that it publishes
+  `RETRY_EXHAUSTED` and sets the trigger to `FAILED_FINAL`.
+
+A job that never reports: when `job.jobPollWindowSeconds` (default 3600) passes
+with no result row for the run, the orchestrator writes a `job-poll-exhausted`
+row, which the stream-router ignores (no rerun), publishes `JOB_POLL_EXHAUSTED`
+and sets the trigger to `FAILED_FINAL`. Set the window to cover the job's
+runtime. A row written after the window closes still reaches the
+stream-router (a late `fail` or `timeout` starts a rerun) but does not change
+the closed run.
 
 ### `command`
 
@@ -77,7 +164,7 @@ job:
     url: https://airflow.example.com
     dagID: my_dag
     headers:
-      Authorization: "Bearer ${AIRFLOW_TOKEN}"
+      Authorization: "Bearer ${INTERLOCK_AIRFLOW_TOKEN}"
     pollInterval: 1m
 ```
 
@@ -99,13 +186,12 @@ job:
     jobName: my-glue-etl
     arguments:
       "--pipeline": my-pipeline
-      "--date": "${DATE}"
 ```
 
 | Field | Type | Description |
 |---|---|---|
 | `jobName` | string | Glue job name |
-| `arguments` | map | Job arguments (keys prefixed with `--`) |
+| `arguments` | map | Job arguments (keys prefixed with `--`); Interlock adds `--par_day` and, for hourly dates, `--par_hour` |
 
 **Returned metadata**: `jobRunId` -- used by the orchestrator to poll `GetJobRun`.
 
@@ -180,8 +266,8 @@ job:
   config:
     workspaceURL: https://my-workspace.cloud.databricks.com
     headers:
-      Authorization: "Bearer ${DATABRICKS_TOKEN}"
-    body: '{"job_id": 12345, "notebook_params": {"date": "${DATE}"}}'
+      Authorization: "Bearer ${INTERLOCK_DATABRICKS_TOKEN}"
+    body: '{"job_id": 12345}'
 ```
 
 | Field | Type | Description |
@@ -194,14 +280,13 @@ job:
 
 ## Template Variables
 
-The `body`, `input`, and `arguments` fields support template substitution. Variables are resolved at trigger time:
+Variables are expanded when the job is triggered. Any other `${...}` expands to
+an empty string.
 
-| Variable | Value |
-|---|---|
-| `${DATE}` | Current date (`YYYY-MM-DD`) |
-| `${PIPELINE}` | Pipeline ID |
-| `${SCHEDULE}` | Schedule ID |
-| `${RUN_ID}` | Run ID (UUID v4) |
+| Variable | Expands in | Value |
+|---|---|---|
+| `${INTERLOCK_<NAME>}` | `http` body and headers, `airflow` body and headers, `databricks` headers, `lambda` payload | the orchestrator Lambda's environment variable `INTERLOCK_<NAME>` |
+| `${INTERLOCK_PIPELINE_ID}`, `${INTERLOCK_SCHEDULE_ID}`, `${INTERLOCK_DATE}`, `${INTERLOCK_RUN_ID}` | `http` body and headers | the [run identity](#run-identity), which takes precedence over an environment variable of the same name |
 
 ## Status Polling
 
@@ -216,7 +301,7 @@ After a job executes, the orchestrator Lambda polls for completion using the ret
 | `databricks` | `GET /runs/get` | RUNNING/PENDING -> running, TERMINATED(SUCCESS) -> succeeded, others -> failed |
 | `airflow` | `GET /dags/{id}/dagRuns` | running -> running, success -> succeeded, failed -> failed |
 
-The `http` and `command` types are fire-and-forget -- they do not support status polling.
+The `http`, `command` and `lambda` types have no status API. An `http` job reports its own result (see [`http`](#http)); `command` and `lambda` are recorded as succeeded once the call returns.
 
 ### Glue RCA Verification
 

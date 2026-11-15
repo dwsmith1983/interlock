@@ -61,8 +61,13 @@ Add a top-level test to `scenarios_test.go`:
 
 1. `startDay(t)` for a fresh day, and a pipeline ID no other test uses.
 2. `putConfig` (start from `scenarioConfig`), queue mock outcomes with
-   `POST /jobs/<id>/outcome` if the job should fail, then write the sensor.
-3. Wait for the effects with `waitCompleted`, `waitEvents` and `waitAlerts`,
+   `POST /jobs/<id>/outcome` if the launch should be rejected, then write the
+   sensor.
+3. Report the job's result. A 2xx from the mock only means the launch was
+   accepted; the run stays RUNNING until its JOB# row appears. `waitLaunch`
+   returns the run ID a launch carried (`X-Interlock-Run-Id`) and `reportJob`
+   writes the row the job would write (`success`, `fail` or `timeout`).
+4. Wait for the effects with `waitCompleted`, `waitEvents` and `waitAlerts`,
    then check `assertLaunches` and `assertTriggerStatus`.
 
 Use `advanceTo` to move the clock, `invokeWatchdog` for the watchdog's
@@ -81,7 +86,9 @@ code path first and assert the exact values it produces.
   sets the stream mapping filters from that copy, so the filters themselves run.
 - DynamoDB TTL. It is off, and would run on the real clock rather than the
   simulated one.
-- `job.maxRetries` and the job-failure rerun path. HTTP jobs finish
-  synchronously and are never polled, so no `fail` job event is written; the
-  retry scenario covers the Step Functions Trigger retry instead.
+- Most of `job.maxRetries`. `TestScenarioRerunIgnoresPreviousFailure` covers
+  one stream-router job-fail-retry (a reported `fail`, `maxRetries: 1`, one
+  rerun that then succeeds); retry exhaustion (`RETRY_EXHAUSTED`),
+  `maxCodeRetries` for permanent failures and `timeout` rows are not run. The
+  retry scenario covers the Step Functions Trigger retry.
 - Slack delivery. The dispatcher's queue mapping is off in e2e.

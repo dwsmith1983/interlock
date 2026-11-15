@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	sfntypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
+
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -111,9 +114,24 @@ func waitAlerts(t *testing.T, pipeline string, want ...alert) {
 	}
 }
 
+// waitLaunch waits for the pipeline's nth launch (from 1) and returns the
+// run ID it carried.
+func waitLaunch(t *testing.T, pipeline string, n int) string {
+	t.Helper()
+	var ids []string
+	waitFor(t, settleTimeout, fmt.Sprintf("%s launch %d", pipeline, n), func() bool {
+		ids = launches(t, pipeline)
+		return len(ids) >= n
+	})
+	if ids[n-1] == "" {
+		t.Fatalf("%s launch %d carried no run ID", pipeline, n)
+	}
+	return ids[n-1]
+}
+
 func assertLaunches(t *testing.T, pipeline string, want int) {
 	t.Helper()
-	if n := launches(t, pipeline); n != want {
+	if n := len(launches(t, pipeline)); n != want {
 		t.Fatalf("%s mock job launches = %d, want %d", pipeline, n, want)
 	}
 }
@@ -170,6 +188,7 @@ func TestScenarioSLAMet(t *testing.T) {
 
 	advanceTo(t, time.Date(start.Year(), start.Month(), start.Day(), slaRunHour, 0, 0, 0, time.UTC))
 	writeReady(t, id, date)
+	reportJob(t, id, date, waitLaunch(t, id, 1), types.JobEventSuccess)
 	waitCompleted(t, id, date)
 	vp, jc, met := string(types.EventValidationPassed), string(types.EventJobCompleted), string(types.EventSLAMet)
 	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 2, vp: 1, jc: 1, met: 1},
@@ -182,11 +201,12 @@ func TestScenarioSLAMet(t *testing.T) {
 	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
 }
 
-// An http job is synchronous, so a failed launch is a Trigger task error: the
-// 400 is permanent for that attempt (one launch), the orchestrator logs
-// infra-trigger-failure and fails the task, and the Trigger state's Retry
-// launches again after its 30 s interval. No JOB# fail row is written, so the
-// stream-router's job-fail-retry path (job.maxRetries) does not run.
+// A rejected launch is a Trigger task error: the 400 is permanent for that
+// attempt (one launch), the orchestrator logs infra-trigger-failure and fails
+// the task, and the Trigger state's Retry launches again after its 30 s
+// interval. The retry is the same execution, so both launches carry the same
+// run ID, and the job reports success for it. No JOB# fail row is written, so
+// the stream-router's job-fail-retry path (job.maxRetries) does not run.
 func TestScenarioRetryAfterFailedLaunch(t *testing.T) {
 	const id = "retry-ok"
 	_, date := startDay(t)
@@ -194,6 +214,11 @@ func TestScenarioRetryAfterFailedLaunch(t *testing.T) {
 	putConfig(t, scenarioConfig(id))
 
 	writeReady(t, id, date)
+	runID := waitLaunch(t, id, 2)
+	if ids := launches(t, id); ids[0] != runID {
+		t.Fatalf("launch run IDs = %v, want both from one execution", ids)
+	}
+	reportJob(t, id, date, runID, types.JobEventSuccess)
 	waitCompleted(t, id, date)
 	vp, jc := string(types.EventValidationPassed), string(types.EventJobCompleted)
 	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 2, vp: 1, jc: 1}, []string{vp, jc})
@@ -243,4 +268,72 @@ func TestScenarioCalendarExclusion(t *testing.T) {
 	waitAlerts(t, id, alert{id, date, excluded})
 	assertLaunches(t, id, 0)
 	assertTriggerStatus(t, id, date, "")
+}
+
+// The job reports fail for run A, so the stream-router's job-fail-retry
+// (job.maxRetries 1) resets the trigger lock and starts rerun B, which
+// launches the job again under its own execution name. Execution A also reads
+// its fail and ends through CompleteTrigger (FAILED_FINAL). B must not read
+// A's fail: it keeps polling until the job reports success for B, and its
+// CompleteTrigger, the last writer, leaves the trigger row COMPLETED. The test
+// waits for A to finish before reporting B, since both react to A's fail.
+func TestScenarioRerunIgnoresPreviousFailure(t *testing.T) {
+	const id = "rerun-after-fail"
+	_, date := startDay(t)
+	cfg := scenarioConfig(id)
+	cfg.Job.MaxRetries = 1
+	putConfig(t, cfg)
+
+	writeReady(t, id, date)
+	runA := waitLaunch(t, id, 1)
+	reportJob(t, id, date, runA, types.JobEventFail)
+
+	runB := waitLaunch(t, id, 2)
+	if want := id + "-" + streamSchedule + "-" + date + "-rerun-0"; runB != want || runB == runA {
+		t.Fatalf("rerun run ID = %q (first run %q), want %q", runB, runA, want)
+	}
+	waitFor(t, settleTimeout, "execution A to finish", func() bool {
+		return executionStatus(t, runA) != sfntypes.ExecutionStatusRunning
+	})
+	if got := executionStatus(t, runA); got != sfntypes.ExecutionStatusSucceeded {
+		t.Fatalf("execution A = %s, want SUCCEEDED (fail ends through CompleteTrigger and Done)", got)
+	}
+	// Let B check the job log at least once before its result exists: it
+	// either parks in WaitForJob again or, reading A's fail, finishes.
+	waitFor(t, settleTimeout, "execution B to run CheckJob", func() bool {
+		h := executionHistory(t, runB)
+		return stateExited(h, "CheckJob") &&
+			(h[len(h)-1].Type == sfntypes.HistoryEventTypeWaitStateEntered || executionStatus(t, runB) != sfntypes.ExecutionStatusRunning)
+	})
+	if got := executionStatus(t, runB); got != sfntypes.ExecutionStatusRunning {
+		t.Fatalf("execution B = %s after CheckJob with no result for B, want RUNNING: it must not read run A's fail", got)
+	}
+
+	reportJob(t, id, date, runB, types.JobEventSuccess)
+	waitFor(t, settleTimeout, "execution B to finish", func() bool {
+		return executionStatus(t, runB) != sfntypes.ExecutionStatusRunning
+	})
+	if got := executionStatus(t, runB); got != sfntypes.ExecutionStatusSucceeded {
+		t.Fatalf("execution B = %s, want SUCCEEDED", got)
+	}
+
+	vp, jc := string(types.EventValidationPassed), string(types.EventJobCompleted)
+	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 3, vp: 2, jc: 1}, []string{vp, vp, jc})
+	wantLog := []string{types.JobEventFail, types.JobEventSuccess}
+	if got := jobEvents(t, id); !slices.Equal(got, wantLog) {
+		t.Fatalf("job log = %v, want %v", got, wantLog)
+	}
+	waitAlerts(t, id, alert{id, date, jc})
+	assertLaunches(t, id, 2)
+	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
+	t.Logf("run A %s, run B %s, job log %v", runA, runB, wantLog)
+}
+
+func stateExited(h []sfntypes.HistoryEvent, state string) bool {
+	for _, e := range h {
+		if d := e.StateExitedEventDetails; d != nil && aws.ToString(d.Name) == state {
+			return true
+		}
+	}
+	return false
 }

@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -97,16 +98,59 @@ func ExecuteCommand(ctx context.Context, command string) error {
 	return cmd.Run()
 }
 
-// ExecuteHTTP fires an HTTP trigger.
+// runField is one part of the run identity: the header that carries it on
+// every http trigger request and the variable it expands in the body and
+// header values.
+type runField struct{ header, variable, value string }
+
+func runFields(run types.RunIdentity) []runField {
+	return []runField{
+		{"X-Interlock-Pipeline-Id", "INTERLOCK_PIPELINE_ID", run.PipelineID},
+		{"X-Interlock-Schedule-Id", "INTERLOCK_SCHEDULE_ID", run.ScheduleID},
+		{"X-Interlock-Date", "INTERLOCK_DATE", run.Date},
+		{"X-Interlock-Run-Id", "INTERLOCK_RUN_ID", run.RunID},
+	}
+}
+
+// identityLookup resolves the run identity variables through format and any
+// other variable through the INTERLOCK_ env allowlist.
+func identityLookup(fields []runField, format func(string) string) func(string) string {
+	return func(key string) string {
+		for _, f := range fields {
+			if key == f.variable {
+				return format(f.value)
+			}
+		}
+		return safeEnvLookup(key)
+	}
+}
+
+// jsonStringContent is s encoded as a JSON string without the surrounding
+// quotes, and without HTML escaping so "/", "<" and "&" stay literal.
+func jsonStringContent(s string) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s) // encoding a string cannot fail
+	out := strings.TrimSuffix(b.String(), "\n")
+	return out[1 : len(out)-1]
+}
+
+// ExecuteHTTP fires an HTTP trigger. A 2xx only means the job was accepted.
 func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 	method := cfg.Method
 	if method == "" {
 		method = "POST"
 	}
 
-	var bodyStr string
-	if cfg.Body != "" {
-		bodyStr = os.Expand(cfg.Body, safeEnvLookup)
+	// The run identity variables expand to this launch's values, JSON-escaped
+	// in the body since identity values are free-form; every other variable
+	// follows the INTERLOCK_ env allowlist. A generated body is sent as is.
+	fields := runFields(cfg.Run)
+	headerLookup := identityLookup(fields, func(v string) string { return v })
+	bodyStr := cfg.Body
+	if cfg.Body != "" && !cfg.BodyGenerated {
+		bodyStr = os.Expand(cfg.Body, identityLookup(fields, jsonStringContent))
 	}
 
 	var bodyReader io.Reader
@@ -121,7 +165,11 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range cfg.Headers {
-		req.Header.Set(k, os.Expand(v, safeEnvLookup))
+		req.Header.Set(k, os.Expand(v, headerLookup))
+	}
+	// Set after the configured headers so config cannot override them.
+	for _, f := range fields {
+		req.Header.Set(f.header, f.value)
 	}
 
 	httpClient := resolveHTTPClient(cfg.Timeout)

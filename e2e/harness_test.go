@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -63,6 +64,8 @@ const (
 	lambdaLogPrefix = "/aws/lambda/"
 	logTailLines    = 200 // per Lambda log group, in the dump after a failure
 	logDumpTimeout  = time.Minute
+
+	jobRowTTL = 30 * 24 * time.Hour // as store.WriteJobEvent sets it
 )
 
 var (
@@ -255,17 +258,72 @@ func mockNow(t *testing.T) time.Time {
 	return now
 }
 
-// launches is how many times the pipeline's http trigger hit the mock job.
-func launches(t *testing.T, pipeline string) int {
+// launches is the X-Interlock-Run-Id of each launch of the pipeline's http
+// job, in launch order: its length is how many times the trigger hit the mock.
+func launches(t *testing.T, pipeline string) []string {
 	t.Helper()
 	var job struct {
-		Launches int `json:"launches"`
+		RunIDs []string `json:"runIds"`
 	}
 	body := mockDo(t, http.MethodGet, "/jobs/"+pipeline, nil, http.StatusOK)
 	if err := json.Unmarshal(body, &job); err != nil {
 		t.Fatalf("decode mock job %s: %v: %s", pipeline, err, body)
 	}
-	return job.Launches
+	return job.RunIDs
+}
+
+// reportJob writes the JOB# row an http job writes to report its result:
+// SK JOB#<schedule>#<date>#<millis> with the simulated clock's millis, and
+// the run ID the trigger sent. Every e2e pipeline is sensor-triggered, so the
+// row is on the stream schedule.
+func reportJob(t *testing.T, pipeline, date, runID, event string) {
+	t.Helper()
+	now := mockNow(t)
+	item := map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipeline)},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(streamSchedule, date, strconv.FormatInt(now.UnixMilli(), 10))},
+		"event": &ddbtypes.AttributeValueMemberS{Value: event},
+		"runId": &ddbtypes.AttributeValueMemberS{Value: runID},
+		"ttl":   &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(now.Add(jobRowTTL).Unix(), 10)},
+	}
+	ctx, cancel := callCtx()
+	defer cancel()
+	if _, err := ddb.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(joblogTable), Item: item}); err != nil {
+		t.Fatalf("report %s for %s run %s: %v", event, pipeline, runID, err)
+	}
+}
+
+func executionARN(name string) string {
+	return strings.Replace(stateMachineARN, ":stateMachine:", ":execution:", 1) + ":" + name
+}
+
+// executionStatus is the status of the state machine's execution name.
+func executionStatus(t *testing.T, name string) sfntypes.ExecutionStatus {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	out, err := sfnAPI.DescribeExecution(ctx, &sfn.DescribeExecutionInput{ExecutionArn: aws.String(executionARN(name))})
+	if err != nil {
+		t.Fatalf("describe execution %s: %v", name, err)
+	}
+	return out.Status
+}
+
+// executionHistory is every history event of the execution name, oldest first.
+func executionHistory(t *testing.T, name string) []sfntypes.HistoryEvent {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	var evs []sfntypes.HistoryEvent
+	p := sfn.NewGetExecutionHistoryPaginator(sfnAPI, &sfn.GetExecutionHistoryInput{ExecutionArn: aws.String(executionARN(name))})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			t.Fatalf("history of execution %s: %v", name, err)
+		}
+		evs = append(evs, page.Events...)
+	}
+	return evs
 }
 
 // waitFor polls cond until it holds, failing the test after timeout. A
