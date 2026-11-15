@@ -370,6 +370,60 @@ func TestScenarioRetriesExhausted(t *testing.T) {
 	assertTriggerStatus(t, id, date, types.TriggerStatusFailedFinal)
 }
 
+// The SLA stays live through a CompleteTrigger retry. Run A fails, A's
+// CompleteTrigger starts <A>-r1 and keeps the trigger row RUNNING, so the
+// newest job row is A's fail while B polls. The warning the watchdog
+// scheduled fires then and must publish SLA_WARNING. B succeeds before the
+// breach, and its CancelSLASchedules deletes the breach schedule and
+// publishes SLA_MET.
+func TestScenarioSLAWarningDuringRetry(t *testing.T) {
+	const id = "sla-warn-retry"
+	start, date := startDay(t)
+	cfg := scenarioConfig(id)
+	cfg.Job.MaxRetries = 1
+	cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, ExpectedDuration: slaExpected}
+	putConfig(t, cfg)
+
+	invokeWatchdog(t)
+	breachAt := time.Date(start.Year(), start.Month(), start.Day()+1, 8, 0, 0, 0, time.UTC)
+	warnAt := breachAt.Add(-time.Hour)
+
+	advanceTo(t, time.Date(start.Year(), start.Month(), start.Day(), slaRunHour, 0, 0, 0, time.UTC))
+	writeReady(t, id, date)
+	runA := waitLaunch(t, id, 1)
+	reportJob(t, id, date, runA, types.JobEventFail)
+	runB := waitLaunch(t, id, 2)
+	if want := runA + "-r1"; runB != want {
+		t.Fatalf("retry run ID = %q, want %q", runB, want)
+	}
+	waitFor(t, settleTimeout, "execution A to finish", func() bool {
+		return executionStatus(t, runA) != sfntypes.ExecutionStatusRunning
+	})
+
+	advanceTo(t, warnAt)
+	if scanned, fired := fireDueSchedules(t, id); scanned != 2 || fired != 1 {
+		t.Fatalf("at the warning: schedules scanned=%d fired=%d, want 2 and 1", scanned, fired)
+	}
+	assertTriggerStatus(t, id, date, types.TriggerStatusRunning)
+	warn := string(types.EventSLAWarning)
+	waitFor(t, settleTimeout, id+" SLA_WARNING event", func() bool {
+		return slices.Contains(eventTypes(events(t, id)), warn)
+	})
+
+	reportJob(t, id, date, runB, types.JobEventSuccess)
+	waitCompleted(t, id, date)
+	vp, jc, jf, met := string(types.EventValidationPassed), string(types.EventJobCompleted),
+		string(types.EventJobFailed), string(types.EventSLAMet)
+	waitEvents(t, id, date,
+		map[string]int{string(types.EventJobTriggered): 3, vp: 2, jf: 1, warn: 1, jc: 1, met: 1},
+		[]string{vp, vp, jc}, []string{warn, jc}, []string{warn, met})
+
+	assertNothingFires(t, id, breachAt)
+	waitAlerts(t, id, alert{id, date, jf}, alert{id, date, warn}, alert{id, date, jc}, alert{id, date, met})
+	assertLaunches(t, id, 2)
+	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
+}
+
 func stateExited(h []sfntypes.HistoryEvent, state string) bool {
 	for _, e := range h {
 		if d := e.StateExitedEventDetails; d != nil && aws.ToString(d.Name) == state {

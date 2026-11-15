@@ -370,9 +370,11 @@ func CreateSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, da
 	return createSLASchedules(ctx, d, pipelineID, scheduleID, date, calc, onConflictSkip)
 }
 
-// createSLASchedules creates warning and breach one-time schedules.
-// Returns an error on the first schedule creation failure. If onConflictSkip
-// is true, ConflictException errors are silently skipped (idempotent retries).
+// createSLASchedules creates warning and breach one-time schedules, skipping
+// one whose time in calc is empty (the watchdog clears a warning that is
+// already due). Returns an error on the first schedule creation failure. If
+// onConflictSkip is true, ConflictException errors are silently skipped
+// (idempotent retries).
 func createSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, date string, calc SLAMonitorOutput, onConflictSkip bool) error {
 	for _, alert := range []struct {
 		suffix    string
@@ -382,6 +384,9 @@ func createSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, da
 		{"warning", "SLA_WARNING", calc.WarningAt},
 		{"breach", "SLA_BREACH", calc.BreachAt},
 	} {
+		if alert.timestamp == "" {
+			continue
+		}
 		name := SLAScheduleName(pipelineID, scheduleID, date, alert.suffix)
 		payload := SLAMonitorInput{
 			Mode:       "fire-alert",

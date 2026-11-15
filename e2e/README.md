@@ -89,7 +89,11 @@ code path first and assert the exact values it produces.
 - Part of `job.maxRetries`. `TestScenarioRerunIgnoresPreviousFailure` covers
   one CompleteTrigger retry (a reported `fail`, `maxRetries: 1`, a `-r1`
   retry that then succeeds) and `TestScenarioRetriesExhausted` the
-  `RETRY_EXHAUSTED` path when both attempts fail. Not run:
+  `RETRY_EXHAUSTED` path when both attempts fail.
+  `TestScenarioSLAWarningDuringRetry` fires the SLA warning while the
+  `-r1` retry polls (trigger row `RUNNING`, newest job row the first
+  attempt's `fail`) and expects `SLA_WARNING`, then `SLA_MET` once the
+  retry succeeds. Not run:
   - a `PERMANENT` failure and `maxCodeRetries`;
   - a retry after the job poll window closes (the `timeout` row): the window
     is at least 60 s and the e2e job check interval is 5 s, so one exhausted
