@@ -200,3 +200,30 @@ func TestMem_Conditions(t *testing.T) {
 		}
 	}
 }
+
+// TestMem_ConditionNumberLess: "<" compares number attributes; an absent row
+// or attribute satisfies it never, so "attribute_not_exists(PK) OR #ttl < :now"
+// writes over an expired row only.
+func TestMem_ConditionNumberLess(t *testing.T) {
+	n := func(v string) *ddbtypes.AttributeValueMemberN { return &ddbtypes.AttributeValueMemberN{Value: v} }
+	for _, tc := range []struct {
+		ttl, now string // ttl "" means no row
+		want     bool
+	}{{"", "100", true}, {"100", "99", false}, {"100", "100", false}, {"100", "101", true}} {
+		fake, mem := storetest.NewMem()
+		item := map[string]ddbtypes.AttributeValue{"PK": s("PIPELINE#p"), "SK": s("M")}
+		if tc.ttl != "" {
+			mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": item["PK"], "SK": item["SK"], "ttl": n(tc.ttl)})
+		}
+		_, err := fake.PutItem(context.Background(), &dynamodb.PutItemInput{
+			TableName: aws.String("control"), Item: item,
+			ConditionExpression:       aws.String("attribute_not_exists(PK) OR #ttl < :now"),
+			ExpressionAttributeNames:  map[string]string{"#ttl": "ttl"},
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{":now": n(tc.now)},
+		})
+		var ccfe *ddbtypes.ConditionalCheckFailedException
+		if got := err == nil; got != tc.want || (err != nil && !errors.As(err, &ccfe)) {
+			t.Errorf("ttl %q now %s: err = %v, want written %v (else a conditional check failure)", tc.ttl, tc.now, err, tc.want)
+		}
+	}
+}

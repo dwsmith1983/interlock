@@ -7,6 +7,8 @@ package e2e
 // the scenarios do not depend on the order go test runs them in.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"net/http"
@@ -428,22 +430,29 @@ func TestScenarioSLAWarningDuringRetry(t *testing.T) {
 
 // One team's malformed CONFIG row (a string where job.maxRetries wants a
 // number) must not stop the other pipelines: the good one triggers and
-// completes, and a watchdog pass over both succeeds (the invoke fails if any
-// check does).
+// completes, and the watchdog reports the bad row once, not again on its next
+// pass. The absence is checked against a sentinel on the same path: a third
+// pass after the marker's 24 h TTL reports again, so exactly two alerts and
+// two events arrive (a report from the second pass would make three).
 func TestScenarioBadConfigIsolated(t *testing.T) {
 	const id, bad = "bad-config-neighbour", "bad-config"
-	_, date := startDay(t)
-	badKey := map[string]ddbtypes.AttributeValue{
-		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(bad)},
-		"SK": &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
+	const badConfig = `{"pipeline":{"id":"bad-config"},"job":{"maxRetries":"3"}}`
+	start, date := startDay(t)
+	sum := sha256.Sum256([]byte(badConfig))
+	keys := []map[string]ddbtypes.AttributeValue{}
+	for _, sk := range []string{types.ConfigSK, "CONFIG_INVALID#" + hex.EncodeToString(sum[:])[:16]} {
+		keys = append(keys, map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(bad)}, "SK": &ddbtypes.AttributeValueMemberS{Value: sk}})
 	}
-	putItem(t, map[string]ddbtypes.AttributeValue{"PK": badKey["PK"], "SK": badKey["SK"],
-		"config": &ddbtypes.AttributeValueMemberS{Value: `{"pipeline":{"id":"bad-config"},"job":{"maxRetries":"3"}}`}})
-	t.Cleanup(func() { // keep the bad row out of the other scenarios
+	putItem(t, map[string]ddbtypes.AttributeValue{"PK": keys[0]["PK"], "SK": keys[0]["SK"],
+		"config": &ddbtypes.AttributeValueMemberS{Value: badConfig}})
+	t.Cleanup(func() { // the config and its marker; later watchdog passes would report it again
 		ctx, cancel := callCtx()
 		defer cancel()
-		if _, err := ddb.DeleteItem(ctx, &dynamodb.DeleteItemInput{TableName: aws.String(controlTable), Key: badKey}); err != nil {
-			t.Errorf("delete %s config: %v", bad, err)
+		for _, key := range keys {
+			if _, err := ddb.DeleteItem(ctx, &dynamodb.DeleteItemInput{TableName: aws.String(controlTable), Key: key}); err != nil {
+				t.Errorf("delete %s %v: %v", bad, key["SK"], err)
+			}
 		}
 	})
 	putConfig(t, scenarioConfig(id))
@@ -454,7 +463,15 @@ func TestScenarioBadConfigIsolated(t *testing.T) {
 	vp, jc := string(types.EventValidationPassed), string(types.EventJobCompleted)
 	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 2, vp: 1, jc: 1}, []string{vp, jc})
 
+	invalid := string(types.EventConfigInvalid)
 	invokeWatchdog(t)
+	waitEvents(t, bad, "", map[string]int{invalid: 1})
+	advanceTo(t, start.Add(time.Hour))
+	invokeWatchdog(t) // the marker holds: no report
+	advanceTo(t, start.Add(25*time.Hour))
+	invokeWatchdog(t) // the marker has expired: the sentinel report
+	waitEvents(t, bad, "", map[string]int{invalid: 2})
+	waitAlerts(t, bad, alert{bad, "", invalid}, alert{bad, "", invalid})
 	waitAlerts(t, id, alert{id, date, jc})
 	assertLaunches(t, id, 1)
 }

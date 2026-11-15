@@ -1,6 +1,6 @@
 // Package watchdog implements the periodic health-check Lambda handler.
 // It detects stale triggers, missed schedules, missing post-run sensors,
-// and SLA breaches.
+// and SLA breaches, and reports rejected pipeline configs.
 package watchdog
 
 import (
@@ -27,6 +27,7 @@ func HandleWatchdog(ctx context.Context, d *lambda.Deps) error {
 		{"trigger-deadlines", checkTriggerDeadlines},
 		{"post-run-sensors", detectMissingPostRunSensors},
 		{"relative-sla-breaches", detectRelativeSLABreaches},
+		{"invalid-configs", reportInvalidConfigs},
 	}
 
 	var errs []error

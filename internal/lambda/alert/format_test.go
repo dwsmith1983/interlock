@@ -80,3 +80,29 @@ func TestFormatAlertText_CapsLength(t *testing.T) {
 		})
 	}
 }
+
+// TestFormatAlertText_ConfigInvalid: a rejected config stops that pipeline,
+// so the alert is red and names the config version.
+func TestFormatAlertText_ConfigInvalid(t *testing.T) {
+	text := alert.FormatAlertText(string(types.EventConfigInvalid), types.InterlockEvent{
+		PipelineID: "q", Message: "config for q rejected: <bad>",
+		Detail: map[string]interface{}{"reason": "<bad>", "hash": "0123456789abcdef"},
+	})
+	want := "\xf0\x9f\x94\xb4 *CONFIG_INVALID* | q | \nconfig for q rejected: &lt;bad&gt;\nConfig hash: 0123456789abcdef"
+	if text != want {
+		t.Fatalf("text = %q, want %q", text, want)
+	}
+}
+
+// TestFormatAlertText_ControlCharacters: a value cannot start a new line (and
+// so fake a second alert) or carry any other control character.
+func TestFormatAlertText_ControlCharacters(t *testing.T) {
+	text := alert.FormatAlertText(string(types.EventConfigInvalid), types.InterlockEvent{
+		PipelineID: "q\n\xf0\x9f\x94\xb4 *SLA_BREACH* | prod", Message: "a\tb\r\nc\x00d\x7fe",
+		Detail: map[string]interface{}{"hash": "h\x1b"},
+	})
+	want := "\xf0\x9f\x94\xb4 *CONFIG_INVALID* | q \xf0\x9f\x94\xb4 *SLA_BREACH* | prod | \na b  c d e\nConfig hash: h "
+	if text != want {
+		t.Fatalf("text = %q, want %q", text, want)
+	}
+}

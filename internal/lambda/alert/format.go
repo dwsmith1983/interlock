@@ -12,7 +12,17 @@ import (
 // a value can neither mention (<!channel>) nor link.
 var mrkdwn = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
-func esc(v interface{}) string { return mrkdwn.Replace(fmt.Sprint(v)) }
+// esc makes v safe for Slack text: every control character (newline, CR,
+// tab, the rest of C0 and DEL) becomes a space, so a value cannot start a
+// line that looks like another alert, then mrkdwn is escaped.
+func esc(v interface{}) string {
+	return mrkdwn.Replace(strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, fmt.Sprint(v)))
+}
 
 // FormatAlertText builds the Slack message text from event detail: a header,
 // the event's message, then any known detail fields. Every value is escaped.
@@ -31,7 +41,7 @@ func FormatAlertText(detailType string, detail types.InterlockEvent) string {
 			parts = append(parts, "Deadline "+esc(v))
 		}
 	}
-	for _, f := range []struct{ key, label string }{{"status", "Status"}, {"source", "Source"}, {"cron", "Cron"}} {
+	for _, f := range []struct{ key, label string }{{"status", "Status"}, {"source", "Source"}, {"cron", "Cron"}, {"hash", "Config hash"}} {
 		if v, ok := detail.Detail[f.key]; ok {
 			parts = append(parts, f.label+": "+esc(v))
 		}
@@ -76,7 +86,8 @@ func alertEmoji(detailType string) string {
 	case string(types.EventSLABreach), string(types.EventJobFailed),
 		string(types.EventValidationExhausted), string(types.EventRetryExhausted),
 		string(types.EventInfraFailure), string(types.EventSFNTimeout),
-		string(types.EventScheduleMissed), string(types.EventDataDrift):
+		string(types.EventScheduleMissed), string(types.EventDataDrift),
+		string(types.EventConfigInvalid):
 		return "\xf0\x9f\x94\xb4" // red circle
 	case string(types.EventSLAWarning):
 		return "\xf0\x9f\x9f\xa1" // yellow circle

@@ -139,6 +139,11 @@ class CmdDeployTest(unittest.TestCase):
                 self.assertEqual(env["E2E_SCHEDULE_TABLE"], deploy.TABLE_SCHEDULES)
 
 
+class AlertAllowlistTest(unittest.TestCase):
+    def test_config_invalid_alerts(self) -> None:
+        self.assertIn("CONFIG_INVALID", deploy.ALERT_DETAIL_TYPES)
+
+
 class CmdSmokeTest(unittest.TestCase):
     def test_smoke_ignores_schedules_table(self) -> None:
         client = mock.MagicMock()

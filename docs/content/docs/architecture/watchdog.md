@@ -4,7 +4,7 @@ weight: 3
 description: Detects stale triggers, missed schedules, SLA gaps, trigger deadline expiry, and missing post-run sensors.
 ---
 
-The watchdog is one of six Lambda functions in the Interlock framework. It runs independently on an EventBridge schedule (default: every 5 minutes) and runs eight checks in a table-driven loop to detect silent failures:
+The watchdog is one of six Lambda functions in the Interlock framework. It runs independently on an EventBridge schedule (default: every 5 minutes) and runs nine checks in a table-driven loop to detect silent failures:
 
 1. **Stale triggers** -- a Step Function execution started but never completed (timeout, infrastructure failure)
 2. **Missed schedules** -- a cron-scheduled pipeline's expected start time passed with no trigger record
@@ -14,6 +14,7 @@ The watchdog is one of six Lambda functions in the Interlock framework. It runs 
 6. **Trigger deadlines** -- a sensor-triggered pipeline's auto-trigger window has expired with no trigger
 7. **Missing post-run sensors** -- a pipeline completed but the expected post-run sensor never arrived
 8. **Relative SLA breaches** -- a pipeline with `maxDuration` SLA has exceeded its time budget since first sensor arrival
+9. **Invalid configs** -- a pipeline's `CONFIG` row was rejected (malformed or failing validation), so that pipeline is skipped while the others run; reported as `CONFIG_INVALID` once per broken config version and day
 
 In STAMP terms, these are safety constraint violations caused by _what didn't happen_ rather than what went wrong.
 
@@ -200,7 +201,7 @@ variable "watchdog_schedule" {
 
 ## Error Handling
 
-All eight checks run independently in sequence. An error in any check does not prevent the remaining checks from running. Errors are collected into an aggregate error and returned to the Lambda runtime.
+All nine checks run independently in sequence. An error in any check does not prevent the remaining checks from running. Errors are collected into an aggregate error and returned to the Lambda runtime.
 
 When one or more checks fail, the watchdog publishes a `WATCHDOG_DEGRADED` event to EventBridge listing the failed check names. This allows operators to detect partial watchdog failures through the standard alerting pipeline.
 

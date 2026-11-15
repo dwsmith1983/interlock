@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`CONFIG_INVALID` alert for a rejected pipeline config.** At the end of each pass the watchdog publishes `CONFIG_INVALID` (on the alert rule, red in Slack) for each `CONFIG` row the config cache rejected, with `reason` and `hash` in its detail and the parsed pipeline ID, or the raw PK, as `pipelineId`. It reports once per broken config version and day, guarded by a `CONFIG_INVALID#<hash>` marker row with a 24 h TTL; a failed publish deletes the marker so the next pass tries again, and a pass reports at most 20 rows. Slack alert text now turns control characters in every value (newlines, tabs, the rest of C0 and DEL) into spaces, so a value cannot start a line that reads as another alert.
+
 ### Changed
 
 - **The orchestrator can start Step Functions executions.** It now requires `STATE_MACHINE_ARN` at startup; Terraform sets it and grants `states:StartExecution` on the pipeline state machine, and the LocalStack deploy corrects it (with the stream-router's and the watchdog's) when the state machine ARN differs from the predicted one. CompleteTrigger now receives the run ID and the execution name, and a new `IsRetrying` state ends an execution without cancelling the SLA schedules when CompleteTrigger reports `retrying`.

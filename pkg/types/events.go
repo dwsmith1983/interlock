@@ -46,6 +46,7 @@ const (
 	EventDryRunWouldRetry        EventDetailType = "DRY_RUN_WOULD_RETRY"
 	EventDryRunRetryExhausted    EventDetailType = "DRY_RUN_RETRY_EXHAUSTED"
 	EventWatchdogDegraded        EventDetailType = "WATCHDOG_DEGRADED"
+	EventConfigInvalid           EventDetailType = "CONFIG_INVALID"
 )
 
 // EventSource is the EventBridge source for all interlock events.
