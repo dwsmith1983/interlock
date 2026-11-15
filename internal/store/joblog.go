@@ -98,3 +98,53 @@ func (s *Store) GetLatestJobEvent(ctx context.Context, pipelineID, schedule, dat
 	}
 	return &rec, nil
 }
+
+// GetJobResult returns the newest terminal job event (success, fail or
+// timeout) whose runId is runID for a pipeline, schedule and date, or nil, nil
+// when that run has none yet. It pages newest first and filters in Go: a
+// FilterExpression combined with Limit would drop matches past the limit.
+// runID is required: an empty one would match rows written without a runId.
+func (s *Store) GetJobResult(ctx context.Context, pipelineID, schedule, date, runID string) (*types.JobLogRecord, error) {
+	if runID == "" {
+		return nil, fmt.Errorf("get job result %q/%s/%s: runID is required", pipelineID, schedule, date)
+	}
+	prefix := "JOB#" + schedule + "#" + date + "#"
+	var startKey map[string]ddbtypes.AttributeValue
+	for {
+		out, err := s.Client.Query(ctx, &dynamodb.QueryInput{
+			TableName:              &s.JobLogTable,
+			KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":pk":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+				":prefix": &ddbtypes.AttributeValueMemberS{Value: prefix},
+			},
+			ConsistentRead:    aws.Bool(true),
+			ScanIndexForward:  aws.Bool(false),
+			ExclusiveStartKey: startKey,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get job result %q/%s/%s run %q: %w", pipelineID, schedule, date, runID, err)
+		}
+		var recs []types.JobLogRecord
+		if err := attributevalue.UnmarshalListOfMaps(out.Items, &recs); err != nil {
+			return nil, fmt.Errorf("unmarshal job events %q/%s/%s run %q: %w", pipelineID, schedule, date, runID, err)
+		}
+		for i := range recs {
+			if recs[i].RunID == runID && isTerminalJobEvent(recs[i].Event) {
+				return &recs[i], nil
+			}
+		}
+		if out.LastEvaluatedKey == nil {
+			return nil, nil
+		}
+		startKey = out.LastEvaluatedKey
+	}
+}
+
+func isTerminalJobEvent(event string) bool {
+	switch event {
+	case types.JobEventSuccess, types.JobEventFail, types.JobEventTimeout:
+		return true
+	}
+	return false
+}
