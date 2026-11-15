@@ -191,8 +191,9 @@ func parseRerunRequestSK(sk string) (schedule, date string, err error) {
 	return parts[0], parts[1], nil
 }
 
-// handleJobFailure processes a job failure or timeout.
-func handleJobFailure(ctx context.Context, d *lambda.Deps, pipelineID, schedule, date, jobEvent string) error {
+// handleJobFailure processes a job failure or timeout. category is the
+// failed row's own failure category.
+func handleJobFailure(ctx context.Context, d *lambda.Deps, pipelineID, schedule, date, jobEvent string, category types.FailureCategory) error {
 	cfg, err := lambda.GetValidatedConfig(ctx, d, pipelineID)
 	if err != nil {
 		return fmt.Errorf("load config for %q: %w", pipelineID, err)
@@ -203,7 +204,7 @@ func handleJobFailure(ctx context.Context, d *lambda.Deps, pipelineID, schedule,
 	}
 
 	if cfg.DryRun {
-		return handleDryRunJobFailure(ctx, d, cfg, pipelineID, schedule, date)
+		return handleDryRunJobFailure(ctx, d, cfg, pipelineID, schedule, date, category)
 	}
 
 	maxRetries := cfg.Job.MaxRetries

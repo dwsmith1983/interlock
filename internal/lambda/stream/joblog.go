@@ -35,7 +35,11 @@ func handleJobLogEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 
 	switch jobEvent {
 	case types.JobEventFail, types.JobEventTimeout:
-		return handleJobFailure(ctx, d, pipelineID, schedule, date, jobEvent)
+		category := ""
+		if v, ok := record.Change.NewImage["category"]; ok && v.DataType() == events.DataTypeString {
+			category = v.String()
+		}
+		return handleJobFailure(ctx, d, pipelineID, schedule, date, jobEvent, types.FailureCategory(category))
 	case types.JobEventSuccess:
 		return handleJobSuccess(ctx, d, pipelineID, schedule, date)
 	default:

@@ -335,62 +335,29 @@ func handleDryRunRerunRequest(ctx context.Context, d *lambda.Deps, cfg *types.Pi
 	return nil
 }
 
-// handleDryRunJobFailure evaluates retry logic for a dry-run pipeline.
-func handleDryRunJobFailure(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string) error {
+// handleDryRunJobFailure says what CompleteTrigger would decide for a
+// dry-run pipeline's failure: an excluded date is never retried, the failed
+// row's own category picks the budget, and with no executions there are no
+// retries so far.
+func handleDryRunJobFailure(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string, category types.FailureCategory) error {
 	maxRetries := cfg.Job.MaxRetries
-
-	latestJob, jobErr := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
-	if jobErr != nil {
-		d.Logger.WarnContext(ctx, "dry-run: could not read latest job event for failure category",
-			"pipelineId", pipelineID, "error", jobErr)
+	if category == types.FailurePermanent {
+		maxRetries = types.IntOrDefault(cfg.Job.MaxCodeRetries, 1)
 	}
-	if latestJob != nil {
-		if types.FailureCategory(latestJob.Category) == types.FailurePermanent {
-			maxRetries = types.IntOrDefault(cfg.Job.MaxCodeRetries, 1)
-		}
+	detail := map[string]interface{}{"retries": 0, "maxRetries": maxRetries}
+	eventType, msg := types.EventDryRunWouldRetry, fmt.Sprintf("dry-run: would retry %s (0/%d)", pipelineID, maxRetries)
+	switch {
+	case lambda.IsExcludedDate(cfg, date):
+		detail["reason"] = "excluded by calendar"
+		eventType = types.EventDryRunRetryExhausted
+		msg = fmt.Sprintf("dry-run: retry skipped for %s: execution date %s excluded by calendar", pipelineID, date)
+	case maxRetries <= 0: // retries so far (0) >= maxRetries, as CompleteTrigger checks
+		eventType, msg = types.EventDryRunRetryExhausted, fmt.Sprintf("dry-run: retry limit reached (0/0) for %s", pipelineID)
 	}
-
-	rerunCount, err := d.Store.CountRerunsBySource(ctx, pipelineID, schedule, date, []string{"job-fail-retry"})
-	if err != nil {
-		return fmt.Errorf("dry-run: count reruns for %q/%s/%s: %w", pipelineID, schedule, date, err)
+	if err := lambda.PublishEvent(ctx, d, string(eventType), pipelineID, schedule, date, msg, detail); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", eventType, "error", err)
 	}
-
-	if rerunCount >= maxRetries {
-		if pubErr := lambda.PublishEvent(ctx, d, string(types.EventDryRunRetryExhausted), pipelineID, schedule, date,
-			fmt.Sprintf("dry-run: retry limit reached (%d/%d) for %s", rerunCount, maxRetries, pipelineID),
-			map[string]interface{}{
-				"retries":    rerunCount,
-				"maxRetries": maxRetries,
-			}); pubErr != nil {
-			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunRetryExhausted, "error", pubErr)
-		}
-		return nil
-	}
-
-	if lambda.IsExcludedDate(cfg, date) {
-		if pubErr := lambda.PublishEvent(ctx, d, string(types.EventDryRunRetryExhausted), pipelineID, schedule, date,
-			fmt.Sprintf("dry-run: retry skipped for %s: execution date %s excluded by calendar", pipelineID, date),
-			map[string]interface{}{
-				"reason":     "excluded by calendar",
-				"retries":    rerunCount,
-				"maxRetries": maxRetries,
-			}); pubErr != nil {
-			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunRetryExhausted, "error", pubErr)
-		}
-		return nil
-	}
-
-	if pubErr := lambda.PublishEvent(ctx, d, string(types.EventDryRunWouldRetry), pipelineID, schedule, date,
-		fmt.Sprintf("dry-run: would retry %s (%d/%d)", pipelineID, rerunCount, maxRetries),
-		map[string]interface{}{
-			"retries":    rerunCount,
-			"maxRetries": maxRetries,
-		}); pubErr != nil {
-		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunWouldRetry, "error", pubErr)
-	}
-
-	d.Logger.Info("dry-run: would retry",
-		"pipelineId", pipelineID, "schedule", schedule, "date", date,
-		"retries", rerunCount, "maxRetries", maxRetries)
+	d.Logger.Info("dry-run: job failure", "pipelineId", pipelineID, "schedule", schedule, "date", date,
+		"event", eventType, "maxRetries", maxRetries)
 	return nil
 }
