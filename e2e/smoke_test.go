@@ -53,13 +53,12 @@ func TestHarnessSmoke(t *testing.T) {
 	putConfig(t, smokeConfig())
 	writeSensor(t, smokePipeline, smokeSensor, map[string]interface{}{"status": "ready", "date": date})
 
-	waitFor(t, settleTimeout, "the mock job to be launched", func() bool {
-		return launches(t, smokePipeline) >= 1
-	})
+	// The http job reports its own result under the run ID it was sent.
+	reportJob(t, smokePipeline, date, waitLaunch(t, smokePipeline, 1), types.JobEventSuccess)
 	waitFor(t, settleTimeout, "the trigger row to reach COMPLETED", func() bool {
 		return triggerStatus(t, smokePipeline, date) == types.TriggerStatusCompleted
 	})
-	if n := launches(t, smokePipeline); n != 1 {
+	if n := len(launches(t, smokePipeline)); n != 1 {
 		t.Fatalf("mock job launches = %d, want exactly 1", n)
 	}
 
@@ -115,7 +114,7 @@ func TestHarnessSmoke(t *testing.T) {
 	if len(got) != len(wantAlerts) {
 		t.Fatalf("alerts = %+v, want only %+v", got, wantAlerts)
 	}
-	if n := launches(t, smokePipeline); n != 1 {
+	if n := len(launches(t, smokePipeline)); n != 1 {
 		t.Fatalf("mock job launches at the end = %d, want still 1", n)
 	}
 	t.Logf("events: %v; alerts: %+v", eventTypes(evs), got)

@@ -33,11 +33,16 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger build config: %w", err)
 	}
 
-	// The execution name identifies this run. Jobs without a status API
-	// record their result under it.
+	// The execution name identifies this run; a job that reports its own
+	// result writes it as the runId of its JOB# row.
 	runID := input.ExecutionName
 	if runID == "" {
 		runID = fmt.Sprintf("%s-%s-%s-%d", input.PipelineID, input.ScheduleID, input.Date, d.Now().UnixMilli())
+	}
+	if triggerCfg.HTTP != nil {
+		triggerCfg.HTTP.Run = types.RunIdentity{
+			PipelineID: input.PipelineID, ScheduleID: input.ScheduleID, Date: input.Date, RunID: runID,
+		}
 	}
 	InjectDateArgs(&triggerCfg, input.Date)
 
@@ -57,8 +62,10 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	}
 
 	switch cfg.Job.Type {
-	case types.TriggerHTTP, types.TriggerCommand, types.TriggerLambda:
-		// No status API: the call returning counts as success.
+	case types.TriggerHTTP:
+		// The job reports its own result: the run stays RUNNING until a
+		// JOB# row for runID appears or the poll window closes.
+	case types.TriggerCommand, types.TriggerLambda:
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
 			types.JobEventSuccess, runID, 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type)); err != nil {
 			d.Logger.Warn("failed to write job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
@@ -119,7 +126,8 @@ func ExtractRunID(metadata map[string]interface{}) string {
 
 // InjectDateArgs parses the execution date and injects --par_day (and --par_hour
 // for hourly dates) into Glue trigger arguments. For HTTP triggers with no
-// explicit body, injects a JSON body with par_day and par_hour.
+// explicit body, injects a JSON body with par_day, par_hour (hourly dates
+// only) and the run identity.
 func InjectDateArgs(tc *types.TriggerConfig, date string) {
 	datePart, hourPart := lambda.ParseExecutionDate(date)
 	parDay := strings.ReplaceAll(datePart, "-", "")
@@ -135,11 +143,15 @@ func InjectDateArgs(tc *types.TriggerConfig, date string) {
 	}
 
 	if tc.HTTP != nil && tc.HTTP.Body == "" {
-		payload := map[string]string{"par_day": parDay}
+		run := tc.HTTP.Run
+		payload := map[string]string{
+			"par_day": parDay, "pipelineId": run.PipelineID, "scheduleId": run.ScheduleID, "date": run.Date, "runId": run.RunID,
+		}
 		if hourPart != "" {
 			payload["par_hour"] = hourPart
 		}
 		b, _ := json.Marshal(payload) // json.Marshal is infallible for map[string]string (no channels, funcs, or complex types)
 		tc.HTTP.Body = string(b)
+		tc.HTTP.BodyGenerated = true
 	}
 }

@@ -2,8 +2,10 @@ package trigger
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -189,6 +191,113 @@ func TestExecuteHTTP_EnvExpansionRestricted(t *testing.T) {
 	// Non-INTERLOCK_ vars must NOT resolve (replaced with empty string).
 	assert.NotContains(t, receivedBody, "leaked")
 	assert.Contains(t, receivedBody, `"secret":""`)
+}
+
+func TestExecuteHTTP_RunIdentity(t *testing.T) {
+	t.Setenv("INTERLOCK_RUN_ID", "from-env") // the run's own values must win
+	t.Setenv("INTERLOCK_DATE", "from-env")
+	t.Setenv("INTERLOCK_TOKEN", "good-token")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "leaked")
+
+	var got http.Header
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
+	err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{
+		Method: "POST",
+		URL:    srv.URL,
+		Headers: map[string]string{
+			"X-Trace":            "${INTERLOCK_PIPELINE_ID}/${INTERLOCK_SCHEDULE_ID}/${INTERLOCK_DATE}/${INTERLOCK_RUN_ID}",
+			"Authorization":      "Bearer ${INTERLOCK_TOKEN}",
+			"x-interlock-run-id": "spoof",
+			"X-Interlock-Date":   "spoof",
+		},
+		Body: `{"p":"${INTERLOCK_PIPELINE_ID}","s":"${INTERLOCK_SCHEDULE_ID}","d":"${INTERLOCK_DATE}",` +
+			`"r":"${INTERLOCK_RUN_ID}","secret":"${AWS_SECRET_ACCESS_KEY}"}`,
+		Run: types.RunIdentity{PipelineID: "orders", ScheduleID: "stream", Date: "2026-03-01T05", RunID: "exec-42"},
+	})
+	require.NoError(t, err)
+
+	for header, want := range map[string]string{
+		"X-Interlock-Pipeline-Id": "orders",
+		"X-Interlock-Schedule-Id": "stream",
+		"X-Interlock-Date":        "2026-03-01T05",
+		"X-Interlock-Run-Id":      "exec-42",
+		"X-Trace":                 "orders/stream/2026-03-01T05/exec-42",
+		"Authorization":           "Bearer good-token",
+	} {
+		assert.Equal(t, []string{want}, got.Values(header), header)
+	}
+	assert.Equal(t, `{"p":"orders","s":"stream","d":"2026-03-01T05","r":"exec-42","secret":""}`, gotBody)
+}
+
+// identityServer returns the URL of a server that records each request's body.
+func identityServer(t *testing.T) (url string, bodies *[]string) {
+	t.Helper()
+	bodies = &[]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		*bodies = append(*bodies, string(b))
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(srv.Close)
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	t.Cleanup(func() { defaultHTTPClient = origClient })
+	return srv.URL, bodies
+}
+
+// Identity values are free-form, so in a body they are inserted JSON-escaped
+// and a configured JSON body stays valid whatever the pipeline ID holds.
+func TestExecuteHTTP_IdentityInBodyIsJSONEscaped(t *testing.T) {
+	for _, id := range []string{"team/orders:v2", `we"ird\path$HOME<&>`} {
+		t.Run(id, func(t *testing.T) {
+			t.Setenv("HOME", "/root")
+			url, bodies := identityServer(t)
+			err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{
+				URL: url, Body: `{"p":"${INTERLOCK_PIPELINE_ID}"}`, Run: types.RunIdentity{PipelineID: id},
+			})
+			require.NoError(t, err)
+			require.Len(t, *bodies, 1)
+			var got map[string]string
+			require.NoError(t, json.Unmarshal([]byte((*bodies)[0]), &got), "body %s", (*bodies)[0])
+			assert.Equal(t, id, got["p"])
+			if strings.ContainsAny(id, "<>&") {
+				assert.Contains(t, (*bodies)[0], "<&>", "HTML escaping must be off")
+			}
+		})
+	}
+}
+
+// The default body is already marshalled, so it is sent as is: a "$" in the
+// pipeline ID is not expanded.
+func TestExecuteHTTP_GeneratedBodyIsNotExpanded(t *testing.T) {
+	t.Setenv("INTERLOCK_X", "expanded")
+	url, bodies := identityServer(t)
+	body := `{"pipelineId":"a${INTERLOCK_X}$INTERLOCK_X"}`
+	err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: url, Body: body, BodyGenerated: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{body}, *bodies)
+}
+
+// Header values stay raw; net/http refuses CR/LF, so nothing is sent.
+func TestExecuteHTTP_CRLFInIdentityHeaderFails(t *testing.T) {
+	url, bodies := identityServer(t)
+	err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{
+		URL: url, Run: types.RunIdentity{RunID: "run\r\nX-Evil: 1"},
+	})
+	require.Error(t, err)
+	assert.Empty(t, *bodies, "the server must receive no request")
 }
 
 func TestTriggerError_ErrorMessage(t *testing.T) {
