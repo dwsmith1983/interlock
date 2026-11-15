@@ -9,25 +9,26 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// handleCheckJob queries the job log for the latest event. If no event exists
-// and a StatusChecker is configured, it polls the trigger API directly and
-// writes terminal results (succeeded/failed) to the job log.
+// handleCheckJob reads the newest terminal job log row for this run
+// (input.RunID). Rows of earlier attempts for the same date are ignored, so a
+// rerun is never decided by the previous attempt's result. If the run has no
+// terminal row and a StatusChecker is configured, it polls the trigger API
+// directly and writes terminal results (succeeded/failed) to the job log.
 func handleCheckJob(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
-	record, err := d.Store.GetLatestJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date)
+	record, err := d.Store.GetJobResult(ctx, input.PipelineID, input.ScheduleID, input.Date, input.RunID)
 	if err != nil {
+		d.Logger.WarnContext(ctx, "job result lookup failed", "error", err,
+			"pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date, "runId", input.RunID)
 		return lambda.OrchestratorOutput{Mode: "check-job", Error: err.Error()}, nil
 	}
-
 	if record != nil {
-		// Only return terminal events; skip intermediate events like
-		// infra-trigger-failure so the StatusChecker can poll actual job status.
-		switch record.Event {
-		case types.JobEventSuccess, types.JobEventFail, types.JobEventTimeout:
-			return lambda.OrchestratorOutput{
-				Mode:  "check-job",
-				Event: record.Event,
-			}, nil
+		out := lambda.OrchestratorOutput{Mode: "check-job", Event: record.Event}
+		// A success row may carry a message (synchronous jobs write one);
+		// it is not an error.
+		if record.Event != types.JobEventSuccess {
+			out.Error = record.Error
 		}
+		return out, nil
 	}
 
 	// No terminal joblog entry — try polling the trigger API directly.

@@ -55,7 +55,7 @@ Append-only log of job execution events. Each record represents a lifecycle even
 
 | Entity | PK | SK | Purpose |
 |---|---|---|---|
-| Job event | `PIPELINE#{id}` | `JOB#{schedule}#{date}#{timestamp}` | success/fail/timeout record |
+| Job event | `PIPELINE#{id}` | `JOB#{schedule}#{date}#{timestamp}` | success/fail/timeout record; `runId` names the run it belongs to |
 
 DynamoDB Streams are enabled. The stream-router processes `JOB#` records to handle automatic retries on failure.
 
@@ -106,8 +106,8 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 | Mode | Purpose |
 |---|---|
 | `evaluate` | Load config and sensor data, evaluate validation rules, publish `VALIDATION_PASSED` if all pass |
-| `trigger` | Build trigger config from `job` section, execute trigger (Glue, EMR, HTTP, etc.), return run ID |
-| `check-job` | Query joblog table for latest event; return `success`, `fail`, `timeout`, or empty (still running). Propagates `FailureCategory` to the joblog when a failure is detected |
+| `trigger` | Build trigger config from `job` section, execute trigger (Glue, EMR, HTTP, etc.), return run ID: the job API's run ID for polled types, otherwise the Step Functions execution name |
+| `check-job` | Query joblog table for the newest `success`, `fail` or `timeout` row of this run's `runId` (rows of earlier runs are ignored); otherwise poll the job API. Return the event, or empty (still running). Propagates `FailureCategory` to the joblog when a polled failure is detected |
 | `validation-exhausted` | Publish `VALIDATION_EXHAUSTED` event when the evaluation window closes |
 | `job-poll-exhausted` | Publish `JOB_POLL_EXHAUSTED` event, write timeout joblog entry, set trigger to `FAILED_FINAL` when the job poll window expires |
 | `complete-trigger` | Set trigger status to `COMPLETED` (on success) or `FAILED_FINAL` (on failure/timeout). Ensures trigger records reflect terminal state |
