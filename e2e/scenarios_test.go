@@ -206,7 +206,7 @@ func TestScenarioSLAMet(t *testing.T) {
 // the task, and the Trigger state's Retry launches again after its 30 s
 // interval. The retry is the same execution, so both launches carry the same
 // run ID, and the job reports success for it. No JOB# fail row is written, so
-// the stream-router's job-fail-retry path (job.maxRetries) does not run.
+// CompleteTrigger's failure retry (job.maxRetries) does not run.
 func TestScenarioRetryAfterFailedLaunch(t *testing.T) {
 	const id = "retry-ok"
 	_, date := startDay(t)
@@ -270,13 +270,12 @@ func TestScenarioCalendarExclusion(t *testing.T) {
 	assertTriggerStatus(t, id, date, "")
 }
 
-// The job reports fail for run A, so the stream-router's job-fail-retry
-// (job.maxRetries 1) resets the trigger lock and starts rerun B, which
-// launches the job again under its own execution name. Execution A also reads
-// its fail and ends through CompleteTrigger (FAILED_FINAL). B must not read
+// The job reports fail for run A. Execution A's CompleteTrigger is the only
+// actor that reacts (job.maxRetries 1): it keeps the trigger row RUNNING,
+// starts B as <A>-r1 and ends through IsRetrying and Done, leaving the SLA to
+// B. The stream-router does nothing with the row. B must not read
 // A's fail: it keeps polling until the job reports success for B, and its
-// CompleteTrigger, the last writer, leaves the trigger row COMPLETED. The test
-// waits for A to finish before reporting B, since both react to A's fail.
+// CompleteTrigger leaves the trigger row COMPLETED.
 func TestScenarioRerunIgnoresPreviousFailure(t *testing.T) {
 	const id = "rerun-after-fail"
 	_, date := startDay(t)
@@ -289,14 +288,17 @@ func TestScenarioRerunIgnoresPreviousFailure(t *testing.T) {
 	reportJob(t, id, date, runA, types.JobEventFail)
 
 	runB := waitLaunch(t, id, 2)
-	if want := id + "-" + streamSchedule + "-" + date + "-rerun-0"; runB != want || runB == runA {
-		t.Fatalf("rerun run ID = %q (first run %q), want %q", runB, runA, want)
+	if want := runA + "-r1"; runB != want {
+		t.Fatalf("rerun run ID = %q, want %q", runB, want)
 	}
 	waitFor(t, settleTimeout, "execution A to finish", func() bool {
 		return executionStatus(t, runA) != sfntypes.ExecutionStatusRunning
 	})
 	if got := executionStatus(t, runA); got != sfntypes.ExecutionStatusSucceeded {
-		t.Fatalf("execution A = %s, want SUCCEEDED (fail ends through CompleteTrigger and Done)", got)
+		t.Fatalf("execution A = %s, want SUCCEEDED (a retry ends through IsRetrying and Done)", got)
+	}
+	if h := executionHistory(t, runA); !stateExited(h, "IsRetrying") || stateExited(h, "CheckCancelSLA") {
+		t.Fatalf("execution A must leave through IsRetrying without CheckCancelSLA")
 	}
 	// Let B check the job log at least once before its result exists: it
 	// either parks in WaitForJob again or, reading A's fail, finishes.
@@ -327,6 +329,41 @@ func TestScenarioRerunIgnoresPreviousFailure(t *testing.T) {
 	assertLaunches(t, id, 2)
 	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
 	t.Logf("run A %s, run B %s, job log %v", runA, runB, wantLog)
+}
+
+// job.maxRetries 1 and both attempts fail: A's CompleteTrigger starts
+// <A>-r1, and B's, with the budget spent, sets FAILED_FINAL and publishes
+// RETRY_EXHAUSTED instead of starting a third attempt.
+func TestScenarioRetriesExhausted(t *testing.T) {
+	const id = "retries-exhausted"
+	_, date := startDay(t)
+	cfg := scenarioConfig(id)
+	cfg.Job.MaxRetries = 1
+	putConfig(t, cfg)
+
+	writeReady(t, id, date)
+	runA := waitLaunch(t, id, 1)
+	reportJob(t, id, date, runA, types.JobEventFail)
+	runB := waitLaunch(t, id, 2)
+	if want := runA + "-r1"; runB != want {
+		t.Fatalf("retry run ID = %q, want %q", runB, want)
+	}
+	reportJob(t, id, date, runB, types.JobEventFail)
+	waitFor(t, settleTimeout, "execution B to finish", func() bool {
+		return executionStatus(t, runB) != sfntypes.ExecutionStatusRunning
+	})
+	if got := executionStatus(t, runB); got != sfntypes.ExecutionStatusSucceeded {
+		t.Fatalf("execution B = %s, want SUCCEEDED", got)
+	}
+
+	vp, ex := string(types.EventValidationPassed), string(types.EventRetryExhausted)
+	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 3, vp: 2, ex: 1})
+	if got, want := jobEvents(t, id), []string{types.JobEventFail, types.JobEventFail}; !slices.Equal(got, want) {
+		t.Fatalf("job log = %v, want %v", got, want)
+	}
+	waitAlerts(t, id, alert{id, date, ex})
+	assertLaunches(t, id, 2)
+	assertTriggerStatus(t, id, date, types.TriggerStatusFailedFinal)
 }
 
 func stateExited(h []sfntypes.HistoryEvent, state string) bool {

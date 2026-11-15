@@ -47,7 +47,7 @@ For each trigger:
 
 ### Stale Threshold
 
-The default stale trigger threshold is 24 hours. Triggers whose TTL has expired are considered timed-out Step Function executions. The watchdog transitions them to `FAILED_FINAL` status, which prevents the stream-router from attempting further retries.
+The default stale trigger threshold is 24 hours. Triggers whose TTL has expired are considered timed-out Step Function executions. The watchdog transitions them to `FAILED_FINAL` status. It does not retry: retries start only from a run's CompleteTrigger, and a stale trigger has no run left to start one.
 
 ### Event Format
 

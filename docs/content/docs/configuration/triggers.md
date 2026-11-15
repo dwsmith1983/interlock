@@ -120,21 +120,25 @@ does not restrict it.
 What a row does:
 
 - The run's job check reads only rows whose `runId` is its own run ID. The
-  newest `success`, `fail` or `timeout` row ends the run: `success` sets the
-  trigger to `COMPLETED`, `fail` and `timeout` set it to `FAILED_FINAL`.
-- The stream-router acts on every `JOB#` row, whatever its `runId`. `success`
-  publishes `JOB_COMPLETED`. `fail` and `timeout` start its failure rerun, a new
-  execution with a new run ID, until `maxRetries` reruns have run (`maxCodeRetries`,
-  default 1, for a `PERMANENT` failure); after that it publishes
-  `RETRY_EXHAUSTED` and sets the trigger to `FAILED_FINAL`.
+  newest `success`, `fail` or `timeout` row ends the run. `success` sets the
+  trigger to `COMPLETED`. On `fail` or `timeout` the run's CompleteTrigger
+  starts the next attempt, a new execution with a new run ID, until
+  `maxRetries` retries have run (`maxCodeRetries`, default 1, when the run's own
+  row says `PERMANENT`); after that it publishes `RETRY_EXHAUSTED` and sets the
+  trigger to `FAILED_FINAL`. An excluded date is never retried: it publishes
+  `PIPELINE_EXCLUDED` and sets `FAILED_FINAL`. The count comes from the
+  execution name (`-r<N>` is attempt N), so a requested rerun starts a new
+  chain with a fresh budget.
+- The stream-router publishes `JOB_COMPLETED` for every `success` row,
+  whatever its `runId`, and starts nothing for `fail` or `timeout` rows.
 
 A job that never reports: when `job.jobPollWindowSeconds` (default 3600) passes
 with no result row for the run, the orchestrator writes a `job-poll-exhausted`
-row, which the stream-router ignores (no rerun), publishes `JOB_POLL_EXHAUSTED`
-and sets the trigger to `FAILED_FINAL`. Set the window to cover the job's
-runtime. A row written after the window closes still reaches the
-stream-router (a late `fail` or `timeout` starts a rerun) but does not change
-the closed run.
+row and publishes `JOB_POLL_EXHAUSTED`, and CompleteTrigger treats the closed
+window like any other timeout, retrying while the budget lasts. Set the window
+to cover the job's runtime. A `fail` or `timeout` that arrives after its
+execution has ended, or for a run ID that is not the current attempt's,
+changes nothing; a lock it leaves stale is the watchdog's to clear.
 
 ### `command`
 

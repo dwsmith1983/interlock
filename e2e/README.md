@@ -86,9 +86,12 @@ code path first and assert the exact values it produces.
   sets the stream mapping filters from that copy, so the filters themselves run.
 - DynamoDB TTL. It is off, and would run on the real clock rather than the
   simulated one.
-- Most of `job.maxRetries`. `TestScenarioRerunIgnoresPreviousFailure` covers
-  one stream-router job-fail-retry (a reported `fail`, `maxRetries: 1`, one
-  rerun that then succeeds); retry exhaustion (`RETRY_EXHAUSTED`),
-  `maxCodeRetries` for permanent failures and `timeout` rows are not run. The
-  retry scenario covers the Step Functions Trigger retry.
+- Part of `job.maxRetries`. `TestScenarioRerunIgnoresPreviousFailure` covers
+  one CompleteTrigger retry (a reported `fail`, `maxRetries: 1`, a `-r1`
+  retry that then succeeds) and `TestScenarioRetriesExhausted` the
+  `RETRY_EXHAUSTED` path when both attempts fail. `maxCodeRetries` for
+  permanent failures, `timeout` rows and job poll window exhaustion are not
+  run: the window is at least 60 s and the e2e job check interval is 5 s, so
+  one exhausted attempt and its retry take over two minutes. The retry
+  scenario covers the Step Functions Trigger retry.
 - Slack delivery. The dispatcher's queue mapping is off in e2e.
