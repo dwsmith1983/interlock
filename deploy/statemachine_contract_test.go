@@ -261,6 +261,20 @@ func checkJobTerminalResult(t *testing.T) lambda.OrchestratorOutput {
 	return out
 }
 
+// completeTriggerResult returns the live complete-trigger output for a
+// success, the document IsRetrying reads. Every outcome sets status.
+func completeTriggerResult(t *testing.T) lambda.OrchestratorOutput {
+	t.Helper()
+	d := &lambda.Deps{Store: storetest.NewStore(&storetest.FakeDynamo{}), Logger: slog.Default()}
+	out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode: "complete-trigger", PipelineID: "gold-orders", ScheduleID: "daily", Date: "2026-03-01",
+		Event: types.JobEventSuccess, RunID: "jr_1", ExecutionName: "gold-orders-daily-2026-03-01-1709280000",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, out.Status, "IsRetrying dereferences $.completeTriggerResult.status")
+	return out
+}
+
 // stateDocument builds the JSON document Step Functions holds when each state
 // runs: the execution input plus every ResultPath written earlier on the path
 // that reaches the state. evalLoop/jobPollLoop mirror the Result blocks of the
@@ -279,6 +293,7 @@ func stateDocument(t *testing.T, input lambda.SFNInput) map[string]interface{} {
 	doc["evaluateResult"] = toDoc(t, evaluateErrorResult(t))
 	doc["triggerResult"] = toDoc(t, triggerResult(t))
 	doc["checkJobResult"] = toDoc(t, checkJobTerminalResult(t))
+	doc["completeTriggerResult"] = toDoc(t, completeTriggerResult(t))
 	doc["errorInfo"] = map[string]interface{}{
 		"Error": "States.TaskFailed",
 		"Cause": "trigger execute: glue trigger: StartJobRun failed",

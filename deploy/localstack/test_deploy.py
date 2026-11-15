@@ -101,11 +101,22 @@ class CmdDeployTest(unittest.TestCase):
         mocks["ensure_schedules_table"].assert_not_called()
         mocks["ensure_lambdas"].assert_called_once_with(sfn_arn=SFN_ARN, e2e=False)
 
-    def test_deploy_e2e_stream_router_env_update_keeps_hooks(self) -> None:
+    def test_deploy_e2e_sfn_starters_env_update_keeps_hooks(self) -> None:
         _, client = self._run_deploy(e2e=True, sfn_arn="arn:other")
-        env = client.update_function_configuration.call_args.kwargs["Environment"]["Variables"]
-        self.assertEqual(env["STATE_MACHINE_ARN"], "arn:other")
-        self.assertEqual(env["E2E_CLOCK_URL"], CLOCK_URL)
+        calls = client.update_function_configuration.call_args_list
+        updated = {c.kwargs["FunctionName"]: c.kwargs["Environment"]["Variables"] for c in calls}
+        want = sorted(f"{deploy.PREFIX}-{h}" for h in ("orchestrator", "stream-router", "watchdog"))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sorted(updated), want)
+        for name, env in updated.items():
+            with self.subTest(function=name):
+                self.assertEqual(env["STATE_MACHINE_ARN"], "arn:other")
+                self.assertEqual(env["E2E_CLOCK_URL"], CLOCK_URL)
+        orch = updated[f"{deploy.PREFIX}-orchestrator"]
+        self.assertEqual(orch["DISABLE_SSRF_PROTECTION"], "true")
+        watchdog = updated[f"{deploy.PREFIX}-watchdog"]
+        for var in (*SCHEDULER_VARS, "E2E_SCHEDULE_TABLE"):
+            self.assertTrue(watchdog.get(var), f"watchdog lost {var}")
 
     def test_ensure_lambdas_e2e_forwards_hooks(self) -> None:
         client = mock.MagicMock()

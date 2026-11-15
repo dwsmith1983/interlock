@@ -183,6 +183,10 @@ resource "aws_lambda_function" "orchestrator" {
       JOBLOG_TABLE   = aws_dynamodb_table.joblog.name
       RERUN_TABLE    = aws_dynamodb_table.rerun.name
       EVENT_BUS_NAME = aws_cloudwatch_event_bus.interlock.name
+      # CompleteTrigger starts retries. Built from the name: the state machine
+      # references this function, so its ARN attribute would be a cycle.
+      STATE_MACHINE_ARN   = "arn:${data.aws_partition.current.partition}:states:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:stateMachine:${var.environment}-interlock-pipeline"
+      SFN_TIMEOUT_SECONDS = tostring(var.sfn_timeout_seconds)
     }
   }
 
@@ -460,7 +464,7 @@ resource "aws_iam_role_policy" "dynamodb_streams" {
 }
 
 # -----------------------------------------------------------------------------
-# Step Functions StartExecution — stream-router
+# Step Functions StartExecution: stream-router, watchdog, orchestrator
 # -----------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "sfn_start" {
@@ -471,7 +475,7 @@ data "aws_iam_policy_document" "sfn_start" {
 }
 
 resource "aws_iam_role_policy" "sfn_start" {
-  for_each = toset(["stream-router", "watchdog"])
+  for_each = toset(["stream-router", "watchdog", "orchestrator"])
   name     = "sfn-start"
   role     = aws_iam_role.lambda[each.key].id
   policy   = data.aws_iam_policy_document.sfn_start.json

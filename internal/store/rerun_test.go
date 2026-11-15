@@ -231,3 +231,32 @@ func TestCountRerunsBySource_DynamoError(t *testing.T) {
 		t.Errorf("expected context in error message, got: %v", err)
 	}
 }
+
+// TestWriteRerunOnce_KeyedByExecution: a retried CompleteTrigger writes the
+// same execution's rerun row again, which must not add a row; requested
+// reruns keep their count-based attempt numbering after it.
+func TestWriteRerunOnce_KeyedByExecution(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+	ctx := context.Background()
+
+	for i, want := range []bool{true, false} {
+		written, err := s.WriteRerunOnce(ctx, "pipe-1", "daily", "2026-03-01", "pipe-1-daily-2026-03-01-1709308800-r1", "job-fail-retry", "fail")
+		if err != nil || written != want {
+			t.Fatalf("call %d: WriteRerunOnce = %v, %v, want %v, nil", i+1, written, err, want)
+		}
+	}
+	item, ok := mock.items[itemKey("rerun", types.PipelinePK("pipe-1"), "RERUN#daily#2026-03-01#pipe-1-daily-2026-03-01-1709308800-r1")]
+	if !ok {
+		t.Fatal("rerun row keyed by the execution name is missing")
+	}
+	if got := [2]string{item["reason"].(*ddbtypes.AttributeValueMemberS).Value, item["sourceJobEvent"].(*ddbtypes.AttributeValueMemberS).Value}; got != [2]string{"job-fail-retry", "fail"} {
+		t.Errorf("reason/sourceJobEvent = %q", got)
+	}
+	if n, err := s.CountRerunsBySource(ctx, "pipe-1", "daily", "2026-03-01", []string{"job-fail-retry"}); err != nil || n != 1 {
+		t.Errorf("job-fail-retry rows = %d, %v, want 1", n, err)
+	}
+	if attempt, err := s.WriteRerun(ctx, "pipe-1", "daily", "2026-03-01", "manual", ""); err != nil || attempt != 1 {
+		t.Errorf("WriteRerun after it = %d, %v, want attempt 1", attempt, err)
+	}
+}
