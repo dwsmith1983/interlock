@@ -55,14 +55,15 @@ type StatusResult struct {
 
 // OrchestratorInput is the input to the orchestrator Lambda from Step Functions.
 type OrchestratorInput struct {
-	Mode       string                 `json:"mode"` // evaluate, trigger, check-job, post-run, validation-exhausted, complete-trigger
-	PipelineID string                 `json:"pipelineId"`
-	ScheduleID string                 `json:"scheduleId"`
-	Date       string                 `json:"date"`
-	RunID      string                 `json:"runId,omitempty"`
-	Event      string                 `json:"event,omitempty"`     // job event for complete-trigger (success, fail, timeout)
-	Metadata   map[string]interface{} `json:"metadata,omitempty"`  // trigger metadata for status polling
-	ErrorInfo  map[string]interface{} `json:"errorInfo,omitempty"` // error details from SFN Catch
+	Mode          string                 `json:"mode"` // evaluate, trigger, check-job, post-run, validation-exhausted, complete-trigger
+	PipelineID    string                 `json:"pipelineId"`
+	ScheduleID    string                 `json:"scheduleId"`
+	Date          string                 `json:"date"`
+	RunID         string                 `json:"runId,omitempty"`
+	ExecutionName string                 `json:"executionName,omitempty"` // $$.Execution.Name, the trigger mode's run ID for jobs that report their own result
+	Event         string                 `json:"event,omitempty"`         // job event for complete-trigger (success, fail, timeout)
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`      // trigger metadata for status polling
+	ErrorInfo     map[string]interface{} `json:"errorInfo,omitempty"`     // error details from SFN Catch
 }
 
 // OrchestratorOutput is the output of the orchestrator Lambda.
@@ -74,7 +75,7 @@ type OrchestratorOutput struct {
 	JobType  string                 `json:"jobType,omitempty"`
 	Event    string                 `json:"event,omitempty"` // success, fail, timeout
 	Error    string                 `json:"error,omitempty"`
-	Metadata map[string]interface{} `json:"metadata,omitempty"` // trigger metadata passed through for status polling
+	Metadata map[string]interface{} `json:"metadata,omitzero"` // nil is omitted, an empty map is emitted as {}: CheckJob dereferences $.triggerResult.metadata
 }
 
 // SLAMonitorInput is the input to the SLA monitor Lambda.

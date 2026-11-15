@@ -26,11 +26,22 @@ import (
 // arguments out of intrinsic calls like States.MathAdd($.a, $.b).
 var pathRefRE = regexp.MustCompile(`\$(?:\.[A-Za-z0-9_]+(?:\[\d+\])*)+`)
 
+// contextPaths are the context-object paths the ASL may read. Step Functions
+// always supplies them; any other "$$." path fails the contract until it is
+// checked and added here.
+var contextPaths = map[string]bool{
+	"$$.Execution.Name": true,
+}
+
 // resolvePath walks a reference path against a decoded JSON document and
-// reports whether it exists. Supports "$", "$.a.b" and "$.a[0].b".
+// reports whether it exists. Supports "$", "$.a.b", "$.a[0].b" and the
+// context paths in contextPaths.
 func resolvePath(doc interface{}, path string) bool {
 	if path == "$" {
 		return true
+	}
+	if strings.HasPrefix(path, "$$.") {
+		return contextPaths[path]
 	}
 	if !strings.HasPrefix(path, "$.") {
 		return false
@@ -201,13 +212,15 @@ func evaluateErrorResult(t *testing.T) lambda.OrchestratorOutput {
 	return out
 }
 
-// triggerResult returns the output the live trigger handler produces for a
-// polling (Glue) trigger — the state CheckJob reads.
+// triggerResult returns the output the live trigger handler produces for an
+// http trigger, the state CheckJob reads. It is the worst case for CheckJob:
+// the executor returns no metadata, so $.triggerResult.metadata exists only
+// because the handler always emits an object.
 func triggerResult(t *testing.T) lambda.OrchestratorOutput {
 	t.Helper()
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "gold-orders"},
-		Job:      types.JobConfig{Type: types.TriggerGlue, Config: map[string]interface{}{"jobName": "etl"}},
+		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	fake := &storetest.FakeDynamo{
 		GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
@@ -215,11 +228,10 @@ func triggerResult(t *testing.T) lambda.OrchestratorOutput {
 		},
 	}
 	d := &lambda.Deps{Store: storetest.NewStore(fake), Logger: slog.Default()}
-	d.TriggerRunner = &contractExecutor{meta: map[string]interface{}{
-		"glue_job_name": "etl", "glue_job_run_id": "jr_1",
-	}}
+	d.TriggerRunner = &contractExecutor{}
 	out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
 		Mode: "trigger", PipelineID: "gold-orders", ScheduleID: "daily", Date: "2026-03-01",
+		ExecutionName: "gold-orders-daily-2026-03-01-1709280000",
 	})
 	require.NoError(t, err)
 	return out
@@ -236,14 +248,16 @@ func checkJobTerminalResult(t *testing.T) lambda.OrchestratorOutput {
 				"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-orders")},
 				"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("daily", "2026-03-01", "1709280000000")},
 				"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
+				"runId": &ddbtypes.AttributeValueMemberS{Value: "jr_1"},
 			}}}, nil
 		},
 	}
 	d := &lambda.Deps{Store: storetest.NewStore(fake), Logger: slog.Default()}
 	out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode: "check-job", PipelineID: "gold-orders", ScheduleID: "daily", Date: "2026-03-01",
+		Mode: "check-job", PipelineID: "gold-orders", ScheduleID: "daily", Date: "2026-03-01", RunID: "jr_1",
 	})
 	require.NoError(t, err)
+	require.Equal(t, types.JobEventSuccess, out.Event, "the fixture must be a terminal check-job result")
 	return out
 }
 
@@ -359,4 +373,29 @@ func TestASL_EveryDereferencedPathResolves(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolvePath_ContextPaths(t *testing.T) {
+	for path, want := range map[string]bool{
+		"$$.Execution.Name":     true,
+		"$$.Execution.Bogus":    false,
+		"$$.State.EnteredTime":  false,
+		"$$.Execution.Name.Sub": false,
+	} {
+		require.Equalf(t, want, resolvePath(map[string]interface{}{}, path), "resolvePath(%q)", path)
+	}
+}
+
+// TestASL_TriggerPassesExecutionName guards the run ID of jobs that report
+// their own result: the Trigger state must pass the execution name, and the
+// orchestrator input must decode it.
+func TestASL_TriggerPassesExecutionName(t *testing.T) {
+	asl := loadASL(t)
+	var st aslState
+	require.NoError(t, json.Unmarshal(asl.States["Trigger"], &st))
+	require.Equal(t, "$$.Execution.Name", st.Parameters["executionName.$"])
+
+	var in lambda.OrchestratorInput
+	require.NoError(t, json.Unmarshal([]byte(`{"mode":"trigger","executionName":"run-1"}`), &in))
+	require.Equal(t, "run-1", in.ExecutionName)
 }

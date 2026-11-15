@@ -32,6 +32,13 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	if err != nil {
 		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger build config: %w", err)
 	}
+
+	// The execution name identifies this run. Jobs without a status API
+	// record their result under it.
+	runID := input.ExecutionName
+	if runID == "" {
+		runID = fmt.Sprintf("%s-%s-%s-%d", input.PipelineID, input.ScheduleID, input.Date, d.Now().UnixMilli())
+	}
 	InjectDateArgs(&triggerCfg, input.Date)
 
 	metadata, err := d.TriggerRunner.Execute(ctx, &triggerCfg)
@@ -39,29 +46,32 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 		errMsg := fmt.Sprintf("trigger execute: %v", err)
 		// Log infra failure to joblog for audit trail, then return Lambda error
 		// so Step Functions Retry handles exponential backoff.
-		if writeErr := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventInfraTriggerFailure, "", 0, errMsg); writeErr != nil {
+		if writeErr := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventInfraTriggerFailure, runID, 0, errMsg); writeErr != nil {
 			d.Logger.WarnContext(ctx, "failed to write infra trigger failure to joblog", "error", writeErr, "pipeline", input.PipelineID)
 		}
 		return lambda.OrchestratorOutput{}, fmt.Errorf("%s", errMsg)
 	}
 
-	runID := ExtractRunID(metadata)
-
 	if err := lambda.PublishEvent(ctx, d, string(types.EventJobTriggered), input.PipelineID, input.ScheduleID, input.Date, fmt.Sprintf("triggered %s job", cfg.Job.Type)); err != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobTriggered, "error", err)
 	}
 
-	// Non-polling triggers (http, command, lambda) complete synchronously
-	// during Execute. Write success to joblog immediately and set a sentinel
-	// runId so the Step Functions CheckJob JSONPath resolves. An empty
-	// (non-nil) map carries no run identity either, so it takes the same path.
-	if len(metadata) == 0 {
+	switch cfg.Job.Type {
+	case types.TriggerHTTP, types.TriggerCommand, types.TriggerLambda:
+		// No status API: the call returning counts as success.
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
-			types.JobEventSuccess, "sync", 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type)); err != nil {
-			d.Logger.Warn("failed to write sync job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
+			types.JobEventSuccess, runID, 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type)); err != nil {
+			d.Logger.Warn("failed to write job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
 		}
-		runID = "sync"
-		metadata = map[string]interface{}{"completedSync": true}
+	default:
+		if id := ExtractRunID(metadata); id != "" {
+			runID = id
+		}
+	}
+
+	// CheckJob dereferences $.triggerResult.metadata, so it must be an object.
+	if metadata == nil {
+		metadata = map[string]interface{}{}
 	}
 
 	return lambda.OrchestratorOutput{
@@ -100,8 +110,9 @@ func BuildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 }
 
 // ExtractRunID searches trigger metadata for a recognisable run identifier.
-// The key list is owned by the parent lambda package so the two orchestrator
-// implementations cannot drift apart.
+// The key list lives in the parent lambda package and is shared with the
+// deprecated root orchestrator, but the rest of that root copy is not kept in
+// step with this package.
 func ExtractRunID(metadata map[string]interface{}) string {
 	return lambda.ExtractRunID(metadata)
 }

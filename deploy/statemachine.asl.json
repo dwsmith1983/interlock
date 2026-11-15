@@ -124,7 +124,8 @@
         "mode": "trigger",
         "pipelineId.$": "$.pipelineId",
         "scheduleId.$": "$.scheduleId",
-        "date.$": "$.date"
+        "date.$": "$.date",
+        "executionName.$": "$$.Execution.Name"
       },
       "ResultPath": "$.triggerResult",
       "Next": "HasTriggerResult",

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -29,6 +31,32 @@ func configItem(t *testing.T, cfg types.PipelineConfig) map[string]ddbtypes.Attr
 		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
 		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
 		"config": &ddbtypes.AttributeValueMemberS{Value: string(data)},
+	}
+}
+
+// strAttr returns item[name] as a string, "" when the attribute is absent. An
+// attribute of another type fails the test.
+func strAttr(t *testing.T, item map[string]ddbtypes.AttributeValue, name string) string {
+	t.Helper()
+	av, ok := item[name]
+	if !ok {
+		return ""
+	}
+	sv, ok := av.(*ddbtypes.AttributeValueMemberS)
+	if !ok {
+		t.Errorf("attribute %q = %T, want a string", name, av)
+		return ""
+	}
+	return sv.Value
+}
+
+// joblogPuts returns a PutItemFn that records every job log item written.
+func joblogPuts(rows *[]map[string]ddbtypes.AttributeValue) func(context.Context, *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+	return func(_ context.Context, in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+		if *in.TableName == "joblog" {
+			*rows = append(*rows, in.Item)
+		}
+		return &dynamodb.PutItemOutput{}, nil
 	}
 }
 
@@ -202,62 +230,57 @@ func TestTrigger_FailuresReturnLambdaError(t *testing.T) {
 
 // TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata guards the CheckJob
 // Parameters, which dereference both $.triggerResult.runId and
-// $.triggerResult.metadata.
+// $.triggerResult.metadata, and the run ID each trigger type reports under.
+// Jobs without a status API (http, command, lambda) record success at once
+// under the run ID.
 func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
-	glueCfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Job: types.JobConfig{
-			Type:   types.TriggerGlue,
-			Config: map[string]interface{}{"jobName": "my-etl"},
-		},
+	const execName = "p-s-2026-03-01-1709280000"
+	now := time.Date(2026, 3, 1, 6, 0, 0, 0, time.UTC)
+	fallback := fmt.Sprintf("p-s-2026-03-01-%d", now.UnixMilli())
+	job := func(tt types.TriggerType, cfg map[string]interface{}) types.JobConfig {
+		return types.JobConfig{Type: tt, Config: cfg}
 	}
-	httpCfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Job: types.JobConfig{
-			Type:   types.TriggerHTTP,
-			Config: map[string]interface{}{"url": "https://example.com/trigger", "method": "POST"},
-		},
-	}
+	glue := job(types.TriggerGlue, map[string]interface{}{"jobName": "my-etl"})
+	httpJob := job(types.TriggerHTTP, map[string]interface{}{"url": "https://example.com/trigger", "method": "POST"})
 
 	tests := []struct {
-		name      string
-		cfg       types.PipelineConfig
-		meta      map[string]interface{}
-		wantRunID string
+		name        string
+		job         types.JobConfig
+		meta        map[string]interface{}
+		execName    string
+		wantRunID   string
+		wantSuccess bool // a success row under wantRunID
 	}{
-		{
-			name:      "polling trigger",
-			cfg:       glueCfg,
-			meta:      map[string]interface{}{"glue_job_name": "my-etl", "glue_job_run_id": "jr_1"},
-			wantRunID: "jr_1",
-		},
-		{
-			name:      "sync trigger with nil metadata",
-			cfg:       httpCfg,
-			meta:      nil,
-			wantRunID: "sync",
-		},
-		{
-			name:      "sync trigger with empty metadata",
-			cfg:       httpCfg,
-			meta:      map[string]interface{}{},
-			wantRunID: "sync",
-		},
+		{name: "polling trigger keeps its API run ID", job: glue, execName: execName,
+			meta: map[string]interface{}{"glue_job_name": "my-etl", "glue_job_run_id": "jr_1"}, wantRunID: "jr_1"},
+		{name: "polling trigger without an API run ID", job: glue, execName: execName,
+			meta: map[string]interface{}{"glue_job_name": "my-etl"}, wantRunID: execName},
+		{name: "http uses the execution name", job: httpJob, execName: execName, wantRunID: execName, wantSuccess: true},
+		{name: "http with empty metadata", job: httpJob, execName: execName, meta: map[string]interface{}{}, wantRunID: execName,
+			wantSuccess: true},
+		{name: "http without an execution name", job: httpJob, wantRunID: fallback, wantSuccess: true},
+		{name: "command records success under the run ID", execName: execName, wantRunID: execName, wantSuccess: true,
+			job: job(types.TriggerCommand, map[string]interface{}{"command": "echo ok"})},
+		{name: "lambda records success under the run ID", execName: execName, wantRunID: execName, wantSuccess: true,
+			job: job(types.TriggerLambda, map[string]interface{}{"functionName": "f"})},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := tt.cfg
+			cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: tt.job}
+			var jobRows []map[string]ddbtypes.AttributeValue
 			fake := &storetest.FakeDynamo{
 				GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
 					return &dynamodb.GetItemOutput{Item: configItem(t, cfg)}, nil
 				},
+				PutItemFn: joblogPuts(&jobRows),
 			}
 			d := testDeps(fake)
+			d.NowFunc = func() time.Time { return now }
 			d.TriggerRunner = &fakeExecutor{meta: tt.meta}
 
 			out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-				Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01",
+				Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01", ExecutionName: tt.execName,
 			})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -265,9 +288,55 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 			if out.RunID != tt.wantRunID {
 				t.Errorf("runID = %q, want %q", out.RunID, tt.wantRunID)
 			}
-			if len(out.Metadata) == 0 {
-				t.Errorf("metadata = %v, want a non-empty map for $.triggerResult.metadata", out.Metadata)
+			data, err := json.Marshal(out)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var decoded map[string]interface{}
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, ok := decoded["metadata"].(map[string]interface{}); !ok {
+				t.Errorf("marshaled output = %s, want a metadata object for $.triggerResult.metadata", data)
+			}
+
+			if tt.wantSuccess {
+				if len(jobRows) != 1 || strAttr(t, jobRows[0], "event") != types.JobEventSuccess ||
+					strAttr(t, jobRows[0], "runId") != tt.wantRunID {
+					t.Errorf("job log rows = %v, want one success row with runId %q", jobRows, tt.wantRunID)
+				}
+			} else if len(jobRows) != 0 {
+				t.Errorf("job log rows = %v, want none", jobRows)
 			}
 		})
+	}
+}
+
+// TestTrigger_InfraFailureRowCarriesRunID: the run ID is known before the
+// launch, so the infra-trigger-failure row belongs to the run like any other.
+func TestTrigger_InfraFailureRowCarriesRunID(t *testing.T) {
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com/run"}},
+	}
+	var jobRows []map[string]ddbtypes.AttributeValue
+	fake := &storetest.FakeDynamo{
+		GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(t, cfg)}, nil
+		},
+		PutItemFn: joblogPuts(&jobRows),
+	}
+	d := testDeps(fake)
+	d.TriggerRunner = &fakeExecutor{err: errors.New("connection refused")}
+
+	_, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01", ExecutionName: "exec-1",
+	})
+	if err == nil {
+		t.Fatal("trigger must return a Lambda error when Execute fails")
+	}
+	if len(jobRows) != 1 || strAttr(t, jobRows[0], "event") != types.JobEventInfraTriggerFailure ||
+		strAttr(t, jobRows[0], "runId") != "exec-1" {
+		t.Errorf("job log rows = %v, want one infra-trigger-failure row with runId exec-1", jobRows)
 	}
 }
