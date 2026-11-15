@@ -45,6 +45,7 @@ func main() {
 		RerunTable:   os.Getenv("RERUN_TABLE"),
 	}
 	cache := store.NewConfigCache(s, 5*time.Minute)
+	cache.Logger = logger
 
 	tel, telShutdown, err := telemetry.NewTelemetry(context.Background(), "interlock-stream-router")
 	if err != nil {

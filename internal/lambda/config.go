@@ -4,26 +4,12 @@ import (
 	"context"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
-	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
-// GetValidatedConfig loads a pipeline config and validates its retry/timeout
-// fields. Returns nil (with a warning log) if validation fails, signalling the
-// caller to skip processing for this pipeline.
+// GetValidatedConfig returns the pipeline's config from the config cache,
+// which holds only configs that parsed and passed validation (the cache logs
+// each rejected row). Returns nil without an error for a missing or
+// rejected pipeline, signalling the caller to skip it.
 func GetValidatedConfig(ctx context.Context, d *Deps, pipelineID string) (*types.PipelineConfig, error) {
-	cfg, err := d.ConfigCache.Get(ctx, pipelineID)
-	if err != nil {
-		return nil, err
-	}
-	if cfg == nil {
-		return nil, nil
-	}
-	if errs := validation.ValidatePipelineConfig(cfg); len(errs) > 0 {
-		d.Logger.Warn("invalid pipeline config, skipping",
-			"pipelineId", pipelineID,
-			"errors", errs,
-		)
-		return nil, nil
-	}
-	return cfg, nil
+	return d.ConfigCache.Get(ctx, pipelineID)
 }

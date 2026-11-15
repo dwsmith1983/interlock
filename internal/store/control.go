@@ -2,9 +2,12 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -13,12 +16,32 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
-// ScanConfigs reads all CONFIG rows from the control table.
-// Returns a map of pipeline ID to PipelineConfig.
-func (s *Store) ScanConfigs(ctx context.Context) (map[string]*types.PipelineConfig, error) {
+// RejectedConfig is a CONFIG row ScanConfigs could not load.
+type RejectedConfig struct {
+	PK         string // the row's raw partition key
+	PipelineID string // empty when PK has no "PIPELINE#<id>" form
+	Reason     string
+	Hash       string // configHash of the raw config string; empty when there is none
+}
+
+// configHash is the first 16 hex characters of the SHA-256 of s: short, but
+// enough to tell one version of a config from the next.
+func configHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// ScanConfigs reads all CONFIG rows from the control table. A row that does
+// not load (bad PK, missing or non-string config, JSON that does not
+// unmarshal, a config that fails validation) is returned as a rejection, so
+// one team's bad config never hides another's. Only a DynamoDB error fails
+// the scan.
+func (s *Store) ScanConfigs(ctx context.Context) (map[string]*types.PipelineConfig, []RejectedConfig, error) {
 	configs := make(map[string]*types.PipelineConfig)
+	var rejected []RejectedConfig
 
 	err := ScanAll(ctx, s.Client, func(startKey map[string]ddbtypes.AttributeValue) *dynamodb.ScanInput {
 		return &dynamodb.ScanInput{
@@ -31,43 +54,59 @@ func (s *Store) ScanConfigs(ctx context.Context) (map[string]*types.PipelineConf
 		}
 	}, func(items []map[string]ddbtypes.AttributeValue) error {
 		for _, item := range items {
-			pkAttr, ok := item["PK"]
-			if !ok {
-				return fmt.Errorf("row missing PK attribute")
+			cfg, r := loadConfigRow(item)
+			if cfg == nil {
+				rejected = append(rejected, r)
+				continue
 			}
-			pkStr, ok := pkAttr.(*ddbtypes.AttributeValueMemberS)
-			if !ok {
-				return fmt.Errorf("PK is not a string")
-			}
-
-			const prefix = "PIPELINE#"
-			if len(pkStr.Value) <= len(prefix) {
-				return fmt.Errorf("invalid PK %q", pkStr.Value)
-			}
-			pipelineID := pkStr.Value[len(prefix):]
-
-			configAttr, ok := item["config"]
-			if !ok {
-				return fmt.Errorf("config attribute missing for %q", pipelineID)
-			}
-			configStr, ok := configAttr.(*ddbtypes.AttributeValueMemberS)
-			if !ok {
-				return fmt.Errorf("config is not a string for %q", pipelineID)
-			}
-
-			var cfg types.PipelineConfig
-			if err := json.Unmarshal([]byte(configStr.Value), &cfg); err != nil {
-				return fmt.Errorf("unmarshal config for %q: %w", pipelineID, err)
-			}
-			configs[pipelineID] = &cfg
+			configs[r.PipelineID] = cfg
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("scan configs: %w", err)
+		return nil, nil, fmt.Errorf("scan configs: %w", err)
 	}
-	return configs, nil
+	return configs, rejected, nil
 }
+
+// loadConfigRow parses and validates one CONFIG row. It returns the config, or
+// nil and the rejection; PK and PipelineID are filled in either way.
+func loadConfigRow(item map[string]ddbtypes.AttributeValue) (*types.PipelineConfig, RejectedConfig) {
+	var r RejectedConfig
+	if pk, ok := item["PK"].(*ddbtypes.AttributeValueMemberS); ok {
+		r.PK = pk.Value
+	}
+	if id, ok := strings.CutPrefix(r.PK, "PIPELINE#"); ok && id != "" {
+		r.PipelineID = id
+	}
+	raw, isString := item["config"].(*ddbtypes.AttributeValueMemberS)
+	if isString {
+		r.Hash = configHash(raw.Value)
+	}
+	var cfg types.PipelineConfig
+	switch _, present := item["config"]; {
+	case r.PipelineID == "":
+		r.Reason = fmt.Sprintf("invalid PK %q", r.PK)
+	case !present:
+		r.Reason = "config attribute missing"
+	case !isString:
+		r.Reason = "config is not a string"
+	default:
+		if err := json.Unmarshal([]byte(raw.Value), &cfg); err != nil {
+			r.Reason = "unmarshal config: " + err.Error()
+		} else if errs := validation.ValidatePipelineConfig(&cfg); len(errs) > 0 {
+			r.Reason = strings.Join(errs, "; ")
+		} else {
+			return &cfg, r
+		}
+	}
+	// Cut to maxReasonBytes; ToValidUTF8 drops a rune the cut splits.
+	r.Reason = strings.ToValidUTF8(r.Reason[:min(len(r.Reason), maxReasonBytes)], "")
+	return nil, r
+}
+
+// maxReasonBytes bounds a rejection reason, which can quote the config.
+const maxReasonBytes = 1024
 
 // GetConfig retrieves the pipeline configuration from the control table.
 // Returns nil, nil if the item does not exist.

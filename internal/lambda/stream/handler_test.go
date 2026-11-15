@@ -366,3 +366,45 @@ func TestHandleRecord_ConfigChangesInvalidateCache(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleRecord_SensorBesideBadConfig: another team's bad CONFIG row,
+// malformed or failing validation, must not stop a good pipeline's trigger.
+func TestHandleRecord_SensorBesideBadConfig(t *testing.T) {
+	for name, sibling := range map[string]string{
+		"JSON type mismatch": `{"pipeline":{"id":"q"},"job":{"maxRetries":"3"}}`,
+		"fails validation":   `{"pipeline":{"id":"q"},"job":{"maxRetries":11}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, mem, sfnFake, _ := jobWorld(t, types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "p"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Job:      types.JobConfig{Type: types.TriggerHTTP},
+			})
+			mem.Put("control", map[string]ddbtypes.AttributeValue{
+				"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("q")},
+				"SK":     &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
+				"config": &ddbtypes.AttributeValueMemberS{Value: sibling},
+			})
+			record := events.DynamoDBEventRecord{
+				EventName: "INSERT",
+				Change: events.DynamoDBStreamRecord{
+					SequenceNumber: "1",
+					Keys: map[string]events.DynamoDBAttributeValue{
+						"PK": events.NewStringAttribute(types.PipelinePK("p")),
+						"SK": events.NewStringAttribute(types.SensorSK("upstream")),
+					},
+					NewImage: map[string]events.DynamoDBAttributeValue{
+						"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{"status": events.NewStringAttribute("ready")}),
+					},
+				},
+			}
+
+			if err := handleRecord(context.Background(), d, record); err != nil {
+				t.Fatalf("handleRecord: %v", err)
+			}
+			if sfnFake.calls != 1 {
+				t.Fatalf("StartExecution calls = %d, want 1", sfnFake.calls)
+			}
+		})
+	}
+}
