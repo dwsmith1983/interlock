@@ -342,7 +342,7 @@
     },
     "CompleteTrigger": {
       "Type": "Task",
-      "Comment": "Set trigger row to terminal status: COMPLETED on success, FAILED_FINAL on fail/timeout",
+      "Comment": "Decide what follows the run: COMPLETED on success; on fail/timeout start the next attempt (status retrying) until the retry budget is spent, then FAILED_FINAL",
       "Resource": "${orchestrator_arn}",
       "Parameters": {
         "mode": "complete-trigger",

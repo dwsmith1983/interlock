@@ -2,40 +2,172 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	sfntypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// handleCompleteTrigger sets the trigger row to its terminal status.
-// Success -> COMPLETED; fail/timeout -> FAILED_FINAL.
-// On success with PostRun configured, captures a date-scoped baseline snapshot
-// of all sensors for later drift comparison by the stream-based post-run evaluator.
+// StatusRetrying is complete-trigger's status when the next attempt runs;
+// the ASL's IsRetrying Choice then skips CancelSLA.
+const StatusRetrying = "retrying"
+
+// handleCompleteTrigger decides what happens after a run ends, and is the
+// only place that retries a failed job. Success sets COMPLETED and captures
+// the post-run baseline. A fail or timeout starts the next attempt, or sets
+// FAILED_FINAL when the date is excluded or the retry budget is spent.
 func handleCompleteTrigger(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
-	status := types.TriggerStatusCompleted
 	if input.Event != types.JobEventSuccess {
-		status = types.TriggerStatusFailedFinal
+		return handleRunFailure(ctx, d, input)
 	}
 
-	if err := d.Store.SetTriggerStatus(ctx, input.PipelineID, input.ScheduleID, input.Date, status); err != nil {
+	if err := d.Store.SetTriggerStatus(ctx, input.PipelineID, input.ScheduleID, input.Date, types.TriggerStatusCompleted); err != nil {
 		return lambda.OrchestratorOutput{}, fmt.Errorf("set trigger status: %w", err)
 	}
 
-	// On success, capture post-run baseline for drift detection.
-	if input.Event == types.JobEventSuccess {
-		if err := lambda.CapturePostRunBaseline(ctx, d, input.PipelineID, input.ScheduleID, input.Date); err != nil {
-			d.Logger.WarnContext(ctx, "failed to capture post-run baseline",
-				"pipeline", input.PipelineID, "error", err)
-			if pubErr := lambda.PublishEvent(ctx, d, string(types.EventBaselineCaptureFailed), input.PipelineID, input.ScheduleID, input.Date,
-				fmt.Sprintf("baseline capture failed for %s: %v", input.PipelineID, err)); pubErr != nil {
-				d.Logger.WarnContext(ctx, "failed to publish baseline capture failure event", "error", pubErr)
-			}
+	// Capture post-run baseline for drift detection.
+	if err := lambda.CapturePostRunBaseline(ctx, d, input.PipelineID, input.ScheduleID, input.Date); err != nil {
+		d.Logger.WarnContext(ctx, "failed to capture post-run baseline",
+			"pipeline", input.PipelineID, "error", err)
+		if pubErr := lambda.PublishEvent(ctx, d, string(types.EventBaselineCaptureFailed), input.PipelineID, input.ScheduleID, input.Date,
+			fmt.Sprintf("baseline capture failed for %s: %v", input.PipelineID, err)); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish baseline capture failure event", "error", pubErr)
 		}
 	}
 
-	return lambda.OrchestratorOutput{
-		Mode:   "complete-trigger",
-		Status: status,
-	}, nil
+	return lambda.OrchestratorOutput{Mode: "complete-trigger", Status: types.TriggerStatusCompleted}, nil
+}
+
+// handleRunFailure applies the retry budget to a failed or timed-out run.
+func handleRunFailure(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
+	pipelineID, date := input.PipelineID, input.Date
+	cfg, err := lambda.GetValidatedConfig(ctx, d, pipelineID)
+	if err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("load config for %q: %w", pipelineID, err)
+	}
+	if cfg == nil || cfg.DryRun {
+		d.Logger.WarnContext(ctx, "no valid config, or dry-run, not retrying", "pipeline", pipelineID)
+		return failFinal(ctx, d, input, "", "", nil)
+	}
+	if lambda.IsExcludedDate(cfg, date) {
+		return failFinal(ctx, d, input, types.EventPipelineExcluded,
+			fmt.Sprintf("job failure retry skipped for %s: execution date %s excluded by calendar", pipelineID, date), nil)
+	}
+
+	maxRetries := cfg.Job.MaxRetries
+	if failureCategory(ctx, d, input) == types.FailurePermanent {
+		maxRetries = types.IntOrDefault(cfg.Job.MaxCodeRetries, 1)
+	}
+	retries := lambda.RetriesSoFar(input.ExecutionName)
+	if retries >= maxRetries {
+		return failFinal(ctx, d, input, types.EventRetryExhausted,
+			fmt.Sprintf("retry limit reached (%d/%d) for %s", retries, maxRetries, pipelineID),
+			map[string]interface{}{"retries": retries, "maxRetries": maxRetries, "runId": input.RunID})
+	}
+	return startRetry(ctx, d, cfg, input)
+}
+
+// startRetry records the rerun, starts the next execution and then keeps the
+// trigger row's lock. Each step is idempotent, so the Task's Retry may run it
+// again: a repeated start gets ExecutionAlreadyExists.
+func startRetry(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
+	pipelineID, schedule, date := input.PipelineID, input.ScheduleID, input.Date
+	if input.ExecutionName == "" {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("retry %q/%s/%s: executionName is required", pipelineID, schedule, date)
+	}
+	next := lambda.NextExecName(input.ExecutionName)
+	if _, err := d.Store.WriteRerunOnce(ctx, pipelineID, schedule, date, next, "job-fail-retry", input.Event); err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("write rerun for %q: %w", pipelineID, err)
+	}
+
+	started := true
+	if err := lambda.StartSFNWithName(ctx, d, cfg, pipelineID, schedule, date, next); err != nil {
+		var exists *sfntypes.ExecutionAlreadyExists
+		if !errors.As(err, &exists) {
+			return startFailed(ctx, d, input, next, err)
+		}
+		started = false
+	}
+	if err := holdLock(ctx, d, input, started); err != nil {
+		return lambda.OrchestratorOutput{}, err
+	}
+	d.Logger.InfoContext(ctx, "retry running", "pipeline", pipelineID, "schedule", schedule, "date", date,
+		"execution", next, "startedNow", started)
+	return lambda.OrchestratorOutput{Mode: "complete-trigger", Status: StatusRetrying, NextExecution: next}, nil
+}
+
+// startFailed ends the run after the next execution could not start (the SDK
+// has already retried throttling): FAILED_FINAL, then INFRA_FAILURE. A
+// COMPLETED row means an earlier, lost invocation started the next attempt
+// and it already succeeded, so the row is kept and the chain is left to it.
+func startFailed(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput, next string, startErr error) (lambda.OrchestratorOutput, error) {
+	written, err := d.Store.FailTriggerUnlessCompleted(ctx, input.PipelineID, input.ScheduleID, input.Date)
+	if err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("set trigger status: %w", err)
+	}
+	if !written {
+		d.Logger.InfoContext(ctx, "retry did not start but the trigger row is COMPLETED, left alone",
+			"pipeline", input.PipelineID, "execution", next, "error", startErr)
+		return lambda.OrchestratorOutput{Mode: "complete-trigger", Status: StatusRetrying, NextExecution: next}, nil
+	}
+	if err := lambda.PublishEvent(ctx, d, string(types.EventInfraFailure), input.PipelineID, input.ScheduleID, input.Date,
+		fmt.Sprintf("retry %s for %s did not start: %v", next, input.PipelineID, startErr),
+		map[string]interface{}{"execution": next, "error": startErr.Error()}); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventInfraFailure, "error", err)
+	}
+	return lambda.OrchestratorOutput{Mode: "complete-trigger", Status: types.TriggerStatusFailedFinal}, nil
+}
+
+// holdLock gives a RUNNING trigger row a fresh TTL for the next attempt. A
+// finished row is left alone (a Task retry can run after the next attempt
+// ended); a missing row is recreated only by the invocation that started it.
+func holdLock(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput, started bool) error {
+	pipelineID, schedule, date := input.PipelineID, input.ScheduleID, input.Date
+	ttl := lambda.ResolveTriggerLockTTL()
+	held, err := d.Store.RefreshRunningTriggerLock(ctx, pipelineID, schedule, date, ttl)
+	if err != nil {
+		return fmt.Errorf("refresh trigger lock for %q: %w", pipelineID, err)
+	}
+	if !held && started {
+		if held, err = d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ttl); err != nil {
+			return fmt.Errorf("acquire trigger lock for %q: %w", pipelineID, err)
+		}
+	}
+	if !held {
+		d.Logger.InfoContext(ctx, "trigger row is not RUNNING, left alone", "pipeline", pipelineID, "schedule", schedule, "date", date)
+	}
+	return nil
+}
+
+// failureCategory reads the run's own terminal row. No row, or a failed
+// lookup, counts as transient.
+func failureCategory(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) types.FailureCategory {
+	rec, err := d.Store.GetJobResult(ctx, input.PipelineID, input.ScheduleID, input.Date, input.RunID)
+	if err != nil {
+		d.Logger.WarnContext(ctx, "job result lookup failed, treating failure as transient",
+			"pipeline", input.PipelineID, "runId", input.RunID, "error", err)
+		return types.FailureTransient
+	}
+	if rec == nil {
+		return types.FailureTransient
+	}
+	return types.FailureCategory(rec.Category)
+}
+
+// failFinal sets FAILED_FINAL and then publishes eventType, if any. Writing
+// first means a Task retry after a failed write does not alert twice.
+func failFinal(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput,
+	eventType types.EventDetailType, msg string, detail map[string]interface{}) (lambda.OrchestratorOutput, error) {
+	if err := d.Store.SetTriggerStatus(ctx, input.PipelineID, input.ScheduleID, input.Date, types.TriggerStatusFailedFinal); err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("set trigger status: %w", err)
+	}
+	if eventType != "" {
+		if err := lambda.PublishEvent(ctx, d, string(eventType), input.PipelineID, input.ScheduleID, input.Date, msg, detail); err != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", eventType, "error", err)
+		}
+	}
+	return lambda.OrchestratorOutput{Mode: "complete-trigger", Status: types.TriggerStatusFailedFinal}, nil
 }

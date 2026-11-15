@@ -207,7 +207,7 @@ Fields marked `int*` use pointer semantics: omit to use the default, set to `0` 
 |---|---|---|---|---|
 | `jobPollWindowSeconds` | int* | `3600` (1h) | 60--86400 | Maximum time to poll for job completion before timing out |
 
-When the poll window elapses without a terminal job status, the orchestrator publishes a `JOB_POLL_EXHAUSTED` event, writes a timeout entry to the joblog, and sets the trigger to `FAILED_FINAL`. This prevents unbounded polling when external jobs hang.
+When the poll window elapses without a terminal job status, the orchestrator publishes a `JOB_POLL_EXHAUSTED` event and writes a `job-poll-exhausted` entry to the joblog, and CompleteTrigger handles the closed window like any other timeout: it retries while `maxRetries` lasts, then sets the trigger to `FAILED_FINAL` and publishes `RETRY_EXHAUSTED`. This prevents unbounded polling when external jobs hang.
 
 ### Configuration Validation
 

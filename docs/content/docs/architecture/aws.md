@@ -57,7 +57,7 @@ Append-only log of job execution events. Each record represents a lifecycle even
 |---|---|---|---|
 | Job event | `PIPELINE#{id}` | `JOB#{schedule}#{date}#{timestamp}` | success/fail/timeout record; `runId` names the run it belongs to |
 
-DynamoDB Streams are enabled. The stream-router processes `JOB#` records to handle automatic retries on failure.
+DynamoDB Streams are enabled. The stream-router publishes `JOB_COMPLETED` from `JOB#` records; retries are started by the run's CompleteTrigger.
 
 ### Rerun Table
 
@@ -90,7 +90,7 @@ Processes DynamoDB Stream events from the control and joblog tables. Routes reco
 |---|---|
 | `SENSOR#` | Evaluate trigger condition; if matched and not excluded, acquire trigger lock and start Step Function execution |
 | `CONFIG` | Invalidate the config cache |
-| `JOB#` | On failure/timeout: check retry limit, write rerun record, restart SFN. On success: publish `JOB_COMPLETED` event |
+| `JOB#` | On success: publish `JOB_COMPLETED`. On fail/timeout: nothing (retries belong to the run's CompleteTrigger). Dry-run pipelines: publish what a retry would do |
 | `SENSOR#` (post-run) | If sensor matches a `postRun.rules[].key` and trigger is COMPLETED: compare against baseline, publish drift/pass/fail events, request rerun on drift. If trigger is RUNNING: publish informational `POST_RUN_DRIFT_INFLIGHT` event |
 
 The stream-router maintains a config cache to avoid redundant DynamoDB reads. Pipeline configs are validated at load time (`ValidatePipelineConfig`) -- invalid configs are logged and skipped.
@@ -109,8 +109,8 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 | `trigger` | Build trigger config from `job` section, execute trigger (Glue, EMR, HTTP, etc.), return run ID: the job API's run ID for polled types, otherwise the Step Functions execution name |
 | `check-job` | Query joblog table for the newest `success`, `fail` or `timeout` row of this run's `runId` (rows of earlier runs are ignored); otherwise poll the job API. Return the event, or empty (still running). Propagates `FailureCategory` to the joblog when a polled failure is detected |
 | `validation-exhausted` | Publish `VALIDATION_EXHAUSTED` event when the evaluation window closes |
-| `job-poll-exhausted` | Publish `JOB_POLL_EXHAUSTED` event, write timeout joblog entry, set trigger to `FAILED_FINAL` when the job poll window expires |
-| `complete-trigger` | Set trigger status to `COMPLETED` (on success) or `FAILED_FINAL` (on failure/timeout). Ensures trigger records reflect terminal state |
+| `job-poll-exhausted` | Publish `JOB_POLL_EXHAUSTED` event and write a `job-poll-exhausted` joblog row when the job poll window expires; `complete-trigger` then decides with event `timeout` |
+| `complete-trigger` | On success set the trigger to `COMPLETED`. On fail/timeout start the next attempt (`status: retrying`) while `maxRetries` lasts, else set `FAILED_FINAL` and publish `RETRY_EXHAUSTED` (`PIPELINE_EXCLUDED` for an excluded date, `INFRA_FAILURE` when the next execution cannot start) |
 
 Supported trigger types: `http`, `command`, `airflow`, `glue`, `emr`, `emr-serverless`, `step-function`, `databricks`, `lambda`.
 
@@ -121,7 +121,7 @@ Manages SLA deadlines using EventBridge Scheduler. Creates one-time schedule ent
 | When | Action |
 |---|---|
 | After trigger (or validation exhaustion) | Creates two one-time EventBridge Scheduler entries — one for warning, one for breach. Entries auto-delete after firing. |
-| On job completion (or all retries exhausted) | Cancels unfired Scheduler entries. Publishes `SLA_MET` if the job completed before the warning deadline. |
+| When the run ends without starting a retry | Cancels unfired Scheduler entries. Publishes `SLA_MET` if the job completed before the warning deadline. |
 
 When a Scheduler entry fires, it invokes this Lambda to publish the corresponding `SLA_WARNING` or `SLA_BREACH` event to EventBridge.
 
@@ -166,7 +166,9 @@ The state machine orchestrates the pipeline lifecycle as a sequential flow. A gl
 InitEvalLoop → Evaluate → IsReady
   → (passed) Trigger → HasTriggerResult
       → InitJobPollLoop → WaitForJob → CheckJob → IsJobDone
-          → (terminal) CompleteTrigger → CheckCancelSLA → CancelSLASchedules → Done
+          → (terminal) CompleteTrigger → IsRetrying
+              → (retrying) Done
+              → CheckCancelSLA → CancelSLASchedules → Done
           → (running) IncrementJobPollElapsed → CheckJobPollExhausted
               → (window remaining) WaitForJob (loop)
               → (exhausted) JobPollExhausted → InjectTimeoutEvent → CompleteTrigger → ...
@@ -185,7 +187,7 @@ InitEvalLoop → Evaluate → IsReady
 6. **CheckWindowExhausted** — if elapsed >= window, go to ValidationExhausted
 7. **ValidationExhausted** — publish `VALIDATION_EXHAUSTED` event
 
-### Trigger and Job Polling (11 states)
+### Trigger and Job Polling (12 states)
 
 1. **Trigger** — invoke orchestrator with `mode=trigger`. Infrastructure failures retry up to `trigger_max_attempts` times (default 3) with exponential backoff (30s, 60s, 120s, 240s)
 2. **HasTriggerResult** — if a job was triggered, poll for completion; otherwise finish
@@ -195,9 +197,10 @@ InitEvalLoop → Evaluate → IsReady
 6. **IsJobDone** — route on terminal events (success/fail/timeout) or keep polling
 7. **IncrementJobPollElapsed** — track total job polling time via `States.MathAdd`
 8. **CheckJobPollExhausted** — if elapsed >= `jobPollWindowSeconds`, go to JobPollExhausted
-9. **JobPollExhausted** — invoke orchestrator with `mode=job-poll-exhausted`
-10. **InjectTimeoutEvent** — inject `event: timeout` for CompleteTrigger routing
-11. **CompleteTrigger** — invoke orchestrator with `mode=complete-trigger` to set terminal trigger status
+9. **JobPollExhausted**: invoke orchestrator with `mode=job-poll-exhausted` (best effort)
+10. **InjectTimeoutEvent**: inject `event: timeout` for CompleteTrigger routing
+11. **CompleteTrigger**: invoke orchestrator with `mode=complete-trigger`, passing the run ID and execution name; it sets the terminal status or starts the next attempt
+12. **IsRetrying**: if CompleteTrigger started a retry, finish without cancelling the SLA (the retry owns it); otherwise go to CheckCancelSLA
 
 ### SLA Cleanup (2 states)
 

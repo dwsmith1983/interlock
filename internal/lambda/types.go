@@ -76,6 +76,8 @@ type OrchestratorOutput struct {
 	Event    string                 `json:"event,omitempty"` // success, fail, timeout
 	Error    string                 `json:"error,omitempty"`
 	Metadata map[string]interface{} `json:"metadata,omitzero"` // nil is omitted, an empty map is emitted as {}: CheckJob dereferences $.triggerResult.metadata
+
+	NextExecution string `json:"nextExecution,omitempty"` // complete-trigger: the retry it started
 }
 
 // SLAMonitorInput is the input to the SLA monitor Lambda.

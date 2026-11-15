@@ -193,13 +193,18 @@ Consumers subscribe to events by creating EventBridge rules that match on `sourc
 
 ## Automatic Retries
 
-When a triggered job fails or times out, the stream-router processes the `JOB#` record from the joblog table stream and decides whether to retry:
+When a triggered job fails or times out (including a closed job poll window), the run's own CompleteTrigger step decides whether to retry. It is the only actor that does; the stream-router starts nothing for the `fail` or `timeout` row.
 
-1. Count existing re-run records for this pipeline/schedule/date
-2. If under `job.maxRetries`, write a re-run record, release and re-acquire the trigger lock, and start a new Step Function execution
-3. If at the retry limit, publish a `RETRY_EXHAUSTED` event and mark the trigger as `FAILED_FINAL`
+1. If the date is excluded by the calendar, publish `PIPELINE_EXCLUDED` and mark the trigger as `FAILED_FINAL`; an excluded date is never retried
+2. Read the number of retries so far from the execution name's `-r{N}` suffix (none means 0), and the failure category from the run's own job log row (`PERMANENT` uses `job.maxCodeRetries`, default 1; anything else, or no row, uses `job.maxRetries`)
+3. If at the limit, mark the trigger as `FAILED_FINAL` and publish a `RETRY_EXHAUSTED` event
+4. Otherwise write a re-run record, start the next execution (which keeps the SLA schedules) and give the trigger lock a fresh TTL while it is still `RUNNING`. If the execution cannot be started, mark the trigger as `FAILED_FINAL` and publish `INFRA_FAILURE`
 
-Re-run executions use a unique name (`{pipeline}-{schedule}-{date}-rerun-{attempt}`) to avoid Step Function dedup collisions.
+A dry-run pipeline, or one without a valid config, is never retried: the trigger goes to `FAILED_FINAL`.
+
+The budget belongs to one execution chain. A requested rerun or a reconciler start begins a new chain with a fresh `maxRetries`, and any execution whose name ends in `-r{N}` counts as attempt N, so do not end a hand-started execution's name that way.
+
+A retry is named after the failing execution with its `-r{N}` suffix replaced by `-r{N+1}` (`{execution}-r1`, `{execution}-r2`, ...), so a repeated CompleteTrigger never starts a second copy.
 
 ### Infrastructure Trigger Retry
 

@@ -506,6 +506,34 @@ func (s *Store) RefreshRunningTriggerLock(ctx context.Context, pipelineID, sched
 	return true, nil
 }
 
+// FailTriggerUnlessCompleted sets the trigger row to FAILED_FINAL (removing
+// its TTL, creating it when absent) unless it is COMPLETED. It returns false,
+// and writes nothing, for a COMPLETED row.
+func (s *Store) FailTriggerUnlessCompleted(ctx context.Context, pipelineID, schedule, date string) (bool, error) {
+	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.ControlTable,
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
+		},
+		ConditionExpression:      aws.String("attribute_not_exists(PK) OR #status <> :completed"),
+		UpdateExpression:         aws.String("SET #status = :s REMOVE #ttl"),
+		ExpressionAttributeNames: map[string]string{"#status": "status", "#ttl": "ttl"},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":s":         &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusFailedFinal},
+			":completed": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+		},
+	})
+	if err != nil {
+		var ccfe *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &ccfe) {
+			return false, nil
+		}
+		return false, fmt.Errorf("fail trigger %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return true, nil
+}
+
 // SetTriggerStatus updates only the status attribute of an existing trigger row,
 // preserving TTL and other attributes.
 func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date, status string) error {
