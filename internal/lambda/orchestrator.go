@@ -217,17 +217,12 @@ func handleValidationExhausted(ctx context.Context, d *Deps, input OrchestratorI
 	}, nil
 }
 
-// handleJobPollExhausted publishes a JOB_POLL_EXHAUSTED event when the
-// job poll window closes without the job reaching a terminal state.
+// handleJobPollExhausted writes a timeout row for the run when the job poll
+// window closes without the job reaching a terminal state.
 func handleJobPollExhausted(ctx context.Context, d *Deps, input OrchestratorInput) (OrchestratorOutput, error) {
 	if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
-		types.JobEventJobPollExhausted, input.RunID, 0, "job poll window exhausted"); err != nil {
-		return OrchestratorOutput{}, fmt.Errorf("write job-poll-exhausted joblog: %w", err)
-	}
-
-	if err := PublishEvent(ctx, d, string(types.EventJobPollExhausted), input.PipelineID, input.ScheduleID, input.Date,
-		"job poll window exhausted"); err != nil {
-		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobPollExhausted, "error", err)
+		types.JobEventTimeout, input.RunID, 0, "job poll window exhausted"); err != nil {
+		return OrchestratorOutput{}, fmt.Errorf("write job poll timeout joblog: %w", err)
 	}
 
 	return OrchestratorOutput{

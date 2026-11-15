@@ -2750,8 +2750,8 @@ func TestOrchestrator_JobPollExhausted_WritesJoblog(t *testing.T) {
 		t.Fatalf("expected 1 joblog entry, got %d", len(jobItems.Items))
 	}
 	jobEvent := jobItems.Items[0]["event"].(*ddbtypes.AttributeValueMemberS).Value
-	if jobEvent != types.JobEventJobPollExhausted {
-		t.Errorf("joblog event = %q, want %q", jobEvent, types.JobEventJobPollExhausted)
+	if jobEvent != types.JobEventTimeout {
+		t.Errorf("joblog event = %q, want %q", jobEvent, types.JobEventTimeout)
 	}
 	// Verify runId is stored.
 	runID := jobItems.Items[0]["runId"].(*ddbtypes.AttributeValueMemberS).Value
@@ -2759,10 +2759,10 @@ func TestOrchestrator_JobPollExhausted_WritesJoblog(t *testing.T) {
 		t.Errorf("joblog runId = %q, want %q", runID, "jr_abc123")
 	}
 
-	// Verify EventBridge event was published.
+	// The stream-router publishes JOB_FAILED from the row.
 	eb := d.EventBridge.(*mockEventBridge)
-	if len(eb.events) != 1 {
-		t.Fatalf("expected 1 EventBridge call, got %d", len(eb.events))
+	if len(eb.events) != 0 {
+		t.Fatalf("expected no EventBridge call, got %d", len(eb.events))
 	}
 }
 
@@ -2784,8 +2784,8 @@ func TestJobPollExhausted_WriteJobEventError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected Lambda error when WriteJobEvent fails")
 	}
-	if !strings.Contains(err.Error(), "write job-poll-exhausted joblog") {
-		t.Errorf("error = %q, want it to contain 'write job-poll-exhausted joblog'", err.Error())
+	if !strings.Contains(err.Error(), "write job poll timeout joblog") {
+		t.Errorf("error = %q, want it to contain 'write job poll timeout joblog'", err.Error())
 	}
 }
 

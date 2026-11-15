@@ -172,3 +172,24 @@ func TestCheckJob_PolledRowsCarryRunID(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckJob_PolledFailureDoesNotPublish: the stream-router publishes
+// JOB_FAILED from the fail row CheckJob writes, so CheckJob itself must not.
+func TestCheckJob_PolledFailureDoesNotPublish(t *testing.T) {
+	d, _, rec := memDeps(t, types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Job:      types.JobConfig{Type: types.TriggerGlue, Config: map[string]interface{}{"jobName": "etl"}},
+	})
+	d.StatusChecker = &fakeStatusChecker{result: lambda.StatusResult{State: "failed", Message: "OOM"}}
+
+	out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode: "check-job", PipelineID: "p", ScheduleID: "s", Date: ctDate, RunID: "jr_1",
+		Metadata: map[string]interface{}{"glue_job_name": "etl", "glue_job_run_id": "jr_1"},
+	})
+	if err != nil || out.Event != types.JobEventFail {
+		t.Fatalf("check-job = %+v, %v, want event fail", out, err)
+	}
+	if len(rec.events) != 0 {
+		t.Errorf("events = %+v, want none", rec.events)
+	}
+}

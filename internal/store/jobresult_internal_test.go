@@ -19,7 +19,6 @@ func TestIsTerminalJobEvent(t *testing.T) {
 		types.JobEventRerunAccepted:         false,
 		types.JobEventRerunRejected:         false,
 		types.JobEventValidationExhausted:   false,
-		types.JobEventJobPollExhausted:      false,
 		"":                                  false,
 	}
 	for event, want := range tests {

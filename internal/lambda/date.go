@@ -54,6 +54,23 @@ func ParseExecutionDate(date string) (datePart, hourPart string) {
 	return date, ""
 }
 
+// IsValidExecutionDate reports whether date is an execution date as the
+// stream writes it: "YYYY-MM-DD", or "YYYY-MM-DDThh" with hour 00-23.
+func IsValidExecutionDate(date string) bool {
+	datePart, hourPart := ParseExecutionDate(date)
+	if _, err := time.Parse("2006-01-02", datePart); err != nil || len(datePart) != 10 {
+		return false
+	}
+	if !strings.Contains(date, "T") {
+		return true
+	}
+	if len(hourPart) != 2 || hourPart[0] < '0' || hourPart[0] > '9' || hourPart[1] < '0' || hourPart[1] > '9' {
+		return false
+	}
+	h, _ := strconv.Atoi(hourPart)
+	return h <= 23
+}
+
 // ResolveTimezone loads the time.Location for the given timezone name.
 // Returns time.UTC if tz is empty or cannot be loaded.
 func ResolveTimezone(tz string) *time.Location {

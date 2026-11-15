@@ -718,9 +718,8 @@ func TestE2E_PrimarySFNPaths(t *testing.T) {
 		assert.Equal(t, sfnDone, r.terminal)
 		assert.Contains(t, r.events, "VALIDATION_PASSED")
 		assert.Contains(t, r.events, "JOB_TRIGGERED")
-		assert.Contains(t, r.events, "JOB_POLL_EXHAUSTED")
 		assert.Equal(t, types.TriggerStatusFailedFinal, e2eTriggerStatus(mock, "pipe-poll-exhaust"))
-		assert.Contains(t, collectJoblogEvents(mock, "pipe-poll-exhaust"), types.JobEventJobPollExhausted)
+		assert.Contains(t, collectJoblogEvents(mock, "pipe-poll-exhaust"), types.JobEventTimeout)
 		assertAlertFormats(t, eb)
 	})
 }

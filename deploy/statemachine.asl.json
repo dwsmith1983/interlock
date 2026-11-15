@@ -301,7 +301,7 @@
     },
     "JobPollExhausted": {
       "Type": "Task",
-      "Comment": "Publish JOB_POLL_EXHAUSTED event and write timeout joblog",
+      "Comment": "Best effort: write a timeout row for the run, which the stream-router reports as JOB_FAILED; CompleteTrigger decides the retry either way",
       "Resource": "${orchestrator_arn}",
       "Parameters": {
         "mode": "job-poll-exhausted",

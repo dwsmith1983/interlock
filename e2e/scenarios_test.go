@@ -95,15 +95,18 @@ func waitEvents(t *testing.T, pipeline, date string, want map[string]int, chains
 	waitFor(t, settleTimeout, fmt.Sprintf("%s events %v", pipeline, want), match)
 }
 
-// waitAlerts waits until every want alert is on the queue, drains the queue
-// once more to catch a late extra, then fails unless want are the pipeline's
-// only alerts.
+// waitAlerts waits until every want alert is on the queue (as many times as
+// it is in want), drains the queue once more to catch a late extra, then
+// fails unless want are the pipeline's only alerts.
 func waitAlerts(t *testing.T, pipeline string, want ...alert) {
 	t.Helper()
+	count := func(as []alert, a alert) int {
+		return len(slices.DeleteFunc(slices.Clone(as), func(x alert) bool { return x != a }))
+	}
 	waitFor(t, deliverTimeout, pipeline+" alerts", func() bool {
 		got := alerts(t, pipeline)
 		for _, w := range want {
-			if !slices.Contains(got, w) {
+			if count(got, w) < count(want, w) {
 				return false
 			}
 		}
@@ -273,7 +276,7 @@ func TestScenarioCalendarExclusion(t *testing.T) {
 // The job reports fail for run A. Execution A's CompleteTrigger is the only
 // actor that reacts (job.maxRetries 1): it keeps the trigger row RUNNING,
 // starts B as <A>-r1 and ends through IsRetrying and Done, leaving the SLA to
-// B. The stream-router does nothing with the row. B must not read
+// B. The stream-router only publishes JOB_FAILED for the row. B must not read
 // A's fail: it keeps polling until the job reports success for B, and its
 // CompleteTrigger leaves the trigger row COMPLETED.
 func TestScenarioRerunIgnoresPreviousFailure(t *testing.T) {
@@ -319,13 +322,13 @@ func TestScenarioRerunIgnoresPreviousFailure(t *testing.T) {
 		t.Fatalf("execution B = %s, want SUCCEEDED", got)
 	}
 
-	vp, jc := string(types.EventValidationPassed), string(types.EventJobCompleted)
-	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 3, vp: 2, jc: 1}, []string{vp, vp, jc})
+	vp, jc, jf := string(types.EventValidationPassed), string(types.EventJobCompleted), string(types.EventJobFailed)
+	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 3, vp: 2, jf: 1, jc: 1}, []string{vp, vp, jc})
 	wantLog := []string{types.JobEventFail, types.JobEventSuccess}
 	if got := jobEvents(t, id); !slices.Equal(got, wantLog) {
 		t.Fatalf("job log = %v, want %v", got, wantLog)
 	}
-	waitAlerts(t, id, alert{id, date, jc})
+	waitAlerts(t, id, alert{id, date, jf}, alert{id, date, jc})
 	assertLaunches(t, id, 2)
 	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
 	t.Logf("run A %s, run B %s, job log %v", runA, runB, wantLog)
@@ -333,7 +336,8 @@ func TestScenarioRerunIgnoresPreviousFailure(t *testing.T) {
 
 // job.maxRetries 1 and both attempts fail: A's CompleteTrigger starts
 // <A>-r1, and B's, with the budget spent, sets FAILED_FINAL and publishes
-// RETRY_EXHAUSTED instead of starting a third attempt.
+// RETRY_EXHAUSTED instead of starting a third attempt. Each fail row is one
+// JOB_FAILED from the stream-router.
 func TestScenarioRetriesExhausted(t *testing.T) {
 	const id = "retries-exhausted"
 	_, date := startDay(t)
@@ -356,12 +360,12 @@ func TestScenarioRetriesExhausted(t *testing.T) {
 		t.Fatalf("execution B = %s, want SUCCEEDED", got)
 	}
 
-	vp, ex := string(types.EventValidationPassed), string(types.EventRetryExhausted)
-	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 3, vp: 2, ex: 1})
+	vp, jf, ex := string(types.EventValidationPassed), string(types.EventJobFailed), string(types.EventRetryExhausted)
+	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 3, vp: 2, jf: 2, ex: 1})
 	if got, want := jobEvents(t, id), []string{types.JobEventFail, types.JobEventFail}; !slices.Equal(got, want) {
 		t.Fatalf("job log = %v, want %v", got, want)
 	}
-	waitAlerts(t, id, alert{id, date, ex})
+	waitAlerts(t, id, alert{id, date, jf}, alert{id, date, jf}, alert{id, date, ex})
 	assertLaunches(t, id, 2)
 	assertTriggerStatus(t, id, date, types.TriggerStatusFailedFinal)
 }
