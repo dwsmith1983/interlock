@@ -25,17 +25,15 @@ func handleValidationExhausted(ctx context.Context, d *lambda.Deps, input lambda
 	}, nil
 }
 
-// handleJobPollExhausted publishes a JOB_POLL_EXHAUSTED event when the
-// job poll window closes without the job reaching a terminal state.
+// handleJobPollExhausted writes a timeout row for the run when the job poll
+// window closes without a terminal result. The stream-router publishes
+// JOB_FAILED from the row, and CompleteTrigger (fed event=timeout by
+// InjectTimeoutEvent) decides whether to retry. The ASL treats this state as
+// best effort, so that decision never depends on the row.
 func handleJobPollExhausted(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
 	if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
-		types.JobEventJobPollExhausted, input.RunID, 0, "job poll window exhausted"); err != nil {
-		return lambda.OrchestratorOutput{}, fmt.Errorf("write job-poll-exhausted joblog: %w", err)
-	}
-
-	if err := lambda.PublishEvent(ctx, d, string(types.EventJobPollExhausted), input.PipelineID, input.ScheduleID, input.Date,
-		"job poll window exhausted"); err != nil {
-		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobPollExhausted, "error", err)
+		types.JobEventTimeout, input.RunID, 0, "job poll window exhausted"); err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("write job poll timeout joblog: %w", err)
 	}
 
 	return lambda.OrchestratorOutput{

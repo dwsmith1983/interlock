@@ -61,7 +61,6 @@ const (
 	JobEventRerunAccepted         = "rerun-accepted"
 	JobEventRerunRejected         = "rerun-rejected"
 	JobEventValidationExhausted   = "validation-exhausted"
-	JobEventJobPollExhausted      = "job-poll-exhausted"
 )
 
 // ---------------------------------------------------------------------------

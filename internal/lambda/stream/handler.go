@@ -18,6 +18,8 @@ import (
 const (
 	// removeEventName is the DynamoDB stream EventName for a deleted item.
 	removeEventName = "REMOVE"
+	// insertEventName is the DynamoDB stream EventName for a new item.
+	insertEventName = "INSERT"
 	// ttlServiceIdentity is the UserIdentity.Type DynamoDB sets on records it
 	// deletes itself via the TTL process (PrincipalID "dynamodb.amazonaws.com").
 	ttlServiceIdentity = "Service"
@@ -68,8 +70,9 @@ func handleRecord(ctx context.Context, d *lambda.Deps, record events.DynamoDBEve
 	// handlers act on absent data: a deleted RERUN_REQUEST# row would start a
 	// rerun with reason "manual", and a deleted SENSOR# row would publish a
 	// POST_RUN_* verdict. The one actionable delete is CONFIG: a pipeline
-	// whose config disappeared must drop out of the cache. An empty EventName
-	// (synthetic records) is treated as a write, as before.
+	// whose config disappeared must drop out of the cache. Other records,
+	// including an empty EventName, are routed; JOB# rows are then reported
+	// only for INSERT (see handleJobLogEvent).
 	if record.EventName == removeEventName {
 		if sk == types.ConfigSK {
 			d.Logger.Info("config deleted, invalidating cache", "pk", pk)

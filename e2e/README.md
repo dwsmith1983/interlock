@@ -89,9 +89,13 @@ code path first and assert the exact values it produces.
 - Part of `job.maxRetries`. `TestScenarioRerunIgnoresPreviousFailure` covers
   one CompleteTrigger retry (a reported `fail`, `maxRetries: 1`, a `-r1`
   retry that then succeeds) and `TestScenarioRetriesExhausted` the
-  `RETRY_EXHAUSTED` path when both attempts fail. `maxCodeRetries` for
-  permanent failures, `timeout` rows and job poll window exhaustion are not
-  run: the window is at least 60 s and the e2e job check interval is 5 s, so
-  one exhausted attempt and its retry take over two minutes. The retry
-  scenario covers the Step Functions Trigger retry.
+  `RETRY_EXHAUSTED` path when both attempts fail. Not run:
+  - a `PERMANENT` failure and `maxCodeRetries`;
+  - a retry after the job poll window closes (the `timeout` row): the window
+    is at least 60 s and the e2e job check interval is 5 s, so one exhausted
+    attempt and its retry take over two minutes;
+  - a late `fail` row, written after its execution ended (reported as
+    `JOB_FAILED`, starts nothing).
+
+  The retry scenario covers the Step Functions Trigger retry.
 - Slack delivery. The dispatcher's queue mapping is off in e2e.

@@ -129,16 +129,19 @@ What a row does:
   `PIPELINE_EXCLUDED` and sets `FAILED_FINAL`. The count comes from the
   execution name (`-r<N>` is attempt N), so a requested rerun starts a new
   chain with a fresh budget.
-- The stream-router publishes `JOB_COMPLETED` for every `success` row,
-  whatever its `runId`, and starts nothing for `fail` or `timeout` rows.
+- The stream-router reports every new `JOB#` row, whatever its `runId`:
+  `success` publishes `JOB_COMPLETED`, `fail` and `timeout` publish
+  `JOB_FAILED` (error cut to 2 KB). It starts nothing. A row that overwrites an
+  earlier one, has an invalid date, or belongs to a schedule and date with no
+  trigger row (no dry-run marker, for a dry-run pipeline) is not reported.
 
 A job that never reports: when `job.jobPollWindowSeconds` (default 3600) passes
-with no result row for the run, the orchestrator writes a `job-poll-exhausted`
-row and publishes `JOB_POLL_EXHAUSTED`, and CompleteTrigger treats the closed
-window like any other timeout, retrying while the budget lasts. Set the window
-to cover the job's runtime. A `fail` or `timeout` that arrives after its
-execution has ended, or for a run ID that is not the current attempt's,
-changes nothing; a lock it leaves stale is the watchdog's to clear.
+with no result row for the run, the orchestrator writes a `timeout` row for the
+run (reported as `JOB_FAILED`) and CompleteTrigger treats it like any other
+timeout, retrying while the budget lasts. Set the window to cover the job's
+runtime. A `fail` or `timeout` that arrives after its execution has ended, or
+for a run ID that is not the current attempt's, publishes `JOB_FAILED` and is
+otherwise ignored; a lock it leaves stale is the watchdog's to clear.
 
 ### `command`
 

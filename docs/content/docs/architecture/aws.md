@@ -57,7 +57,7 @@ Append-only log of job execution events. Each record represents a lifecycle even
 |---|---|---|---|
 | Job event | `PIPELINE#{id}` | `JOB#{schedule}#{date}#{timestamp}` | success/fail/timeout record; `runId` names the run it belongs to |
 
-DynamoDB Streams are enabled. The stream-router publishes `JOB_COMPLETED` from `JOB#` records; retries are started by the run's CompleteTrigger.
+DynamoDB Streams are enabled. The stream-router publishes `JOB_COMPLETED` and `JOB_FAILED` from `JOB#` records; retries are started by the run's CompleteTrigger.
 
 ### Rerun Table
 
@@ -90,7 +90,7 @@ Processes DynamoDB Stream events from the control and joblog tables. Routes reco
 |---|---|
 | `SENSOR#` | Evaluate trigger condition; if matched and not excluded, acquire trigger lock and start Step Function execution |
 | `CONFIG` | Invalidate the config cache |
-| `JOB#` | On success: publish `JOB_COMPLETED`. On fail/timeout: nothing (retries belong to the run's CompleteTrigger). Dry-run pipelines: publish what a retry would do |
+| `JOB#` | On success: publish `JOB_COMPLETED`. On fail/timeout: publish `JOB_FAILED` (retries belong to the run's CompleteTrigger). Dry-run pipelines: publish what a retry would do |
 | `SENSOR#` (post-run) | If sensor matches a `postRun.rules[].key` and trigger is COMPLETED: compare against baseline, publish drift/pass/fail events, request rerun on drift. If trigger is RUNNING: publish informational `POST_RUN_DRIFT_INFLIGHT` event |
 
 The stream-router maintains a config cache to avoid redundant DynamoDB reads. Pipeline configs are validated at load time (`ValidatePipelineConfig`) -- invalid configs are logged and skipped.
@@ -109,7 +109,7 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 | `trigger` | Build trigger config from `job` section, execute trigger (Glue, EMR, HTTP, etc.), return run ID: the job API's run ID for polled types, otherwise the Step Functions execution name |
 | `check-job` | Query joblog table for the newest `success`, `fail` or `timeout` row of this run's `runId` (rows of earlier runs are ignored); otherwise poll the job API. Return the event, or empty (still running). Propagates `FailureCategory` to the joblog when a polled failure is detected |
 | `validation-exhausted` | Publish `VALIDATION_EXHAUSTED` event when the evaluation window closes |
-| `job-poll-exhausted` | Publish `JOB_POLL_EXHAUSTED` event and write a `job-poll-exhausted` joblog row when the job poll window expires; `complete-trigger` then decides with event `timeout` |
+| `job-poll-exhausted` | Write a `timeout` joblog row for the run when the job poll window expires |
 | `complete-trigger` | On success set the trigger to `COMPLETED`. On fail/timeout start the next attempt (`status: retrying`) while `maxRetries` lasts, else set `FAILED_FINAL` and publish `RETRY_EXHAUSTED` (`PIPELINE_EXCLUDED` for an excluded date, `INFRA_FAILURE` when the next execution cannot start) |
 
 Supported trigger types: `http`, `command`, `airflow`, `glue`, `emr`, `emr-serverless`, `step-function`, `databricks`, `lambda`.

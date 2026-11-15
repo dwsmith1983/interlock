@@ -67,9 +67,7 @@ func handleCheckJob(ctx context.Context, d *lambda.Deps, input lambda.Orchestrat
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventFail, input.RunID, 0, result.Message, writeOpts...); err != nil {
 			d.Logger.Warn("failed to write polled job failure joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
 		}
-		if err := lambda.PublishEvent(ctx, d, string(types.EventJobFailed), input.PipelineID, input.ScheduleID, input.Date, "job failed: "+result.Message); err != nil {
-			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventJobFailed, "error", err)
-		}
+		// JOB_FAILED comes from the stream-router, like JOB_COMPLETED above.
 		return lambda.OrchestratorOutput{Mode: "check-job", Event: "fail"}, nil
 	default:
 		// Still running — return no event so SFN loops back to WaitForJob.

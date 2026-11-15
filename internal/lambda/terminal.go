@@ -20,8 +20,7 @@ func IsJobTerminal(ctx context.Context, d *Deps, pipelineID, scheduleID, date st
 	}
 	switch rec.Event {
 	case types.JobEventSuccess, types.JobEventFail, types.JobEventTimeout,
-		types.JobEventInfraTriggerExhausted, types.JobEventValidationExhausted,
-		types.JobEventJobPollExhausted:
+		types.JobEventInfraTriggerExhausted, types.JobEventValidationExhausted:
 		return true
 	default:
 		return false

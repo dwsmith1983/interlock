@@ -45,11 +45,9 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `VALIDATION_PASSED` | All validation rules passed | Readiness evaluation succeeds, before trigger |
 | `VALIDATION_EXHAUSTED` | Evaluation window closed without passing | Max evaluation time exceeded |
 | `JOB_TRIGGERED` | Pipeline job was triggered | Trigger fired successfully |
-| `JOB_COMPLETED` | Triggered job completed successfully | Job polling detects success |
-| `JOB_FAILED` | Triggered job failed | Job polling detects failure |
-| `JOB_TIMEOUT` | Triggered job timed out | Job polling detects timeout |
+| `JOB_COMPLETED` | Triggered job completed successfully | The stream-router sees a `success` job log row (written by the job, by CheckJob after polling, or by the orchestrator for `command` and `lambda`), with the same gates as `JOB_FAILED` |
+| `JOB_FAILED` | Triggered job failed | The stream-router sees a `fail` or `timeout` job log row: one the job wrote, one CheckJob wrote after polling a failure, or the `timeout` row written when the job poll window closes. Only new rows for a date with a trigger row are reported. Detail carries `event`, `error` (cut to 2 KB), `runId` and, when set, `category` |
 | `RETRY_EXHAUSTED` | All retry attempts consumed | Job failed `maxRetries` (or `maxCodeRetries` for permanent failures) times without success |
-| `JOB_POLL_EXHAUSTED` | Job polling window exceeded | Orchestrator stopped checking job status after `jobPollWindowSeconds` elapsed without a terminal result |
 | `INFRA_FAILURE` | Unrecoverable infrastructure error | Step Functions execution reaches Fail state |
 | `SFN_TIMEOUT` | Step Functions execution timed out | Global `TimeoutSeconds` exceeded (configurable via `sfn_timeout_seconds` Terraform variable) |
 | `DATA_DRIFT` | Post-run drift detected | Post-run evaluation detected data quality drift against baseline |

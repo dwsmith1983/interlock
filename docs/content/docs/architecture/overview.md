@@ -193,7 +193,7 @@ Consumers subscribe to events by creating EventBridge rules that match on `sourc
 
 ## Automatic Retries
 
-When a triggered job fails or times out (including a closed job poll window), the run's own CompleteTrigger step decides whether to retry. It is the only actor that does; the stream-router starts nothing for the `fail` or `timeout` row.
+When a triggered job fails or times out (including a closed job poll window), the run's own CompleteTrigger step decides whether to retry. It is the only actor that does; the stream-router just publishes `JOB_FAILED` for the `fail` or `timeout` row.
 
 1. If the date is excluded by the calendar, publish `PIPELINE_EXCLUDED` and mark the trigger as `FAILED_FINAL`; an excluded date is never retried
 2. Read the number of retries so far from the execution name's `-r{N}` suffix (none means 0), and the failure category from the run's own job log row (`PERMANENT` uses `job.maxCodeRetries`, default 1; anything else, or no row, uses `job.maxRetries`)
