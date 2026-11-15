@@ -45,7 +45,7 @@ func TestScanConfigs_MultipleConfigs(t *testing.T) {
 		}},
 	})
 
-	configs, err := s.ScanConfigs(context.Background())
+	configs, _, err := s.ScanConfigs(context.Background())
 	if err != nil {
 		t.Fatalf("ScanConfigs: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestScanConfigs_Empty(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	configs, err := s.ScanConfigs(context.Background())
+	configs, _, err := s.ScanConfigs(context.Background())
 	if err != nil {
 		t.Fatalf("ScanConfigs: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestScanConfigs_DynamoError(t *testing.T) {
 	injected := errors.New("scan throttled")
 	mock.errFn = errOnOp("Scan", injected)
 
-	_, err := s.ScanConfigs(context.Background())
+	_, _, err := s.ScanConfigs(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -89,44 +89,6 @@ func TestScanConfigs_DynamoError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "scan configs") {
 		t.Errorf("expected context in error message, got: %v", err)
-	}
-}
-
-func TestScanConfigs_InvalidJSON(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("bad-pipe")},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
-		"config": &ddbtypes.AttributeValueMemberS{Value: `{not valid`},
-	})
-
-	_, err := s.ScanConfigs(context.Background())
-	if err == nil {
-		t.Fatal("expected unmarshal error, got nil")
-	}
-	if !strings.Contains(err.Error(), "unmarshal config") {
-		t.Errorf("expected 'unmarshal config' in error, got: %v", err)
-	}
-}
-
-func TestScanConfigs_MissingConfigAttribute(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	// A CONFIG row without the "config" attribute.
-	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
-		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("broken")},
-		"SK": &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
-	})
-
-	_, err := s.ScanConfigs(context.Background())
-	if err == nil {
-		t.Fatal("expected error for missing config attribute, got nil")
-	}
-	if !strings.Contains(err.Error(), "config attribute missing") {
-		t.Errorf("expected 'config attribute missing' in error, got: %v", err)
 	}
 }
 

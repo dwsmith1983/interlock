@@ -44,6 +44,7 @@ func main() {
 		RerunTable:   os.Getenv("RERUN_TABLE"),
 	}
 	cache := store.NewConfigCache(s, 5*time.Minute)
+	cache.Logger = logger
 
 	deps := &ilambda.Deps{
 		Store:              s,

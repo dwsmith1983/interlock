@@ -211,7 +211,7 @@ When the poll window elapses without a terminal job status, the orchestrator wri
 
 ### Configuration Validation
 
-The framework validates all retry and timeout fields at config load time. Invalid configs are logged and skipped (fail-open). Validation bounds:
+The framework validates all retry and timeout fields at config load time. A `CONFIG` row that does not load, because it is malformed (such as `"maxRetries": "3"`) or outside the bounds below, is skipped by the stream-router, the watchdog and CompleteTrigger and logged as a warning; the other pipelines keep running. An execution that is already running reads its config directly at each step, so a config that breaks mid-run does not stop it at once: a config that no longer parses fails the step that reads it (evaluation retries until its window closes, the trigger step fails after its retries), one that parses but fails validation is still used by those steps, and a failed job is not retried (CompleteTrigger finds no valid config and sets `FAILED_FINAL`). Validation bounds:
 
 | Field | Valid Range |
 |---|---|

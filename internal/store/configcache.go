@@ -2,19 +2,27 @@ package store
 
 import (
 	"context"
+	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// ConfigCache caches all pipeline configs with TTL-based refresh.
+// ConfigCache caches all pipeline configs with TTL-based refresh. It holds
+// only the configs ScanConfigs accepted, so every Lambda sees the same set,
+// and keeps the rejected rows beside them.
 type ConfigCache struct {
 	store    *Store
 	mu       sync.RWMutex
 	configs  map[string]*types.PipelineConfig
+	rejected []RejectedConfig
 	loadedAt time.Time
 	ttl      time.Duration
+	// Logger receives one warning per rejected row on each refresh;
+	// slog.Default() when nil.
+	Logger *slog.Logger
 }
 
 // NewConfigCache creates a config cache with the given TTL.
@@ -39,15 +47,32 @@ func (c *ConfigCache) Get(ctx context.Context, pipelineID string) (*types.Pipeli
 // GetAll returns all cached pipeline configs, refreshing if stale.
 // The returned map is a deep copy; callers cannot mutate cached values.
 func (c *ConfigCache) GetAll(ctx context.Context) (map[string]*types.PipelineConfig, error) {
+	configs, _, err := c.load(ctx)
+	return configs, err
+}
+
+// Rejected returns a copy of the CONFIG rows the last scan rejected,
+// refreshing if stale.
+func (c *ConfigCache) Rejected(ctx context.Context) ([]RejectedConfig, error) {
+	_, rejected, err := c.load(ctx)
+	return rejected, err
+}
+
+func (c *ConfigCache) load(ctx context.Context) (map[string]*types.PipelineConfig, []RejectedConfig, error) {
 	c.mu.RLock()
-	if c.store.now().Sub(c.loadedAt) < c.ttl && len(c.configs) > 0 {
-		cp := copyConfigs(c.configs)
+	if c.fresh() {
+		configs, rejected := copyConfigs(c.configs), slices.Clone(c.rejected)
 		c.mu.RUnlock()
-		return cp, nil
+		return configs, rejected, nil
 	}
 	c.mu.RUnlock()
 	return c.refresh(ctx)
 }
+
+// fresh reports whether the last load is within the TTL; c.mu must be held.
+// It does not look at the contents, so a scan that accepted nothing is
+// cached like any other.
+func (c *ConfigCache) fresh() bool { return c.store.now().Sub(c.loadedAt) < c.ttl }
 
 // Invalidate forces a refresh on the next GetAll call.
 func (c *ConfigCache) Invalidate() {
@@ -56,22 +81,32 @@ func (c *ConfigCache) Invalidate() {
 	c.mu.Unlock()
 }
 
-func (c *ConfigCache) refresh(ctx context.Context) (map[string]*types.PipelineConfig, error) {
+func (c *ConfigCache) refresh(ctx context.Context) (map[string]*types.PipelineConfig, []RejectedConfig, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Double-check after acquiring write lock.
-	if c.store.now().Sub(c.loadedAt) < c.ttl && len(c.configs) > 0 {
-		return copyConfigs(c.configs), nil
+	if !c.fresh() {
+		configs, rejected, err := c.store.ScanConfigs(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		c.configs, c.rejected, c.loadedAt = configs, rejected, c.store.now()
+		c.logRejected(ctx)
 	}
+	return copyConfigs(c.configs), slices.Clone(c.rejected), nil
+}
 
-	configs, err := c.store.ScanConfigs(ctx)
-	if err != nil {
-		return nil, err
+// logRejected warns once for each row the last scan rejected; c.mu must be held.
+func (c *ConfigCache) logRejected(ctx context.Context) {
+	logger := c.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
-	c.configs = configs
-	c.loadedAt = c.store.now()
-	return copyConfigs(configs), nil
+	for _, r := range c.rejected {
+		logger.WarnContext(ctx, "pipeline config rejected, skipping",
+			"pk", r.PK, "pipelineId", r.PipelineID, "reason", r.Reason, "hash", r.Hash)
+	}
 }
 
 // copyConfigs returns a deep copy of the config map so callers cannot

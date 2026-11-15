@@ -93,7 +93,7 @@ Processes DynamoDB Stream events from the control and joblog tables. Routes reco
 | `JOB#` | On success: publish `JOB_COMPLETED`. On fail/timeout: publish `JOB_FAILED` (retries belong to the run's CompleteTrigger). Dry-run pipelines: publish what a retry would do |
 | `SENSOR#` (post-run) | If sensor matches a `postRun.rules[].key` and trigger is COMPLETED: compare against baseline, publish drift/pass/fail events, request rerun on drift. If trigger is RUNNING: publish informational `POST_RUN_DRIFT_INFLIGHT` event |
 
-The stream-router maintains a config cache to avoid redundant DynamoDB reads. Pipeline configs are validated at load time (`ValidatePipelineConfig`) -- invalid configs are logged and skipped.
+The stream-router maintains a config cache to avoid redundant DynamoDB reads. Pipeline configs are parsed and validated at load time (`ValidatePipelineConfig`): a bad `CONFIG` row is skipped and logged as a warning, and every other pipeline keeps running.
 
 Trigger lock acquisition uses conditional writes to prevent duplicate executions for the same pipeline/schedule/date. Lock TTL is dynamically computed from the `SFN_TIMEOUT_SECONDS` environment variable plus a 30-minute buffer (default: 4h30m). Terminal trigger statuses (`COMPLETED`, `FAILED_FINAL`) have their TTL removed so records persist indefinitely.
 

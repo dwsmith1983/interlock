@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	sfntypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -422,6 +424,39 @@ func TestScenarioSLAWarningDuringRetry(t *testing.T) {
 	waitAlerts(t, id, alert{id, date, jf}, alert{id, date, warn}, alert{id, date, jc}, alert{id, date, met})
 	assertLaunches(t, id, 2)
 	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
+}
+
+// One team's malformed CONFIG row (a string where job.maxRetries wants a
+// number) must not stop the other pipelines: the good one triggers and
+// completes, and a watchdog pass over both succeeds (the invoke fails if any
+// check does).
+func TestScenarioBadConfigIsolated(t *testing.T) {
+	const id, bad = "bad-config-neighbour", "bad-config"
+	_, date := startDay(t)
+	badKey := map[string]ddbtypes.AttributeValue{
+		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(bad)},
+		"SK": &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
+	}
+	putItem(t, map[string]ddbtypes.AttributeValue{"PK": badKey["PK"], "SK": badKey["SK"],
+		"config": &ddbtypes.AttributeValueMemberS{Value: `{"pipeline":{"id":"bad-config"},"job":{"maxRetries":"3"}}`}})
+	t.Cleanup(func() { // keep the bad row out of the other scenarios
+		ctx, cancel := callCtx()
+		defer cancel()
+		if _, err := ddb.DeleteItem(ctx, &dynamodb.DeleteItemInput{TableName: aws.String(controlTable), Key: badKey}); err != nil {
+			t.Errorf("delete %s config: %v", bad, err)
+		}
+	})
+	putConfig(t, scenarioConfig(id))
+
+	writeReady(t, id, date)
+	reportJob(t, id, date, waitLaunch(t, id, 1), types.JobEventSuccess)
+	waitCompleted(t, id, date)
+	vp, jc := string(types.EventValidationPassed), string(types.EventJobCompleted)
+	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 2, vp: 1, jc: 1}, []string{vp, jc})
+
+	invokeWatchdog(t)
+	waitAlerts(t, id, alert{id, date, jc})
+	assertLaunches(t, id, 1)
 }
 
 func stateExited(h []sfntypes.HistoryEvent, state string) bool {

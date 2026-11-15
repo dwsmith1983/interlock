@@ -112,7 +112,7 @@ func TestMem_ScanAndDelete(t *testing.T) {
 	fake, mem := storetest.NewMem()
 	mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": s("PIPELINE#p"), "SK": s(types.ConfigSK), "config": s(`{"pipeline":{"id":"p"}}`)})
 	mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": s("PIPELINE#p"), "SK": s("TRIGGER#s#d")})
-	configs, err := storetest.NewStore(fake).ScanConfigs(context.Background())
+	configs, _, err := storetest.NewStore(fake).ScanConfigs(context.Background())
 	if err != nil || len(configs) != 1 || configs["p"] == nil {
 		t.Fatalf("ScanConfigs = %v, %v, want only p", configs, err)
 	}

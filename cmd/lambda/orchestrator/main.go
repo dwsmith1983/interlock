@@ -63,6 +63,7 @@ func main() {
 		RerunTable:   os.Getenv("RERUN_TABLE"),
 	}
 	cache := store.NewConfigCache(s, 5*time.Minute)
+	cache.Logger = logger
 
 	// Validate hardening config at cold start (result unused; circuit breaker lives in trigger).
 	if _, err = config.LoadHardening(); err != nil {
