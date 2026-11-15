@@ -81,10 +81,7 @@ func checkRelativeSLAForDate(ctx context.Context, d *lambda.Deps, id string, cfg
 			"pipelineId", id, "date", checkDate, "error", err)
 		return
 	}
-	if tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal) {
-		return
-	}
-	if lambda.IsJobTerminal(ctx, d, id, scheduleID, checkDate) {
+	if finished, _ := lambda.RunFinished(ctx, d, tr, id, scheduleID, checkDate); finished {
 		return
 	}
 

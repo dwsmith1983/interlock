@@ -48,13 +48,11 @@ func scheduleSLAAlerts(ctx context.Context, d *lambda.Deps) error {
 		slaDate := lambda.ResolveSLADate(cfg, date)
 
 		tr, err := d.Store.GetTrigger(ctx, id, scheduleID, date)
-		switch {
-		case err != nil:
+		if err != nil {
 			d.Logger.Warn("trigger lookup failed in SLA scheduling", "pipelineId", id, "error", err)
 			continue
-		case tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal):
-			continue
-		case lambda.IsJobTerminal(ctx, d, id, scheduleID, date):
+		}
+		if finished, _ := lambda.RunFinished(ctx, d, tr, id, scheduleID, date); finished {
 			continue
 		}
 
@@ -74,8 +72,14 @@ func scheduleSLAAlerts(ctx context.Context, d *lambda.Deps) error {
 
 		breachAt, _ := time.Parse(time.RFC3339, calc.BreachAt)
 		if breachAt.IsZero() || breachAt.After(now) {
+			// A warning at or before now has fired already (or is due): a
+			// schedule with a past at() would fire it again.
+			toCreate := calc
+			if warningAt, err := time.Parse(time.RFC3339, calc.WarningAt); err == nil && !warningAt.After(now) {
+				toCreate.WarningAt = ""
+			}
 			scheduleErr := false
-			if err := lambda.CreateSLASchedules(ctx, d, id, scheduleID, date, calc, true); err != nil {
+			if err := lambda.CreateSLASchedules(ctx, d, id, scheduleID, date, toCreate, true); err != nil {
 				d.Logger.Error("create SLA schedule failed",
 					"pipelineId", id, "error", err)
 				scheduleErr = true

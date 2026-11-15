@@ -13,23 +13,14 @@ import (
 func handleSLAFireAlert(ctx context.Context, d *lambda.Deps, input lambda.SLAMonitorInput) (lambda.SLAMonitorOutput, error) {
 	var tr *types.ControlRecord
 	if d.Store != nil {
-		suppressed := false
 		var err error
 		tr, err = d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
-		switch {
-		case err != nil:
+		if err != nil {
 			d.Logger.WarnContext(ctx, "trigger lookup failed in fire-alert, proceeding with alert",
 				"pipeline", input.PipelineID, "error", err)
-		case tr != nil && (tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal):
-			d.Logger.InfoContext(ctx, "suppressing SLA alert (pipeline already finished)",
-				"pipeline", input.PipelineID, "date", input.Date, "triggerStatus", tr.Status, "alertType", input.AlertType)
-			suppressed = true
-		case lambda.IsJobTerminal(ctx, d, input.PipelineID, input.ScheduleID, input.Date):
-			d.Logger.InfoContext(ctx, "suppressing SLA alert (terminal joblog event found)",
+		} else if finished, reason := lambda.RunFinished(ctx, d, tr, input.PipelineID, input.ScheduleID, input.Date); finished {
+			d.Logger.InfoContext(ctx, "suppressing SLA alert", "reason", reason,
 				"pipeline", input.PipelineID, "date", input.Date, "alertType", input.AlertType)
-			suppressed = true
-		}
-		if suppressed {
 			return lambda.SLAMonitorOutput{AlertType: input.AlertType, FiredAt: d.Now().UTC().Format(time.RFC3339)}, nil
 		}
 	}
