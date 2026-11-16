@@ -143,23 +143,6 @@ runtime. A `fail` or `timeout` that arrives after its execution has ended, or
 for a run ID that is not the current attempt's, publishes `JOB_FAILED` and is
 otherwise ignored; a lock it leaves stale is the watchdog's to clear.
 
-### `command`
-
-Executes a shell command. Intended for use in development and testing scenarios.
-
-```yaml
-job:
-  type: command
-  config:
-    command: /usr/local/bin/run-etl --pipeline my-pipeline
-    timeout: 300
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `command` | string | Shell command to execute |
-| `timeout` | int | Execution timeout in seconds |
-
 ### `airflow`
 
 Triggers an Apache Airflow DAG run and polls for completion.
@@ -308,7 +291,7 @@ After a job executes, the orchestrator Lambda polls for completion using the ret
 | `databricks` | `GET /runs/get` | RUNNING/PENDING -> running, TERMINATED(SUCCESS) -> succeeded, others -> failed |
 | `airflow` | `GET /dags/{id}/dagRuns` | running -> running, success -> succeeded, failed -> failed |
 
-The `http`, `command` and `lambda` types have no status API. An `http` job reports its own result (see [`http`](#http)); `command` and `lambda` are recorded as succeeded once the call returns.
+The `http` and `lambda` types have no status API. An `http` job reports its own result (see [`http`](#http)); a `lambda` job is recorded as succeeded once the call returns.
 
 ### Glue RCA Verification
 

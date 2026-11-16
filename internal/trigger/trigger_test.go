@@ -16,24 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestExecuteCommand_Success(t *testing.T) {
-	cfg := &types.TriggerConfig{
-		Type:    types.TriggerCommand,
-		Command: &types.CommandTriggerConfig{Command: "echo ok"},
-	}
-	_, err := Execute(context.Background(), cfg)
-	require.NoError(t, err)
-}
-
-func TestExecuteCommand_Failure(t *testing.T) {
-	cfg := &types.TriggerConfig{
-		Type:    types.TriggerCommand,
-		Command: &types.CommandTriggerConfig{Command: "false"},
-	}
-	_, err := Execute(context.Background(), cfg)
-	assert.Error(t, err)
-}
-
 func TestExecuteHTTP_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -393,25 +375,4 @@ func TestExecuteHTTP_Returns_TriggerError_On5xx(t *testing.T) {
 	require.True(t, errors.As(err, &te), "expected TriggerError, got %T", err)
 	assert.Equal(t, types.FailureTransient, te.Category)
 	assert.Contains(t, te.Message, "status 503")
-}
-
-func TestExecuteCommand_EmptyCommand(t *testing.T) {
-	err := ExecuteCommand(context.Background(), "")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "command is empty")
-}
-
-func TestExecuteCommand_DirectExec(t *testing.T) {
-	err := ExecuteCommand(context.Background(), "echo hello")
-	require.NoError(t, err)
-}
-
-func TestExecuteCommand_NoShellMetacharacters(t *testing.T) {
-	// The semicolon should be passed as a literal argument to echo, not
-	// interpreted as a shell command separator. With direct exec there is
-	// no shell to split on ";", so echo receives [";", "ls"] as arguments
-	// and prints them literally. If a shell were involved, "ls" would
-	// execute as a separate command.
-	err := ExecuteCommand(context.Background(), "echo ; ls")
-	require.NoError(t, err, "echo should succeed even with ; in args")
 }

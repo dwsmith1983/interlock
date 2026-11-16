@@ -95,7 +95,7 @@ A job started by an `http` trigger also reports its result to the joblog table, 
 
 ## Keeping Teams Apart with IAM
 
-IAM keeps one team's rows apart from another's. It does not limit what a config makes the shared orchestrator do: a `CONFIG` row can name any job ARN the deployment allows (another team's job included, with its own arguments), a `type: http` job calls any public URL, and a `type: command` job runs a binary inside the orchestrator Lambda with that Lambda's role. Review configs like code. The central `pipelines_path` route gets that review in the central repository; route a team's own Terraform through the same review.
+IAM keeps one team's rows apart from another's. It does not limit what a config makes the shared orchestrator do: a `CONFIG` row can name any job ARN the deployment allows (another team's job included, with its own arguments), and a `type: http` job calls any public URL. Review configs like code. The central `pipelines_path` route gets that review in the central repository; route a team's own Terraform through the same review.
 
 Without a guard, two teams that pick the same ID share one `CONFIG` row and can change each other's pipeline. Give each team's roles access only to keys that start with its prefix, one statement for its jobs and one for its Terraform:
 

@@ -24,6 +24,20 @@ const MaxPipelineIDLen = 31
 // Functions and the Scheduler name alphabets.
 var pipelineIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// triggerTypes is every job.type the orchestrator can launch. Keep it in step
+// with the trigger registry in internal/lambda; a test there fails when a
+// registered type is missing here.
+var triggerTypes = map[types.TriggerType]bool{
+	types.TriggerHTTP:          true,
+	types.TriggerAirflow:       true,
+	types.TriggerGlue:          true,
+	types.TriggerEMR:           true,
+	types.TriggerEMRServerless: true,
+	types.TriggerDatabricks:    true,
+	types.TriggerStepFunction:  true,
+	types.TriggerLambda:        true,
+}
+
 // ValidatePipelineConfig checks the pipeline ID and that all retry and
 // timeout fields are within safe bounds. Returns a list of human-readable
 // validation errors.
@@ -32,6 +46,10 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 
 	if id := cfg.Pipeline.ID; len(id) > MaxPipelineIDLen || !pipelineIDRe.MatchString(id) {
 		errs = append(errs, fmt.Sprintf("pipeline.id %q must be 1-%d characters of A-Z, a-z, 0-9, _ and -", id, MaxPipelineIDLen))
+	}
+
+	if t := cfg.Job.Type; t != "" && !triggerTypes[t] {
+		errs = append(errs, fmt.Sprintf("job.type %q is not a supported trigger type", t))
 	}
 
 	if cfg.Job.MaxRetries < 0 || cfg.Job.MaxRetries > 10 {

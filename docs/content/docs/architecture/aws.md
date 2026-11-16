@@ -112,7 +112,7 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 | `job-poll-exhausted` | Write a `timeout` joblog row for the run when the job poll window expires |
 | `complete-trigger` | On success set the trigger to `COMPLETED`. On fail/timeout start the next attempt (`status: retrying`) while `maxRetries` lasts, else set `FAILED_FINAL` and publish `RETRY_EXHAUSTED` (`PIPELINE_EXCLUDED` for an excluded date, `INFRA_FAILURE` when the next execution cannot start) |
 
-Supported trigger types: `http`, `command`, `airflow`, `glue`, `emr`, `emr-serverless`, `step-function`, `databricks`, `lambda`.
+Supported trigger types: `http`, `airflow`, `glue`, `emr`, `emr-serverless`, `step-function`, `databricks`, `lambda`.
 
 ### sla-monitor
 

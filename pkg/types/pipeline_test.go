@@ -145,9 +145,9 @@ validation:
       check: exists
       field: status
 job:
-  type: command
+  type: http
   config:
-    command: /opt/scripts/ingest.sh
+    url: https://example.com/run
 `
 
 func TestPipelineConfig_Minimal(t *testing.T) {
@@ -172,7 +172,7 @@ func TestPipelineConfig_Minimal(t *testing.T) {
 	assert.Len(t, cfg.Validation.Rules, 1)
 	assert.Equal(t, types.CheckExists, cfg.Validation.Rules[0].Check)
 
-	assert.Equal(t, "command", string(cfg.Job.Type))
+	assert.Equal(t, "http", string(cfg.Job.Type))
 	assert.Equal(t, 0, cfg.Job.MaxRetries)
 	assert.Nil(t, cfg.PostRun)
 }

@@ -2,11 +2,25 @@ package orchestrator_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/orchestrator"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
+
+// TestBuildTriggerConfig_UnknownTypeWithoutConfig: the orchestrator reads
+// configs unvalidated, so a type with no registry entry must fail here even
+// when the job has no config map.
+func TestBuildTriggerConfig_UnknownTypeWithoutConfig(t *testing.T) {
+	for _, cfg := range []map[string]interface{}{nil, {}} {
+		_, err := orchestrator.BuildTriggerConfig(types.JobConfig{Type: "command", Config: cfg})
+		if err == nil || !strings.Contains(err.Error(), "unsupported trigger type: command") {
+			t.Errorf("config %v: err = %v, want unsupported trigger type", cfg, err)
+		}
+	}
+}
 
 // TestExtractRunID covers the metadata shape emitted by every trigger type in
 // internal/trigger. The Step Functions CheckJob state dereferences

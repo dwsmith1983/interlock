@@ -88,7 +88,7 @@ func TestWatchdog_MissedSchedule_PublishesAlert(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -115,7 +115,7 @@ func TestWatchdog_SchedulePresent_NoAlert(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -151,7 +151,7 @@ func TestWatchdog_CalendarExcluded_NoAlert(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -212,7 +212,7 @@ func TestWatchdog_StreamTriggered_NoMissedCheck(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -246,7 +246,7 @@ func TestWatchdog_Reconcile_TriggersRecovery(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -295,7 +295,7 @@ func TestWatchdog_Reconcile_SkipsAlreadyTriggered(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -342,7 +342,7 @@ func TestWatchdog_Reconcile_ConditionNotMet(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -392,7 +392,7 @@ func TestWatchdog_Reconcile_CalendarExcluded(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -436,7 +436,7 @@ func TestWatchdog_Reconcile_PerHour_MultipleRecoveries(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -491,7 +491,7 @@ func TestWatchdog_Reconcile_PerHour_PartiallyTriggered(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -670,7 +670,7 @@ func TestWatchdog_ScheduleSLAAlerts_NoSLAConfig_Skips(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -1076,7 +1076,7 @@ func TestWatchdog_MissedSchedule_DetailFields(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -1126,7 +1126,7 @@ func TestWatchdog_MissedSchedule_BeforeScheduleTime_NoAlert(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "5m", Interval: "1m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -1171,7 +1171,7 @@ func TestWatchdog_Reconcile_CronPipeline_SkipsReconciliation(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -1202,7 +1202,7 @@ func TestWatchdog_Reconcile_SFNError_Continues(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -1227,7 +1227,7 @@ func TestWatchdog_Reconcile_NoTriggerCondition_Skips(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -1267,7 +1267,7 @@ func TestWatchdog_Reconcile_SkipsTerminalSuccess(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
@@ -1305,7 +1305,7 @@ func TestWatchdog_Reconcile_SkipsTerminalFail(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 	seedSensor(mock, "silver-transform", "upstream-complete", map[string]interface{}{
@@ -1335,7 +1335,7 @@ func TestWatchdog_Reconcile_SkipsTerminalTimeout(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
@@ -1365,7 +1365,7 @@ func TestWatchdog_Reconcile_ProceedsOnNonTerminalJoblog(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
@@ -1857,7 +1857,7 @@ func postRunWatchdogConfig(sensorTimeout string) types.PipelineConfig {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 		PostRun: &types.PostRunConfig{
 			Rules: []types.ValidationRule{
 				{Key: "quality-check", Check: types.CheckEquals, Field: "status", Value: "passed"},
@@ -2070,7 +2070,7 @@ func TestWatchdog_SLADateBoundaries(t *testing.T) {
 				ExpectedDuration: "30m",
 			},
 			Validation: types.ValidationConfig{Trigger: "ALL"},
-			Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo test"}},
+			Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 		}
 	}
 
@@ -2222,7 +2222,7 @@ func TestWatchdog_SLADateBoundaries(t *testing.T) {
 				ExpectedDuration: "30m",
 			},
 			Validation: types.ValidationConfig{Trigger: "ALL"},
-			Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo test"}},
+			Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 		}
 		seedConfig(mock, cfg)
 
@@ -2255,7 +2255,7 @@ func TestWatchdog_SLADateBoundaries(t *testing.T) {
 				ExpectedDuration: "10m",
 			},
 			Validation: types.ValidationConfig{Trigger: "ALL"},
-			Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo test"}},
+			Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 		}
 		seedConfig(mock, cfg)
 
@@ -2304,7 +2304,7 @@ func TestWatchdog_PostRunNoConfig(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2349,7 +2349,7 @@ func TestWatchdog_InclusionSchedule_NilInclude_Skipped(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2388,7 +2388,7 @@ func TestWatchdog_InclusionSchedule_TriggerExists_NoAlert(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2435,7 +2435,7 @@ func TestWatchdog_InclusionSchedule_TriggerMissing_PublishesAlert(t *testing.T) 
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2485,7 +2485,7 @@ func TestWatchdog_InclusionSchedule_DedupPreventsRepeat(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2528,7 +2528,7 @@ func TestWatchdog_InclusionSchedule_AllFutureDates_NoAlert(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2567,7 +2567,7 @@ func TestWatchdog_InclusionSchedule_MultiDateGap(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2622,7 +2622,7 @@ func TestWatchdog_InclusionSchedule_RespectsScheduleTime(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2669,7 +2669,7 @@ func TestWatchdog_InclusionSchedule_PastScheduleTime(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2720,7 +2720,7 @@ func TestWatchdog_InclusionSchedule_WithTimezone(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2768,7 +2768,7 @@ func TestWatchdog_InclusionSchedule_NoTimeConfig(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2822,7 +2822,7 @@ func TestWatchdog_InclusionSchedule_TimezoneUTCDateMismatch(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo run"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2875,7 +2875,7 @@ func TestWatchdog_RelativeSLA_NoMaxDuration_Skips(t *testing.T) {
 			ExpectedDuration: "30m",
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2912,7 +2912,7 @@ func TestWatchdog_RelativeSLA_SensorArrival_NotYetBreached(t *testing.T) {
 			MaxDuration: "2h",
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2956,7 +2956,7 @@ func TestWatchdog_RelativeSLA_SensorArrival_Breached(t *testing.T) {
 			MaxDuration: "2h",
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -3004,7 +3004,7 @@ func TestWatchdog_RelativeSLA_Breached_AlreadyCompleted_NoAlert(t *testing.T) {
 			MaxDuration: "2h",
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -3056,7 +3056,7 @@ func TestWatchdog_RelativeSLA_CrossDayArrival(t *testing.T) {
 			MaxDuration: "2h",
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -3107,7 +3107,7 @@ func TestWatchdog_RelativeSLA_CrossDayNotBreached(t *testing.T) {
 			MaxDuration: "2h",
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -3321,7 +3321,7 @@ func TestCloseSensorTriggerWindow_PrefersScheduleTimezone(t *testing.T) {
 			Timezone: "Asia/Tokyo", // JST = UTC+9; 09:00 JST = 00:00 UTC
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 

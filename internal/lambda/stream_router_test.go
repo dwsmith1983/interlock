@@ -123,8 +123,8 @@ func testStreamConfig() types.PipelineConfig {
 			},
 		},
 		Job: types.JobConfig{
-			Type:   "command",
-			Config: map[string]interface{}{"command": "echo hello"},
+			Type:   "http",
+			Config: map[string]interface{}{"url": "https://example.com/run"},
 		},
 	}
 }
@@ -293,7 +293,7 @@ func TestStreamRouter_ConfigChange_InvalidatesCache(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -381,8 +381,8 @@ func testJobConfig() types.PipelineConfig {
 			Rules:   []types.ValidationRule{{Key: "upstream-complete", Check: types.CheckExists}},
 		},
 		Job: types.JobConfig{
-			Type:       "command",
-			Config:     map[string]interface{}{"command": "echo hello"},
+			Type:       "http",
+			Config:     map[string]interface{}{"url": "https://example.com/run"},
 			MaxRetries: 2,
 		},
 	}
@@ -1186,7 +1186,7 @@ func TestSensor_NoTriggerCondition(t *testing.T) {
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
-		Job:        types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job:        types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2178,7 +2178,7 @@ func TestConvertAV_Number(t *testing.T) {
 		Validation: types.ValidationConfig{Trigger: "ALL", Rules: []types.ValidationRule{
 			{Key: "upstream-complete", Check: types.CheckExists},
 		}},
-		Job: types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job: types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2214,7 +2214,7 @@ func TestConvertAV_Bool(t *testing.T) {
 		Validation: types.ValidationConfig{Trigger: "ALL", Rules: []types.ValidationRule{
 			{Key: "upstream-complete", Check: types.CheckExists},
 		}},
-		Job: types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job: types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2286,7 +2286,7 @@ func TestConvertAV_List(t *testing.T) {
 		Validation: types.ValidationConfig{Trigger: "ALL", Rules: []types.ValidationRule{
 			{Key: "upstream-complete", Check: types.CheckExists},
 		}},
-		Job: types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job: types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -2323,7 +2323,7 @@ func TestConvertAV_Null(t *testing.T) {
 		Validation: types.ValidationConfig{Trigger: "ALL", Rules: []types.ValidationRule{
 			{Key: "upstream-complete", Check: types.CheckExists},
 		}},
-		Job: types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "echo hello"}},
+		Job: types.JobConfig{Type: "http", Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	seedConfig(mock, cfg)
 
@@ -3024,8 +3024,8 @@ func postRunConfig() types.PipelineConfig {
 			Rules:   []types.ValidationRule{{Key: "upstream-complete", Check: types.CheckExists}},
 		},
 		Job: types.JobConfig{
-			Type:   "command",
-			Config: map[string]interface{}{"command": "echo hello"},
+			Type:   "http",
+			Config: map[string]interface{}{"url": "https://example.com/run"},
 		},
 		PostRun: &types.PostRunConfig{
 			Rules: []types.ValidationRule{

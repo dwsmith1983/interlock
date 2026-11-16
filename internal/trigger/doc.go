@@ -1,7 +1,6 @@
 // Package trigger implements pipeline trigger execution and status polling
-// for nine trigger types:
+// for eight trigger types:
 //
-//   - command: local shell command execution
 //   - http: HTTP/webhook trigger with configurable method, headers, and body
 //   - airflow: Apache Airflow DAG trigger via REST API
 //   - glue: AWS Glue job trigger via SDK

@@ -6,7 +6,6 @@ type TriggerConfig struct {
 	Type          TriggerType                 `yaml:"type" json:"type"`
 	PollInterval  string                      `yaml:"pollInterval,omitempty" json:"pollInterval,omitempty"`
 	HTTP          *HTTPTriggerConfig          `yaml:"http,omitempty" json:"http,omitempty"`
-	Command       *CommandTriggerConfig       `yaml:"command,omitempty" json:"command,omitempty"`
 	Airflow       *AirflowTriggerConfig       `yaml:"airflow,omitempty" json:"airflow,omitempty"`
 	Glue          *GlueTriggerConfig          `yaml:"glue,omitempty" json:"glue,omitempty"`
 	EMR           *EMRTriggerConfig           `yaml:"emr,omitempty" json:"emr,omitempty"`
@@ -40,11 +39,6 @@ type RunIdentity struct {
 	ScheduleID string
 	Date       string
 	RunID      string
-}
-
-// CommandTriggerConfig holds configuration for command triggers.
-type CommandTriggerConfig struct {
-	Command string `yaml:"command" json:"command"`
 }
 
 // AirflowTriggerConfig holds configuration for Airflow triggers.

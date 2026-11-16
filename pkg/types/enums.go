@@ -7,7 +7,6 @@ type TriggerType string
 // TriggerType values enumerate the supported pipeline trigger mechanisms.
 const (
 	TriggerHTTP          TriggerType = "http"
-	TriggerCommand       TriggerType = "command"
 	TriggerAirflow       TriggerType = "airflow"
 	TriggerGlue          TriggerType = "glue"
 	TriggerEMR           TriggerType = "emr"

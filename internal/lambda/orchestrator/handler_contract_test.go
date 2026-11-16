@@ -265,8 +265,6 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 		{name: "http with empty metadata", job: httpJob, execName: execName, meta: map[string]interface{}{}, wantRunID: execName},
 		{name: "http without an execution name", job: httpJob, wantRunID: fallback},
 		{name: "http hourly date", job: httpJob, execName: execName, date: "2026-03-01T05", wantHour: "05", wantRunID: execName},
-		{name: "command records success under the run ID", execName: execName, wantRunID: execName, wantSuccess: true,
-			job: job(types.TriggerCommand, map[string]interface{}{"command": "echo ok"})},
 		{name: "lambda records success under the run ID", execName: execName, wantRunID: execName, wantSuccess: true,
 			job: job(types.TriggerLambda, map[string]interface{}{"functionName": "f"})},
 	}
