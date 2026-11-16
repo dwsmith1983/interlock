@@ -26,7 +26,7 @@ schedule:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `cron` | string | no | Cron expression for schedule activation (5-field format) |
+| `cron` | string | no | Five-field cron expression (minute, hour, day of month, month, day of week), evaluated in `timezone` |
 | `timezone` | string | no | IANA timezone for cron and deadline interpretation (defaults to `UTC`) |
 | `trigger` | object | no | Condition that activates the evaluation loop (see below) |
 | `evaluation` | object | no | Window and interval settings for the evaluation loop |
@@ -102,6 +102,8 @@ schedule:
     window: 2h
     interval: 10m
 ```
+
+The expression is validated when the config loads. It must be standard five-field cron (minute, hour, day of month, month, day of week), evaluated in `schedule.timezone`. Each field takes `*`, numbers, ranges (`1-5`), steps (`*/15`, `0-30/10`), lists (`1,15`) and, for month and day of week, names (`JAN`, `MON-FRI`). Day of week runs 0 to 6 with 0 as Sunday; `7` is not accepted. `?` means the same as `*` in the day fields. `L`, `W` and `#` are not supported. A seconds or year field, a descriptor such as `@daily` or `@every 1h`, a `TZ=` prefix, or an out-of-range value like `61 8 * * *` or `0 8 * * 1,9` rejects the config, which is reported as `CONFIG_INVALID`. When both day of month and day of week are restricted, either one matching is enough, as in standard cron. On a DST change, a cron time in the skipped local hour (spring forward) does not occur that day, so that day has no start-by time, and for a daily run date a cron time in the repeated hour (fall back) is taken at its first occurrence.
 
 Common cron patterns:
 
