@@ -2,15 +2,37 @@ package validation
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// ValidatePipelineConfig checks that all retry and timeout fields are within
-// safe bounds. Returns a list of human-readable validation errors.
+// MaxPipelineIDLen is the longest pipeline ID for which every name built from
+// it fits its AWS limit with no truncation or hashing. With schedule ID
+// "stream", date "YYYY-MM-DDThh" (13), a 10-digit Unix time, a 3-digit rerun
+// attempt and a "-r99" retry:
+//   - EventBridge Scheduler (64): <id>-stream-<date>-sla-warning adds
+//     1+6+1+13+5+7 = 33, so the ID gets 31. This is the binding limit.
+//   - Step Functions (80): a rerun's retry
+//     <id>-stream-<date>-rerun<attempt>-<unix>-r99 adds 1+6+1+13+6+3+1+10+4
+//     = 45 (ID up to 35), and a first run's retry <id>-stream-<date>-<unix>-r99
+//     adds 36 (ID up to 44).
+const MaxPipelineIDLen = 31
+
+// pipelineIDRe is the pipeline ID alphabet. It is a subset of both the Step
+// Functions and the Scheduler name alphabets.
+var pipelineIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// ValidatePipelineConfig checks the pipeline ID and that all retry and
+// timeout fields are within safe bounds. Returns a list of human-readable
+// validation errors.
 func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	var errs []string
+
+	if id := cfg.Pipeline.ID; len(id) > MaxPipelineIDLen || !pipelineIDRe.MatchString(id) {
+		errs = append(errs, fmt.Sprintf("pipeline.id %q must be 1-%d characters of A-Z, a-z, 0-9, _ and -", id, MaxPipelineIDLen))
+	}
 
 	if cfg.Job.MaxRetries < 0 || cfg.Job.MaxRetries > 10 {
 		errs = append(errs, fmt.Sprintf("job.maxRetries %d out of range [0,10]", cfg.Job.MaxRetries))

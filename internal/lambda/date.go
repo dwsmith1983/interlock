@@ -27,7 +27,7 @@ func ResolveExecutionDate(sensorData map[string]interface{}, now time.Time) stri
 	if hourStr != "" {
 		// Validate hour is 2-digit 00-23.
 		if len(hourStr) == 2 {
-			if h, err := strconv.Atoi(hourStr); err == nil && h >= 0 && h <= 23 {
+			if IsValidExecutionDate(normalized + "T" + hourStr) {
 				return normalized + "T" + hourStr
 			}
 		}

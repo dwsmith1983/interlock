@@ -9,6 +9,7 @@ package e2e
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
@@ -433,30 +434,39 @@ func TestScenarioSLAWarningDuringRetry(t *testing.T) {
 // completes, and the watchdog reports the bad row once, not again on its next
 // pass. The absence is checked against a sentinel on the same path: a third
 // pass after the marker's 24 h TTL reports again, so exactly two alerts and
-// two events arrive (a report from the second pass would make three).
+// two events arrive (a report from the second pass would make three). A
+// pipeline whose ID breaks the ID rule is reported the same way and never
+// launches, though its sensor is ready.
 func TestScenarioBadConfigIsolated(t *testing.T) {
-	const id, bad = "bad-config-neighbour", "bad-config"
-	const badConfig = `{"pipeline":{"id":"bad-config"},"job":{"maxRetries":"3"}}`
-	start, date := startDay(t)
-	sum := sha256.Sum256([]byte(badConfig))
-	keys := []map[string]ddbtypes.AttributeValue{}
-	for _, sk := range []string{types.ConfigSK, "CONFIG_INVALID#" + hex.EncodeToString(sum[:])[:16]} {
-		keys = append(keys, map[string]ddbtypes.AttributeValue{
-			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(bad)}, "SK": &ddbtypes.AttributeValueMemberS{Value: sk}})
+	const id, bad, badID = "bad-config-neighbour", "bad-config", "bad.config-id"
+	badIDConfig, err := json.Marshal(scenarioConfig(badID))
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
 	}
-	putItem(t, map[string]ddbtypes.AttributeValue{"PK": keys[0]["PK"], "SK": keys[0]["SK"],
-		"config": &ddbtypes.AttributeValueMemberS{Value: badConfig}})
-	t.Cleanup(func() { // the config and its marker; later watchdog passes would report it again
+	badConfigs := map[string]string{bad: `{"pipeline":{"id":"bad-config"},"job":{"maxRetries":"3"}}`, badID: string(badIDConfig)}
+	start, date := startDay(t)
+	keys := []map[string]ddbtypes.AttributeValue{}
+	for pipeline, config := range badConfigs {
+		sum := sha256.Sum256([]byte(config))
+		pk := &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipeline)}
+		putItem(t, map[string]ddbtypes.AttributeValue{"PK": pk, "SK": &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
+			"config": &ddbtypes.AttributeValueMemberS{Value: config}})
+		for _, sk := range []string{types.ConfigSK, "CONFIG_INVALID#" + hex.EncodeToString(sum[:])[:16]} {
+			keys = append(keys, map[string]ddbtypes.AttributeValue{"PK": pk, "SK": &ddbtypes.AttributeValueMemberS{Value: sk}})
+		}
+	}
+	t.Cleanup(func() { // the configs and their markers; later watchdog passes would report them again
 		ctx, cancel := callCtx()
 		defer cancel()
 		for _, key := range keys {
 			if _, err := ddb.DeleteItem(ctx, &dynamodb.DeleteItemInput{TableName: aws.String(controlTable), Key: key}); err != nil {
-				t.Errorf("delete %s %v: %v", bad, key["SK"], err)
+				t.Errorf("delete %v %v: %v", key["PK"], key["SK"], err)
 			}
 		}
 	})
 	putConfig(t, scenarioConfig(id))
 
+	writeReady(t, badID, date)
 	writeReady(t, id, date)
 	reportJob(t, id, date, waitLaunch(t, id, 1), types.JobEventSuccess)
 	waitCompleted(t, id, date)
@@ -466,14 +476,18 @@ func TestScenarioBadConfigIsolated(t *testing.T) {
 	invalid := string(types.EventConfigInvalid)
 	invokeWatchdog(t)
 	waitEvents(t, bad, "", map[string]int{invalid: 1})
+	waitEvents(t, badID, "", map[string]int{invalid: 1})
 	advanceTo(t, start.Add(time.Hour))
 	invokeWatchdog(t) // the marker holds: no report
 	advanceTo(t, start.Add(25*time.Hour))
 	invokeWatchdog(t) // the marker has expired: the sentinel report
-	waitEvents(t, bad, "", map[string]int{invalid: 2})
-	waitAlerts(t, bad, alert{bad, "", invalid}, alert{bad, "", invalid})
+	for _, b := range []string{bad, badID} {
+		waitEvents(t, b, "", map[string]int{invalid: 2})
+		waitAlerts(t, b, alert{b, "", invalid}, alert{b, "", invalid})
+	}
 	waitAlerts(t, id, alert{id, date, jc})
 	assertLaunches(t, id, 1)
+	assertLaunches(t, badID, 0)
 }
 
 func stateExited(h []sfntypes.HistoryEvent, state string) bool {

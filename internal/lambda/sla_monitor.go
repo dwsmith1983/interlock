@@ -2,13 +2,10 @@ package lambda
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -291,39 +288,11 @@ func handleSLACancel(ctx context.Context, d *Deps, input SLAMonitorInput) (SLAMo
 	}, nil
 }
 
-// maxScheduleNameLen is the EventBridge Scheduler limit on schedule names.
-const maxScheduleNameLen = 64
-
-// scheduleNameHashLen is how many hex characters of the SHA-256 prefix a
-// shortened schedule name carries.
-const scheduleNameHashLen = 8
-
-var (
-	validScheduleNameRe   = regexp.MustCompile(`^[0-9a-zA-Z_.-]+$`)
-	invalidScheduleCharRe = regexp.MustCompile(`[^0-9a-zA-Z_.-]`)
-)
-
-// SLAScheduleName returns a deterministic EventBridge Scheduler name for an
-// SLA alert. Names that already fit the Scheduler rules (1-64 characters of
-// [0-9a-zA-Z_.-]) are returned unchanged, so schedules created before this
-// rule stay deletable. Any other name becomes a hash of the raw name followed
-// by the tail of its sanitized form, which keeps the date and suffix visible.
-// Hashing the raw name keeps inputs such as "a/b" and "a:b" apart.
+// SLAScheduleName returns the deterministic EventBridge Scheduler name for an
+// SLA alert. validation.MaxPipelineIDLen and the pipeline ID rule make it fit
+// the Scheduler rules (1-64 characters of [0-9a-zA-Z_.-]) as built.
 func SLAScheduleName(pipelineID, scheduleID, date, suffix string) string {
-	raw := fmt.Sprintf("%s-%s-%s-sla-%s", pipelineID, scheduleID, date, suffix)
-	if len(raw) <= maxScheduleNameLen && validScheduleNameRe.MatchString(raw) {
-		return raw
-	}
-
-	sanitized := invalidScheduleCharRe.ReplaceAllString(raw, "-")
-	sum := sha256.Sum256([]byte(raw))
-	h := hex.EncodeToString(sum[:])[:scheduleNameHashLen]
-
-	tailLen := maxScheduleNameLen - scheduleNameHashLen - 1
-	if len(sanitized) > tailLen {
-		sanitized = sanitized[len(sanitized)-tailLen:]
-	}
-	return h + "-" + sanitized
+	return fmt.Sprintf("%s-%s-%s-sla-%s", pipelineID, scheduleID, date, suffix)
 }
 
 // createOneTimeSchedule creates a one-time EventBridge Scheduler entry that

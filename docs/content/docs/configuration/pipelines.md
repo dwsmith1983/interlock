@@ -65,6 +65,8 @@ Identity and ownership metadata.
 | `owner` | string | yes | Team or individual responsible for the pipeline |
 | `description` | string | no | Human-readable description |
 
+The `id` is 1 to 31 characters of `A-Z`, `a-z`, `0-9`, `_` and `-`. Step Functions execution names and EventBridge Scheduler names are built from it, and at that length every one fits its AWS limit as is (the 64-character Scheduler name is the tightest). The file name without `.yaml` or `.yml` must equal the `id`: the Terraform module keys the `CONFIG` row by the file name and fails `terraform plan` when they differ, and a `CONFIG` row whose `PIPELINE#<id>` key differs from its `pipeline.id` is rejected at load.
+
 ### `schedule`
 
 Controls when and how often the pipeline is evaluated. See [Schedules](../schedules/) for full details.
@@ -211,10 +213,11 @@ When the poll window elapses without a terminal job status, the orchestrator wri
 
 ### Configuration Validation
 
-The framework validates all retry and timeout fields at config load time. A `CONFIG` row that does not load, because it is malformed (such as `"maxRetries": "3"`) or outside the bounds below, is skipped by the stream-router, the watchdog and CompleteTrigger, logged as a warning and reported by the watchdog as `CONFIG_INVALID`; the other pipelines keep running. An execution that is already running reads its config directly at each step, so a config that breaks mid-run does not stop it at once: a config that no longer parses fails the step that reads it (evaluation retries until its window closes, the trigger step fails after its retries), one that parses but fails validation is still used by those steps, and a failed job is not retried (CompleteTrigger finds no valid config and sets `FAILED_FINAL`). Validation bounds:
+The framework validates the pipeline ID and all retry and timeout fields at config load time. A `CONFIG` row that does not load, because it is malformed (such as `"maxRetries": "3"`) or outside the bounds below, is skipped by the stream-router, the watchdog and CompleteTrigger, logged as a warning and reported by the watchdog as `CONFIG_INVALID`; the other pipelines keep running. An execution that is already running reads its config directly at each step, so a config that breaks mid-run does not stop it at once: a config that no longer parses fails the step that reads it (evaluation retries until its window closes, the trigger step fails after its retries), one that parses but fails validation is still used by those steps, and a failed job is not retried (CompleteTrigger finds no valid config and sets `FAILED_FINAL`). Validation bounds:
 
 | Field | Valid Range |
 |---|---|
+| `pipeline.id` | 1--31 characters of `A-Za-z0-9_-`, equal to the PK's ID |
 | `maxRetries` | 0--10 |
 | `maxCodeRetries` | 0--3 |
 | `maxDriftReruns` | 0--5 |

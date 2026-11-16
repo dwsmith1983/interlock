@@ -872,6 +872,12 @@ func TestResolveExecutionDate_InvalidHour(t *testing.T) {
 	}
 }
 
+func TestResolveExecutionDate_SignedHour(t *testing.T) {
+	if got := lambda.ResolveExecutionDate(map[string]interface{}{"date": "20260303", "hour": "+5"}, time.Now()); got != "2026-03-03" {
+		t.Errorf("hour +5: got %q, want the date without an hour", got)
+	}
+}
+
 func TestResolveExecutionDate_NonNumericHour(t *testing.T) {
 	data := map[string]interface{}{"date": "20260303", "hour": "ab"}
 	got := lambda.ResolveExecutionDate(data, time.Now())
