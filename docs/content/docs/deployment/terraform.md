@@ -109,7 +109,7 @@ terraform apply
 | `log_retention_days` | number | `30` | CloudWatch log retention in days |
 | `watchdog_schedule` | string | `rate(5 minutes)` | EventBridge schedule expression for the watchdog Lambda |
 | `sfn_timeout_seconds` | number | `14400` | Step Functions global execution timeout in seconds (default 4h). Set this to accommodate your longest pipeline's total window (evaluation + job poll + post-run) |
-| `trigger_max_attempts` | number | `3` | Max infrastructure retry attempts for the Trigger state (exponential backoff: 30s, 60s, 120s, 240s) |
+| `trigger_max_attempts` | number | `3` | Retries the Trigger state makes after its first attempt when a job cannot be started (waits start at 30s and double: 30s, 60s, 120s at the default) |
 | `enable_glue_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Glue jobs |
 | `enable_emr_trigger` | bool | `false` | Grant orchestrator Lambda permission to submit EMR steps |
 | `enable_emr_serverless_trigger` | bool | `false` | Grant orchestrator Lambda permission to start EMR Serverless jobs |

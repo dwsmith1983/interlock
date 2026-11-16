@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -43,6 +44,8 @@ func TestExecuteLambda_InvokeError(t *testing.T) {
 	err := ExecuteLambda(context.Background(), cfg, client)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Invoke failed")
+	var jobErr *JobFailedError
+	assert.False(t, errors.As(err, &jobErr), "a failed Invoke never started the job, so it is not a job failure")
 }
 
 func TestExecuteLambda_FunctionError(t *testing.T) {
@@ -55,9 +58,10 @@ func TestExecuteLambda_FunctionError(t *testing.T) {
 	}
 	cfg := &types.LambdaTriggerConfig{FunctionName: "my-audit"}
 	err := ExecuteLambda(context.Background(), cfg, client)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "function error")
-	assert.Contains(t, err.Error(), "something broke")
+	var jobErr *JobFailedError
+	require.True(t, errors.As(err, &jobErr), "err = %v, want a *JobFailedError", err)
+	assert.Contains(t, jobErr.Error(), "function error")
+	assert.Contains(t, jobErr.Error(), "something broke")
 }
 
 func TestExecuteLambda_WithPayload(t *testing.T) {

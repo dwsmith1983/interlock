@@ -80,7 +80,9 @@ code path first and assert the exact values it produces.
   `DeleteItem` permission fixed in #92 would have passed.
 - The real EventBridge Scheduler. A DynamoDB table stands in for it and only
   records the schedules.
-- Glue, EMR and Databricks request shapes. Only the HTTP trigger runs.
+- Glue, EMR and Databricks request shapes. Only the HTTP and `lambda` triggers
+  run; the `lambda` job is interlock's own orchestrator called with a mode it
+  rejects, so the function error path runs but a successful function does not.
 - Terraform. `deploy.py` deploys the stack.
 - Terraform's `filter_criteria` drifting from deploy.py's copy. The e2e deploy
   sets the stream mapping filters from that copy, so the filters themselves run.
@@ -93,8 +95,11 @@ code path first and assert the exact values it produces.
   `TestScenarioSLAWarningDuringRetry` fires the SLA warning while the
   `-r1` retry polls (trigger row `RUNNING`, newest job row the first
   attempt's `fail`) and expects `SLA_WARNING`, then `SLA_MET` once the
-  retry succeeds. Not run:
-  - a `PERMANENT` failure and `maxCodeRetries`;
+  retry succeeds. `TestScenarioLambdaFunctionError` covers a `PERMANENT`
+  failure: a `lambda` function error writes a `PERMANENT` `fail` row, the
+  Trigger state does not retry it, and `maxCodeRetries: 0` (with
+  `maxRetries: 1`) ends the run with `RETRY_EXHAUSTED`. Not run:
+  - a `PERMANENT` failure that is retried under `maxCodeRetries`;
   - a retry after the job poll window closes (the `timeout` row): the window
     is at least 60 s and the e2e job check interval is 5 s, so one exhausted
     attempt and its retry take over two minutes;

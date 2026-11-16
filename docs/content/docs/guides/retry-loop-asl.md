@@ -95,7 +95,7 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
           "States.TaskFailed"
         ],
         "IntervalSeconds": 30,
-        "MaxAttempts": 4,
+        "MaxAttempts": ${trigger_max_attempts},
         "BackoffRate": 2
       }
     ],
@@ -152,7 +152,7 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
 }
 ```
 
-The Trigger state has a dedicated retry policy for infrastructure failures. When the orchestrator's trigger execution fails (e.g., Glue `ConcurrentRunsExceededException`), it returns a Lambda error. Step Functions retries 4 times with exponential backoff (30s, 60s, 120s, 240s). If all retries exhaust, the Catch routes to `CheckCancelSLA` for graceful SLA cleanup instead of crashing.
+The Trigger state has a dedicated retry policy for infrastructure failures. When the orchestrator cannot start the job (e.g., Glue `ConcurrentRunsExceededException`), it returns a Lambda error. Step Functions retries up to `trigger_max_attempts` times (default 3, so four attempts in all), waiting 30s, 60s and 120s. If all retries exhaust, the Catch routes to `CheckCancelSLA` for graceful SLA cleanup instead of crashing.
 
 Once triggered, the state machine polls job status via `check-job` mode. The `IsJobDone` Choice state first checks whether the `event` field is present (missing means still running), then routes terminal events (`success`, `fail`, `timeout`) to SLA cleanup.
 
@@ -238,7 +238,7 @@ All Task states include Retry and Catch blocks:
 }
 ```
 
-The default retry policy handles transient Lambda errors with exponential backoff (2s, 4s, 8s). The **Trigger** state overrides this with a longer retry (30s, 60s, 120s, 240s) because infrastructure failures like Glue concurrency limits benefit from more time between attempts.
+The default retry policy handles transient Lambda errors with exponential backoff (2s, 4s, 8s). The **Trigger** state overrides this with a longer retry (`trigger_max_attempts`, default 3: waits of 30s, 60s and 120s) because infrastructure failures like Glue concurrency limits benefit from more time between attempts.
 
 Catch routing varies by state:
 - **Most states**: Catch routes to `InfraFailure` (Fail state — terminates execution)

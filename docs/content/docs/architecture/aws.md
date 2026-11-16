@@ -190,7 +190,7 @@ InitEvalLoop → Evaluate → IsReady
 
 ### Trigger and Job Polling (12 states)
 
-1. **Trigger** — invoke orchestrator with `mode=trigger`. Infrastructure failures retry up to `trigger_max_attempts` times (default 3) with exponential backoff (30s, 60s, 120s, 240s)
+1. **Trigger**: invoke orchestrator with `mode=trigger`. A job that could not be started is retried up to `trigger_max_attempts` times after the first attempt (default 3, so four attempts, waiting 30s, 60s and 120s between them)
 2. **HasTriggerResult** — if a job was triggered, poll for completion; otherwise finish
 3. **InitJobPollLoop** — initialize job poll elapsed counter
 4. **WaitForJob** — configurable delay between job status checks
@@ -218,7 +218,7 @@ InitEvalLoop → Evaluate → IsReady
 Every Task state includes Retry and Catch blocks:
 
 - **Default Retry**: `IntervalSeconds: 2`, `MaxAttempts: 3`, `BackoffRate: 2` for Lambda service errors
-- **Trigger Retry**: `IntervalSeconds: 30`, `MaxAttempts: trigger_max_attempts` (default 3), `BackoffRate: 2` — infrastructure failures (e.g., Glue concurrency limits) get a longer retry budget
+- **Trigger Retry**: `IntervalSeconds: 30`, `MaxAttempts: trigger_max_attempts` (default 3), `BackoffRate: 2`: failures to start the job (e.g., Glue concurrency limits, a `lambda` job that could not be invoked) get a longer retry budget. `MaxAttempts` counts retries, so the default allows four attempts. A job that started and then failed is not retried here: CompleteTrigger applies `job.maxRetries`
 - **Catch**: unrecoverable errors route to `InfraFailure` (Fail state). Trigger exhaustion routes to `CheckCancelSLA` for graceful SLA cleanup before termination.
 
 ### ARN Substitution
@@ -228,7 +228,7 @@ The ASL template at `deploy/statemachine.asl.json` uses substitution variables r
 - `${orchestrator_arn}` — orchestrator Lambda ARN
 - `${sla_monitor_arn}` — SLA monitor Lambda ARN
 - `${sfn_timeout_seconds}` — global execution timeout (default 14400 / 4h)
-- `${trigger_max_attempts}` — trigger infrastructure retry count (default 3)
+- `${trigger_max_attempts}`: trigger infrastructure retries after the first attempt (default 3)
 
 ## CloudWatch Alarms
 

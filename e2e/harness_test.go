@@ -50,6 +50,7 @@ const (
 	schedulesTable  = prefix + "-schedules"
 	alertQueue      = prefix + "-alerts"
 	watchdogFn      = prefix + "-watchdog"
+	orchestratorFn  = prefix + "-orchestrator"
 	stateMachineARN = "arn:aws:states:us-east-1:000000000000:stateMachine:" + prefix + "-pipeline"
 
 	// mockURLForLambdas is the mock as the Lambda containers reach it.
@@ -411,6 +412,25 @@ func triggerStatus(t *testing.T, pipeline, date string) string {
 // oldest first: the sort key ends in the writer's (simulated) unix millis.
 func jobEvents(t *testing.T, pipeline string) []string {
 	t.Helper()
+	rows := jobRows(t, pipeline)
+	evs := make([]string, len(rows))
+	for i, r := range rows {
+		evs[i] = r.Event
+	}
+	return evs
+}
+
+// jobRow is the part of a JOB# row the scenarios check.
+type jobRow struct {
+	Event    string `dynamodbav:"event"`
+	RunID    string `dynamodbav:"runId"`
+	Error    string `dynamodbav:"error"`
+	Category string `dynamodbav:"category"`
+}
+
+// jobRows returns every JOB# row in the job log for pipeline, oldest first.
+func jobRows(t *testing.T, pipeline string) []jobRow {
+	t.Helper()
 	ctx, cancel := callCtx()
 	defer cancel()
 	out, err := ddb.Query(ctx, &dynamodb.QueryInput{
@@ -424,17 +444,11 @@ func jobEvents(t *testing.T, pipeline string) []string {
 	if err != nil {
 		t.Fatalf("query %s for %s: %v", joblogTable, pipeline, err)
 	}
-	var rows []struct {
-		Event string `dynamodbav:"event"`
-	}
+	var rows []jobRow
 	if err := attributevalue.UnmarshalListOfMaps(out.Items, &rows); err != nil {
 		t.Fatalf("decode job log for %s: %v", pipeline, err)
 	}
-	evs := make([]string, len(rows))
-	for i, r := range rows {
-		evs[i] = r.Event
-	}
-	return evs
+	return rows
 }
 
 // advanceTo moves the simulated clock forward to at. It first waits until

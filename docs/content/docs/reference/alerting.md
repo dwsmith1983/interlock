@@ -46,7 +46,7 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `VALIDATION_EXHAUSTED` | Evaluation window closed without passing | Max evaluation time exceeded |
 | `JOB_TRIGGERED` | Pipeline job was triggered | Trigger fired successfully |
 | `JOB_COMPLETED` | Triggered job completed successfully | The stream-router sees a `success` job log row (written by the job, by CheckJob after polling, or by the orchestrator for `lambda`), with the same gates as `JOB_FAILED` |
-| `JOB_FAILED` | Triggered job failed | The stream-router sees a `fail` or `timeout` job log row: one the job wrote, one CheckJob wrote after polling a failure, or the `timeout` row written when the job poll window closes. Only new rows for a date with a trigger row are reported. Detail carries `event`, `error` (cut to 2 KB), `runId` and, when set, `category` |
+| `JOB_FAILED` | Triggered job failed | The stream-router sees a `fail` or `timeout` job log row: one the job wrote, one CheckJob wrote after polling a failure, the `fail` row the orchestrator writes when a `lambda` function returns an error, or the `timeout` row written when the job poll window closes. Only new rows for a date with a trigger row are reported. Detail carries `event`, `error` (cut to 2 KB), `runId` and, when set, `category` |
 | `RETRY_EXHAUSTED` | All retry attempts consumed | Job failed `maxRetries` (or `maxCodeRetries` for permanent failures) times without success |
 | `INFRA_FAILURE` | Unrecoverable infrastructure error | Step Functions execution reaches Fail state |
 | `SFN_TIMEOUT` | Step Functions execution timed out | Global `TimeoutSeconds` exceeded (configurable via `sfn_timeout_seconds` Terraform variable) |
