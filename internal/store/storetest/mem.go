@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -83,6 +84,14 @@ func str(v ddbtypes.AttributeValue) string {
 	return ""
 }
 
+// num is a number attribute's value, or "" for anything else.
+func num(v ddbtypes.AttributeValue) string {
+	if n, ok := v.(*ddbtypes.AttributeValueMemberN); ok {
+		return n.Value
+	}
+	return ""
+}
+
 func key(item map[string]ddbtypes.AttributeValue) string {
 	return str(item["PK"]) + "\x00" + str(item["SK"])
 }
@@ -109,10 +118,11 @@ func deref(s *string) string {
 	return *s
 }
 
-var compareRE = regexp.MustCompile(`^([#\w]+) (=|<>) (:\w+)$`)
+var compareRE = regexp.MustCompile(`^([#\w]+) (=|<>|<) (:\w+)$`)
 
 // condition evaluates attribute_exists(PK), attribute_not_exists(PK),
-// "<name> = :value" and "<name> <> :value" clauses joined by AND, with
+// "<name> = :value", "<name> <> :value" and, on numbers,
+// "<name> < :value" clauses joined by AND, with
 // groups of those joined by OR (AND binds tighter), against item (nil when
 // absent).
 func condition(op string, expr *string, item map[string]ddbtypes.AttributeValue,
@@ -149,6 +159,11 @@ func clauseHolds(clause string, item map[string]ddbtypes.AttributeValue,
 		name := m[1]
 		if resolved, ok := names[name]; ok {
 			name = resolved
+		}
+		if m[2] == "<" {
+			a, errA := strconv.ParseFloat(num(item[name]), 64)
+			b, errB := strconv.ParseFloat(num(values[m[3]]), 64)
+			return errA == nil && errB == nil && a < b, true
 		}
 		equal := item != nil && str(item[name]) == str(values[m[3]])
 		// An absent item satisfies neither comparison.

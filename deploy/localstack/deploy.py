@@ -135,6 +135,7 @@ ALERT_DETAIL_TYPES = [
     "DRY_RUN_RERUN_REJECTED",
     "DRY_RUN_WOULD_RETRY",
     "DRY_RUN_RETRY_EXHAUSTED",
+    "CONFIG_INVALID",
 ]
 
 # ---------------------------------------------------------------------------

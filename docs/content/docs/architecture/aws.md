@@ -93,7 +93,7 @@ Processes DynamoDB Stream events from the control and joblog tables. Routes reco
 | `JOB#` | On success: publish `JOB_COMPLETED`. On fail/timeout: publish `JOB_FAILED` (retries belong to the run's CompleteTrigger). Dry-run pipelines: publish what a retry would do |
 | `SENSOR#` (post-run) | If sensor matches a `postRun.rules[].key` and trigger is COMPLETED: compare against baseline, publish drift/pass/fail events, request rerun on drift. If trigger is RUNNING: publish informational `POST_RUN_DRIFT_INFLIGHT` event |
 
-The stream-router maintains a config cache to avoid redundant DynamoDB reads. Pipeline configs are parsed and validated at load time (`ValidatePipelineConfig`): a bad `CONFIG` row is skipped and logged as a warning, and every other pipeline keeps running.
+The stream-router maintains a config cache to avoid redundant DynamoDB reads. Pipeline configs are parsed and validated at load time (`ValidatePipelineConfig`): a bad `CONFIG` row is skipped and logged as a warning (the watchdog also publishes `CONFIG_INVALID`), and every other pipeline keeps running.
 
 Trigger lock acquisition uses conditional writes to prevent duplicate executions for the same pipeline/schedule/date. Lock TTL is dynamically computed from the `SFN_TIMEOUT_SECONDS` environment variable plus a 30-minute buffer (default: 4h30m). Terminal trigger statuses (`COMPLETED`, `FAILED_FINAL`) have their TTL removed so records persist indefinitely.
 
@@ -127,7 +127,7 @@ When a Scheduler entry fires, it invokes this Lambda to publish the correspondin
 
 ### watchdog
 
-Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs eight independent checks in a table-driven loop:
+Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs nine independent checks in a table-driven loop:
 
 1. **Stale triggers** -- scans for `TRIGGER#` records with `RUNNING` status whose TTL has expired. Publishes `SFN_TIMEOUT` events and sets status to `FAILED_FINAL`.
 2. **Missed schedules** -- loads all cron-scheduled pipeline configs, checks for missing `TRIGGER#` records for today's date. Publishes `SCHEDULE_MISSED` events for pipelines past their expected start time.
@@ -137,6 +137,7 @@ Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs eight 
 6. **Trigger deadlines** -- evaluates trigger deadlines for sensor-triggered pipelines. Closes the auto-trigger window and publishes `SENSOR_DEADLINE_EXPIRED` when the deadline passes with no trigger.
 7. **Missing post-run sensors** -- for pipelines with `postRun` config and a completed trigger, checks whether post-run sensors have arrived within the `sensorTimeout` grace period. Publishes `POST_RUN_SENSOR_MISSING` events.
 8. **Relative SLA breaches** -- checks pipelines with `maxDuration` SLA config for breaches relative to the first sensor arrival time.
+9. **Invalid configs** -- publishes `CONFIG_INVALID` for each `CONFIG` row the config cache rejected, once per broken config version and day, at most 20 per pass.
 
 If any check fails, the watchdog publishes a `WATCHDOG_DEGRADED` event listing the failed checks and returns an aggregate error. Individual check failures do not prevent the remaining checks from running.
 

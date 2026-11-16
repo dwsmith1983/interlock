@@ -108,6 +108,51 @@ func loadConfigRow(item map[string]ddbtypes.AttributeValue) (*types.PipelineConf
 // maxReasonBytes bounds a rejection reason, which can quote the config.
 const maxReasonBytes = 1024
 
+// configInvalidKey is the key of rejection r's marker: r's own PK and SK
+// CONFIG_INVALID#<hash>, the hash of the reason when r has no config string.
+func configInvalidKey(r RejectedConfig) map[string]ddbtypes.AttributeValue {
+	hash := r.Hash
+	if hash == "" {
+		hash = configHash(r.Reason)
+	}
+	return map[string]ddbtypes.AttributeValue{
+		"PK": &ddbtypes.AttributeValueMemberS{Value: r.PK},
+		"SK": &ddbtypes.AttributeValueMemberS{Value: "CONFIG_INVALID#" + hash},
+	}
+}
+
+// MarkConfigInvalid records that rejection r was reported, one marker per
+// broken config version, expiring at now+ttl. It returns false and writes
+// nothing while an unexpired marker exists; the condition reads the ttl
+// because DynamoDB deletes expired rows only eventually.
+func (s *Store) MarkConfigInvalid(ctx context.Context, r RejectedConfig, now time.Time, ttl time.Duration) (bool, error) {
+	item := configInvalidKey(r)
+	item["ttl"] = &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Add(ttl).Unix())}
+	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:                 &s.ControlTable,
+		Item:                      item,
+		ConditionExpression:       aws.String("attribute_not_exists(PK) OR #ttl < :now"),
+		ExpressionAttributeNames:  map[string]string{"#ttl": "ttl"},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{":now": &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Unix())}},
+	})
+	if err != nil {
+		var ccfe *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &ccfe) {
+			return false, nil
+		}
+		return false, fmt.Errorf("mark config invalid for %q: %w", r.PK, err)
+	}
+	return true, nil
+}
+
+// ClearConfigInvalid deletes rejection r's marker, so r is reported again.
+func (s *Store) ClearConfigInvalid(ctx context.Context, r RejectedConfig) error {
+	if _, err := s.Client.DeleteItem(ctx, &dynamodb.DeleteItemInput{TableName: &s.ControlTable, Key: configInvalidKey(r)}); err != nil {
+		return fmt.Errorf("clear config invalid marker for %q: %w", r.PK, err)
+	}
+	return nil
+}
+
 // GetConfig retrieves the pipeline configuration from the control table.
 // Returns nil, nil if the item does not exist.
 func (s *Store) GetConfig(ctx context.Context, pipelineID string) (*types.PipelineConfig, error) {

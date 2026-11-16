@@ -3,6 +3,7 @@ package watchdog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"slices"
@@ -22,14 +23,20 @@ import (
 
 const slaTestDate = "2026-03-10"
 
-// slaRecorder records the schedules created and the event types published.
+// slaRecorder records the schedules created and the event types published,
+// and both in call order. While failEvents > 0, PutEvents fails and counts
+// it down.
 type slaRecorder struct {
-	schedules []string
-	events    []string
+	schedules  []string
+	events     []string
+	details    []types.InterlockEvent
+	order      []string
+	failEvents int
 }
 
 func (r *slaRecorder) CreateSchedule(_ context.Context, in *scheduler.CreateScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error) {
 	r.schedules = append(r.schedules, aws.ToString(in.Name))
+	r.order = append(r.order, aws.ToString(in.Name))
 	return &scheduler.CreateScheduleOutput{}, nil
 }
 
@@ -38,8 +45,18 @@ func (r *slaRecorder) DeleteSchedule(context.Context, *scheduler.DeleteScheduleI
 }
 
 func (r *slaRecorder) PutEvents(_ context.Context, in *eventbridge.PutEventsInput, _ ...func(*eventbridge.Options)) (*eventbridge.PutEventsOutput, error) {
+	if r.failEvents > 0 {
+		r.failEvents--
+		return nil, errors.New("put events failed")
+	}
 	for _, e := range in.Entries {
+		var evt types.InterlockEvent
+		if err := json.Unmarshal([]byte(aws.ToString(e.Detail)), &evt); err != nil {
+			return nil, err
+		}
 		r.events = append(r.events, aws.ToString(e.DetailType))
+		r.details = append(r.details, evt)
+		r.order = append(r.order, aws.ToString(e.DetailType))
 	}
 	return &eventbridge.PutEventsOutput{}, nil
 }
