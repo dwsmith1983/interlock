@@ -1,6 +1,7 @@
 package orchestrator_test
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/orchestrator"
 	"github.com/dwsmith1983/interlock/internal/store/storetest"
+	"github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -362,5 +364,111 @@ func TestTrigger_InfraFailureRowCarriesRunID(t *testing.T) {
 	if len(jobRows) != 1 || strAttr(t, jobRows[0], "event") != types.JobEventInfraTriggerFailure ||
 		strAttr(t, jobRows[0], "runId") != "exec-1" {
 		t.Errorf("job log rows = %v, want one infra-trigger-failure row with runId exec-1", jobRows)
+	}
+}
+
+// TestTrigger_LambdaResult: a function that ran and returned an error is the
+// job's result, a PERMANENT fail row that CompleteTrigger decides on. Only a
+// failed Invoke goes to the Trigger state's retry.
+func TestTrigger_LambdaResult(t *testing.T) {
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Job:      types.JobConfig{Type: types.TriggerLambda, Config: map[string]interface{}{"functionName": "f"}},
+	}
+	jobErr := &trigger.JobFailedError{Message: "lambda trigger: function error: Unhandled: boom"}
+
+	tests := []struct {
+		name         string
+		execErr      error
+		wantErr      bool
+		wantEvent    string
+		wantMsg      string
+		wantCategory string
+	}{
+		{name: "function error is a permanent job failure", execErr: fmt.Errorf("wrapped: %w", jobErr),
+			wantEvent: types.JobEventFail, wantMsg: "wrapped: " + jobErr.Message, wantCategory: string(types.FailurePermanent)},
+		{name: "invoke error is an infra failure", execErr: errors.New("lambda trigger: Invoke failed: throttled"),
+			wantErr: true, wantEvent: types.JobEventInfraTriggerFailure, wantMsg: "trigger execute: lambda trigger: Invoke failed: throttled"},
+		{name: "normal return is success", wantEvent: types.JobEventSuccess, wantMsg: "lambda trigger completed synchronously"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var jobRows []map[string]ddbtypes.AttributeValue
+			fake := &storetest.FakeDynamo{
+				GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+					return &dynamodb.GetItemOutput{Item: configItem(t, cfg)}, nil
+				},
+				PutItemFn: joblogPuts(&jobRows),
+			}
+			d := testDeps(fake)
+			d.TriggerRunner = &fakeExecutor{err: tt.execErr}
+			rec := &recorder{}
+			d.EventBridge, d.EventBusName = rec, "bus"
+
+			out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+				Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01", ExecutionName: "exec-1",
+			})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				if out.Mode != "trigger" || out.RunID != "exec-1" || out.Metadata == nil {
+					t.Errorf("output = %+v, want the trigger output for run exec-1", out)
+				}
+				if len(rec.events) != 1 || rec.events[0].Type != string(types.EventJobTriggered) {
+					t.Errorf("events = %v, want one JOB_TRIGGERED", rec.events)
+				}
+			}
+			if len(jobRows) != 1 {
+				t.Fatalf("job log rows = %v, want exactly one", jobRows)
+			}
+			row := jobRows[0]
+			if got := strAttr(t, row, "event"); got != tt.wantEvent {
+				t.Errorf("event = %q, want %q", got, tt.wantEvent)
+			}
+			if got := strAttr(t, row, "runId"); got != "exec-1" {
+				t.Errorf("runId = %q, want exec-1", got)
+			}
+			if got := strAttr(t, row, "error"); got != tt.wantMsg {
+				t.Errorf("error = %q, want %q", got, tt.wantMsg)
+			}
+			if got := strAttr(t, row, "category"); got != tt.wantCategory {
+				t.Errorf("category = %q, want %q", got, tt.wantCategory)
+			}
+		})
+	}
+}
+
+// TestTrigger_LambdaFailRowWriteError: when the fail row cannot be written,
+// the log is the only record of the job's failure, so it is an error that
+// names the run and carries the function's error.
+func TestTrigger_LambdaFailRowWriteError(t *testing.T) {
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Job:      types.JobConfig{Type: types.TriggerLambda, Config: map[string]interface{}{"functionName": "f"}},
+	}
+	fake := &storetest.FakeDynamo{
+		GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(t, cfg)}, nil
+		},
+		PutItemFn: func(context.Context, *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+			return nil, errors.New("dynamodb: throttled")
+		},
+	}
+	var logs bytes.Buffer
+	d := testDeps(fake)
+	d.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	d.TriggerRunner = &fakeExecutor{err: &trigger.JobFailedError{Message: "function error: boom"}}
+
+	if _, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01", ExecutionName: "exec-1",
+	}); err != nil {
+		t.Fatalf("a failed row write must not fail the trigger, got %v", err)
+	}
+	for _, want := range []string{"level=ERROR", "runId=exec-1", `"function error: boom"`, "dynamodb: throttled"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log = %q, want it to contain %q", logs.String(), want)
+		}
 	}
 }

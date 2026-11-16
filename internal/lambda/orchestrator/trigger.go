@@ -3,10 +3,13 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/store"
+	"github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -47,7 +50,10 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	InjectDateArgs(&triggerCfg, input.Date)
 
 	metadata, err := d.TriggerRunner.Execute(ctx, &triggerCfg)
-	if err != nil {
+	// A job that ran and failed is the run's result, which CompleteTrigger
+	// decides on; every other error kept the job from starting.
+	var jobErr *trigger.JobFailedError
+	if err != nil && !errors.As(err, &jobErr) {
 		errMsg := fmt.Sprintf("trigger execute: %v", err)
 		// Log infra failure to joblog for audit trail, then return Lambda error
 		// so Step Functions Retry handles exponential backoff.
@@ -66,9 +72,16 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 		// The job reports its own result: the run stays RUNNING until a
 		// JOB# row for runID appears or the poll window closes.
 	case types.TriggerLambda:
-		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
-			types.JobEventSuccess, runID, 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type)); err != nil {
-			d.Logger.Warn("failed to write job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
+		event, msg := types.JobEventSuccess, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type)
+		var opts []store.JobEventOption
+		if err != nil {
+			event, msg = types.JobEventFail, err.Error()
+			opts = append(opts, store.WithFailureCategory(types.FailurePermanent))
+		}
+		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, event, runID, 0, msg, opts...); err != nil {
+			// This log is then the only record of the job's result.
+			d.Logger.ErrorContext(ctx, "failed to write job result joblog", "error", err, "event", event, "runId", runID,
+				"jobResult", msg, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
 		}
 	default:
 		if id := ExtractRunID(metadata); id != "" {

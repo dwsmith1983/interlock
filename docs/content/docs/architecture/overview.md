@@ -208,7 +208,7 @@ A retry is named after the failing execution with its `-r{N}` suffix replaced by
 
 ### Infrastructure Trigger Retry
 
-When the trigger execution itself fails (e.g., Glue `ConcurrentRunsExceededException`), the orchestrator logs the failure to the joblog table and returns a Lambda error. Step Functions retries the trigger 4 times with exponential backoff (30s, 60s, 120s, 240s). This retry budget is separate from `maxRetries`. If all attempts fail, the execution routes to SLA cleanup and terminates gracefully.
+When the job cannot be started (e.g., Glue `ConcurrentRunsExceededException`, or a `lambda` job whose function could not be invoked), the orchestrator logs `infra-trigger-failure` to the joblog table and returns a Lambda error. Step Functions retries the trigger up to `trigger_max_attempts` times (default 3, so four attempts in all), waiting 30s, 60s and 120s. This retry budget is separate from `maxRetries`. If all attempts fail, the execution routes to SLA cleanup and terminates gracefully. A `lambda` job whose function ran and returned an error has started, so it is a job failure (`fail`, category `PERMANENT`) that CompleteTrigger retries under `maxCodeRetries`.
 
 ## Post-Run Monitoring
 

@@ -14,6 +14,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -372,6 +373,46 @@ func TestScenarioRetriesExhausted(t *testing.T) {
 	}
 	waitAlerts(t, id, alert{id, date, jf}, alert{id, date, jf}, alert{id, date, ex})
 	assertLaunches(t, id, 2)
+	assertTriggerStatus(t, id, date, types.TriggerStatusFailedFinal)
+}
+
+// A lambda job whose function returns an error has run and failed: the
+// orchestrator writes a PERMANENT fail row for the run instead of failing the
+// Trigger task, so the Trigger state's Retry never runs, and CompleteTrigger
+// applies job.maxCodeRetries (0) rather than job.maxRetries (1). The function
+// is interlock's own orchestrator, which rejects an unknown mode.
+func TestScenarioLambdaFunctionError(t *testing.T) {
+	const id = "lambda-function-error"
+	_, date := startDay(t)
+	cfg := scenarioConfig(id)
+	noCodeRetries := 0
+	cfg.Job = types.JobConfig{
+		Type:           types.TriggerLambda,
+		Config:         map[string]interface{}{"functionName": orchestratorFn, "payload": `{"mode":"no-such-mode"}`},
+		MaxRetries:     1,
+		MaxCodeRetries: &noCodeRetries,
+	}
+	putConfig(t, cfg)
+
+	writeReady(t, id, date)
+	vp, jf, ex := string(types.EventValidationPassed), string(types.EventJobFailed), string(types.EventRetryExhausted)
+	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 2, vp: 1, jf: 1, ex: 1})
+
+	rows := jobRows(t, id)
+	if len(rows) != 1 || rows[0].Event != types.JobEventFail || rows[0].Category != string(types.FailurePermanent) ||
+		!strings.Contains(rows[0].Error, "unknown orchestrator mode") {
+		t.Fatalf("job log = %+v, want one PERMANENT fail row with the function's error", rows)
+	}
+	run := rows[0].RunID
+	waitFor(t, settleTimeout, "the execution to finish", func() bool {
+		return executionStatus(t, run) != sfntypes.ExecutionStatusRunning
+	})
+	for _, e := range executionHistory(t, run) {
+		if e.Type == sfntypes.HistoryEventTypeTaskFailed || e.Type == sfntypes.HistoryEventTypeLambdaFunctionFailed {
+			t.Fatalf("execution %s has a failed task (%s): the Trigger state must not retry a job failure", run, e.Type)
+		}
+	}
+	waitAlerts(t, id, alert{id, date, jf}, alert{id, date, ex})
 	assertTriggerStatus(t, id, date, types.TriggerStatusFailedFinal)
 }
 

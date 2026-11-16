@@ -268,6 +268,34 @@ job:
 
 **Returned metadata**: `runId` -- used by the orchestrator to poll via `GET /api/2.1/jobs/runs/get`.
 
+### `lambda`
+
+Invokes an AWS Lambda function synchronously (`RequestResponse`) and waits for it to return.
+
+```yaml
+job:
+  type: lambda
+  config:
+    functionName: my-audit
+    payload: '{"source": "orders"}'
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `functionName` | string | Function name or ARN |
+| `payload` | string | JSON event passed to the function (optional) |
+
+The call's outcome is the job's result, written to the joblog under the run ID:
+
+- The function returns normally: a `success` row, and the trigger becomes `COMPLETED`.
+- The function returns an error (a `FunctionError`: an unhandled exception, and also a function timeout or
+  running out of memory): a `fail` row with category `PERMANENT`. Up to 200 bytes of the function's error
+  text go into the row's `error` and so into the `JOB_FAILED` alert. CompleteTrigger retries it under
+  `maxCodeRetries` (default 1), not `maxRetries`, like any `PERMANENT` failure.
+- The function could not be invoked (throttling, a missing function, no permission): the function never
+  ran, so the orchestrator writes `infra-trigger-failure` and the Trigger state's own retry calls it again
+  (see [Error Handling](../../architecture/aws/#error-handling)).
+
 ## Template Variables
 
 Variables are expanded when the job is triggered. Any other `${...}` expands to
@@ -291,7 +319,7 @@ After a job executes, the orchestrator Lambda polls for completion using the ret
 | `databricks` | `GET /runs/get` | RUNNING/PENDING -> running, TERMINATED(SUCCESS) -> succeeded, others -> failed |
 | `airflow` | `GET /dags/{id}/dagRuns` | running -> running, success -> succeeded, failed -> failed |
 
-The `http` and `lambda` types have no status API. An `http` job reports its own result (see [`http`](#http)); a `lambda` job is recorded as succeeded once the call returns.
+The `http` and `lambda` types have no status API. An `http` job reports its own result (see [`http`](#http)); a `lambda` job's result is the call's outcome (see [`lambda`](#lambda)).
 
 ### Glue RCA Verification
 
