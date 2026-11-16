@@ -49,6 +49,11 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	}
 	InjectDateArgs(&triggerCfg, input.Date)
 
+	// startedAt marks the launch for the start-by check: set first, as a lambda job runs inside Execute.
+	if markErr := d.Store.MarkTriggerStarted(ctx, input.PipelineID, input.ScheduleID, input.Date, d.Now()); markErr != nil {
+		d.Logger.WarnContext(ctx, "failed to mark trigger started", "error", markErr,
+			"pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date, "runId", runID)
+	}
 	metadata, err := d.TriggerRunner.Execute(ctx, &triggerCfg)
 	// A job that ran and failed is the run's result, which CompleteTrigger
 	// decides on; every other error kept the job from starting.

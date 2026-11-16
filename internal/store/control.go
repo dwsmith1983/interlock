@@ -626,6 +626,34 @@ func (s *Store) RefreshRunningTriggerLock(ctx context.Context, pipelineID, sched
 	return true, nil
 }
 
+// ErrTriggerNotFound means MarkTriggerStarted found no trigger row to mark.
+var ErrTriggerNotFound = errors.New("trigger row not found")
+
+// MarkTriggerStarted sets the trigger row's startedAt to at (RFC3339 UTC; a later start
+// overwrites it). It never creates the row: without one it wraps ErrTriggerNotFound.
+func (s *Store) MarkTriggerStarted(ctx context.Context, pipelineID, schedule, date string, at time.Time) error {
+	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.ControlTable,
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
+		},
+		ConditionExpression: aws.String("attribute_exists(PK)"),
+		UpdateExpression:    aws.String("SET startedAt = :t"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":t": &ddbtypes.AttributeValueMemberS{Value: at.UTC().Format(time.RFC3339)},
+		},
+	})
+	if err != nil {
+		var ccfe *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &ccfe) {
+			err = ErrTriggerNotFound
+		}
+		return fmt.Errorf("mark trigger started %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return nil
+}
+
 // FailTriggerUnlessCompleted sets the trigger row to FAILED_FINAL (removing
 // its TTL, creating it when absent) unless it is COMPLETED. It returns false,
 // and writes nothing, for a COMPLETED row.

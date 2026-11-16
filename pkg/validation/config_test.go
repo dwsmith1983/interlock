@@ -415,3 +415,12 @@ func TestValidate_Cron(t *testing.T) {
 		})
 	}
 }
+
+// TestValidate_ScheduleTimeWithCron: with cron the cron time is the start-by
+// time, so schedule.time is rejected there; an inclusion calendar still uses it.
+func TestValidate_ScheduleTimeWithCron(t *testing.T) {
+	cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "orders"}, Schedule: types.ScheduleConfig{Cron: "0 8 * * *", Time: "08:30"}}
+	assert.Equal(t, []string{"schedule.time is not used with schedule.cron; the cron time is the start-by time"}, ValidatePipelineConfig(&cfg))
+	cfg.Schedule = types.ScheduleConfig{Time: "08:30", Include: &types.InclusionConfig{Dates: []string{"2026-03-31"}}}
+	assert.Empty(t, ValidatePipelineConfig(&cfg))
+}

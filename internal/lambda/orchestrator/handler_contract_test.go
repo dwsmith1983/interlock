@@ -76,9 +76,13 @@ type fakeExecutor struct {
 	meta map[string]interface{}
 	err  error
 	got  *types.TriggerConfig
+	hook func() // when set, Execute calls it first
 }
 
 func (f *fakeExecutor) Execute(_ context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error) {
+	if f.hook != nil {
+		f.hook()
+	}
 	f.got = cfg
 	return f.meta, f.err
 }

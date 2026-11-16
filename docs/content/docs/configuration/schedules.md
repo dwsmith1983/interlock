@@ -92,16 +92,23 @@ The granularity is determined by the sensor data, not the pipeline config. A sin
 
 ### Cron-Based Schedules
 
-For time-based schedules, specify a cron expression. The pipeline activates at the cron time, then evaluates until the window expires or validation passes.
+A cron expression never starts a run: the sensor trigger does, as for any other pipeline. The cron time is the start-by time for each run date that has a `RUN#` row (see the SLA section for the row format). If the job has not started by then, the watchdog publishes `SCHEDULE_MISSED` once for that date, with the start-by time in its detail. A pipeline with no `RUN#` rows gets no start-by check. A run counts as started when the orchestrator launches its job, not when evaluation begins; a run that already finished (`COMPLETED` or `FAILED_FINAL`) is not reported.
 
 ```yaml
 schedule:
-  cron: "0 8 * * *"
+  cron: "0 8 * * *"        # start by 08:00 New York time on each RUN# date
   timezone: America/New_York
+  trigger:
+    key: upstream-complete
+    check: equals
+    field: status
+    value: ready
   evaluation:
     window: 2h
     interval: 10m
 ```
+
+For a daily run date the start-by time is the cron's first fire on that local day; for an hourly run date (`YYYY-MM-DDThh`), its first fire in that local hour. A date the cron does not fire on (a Saturday for `0 8 * * 1-5`) and an excluded date get no check. `schedule.time` is for inclusion calendars only; together with `schedule.cron` it rejects the config.
 
 The expression is validated when the config loads. It must be standard five-field cron (minute, hour, day of month, month, day of week), evaluated in `schedule.timezone`. Each field takes `*`, numbers, ranges (`1-5`), steps (`*/15`, `0-30/10`), lists (`1,15`) and, for month and day of week, names (`JAN`, `MON-FRI`). Day of week runs 0 to 6 with 0 as Sunday; `7` is not accepted. `?` means the same as `*` in the day fields. `L`, `W` and `#` are not supported. A seconds or year field, a descriptor such as `@daily` or `@every 1h`, a `TZ=` prefix, or an out-of-range value like `61 8 * * *` or `0 8 * * 1,9` rejects the config, which is reported as `CONFIG_INVALID`. When both day of month and day of week are restricted, either one matching is enough, as in standard cron. On a DST change, a cron time in the skipped local hour (spring forward) does not occur that day, so that day has no start-by time, and for a daily run date a cron time in the repeated hour (fall back) is taken at its first occurrence.
 

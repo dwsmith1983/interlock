@@ -256,6 +256,55 @@ func TestScenarioSLAMet(t *testing.T) {
 	waitAlerts(t, noRowID)
 }
 
+// Cron is the start-by time for each RUN# date (08:00 here), never a start.
+// "start-by-on-time" is ready at 07:00, so the watchdog stays quiet. For
+// "start-by-late", ready at 10:00, the 08:05 pass publishes one SCHEDULE_MISSED,
+// the 09:00 pass none, and the sensor still launches the job once.
+func TestScenarioStartBy(t *testing.T) {
+	const onTimeID, lateID, cronSchedule = "start-by-on-time", "start-by-late", "cron"
+	start, date := startDay(t)
+	at := func(hour, minute int) time.Time {
+		return time.Date(start.Year(), start.Month(), start.Day(), hour, minute, 0, 0, time.UTC)
+	}
+	for _, id := range []string{onTimeID, lateID} {
+		cfg := scenarioConfig(id)
+		cfg.Schedule.Cron = "0 8 * * *"
+		putConfig(t, cfg)
+		putRunDate(t, id, date)
+	}
+	jt, vp, jc := string(types.EventJobTriggered), string(types.EventValidationPassed), string(types.EventJobCompleted)
+	missed := string(types.EventScheduleMissed)
+	// run waits for the execution to succeed (row COMPLETED) before the clock moves.
+	run := func(id string) {
+		t.Helper()
+		writeReady(t, id, date)
+		runID := waitLaunch(t, id, 1)
+		reportJobOn(t, cronSchedule, id, date, runID, types.JobEventSuccess)
+		waitFor(t, settleTimeout, id+" execution to succeed", func() bool {
+			return executionStatus(t, runID) == sfntypes.ExecutionStatusSucceeded
+		})
+	}
+
+	advanceTo(t, at(7, 0))
+	run(onTimeID)
+	waitEvents(t, onTimeID, date, map[string]int{jt: 2, vp: 1, jc: 1}, []string{vp, jc})
+
+	advanceTo(t, at(8, 5))
+	invokeWatchdog(t)
+	waitEvents(t, lateID, date, map[string]int{missed: 1})
+	advanceTo(t, at(9, 0))
+	invokeWatchdog(t)
+
+	advanceTo(t, at(10, 0))
+	run(lateID)
+	waitEvents(t, lateID, date, map[string]int{missed: 1, jt: 2, vp: 1, jc: 1}, []string{missed, vp, jc})
+
+	waitAlerts(t, onTimeID, alert{onTimeID, date, jc})
+	waitAlerts(t, lateID, alert{lateID, date, missed}, alert{lateID, date, jc})
+	assertLaunches(t, onTimeID, 1)
+	assertLaunches(t, lateID, 1)
+}
+
 // A rejected launch is a Trigger task error: the 400 is permanent for that
 // attempt (one launch), the orchestrator logs infra-trigger-failure and fails
 // the task, and the Trigger state's Retry launches again after its 30 s

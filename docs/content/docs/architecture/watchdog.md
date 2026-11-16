@@ -68,36 +68,32 @@ The default stale trigger threshold is 24 hours. Triggers whose TTL has expired 
 
 ## Missed Schedule Detection
 
-The watchdog loads all pipeline configs and checks cron-scheduled pipelines for missing trigger records.
+For a cron pipeline the cron time is a start-by checkpoint, not a trigger. The watchdog checks each expected run date (a `RUN#` row written by the user) and alerts when the job has not started by then.
 
 ### Algorithm
 
 ```
 Load all pipeline configs (via config cache)
 
-For each pipeline with a cron schedule:
-  Skip if excluded by calendar (weekends, specific dates)
+For each pipeline with schedule.cron that is not a dry run:
+  List RUN# keys from 8 days before to 2 days after today (UTC)
+  No keys → skip the pipeline
 
-  Resolve schedule ID ("cron" for cron-scheduled pipelines)
-  Check if a TRIGGER# record exists for today's date
+  For each key:
+    Skip a malformed key (warning) or an excluded date
+    Start-by = the cron's first fire in the key's local day (or hour)
+    No fire in that period, or now before start-by → skip
 
-  If trigger exists → not missed (skip)
+    Read TRIGGER#cron#<key>
+    startedAt set, or status COMPLETED or FAILED_FINAL → started (skip)
 
-  If schedule.time is configured:
-    Resolve timezone (UTC if not specified)
-    If current time < expected start time → skip (not yet due)
-
-  Publish SCHEDULE_MISSED event to EventBridge
+    Marker SENSOR#schedule-missed-check#<key> present → already alerted (skip)
+    Publish SCHEDULE_MISSED; on success, write the marker
 ```
 
-### Deadline Resolution
+### What Counts as Started
 
-The watchdog determines whether a schedule is missed by checking:
-
-1. **Trigger record existence** -- if a `TRIGGER#{schedule}#{date}` record exists in the control table, the pipeline has already been triggered today
-2. **Expected start time** -- if the pipeline config includes a `schedule.time`, the watchdog only alerts after that time has passed in the configured timezone
-
-If no `schedule.time` is configured, the watchdog alerts as soon as it detects a missing trigger record for today's date.
+The orchestrator writes `startedAt` on the trigger row just before it launches the job, since a `lambda` job runs inside the launch call. If the launch fails and its retries run out, the trigger row is released, so the date can still be reported. A `RUNNING` row without `startedAt` is a run still evaluating its rules, so it has not started. `FAILED_FINAL` already sent its own final alert, so it is not reported again. The marker makes the alert once per run date: later passes skip that date. It is written only after the publish succeeds, so a failed publish is retried on the next pass.
 
 ### Event Format
 
@@ -109,8 +105,14 @@ If no `schedule.time` is configured, the watchdog alerts as soon as it detects a
     "pipelineId": "gold-revenue",
     "scheduleId": "cron",
     "date": "2026-03-01",
-    "message": "missed schedule for gold-revenue on 2026-03-01",
-    "timestamp": "2026-03-01T09:10:00Z"
+    "message": "job for gold-revenue on 2026-03-01 has not started by 2026-03-01T09:00:00Z",
+    "timestamp": "2026-03-01T09:10:00Z",
+    "detail": {
+      "source": "watchdog",
+      "cron": "0 9 * * *",
+      "startBy": "2026-03-01T09:00:00Z",
+      "actionHint": "start-by time passed and the job has not started; the SLA is at risk"
+    }
   }
 }
 ```

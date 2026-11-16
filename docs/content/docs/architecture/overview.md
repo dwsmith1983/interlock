@@ -162,7 +162,7 @@ All lifecycle events are published to a custom EventBridge event bus. This repla
 | `SLA_MET` | Job completed before SLA warning deadline |
 | `RETRY_EXHAUSTED` | All retry attempts consumed |
 | `SFN_TIMEOUT` | Step Function execution timed out (watchdog) |
-| `SCHEDULE_MISSED` | Cron schedule passed without a trigger (watchdog) |
+| `SCHEDULE_MISSED` | A run date's cron start-by time passed before its job started (watchdog) |
 | `POST_RUN_PASSED` | Post-run rules pass after job completion |
 | `POST_RUN_FAILED` | Post-run rules fail (no drift detected) |
 | `POST_RUN_DRIFT` | Sensor count drifted from baseline after completion → rerun requested |

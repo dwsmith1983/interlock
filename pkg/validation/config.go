@@ -115,6 +115,9 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	if cfg.Schedule.Cron != "" && cfg.Schedule.Include != nil {
 		errs = append(errs, "schedule.cron and schedule.include are mutually exclusive")
 	}
+	if cfg.Schedule.Cron != "" && cfg.Schedule.Time != "" {
+		errs = append(errs, "schedule.time is not used with schedule.cron; the cron time is the start-by time")
+	}
 
 	// Inclusion calendar validation.
 	if inc := cfg.Schedule.Include; inc != nil {

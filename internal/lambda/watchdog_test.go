@@ -1072,7 +1072,6 @@ func TestWatchdog_MissedSchedule_DetailFields(t *testing.T) {
 		Schedule: types.ScheduleConfig{
 			Cron:       "0 0 * * *",
 			Timezone:   "UTC",
-			Time:       "00:01",
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
 		Validation: types.ValidationConfig{Trigger: "ALL"},
@@ -1103,7 +1102,6 @@ func TestWatchdog_MissedSchedule_DetailFields(t *testing.T) {
 	assert.Equal(t, "watchdog", missedEvent.Detail["source"])
 	assert.Equal(t, "0 0 * * *", missedEvent.Detail["cron"])
 	assert.Contains(t, missedEvent.Detail["actionHint"], "cron")
-	assert.Equal(t, "00:01", missedEvent.Detail["expectedTime"])
 }
 
 // ---------------------------------------------------------------------------
