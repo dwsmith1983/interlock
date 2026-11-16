@@ -140,7 +140,7 @@ The Terraform module reads your pipeline YAML files and writes them as `CONFIG` 
 
 ## 3. Push Sensor Data to DynamoDB
 
-External processes (your ETL jobs, monitoring scripts, data producers) push sensor data to the control table. Each sensor write is a DynamoDB `PutItem`:
+External processes (your ETL jobs, monitoring scripts, data producers) push sensor data to the control table. Each sensor write is a DynamoDB `PutItem`, with the fields the rules read in a `data` map:
 
 ```python
 import boto3
@@ -152,15 +152,17 @@ table = dynamodb.Table("production-interlock-control")
 table.put_item(Item={
     "PK": "PIPELINE#gold-revenue",
     "SK": "SENSOR#upstream-complete",
-    "status": "ready",
-    "updatedAt": "2026-03-01T08:05:00Z",
+    "data": {
+        "status": "ready",
+        "updatedAt": "2026-03-01T08:05:00Z",
+    },
 })
 
 # Push a row count metric
 table.put_item(Item={
     "PK": "PIPELINE#gold-revenue",
     "SK": "SENSOR#row-count",
-    "count": 15432,
+    "data": {"count": 15432},
 })
 ```
 
