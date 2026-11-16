@@ -261,6 +261,19 @@ func TestValidatePipelineConfig(t *testing.T) {
 			},
 			wantCount: 0,
 		},
+		// --- job type ---
+		{
+			name:       "command job type is rejected",
+			cfg:        types.PipelineConfig{Job: types.JobConfig{Type: "command"}},
+			wantCount:  1,
+			wantSubstr: `job.type "command" is not a supported trigger type`,
+		},
+		{
+			name:       "unknown job type is rejected",
+			cfg:        types.PipelineConfig{Job: types.JobConfig{Type: "Glue"}},
+			wantCount:  1,
+			wantSubstr: `job.type "Glue" is not a supported trigger type`,
+		},
 		// --- dry-run validation ---
 		{
 			name: "dryRun without job.type or trigger",

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 	"unicode"
@@ -81,21 +80,6 @@ func Execute(ctx context.Context, cfg *types.TriggerConfig) (map[string]interfac
 // CheckStatus checks the status of an active run via the default Runner.
 func CheckStatus(ctx context.Context, triggerType types.TriggerType, metadata map[string]interface{}, headers map[string]string) (StatusResult, error) {
 	return defaultRunner.CheckStatus(ctx, triggerType, metadata, headers)
-}
-
-// ExecuteCommand runs a command trigger by splitting the command string into
-// arguments and executing the binary directly (no shell). This prevents shell
-// metacharacter injection.
-func ExecuteCommand(ctx context.Context, command string) error {
-	if command == "" {
-		return fmt.Errorf("trigger command is empty")
-	}
-
-	args := strings.Fields(command)
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 // runField is one part of the run identity: the header that carries it on

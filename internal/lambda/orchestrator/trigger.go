@@ -65,7 +65,7 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	case types.TriggerHTTP:
 		// The job reports its own result: the run stays RUNNING until a
 		// JOB# row for runID appears or the poll window closes.
-	case types.TriggerCommand, types.TriggerLambda:
+	case types.TriggerLambda:
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
 			types.JobEventSuccess, runID, 0, fmt.Sprintf("%s trigger completed synchronously", cfg.Job.Type)); err != nil {
 			d.Logger.Warn("failed to write job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
@@ -96,6 +96,11 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 func BuildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 	tc := types.TriggerConfig{Type: job.Type}
 
+	unmarshal, ok := lambda.TriggerUnmarshalers[job.Type]
+	if !ok {
+		return tc, fmt.Errorf("unsupported trigger type: %s", job.Type)
+	}
+
 	if len(job.Config) == 0 {
 		return tc, nil
 	}
@@ -105,10 +110,6 @@ func BuildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 		return tc, fmt.Errorf("marshal job config: %w", err)
 	}
 
-	unmarshal, ok := lambda.TriggerUnmarshalers[job.Type]
-	if !ok {
-		return tc, fmt.Errorf("unsupported trigger type: %s", job.Type)
-	}
 	if err := unmarshal(data, &tc); err != nil {
 		return tc, fmt.Errorf("unmarshal %s config: %w", job.Type, err)
 	}

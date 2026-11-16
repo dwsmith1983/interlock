@@ -211,7 +211,6 @@ No Step Function executions, no job triggers, no rerun requests. Remove `dryRun:
 
 | Type | SDK/Protocol | Use Case |
 |------|-------------|----------|
-| `command` | Subprocess | Local scripts, CLI tools |
 | `http` | HTTP POST | Generic REST APIs, webhooks |
 | `airflow` | HTTP (Airflow API) | Apache Airflow DAG runs |
 | `glue` | AWS SDK | AWS Glue ETL jobs |

@@ -435,15 +435,21 @@ func TestScenarioSLAWarningDuringRetry(t *testing.T) {
 // pass. The absence is checked against a sentinel on the same path: a third
 // pass after the marker's 24 h TTL reports again, so exactly two alerts and
 // two events arrive (a report from the second pass would make three). A
-// pipeline whose ID breaks the ID rule is reported the same way and never
-// launches, though its sensor is ready.
+// pipeline whose ID breaks the ID rule, and one whose job.type is not a
+// trigger type (command), are reported the same way and never launch, though
+// their sensors are ready.
 func TestScenarioBadConfigIsolated(t *testing.T) {
-	const id, bad, badID = "bad-config-neighbour", "bad-config", "bad.config-id"
-	badIDConfig, err := json.Marshal(scenarioConfig(badID))
-	if err != nil {
-		t.Fatalf("marshal config: %v", err)
+	const id, bad, badID, badType = "bad-config-neighbour", "bad-config", "bad.config-id", "bad-config-type"
+	typeCfg := scenarioConfig(badType)
+	typeCfg.Job = types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "true"}}
+	badConfigs := map[string]string{bad: `{"pipeline":{"id":"bad-config"},"job":{"maxRetries":"3"}}`}
+	for pipeline, cfg := range map[string]types.PipelineConfig{badID: scenarioConfig(badID), badType: typeCfg} {
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("marshal config: %v", err)
+		}
+		badConfigs[pipeline] = string(data)
 	}
-	badConfigs := map[string]string{bad: `{"pipeline":{"id":"bad-config"},"job":{"maxRetries":"3"}}`, badID: string(badIDConfig)}
 	start, date := startDay(t)
 	keys := []map[string]ddbtypes.AttributeValue{}
 	for pipeline, config := range badConfigs {
@@ -467,6 +473,7 @@ func TestScenarioBadConfigIsolated(t *testing.T) {
 	putConfig(t, scenarioConfig(id))
 
 	writeReady(t, badID, date)
+	writeReady(t, badType, date)
 	writeReady(t, id, date)
 	reportJob(t, id, date, waitLaunch(t, id, 1), types.JobEventSuccess)
 	waitCompleted(t, id, date)
@@ -477,17 +484,19 @@ func TestScenarioBadConfigIsolated(t *testing.T) {
 	invokeWatchdog(t)
 	waitEvents(t, bad, "", map[string]int{invalid: 1})
 	waitEvents(t, badID, "", map[string]int{invalid: 1})
+	waitEvents(t, badType, "", map[string]int{invalid: 1})
 	advanceTo(t, start.Add(time.Hour))
 	invokeWatchdog(t) // the marker holds: no report
 	advanceTo(t, start.Add(25*time.Hour))
 	invokeWatchdog(t) // the marker has expired: the sentinel report
-	for _, b := range []string{bad, badID} {
+	for _, b := range []string{bad, badID, badType} {
 		waitEvents(t, b, "", map[string]int{invalid: 2})
 		waitAlerts(t, b, alert{b, "", invalid}, alert{b, "", invalid})
 	}
 	waitAlerts(t, id, alert{id, date, jc})
 	assertLaunches(t, id, 1)
 	assertLaunches(t, badID, 0)
+	assertLaunches(t, badType, 0)
 }
 
 func stateExited(h []sfntypes.HistoryEvent, state string) bool {

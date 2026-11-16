@@ -12,7 +12,6 @@ import (
 // canonical registry without duplicating it.
 var TriggerUnmarshalers = map[types.TriggerType]func([]byte, *types.TriggerConfig) error{
 	types.TriggerHTTP:          UnmarshalTo(func(tc *types.TriggerConfig, c *types.HTTPTriggerConfig) { tc.HTTP = c }),
-	types.TriggerCommand:       UnmarshalTo(func(tc *types.TriggerConfig, c *types.CommandTriggerConfig) { tc.Command = c }),
 	types.TriggerAirflow:       UnmarshalTo(func(tc *types.TriggerConfig, c *types.AirflowTriggerConfig) { tc.Airflow = c }),
 	types.TriggerGlue:          UnmarshalTo(func(tc *types.TriggerConfig, c *types.GlueTriggerConfig) { tc.Glue = c }),
 	types.TriggerEMR:           UnmarshalTo(func(tc *types.TriggerConfig, c *types.EMRTriggerConfig) { tc.EMR = c }),

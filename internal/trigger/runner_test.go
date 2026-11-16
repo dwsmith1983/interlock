@@ -40,7 +40,7 @@ func TestRunner_Execute_NilConfig(t *testing.T) {
 func TestRunner_CheckStatus_NonPollingTypes(t *testing.T) {
 	r := NewRunner()
 
-	for _, tt := range []types.TriggerType{types.TriggerCommand, types.TriggerHTTP} {
+	for _, tt := range []types.TriggerType{types.TriggerHTTP, types.TriggerLambda} {
 		result, err := r.CheckStatus(context.Background(), tt, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, RunCheckRunning, result.State, "trigger type %s", tt)
@@ -113,30 +113,12 @@ func TestPackageLevelExecute_NilConfig(t *testing.T) {
 }
 
 func TestPackageLevelCheckStatus_NonPolling(t *testing.T) {
-	result, err := CheckStatus(context.Background(), types.TriggerCommand, nil, nil)
+	result, err := CheckStatus(context.Background(), types.TriggerHTTP, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, RunCheckRunning, result.State)
 }
 
 // --- Runner.Execute dispatch tests ---
-
-func TestRunner_Execute_CommandType(t *testing.T) {
-	r := NewRunner()
-	_, err := r.Execute(context.Background(), &types.TriggerConfig{
-		Type:    types.TriggerCommand,
-		Command: &types.CommandTriggerConfig{Command: "echo test"},
-	})
-	require.NoError(t, err)
-}
-
-func TestRunner_Execute_CommandType_NilConfig(t *testing.T) {
-	r := NewRunner()
-	_, err := r.Execute(context.Background(), &types.TriggerConfig{
-		Type: types.TriggerCommand,
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "command trigger config is nil")
-}
 
 func TestRunner_Execute_HTTPType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

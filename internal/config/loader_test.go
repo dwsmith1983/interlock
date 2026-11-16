@@ -165,9 +165,9 @@ validation:
     - key: SENSOR#ready
       check: exists
 job:
-  type: command
+  type: http
   config:
-    command: echo hello
+    url: https://example.com/run
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "pipe.yml"), []byte(yml), 0o644))
 

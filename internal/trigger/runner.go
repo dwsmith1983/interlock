@@ -89,11 +89,6 @@ func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[str
 	}
 
 	switch cfg.Type {
-	case types.TriggerCommand:
-		if cfg.Command == nil {
-			return nil, fmt.Errorf("command trigger config is nil")
-		}
-		return nil, ExecuteCommand(ctx, cfg.Command.Command)
 	case types.TriggerHTTP:
 		if cfg.HTTP == nil {
 			return nil, fmt.Errorf("http trigger config is nil")
@@ -175,7 +170,7 @@ func (r *Runner) CheckStatus(ctx context.Context, triggerType types.TriggerType,
 		return r.checkSFNStatus(ctx, metadata)
 	case types.TriggerDatabricks:
 		return r.checkDatabricksStatus(ctx, metadata, headers)
-	case types.TriggerCommand, types.TriggerHTTP, types.TriggerLambda:
+	case types.TriggerHTTP, types.TriggerLambda:
 		// Non-polling types — if they're RUNNING they stay that way until callback
 		return StatusResult{State: RunCheckRunning, Message: "non-polling trigger type"}, nil
 	default:

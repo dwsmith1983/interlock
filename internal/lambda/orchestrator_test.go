@@ -1613,7 +1613,7 @@ func TestInjectDateArgs_BothGlueAndHTTP(t *testing.T) {
 }
 
 func TestInjectDateArgs_NeitherGlueNorHTTP(t *testing.T) {
-	tc := types.TriggerConfig{Type: types.TriggerCommand}
+	tc := types.TriggerConfig{Type: types.TriggerLambda}
 	// Neither Glue nor HTTP set — should be a no-op without panic.
 	lambda.InjectDateArgs(&tc, "2026-03-05")
 	if tc.Glue != nil {
@@ -2217,51 +2217,6 @@ func TestBuildTriggerConfig_HTTP(t *testing.T) {
 	}
 	if executor.cfg.HTTP.URL != "https://example.com/run" {
 		t.Errorf("url = %q, want %q", executor.cfg.HTTP.URL, "https://example.com/run")
-	}
-}
-
-func TestBuildTriggerConfig_Command(t *testing.T) {
-	pipelineID := "btc-cmd"
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: pipelineID},
-		Job: types.JobConfig{
-			Type: types.TriggerCommand,
-			Config: map[string]interface{}{
-				"command": "python3 /opt/scripts/etl.py",
-			},
-		},
-	}
-
-	ddb := &mockDynamo{
-		getItemFn: func(_ context.Context, _ *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
-			return &dynamodb.GetItemOutput{Item: configItem(pipelineID, cfg)}, nil
-		},
-	}
-
-	executor := &mockTriggerExecutor{
-		result: map[string]interface{}{"exitCode": float64(0)},
-	}
-
-	d := newTestDeps(ddb)
-	d.TriggerRunner = executor
-
-	out, err := lambda.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
-		Mode:       "trigger",
-		PipelineID: pipelineID,
-		ScheduleID: "daily",
-		Date:       "2026-03-01",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if out.JobType != "command" {
-		t.Errorf("jobType = %q, want %q", out.JobType, "command")
-	}
-	if executor.cfg == nil || executor.cfg.Command == nil {
-		t.Fatal("expected Command config to be populated")
-	}
-	if executor.cfg.Command.Command != "python3 /opt/scripts/etl.py" {
-		t.Errorf("command = %q, want %q", executor.cfg.Command.Command, "python3 /opt/scripts/etl.py")
 	}
 }
 

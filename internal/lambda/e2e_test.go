@@ -326,8 +326,8 @@ func e2ePipeline(id string) types.PipelineConfig {
 			Rules:   []types.ValidationRule{{Key: "upstream-complete", Check: types.CheckExists}},
 		},
 		Job: types.JobConfig{
-			Type:   types.TriggerCommand,
-			Config: map[string]interface{}{"command": "echo hello"},
+			Type:   types.TriggerHTTP,
+			Config: map[string]interface{}{"url": "https://example.com/run"},
 		},
 	}
 }
@@ -1546,8 +1546,8 @@ func TestE2E_Watchdog(t *testing.T) {
 				Rules:   []types.ValidationRule{{Key: "upstream-complete", Check: types.CheckExists}},
 			},
 			Job: types.JobConfig{
-				Type:   types.TriggerCommand,
-				Config: map[string]interface{}{"command": "echo hello"},
+				Type:   types.TriggerHTTP,
+				Config: map[string]interface{}{"url": "https://example.com/run"},
 			},
 		}
 		seedConfig(mock, cfg)
@@ -2262,8 +2262,8 @@ func TestE2E_HourBoundaryRollover(t *testing.T) {
 				Rules:   []types.ValidationRule{{Key: "hourly-status", Check: types.CheckExists}},
 			},
 			Job: types.JobConfig{
-				Type:   types.TriggerCommand,
-				Config: map[string]interface{}{"command": "echo hello"},
+				Type:   types.TriggerHTTP,
+				Config: map[string]interface{}{"url": "https://example.com/run"},
 			},
 		}
 		seedConfig(mock, cfg)
