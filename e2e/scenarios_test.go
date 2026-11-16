@@ -29,9 +29,9 @@ import (
 const (
 	scenarioSensor = "ready"
 	dayStartHour   = 6       // each scenario starts at 06:00 UTC on its day
-	slaDeadline    = "08:00" // T+1: 08:00 UTC the day after the run's date
+	slaDeadline    = "08:00" // 08:00 UTC, deadlineDayOffset days after the run's date
 	slaExpected    = "1h"    // the warning fires an hour before the breach
-	slaRunHour     = 9       // after a same-day 08:00, before the T+1 one
+	slaRunHour     = 9       // after a same-day 08:00, before the next day's
 )
 
 // scenarioConfig is a sensor-triggered pipeline whose http job is the mock,
@@ -167,47 +167,75 @@ func assertNothingFires(t *testing.T, pipeline string, at time.Time) {
 	}
 }
 
-// The watchdog schedules the SLA alerts, the run finishes before the warning,
-// and the SFN's CancelSLASchedules deletes both schedules and publishes
-// SLA_MET, so nothing is left to fire at the warning or breach time. The run
-// starts at 09:00, after 08:00 on its own date, so the verdict is SLA_MET only
-// while cancel applies the T+1 SLA date; a same-day deadline gives SLA_BREACH.
+// Two pipelines share the 08:00 deadline and run at 09:00 on their date; the
+// watchdog schedules their SLA alerts at 06:00. With deadlineDayOffset 1
+// ("sla-met") the deadline is 08:00 the next day: the run finishes before
+// the warning, and CancelSLASchedules deletes both schedules and publishes
+// SLA_MET, so nothing is left to fire. With offset 0 ("sla-same-day") the
+// deadline is 08:00 the same day: the warning fires at 07:00 and the breach at
+// 08:00 while the pipeline has not started, and the 09:00 run's cancel
+// publishes its own SLA_BREACH verdict.
 func TestScenarioSLAMet(t *testing.T) {
-	const id = "sla-met"
+	const metID, sameDayID = "sla-met", "sla-same-day"
 	start, date := startDay(t)
-	cfg := scenarioConfig(id)
-	cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, ExpectedDuration: slaExpected}
-	putConfig(t, cfg)
+	at := func(day, hour int) time.Time {
+		return time.Date(start.Year(), start.Month(), start.Day()+day, hour, 0, 0, 0, time.UTC)
+	}
+	for id, offset := range map[string]int{metID: 1, sameDayID: 0} {
+		cfg := scenarioConfig(id)
+		cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, DeadlineDayOffset: offset, ExpectedDuration: slaExpected}
+		putConfig(t, cfg)
+	}
 
 	invokeWatchdog(t)
-	breachAt := time.Date(start.Year(), start.Month(), start.Day()+1, 8, 0, 0, 0, time.UTC)
-	warnAt := breachAt.Add(-time.Hour)
-	all, scanned := dueSchedules(t, id, breachAt)
-	got := map[string]time.Time{}
-	for _, s := range all {
-		got[s.Name] = s.at
-	}
-	want := map[string]time.Time{
-		id + "-stream-" + date + "-sla-warning": warnAt,
-		id + "-stream-" + date + "-sla-breach":  breachAt,
-	}
-	if scanned != 2 || !maps.EqualFunc(got, want, time.Time.Equal) {
-		t.Fatalf("schedules after the watchdog = %v (scanned %d), want %v", got, scanned, want)
+	for id, breachAt := range map[string]time.Time{metID: at(1, 8), sameDayID: at(0, 8)} {
+		all, scanned := dueSchedules(t, id, at(1, 8))
+		got := map[string]time.Time{}
+		for _, s := range all {
+			got[s.Name] = s.at
+		}
+		want := map[string]time.Time{
+			id + "-stream-" + date + "-sla-warning": breachAt.Add(-time.Hour),
+			id + "-stream-" + date + "-sla-breach":  breachAt,
+		}
+		if scanned != 2 || !maps.EqualFunc(got, want, time.Time.Equal) {
+			t.Fatalf("%s schedules after the watchdog = %v (scanned %d), want %v", id, got, scanned, want)
+		}
 	}
 
-	advanceTo(t, time.Date(start.Year(), start.Month(), start.Day(), slaRunHour, 0, 0, 0, time.UTC))
-	writeReady(t, id, date)
-	reportJob(t, id, date, waitLaunch(t, id, 1), types.JobEventSuccess)
-	waitCompleted(t, id, date)
+	warn, breach := string(types.EventSLAWarning), string(types.EventSLABreach)
+	for i, hour := range []int{7, 8} {
+		advanceTo(t, at(0, hour))
+		if scanned, fired := fireDueSchedules(t, sameDayID); scanned != 2-i || fired != 1 {
+			t.Fatalf("%s at %02d:00: schedules scanned=%d fired=%d, want %d and 1", sameDayID, hour, scanned, fired, 2-i)
+		}
+	}
+	waitEvents(t, sameDayID, date, map[string]int{warn: 1, breach: 1}, []string{warn, breach})
+
+	advanceTo(t, at(0, slaRunHour))
 	vp, jc, met := string(types.EventValidationPassed), string(types.EventJobCompleted), string(types.EventSLAMet)
-	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 2, vp: 1, jc: 1, met: 1},
-		[]string{vp, jc}, []string{vp, met})
+	for _, id := range []string{metID, sameDayID} {
+		writeReady(t, id, date)
+		reportJob(t, id, date, waitLaunch(t, id, 1), types.JobEventSuccess)
+		waitCompleted(t, id, date)
+	}
+	jt := string(types.EventJobTriggered)
+	waitEvents(t, metID, date, map[string]int{jt: 2, vp: 1, jc: 1, met: 1}, []string{vp, jc}, []string{vp, met})
+	waitEvents(t, sameDayID, date, map[string]int{jt: 2, vp: 1, jc: 1, warn: 1, breach: 2},
+		[]string{warn, breach, vp, jc}, []string{vp, breach})
 
-	assertNothingFires(t, id, warnAt)
-	assertNothingFires(t, id, breachAt)
-	waitAlerts(t, id, alert{id, date, jc}, alert{id, date, met})
-	assertLaunches(t, id, 1)
-	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
+	assertNothingFires(t, metID, at(1, 7))
+	assertNothingFires(t, metID, at(1, 8))
+	if scanned, fired := fireDueSchedules(t, sameDayID); scanned != 0 || fired != 0 {
+		t.Fatalf("%s schedules scanned=%d fired=%d, want 0 and 0", sameDayID, scanned, fired)
+	}
+	waitAlerts(t, metID, alert{metID, date, jc}, alert{metID, date, met})
+	waitAlerts(t, sameDayID, alert{sameDayID, date, warn}, alert{sameDayID, date, breach},
+		alert{sameDayID, date, jc}, alert{sameDayID, date, breach})
+	for _, id := range []string{metID, sameDayID} {
+		assertLaunches(t, id, 1)
+		assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
+	}
 }
 
 // A rejected launch is a Trigger task error: the 400 is permanent for that
@@ -427,7 +455,7 @@ func TestScenarioSLAWarningDuringRetry(t *testing.T) {
 	start, date := startDay(t)
 	cfg := scenarioConfig(id)
 	cfg.Job.MaxRetries = 1
-	cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, ExpectedDuration: slaExpected}
+	cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, DeadlineDayOffset: 1, ExpectedDuration: slaExpected}
 	putConfig(t, cfg)
 
 	invokeWatchdog(t)

@@ -97,7 +97,7 @@ Route events to CloudWatch Logs, SNS, or an SQS queue for analysis. See the [Ale
 
 ## SLA Projection
 
-When `sla.expectedDuration` and `sla.deadline` are configured, Interlock computes a projected completion time at the moment validation rules pass. The projection reuses the same SLA calculation logic as production monitoring (including hourly pipeline T+1 adjustment).
+When `sla.expectedDuration` and `sla.deadline` are configured, Interlock computes a projected completion time at the moment validation rules pass. The projection reuses the same SLA calculation logic as production monitoring, including `sla.deadlineDayOffset`.
 
 The `DRY_RUN_SLA_PROJECTION` event includes:
 
@@ -148,4 +148,4 @@ Both pipelines receive the same sensor events. The live pipeline triggers jobs; 
 
 **Calendar exclusions blocking evaluation.** Calendar exclusions apply to dry-run pipelines the same way as live pipelines. Check your calendar config if events stop appearing on expected dates.
 
-**SLA projection shows `met` but you expected `breach`.** The projection uses the same deadline resolution as production, including timezone handling and T+1 adjustment for hourly pipelines. Verify that `sla.deadline` and `sla.timezone` match your expectations.
+**SLA projection shows `met` but you expected `breach`.** The projection uses the same deadline resolution as production, including timezone handling and `sla.deadlineDayOffset`. Verify that `sla.deadline`, `sla.deadlineDayOffset` and `sla.timezone` match your expectations.

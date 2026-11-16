@@ -8,17 +8,13 @@ import (
 )
 
 func TestResolveSLADate(t *testing.T) {
-	sensorDaily := &types.PipelineConfig{
-		SLA: &types.SLAConfig{Deadline: "10:00"},
+	sensor := func(offset int) *types.PipelineConfig {
+		return &types.PipelineConfig{SLA: &types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: offset}}
 	}
-	cron := &types.PipelineConfig{
+	cronOffset1 := &types.PipelineConfig{
 		Schedule: types.ScheduleConfig{Cron: "0 8 * * *"},
-		SLA:      &types.SLAConfig{Deadline: "10:00"},
+		SLA:      &types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: 1},
 	}
-	hourly := &types.PipelineConfig{
-		SLA: &types.SLAConfig{Deadline: ":30"},
-	}
-	nilSLA := &types.PipelineConfig{}
 
 	tests := []struct {
 		name string
@@ -26,14 +22,14 @@ func TestResolveSLADate(t *testing.T) {
 		date string
 		want string
 	}{
-		{"cron pipeline unchanged", cron, "2026-03-10", "2026-03-10"},
-		{"sensor daily shifted", sensorDaily, "2026-03-10", "2026-03-11"},
-		{"month end", sensorDaily, "2026-03-31", "2026-04-01"},
-		{"leap day", sensorDaily, "2028-02-28", "2028-02-29"},
-		{"hourly deadline unchanged", hourly, "2026-03-10", "2026-03-10"},
-		{"composite hourly date unchanged", sensorDaily, "2026-03-10T13", "2026-03-10T13"},
-		{"nil SLA unchanged", nilSLA, "2026-03-10", "2026-03-10"},
-		{"unparseable date unchanged", sensorDaily, "bad", "bad"},
+		{"offset 0 same day", sensor(0), "2026-03-10", "2026-03-10"},
+		{"offset 1 next day", sensor(1), "2026-03-10", "2026-03-11"},
+		{"offset 1 month end", sensor(1), "2026-03-31", "2026-04-01"},
+		{"cron pipeline with offset 1 shifted", cronOffset1, "2026-03-10", "2026-03-11"},
+		{"composite date unchanged", sensor(1), "2026-03-10T13", "2026-03-10T13"},
+		{"hourly deadline unchanged", &types.PipelineConfig{SLA: &types.SLAConfig{Deadline: ":30", DeadlineDayOffset: 1}}, "2026-03-10", "2026-03-10"},
+		{"unparseable date unchanged", sensor(1), "bad", "bad"},
+		{"nil SLA unchanged", &types.PipelineConfig{}, "2026-03-10", "2026-03-10"},
 	}
 
 	for _, tt := range tests {

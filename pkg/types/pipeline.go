@@ -66,11 +66,12 @@ type EvaluationWindow struct {
 
 // SLAConfig defines pipeline deadlines (observational, never stops execution).
 type SLAConfig struct {
-	Deadline         string `yaml:"deadline,omitempty" json:"deadline,omitempty"`                 // "HH:MM" wall-clock deadline
-	ExpectedDuration string `yaml:"expectedDuration,omitempty" json:"expectedDuration,omitempty"` // e.g. "30m"
-	MaxDuration      string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`           // e.g. "2h"; relative SLA from first sensor arrival
-	Timezone         string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
-	Critical         bool   `yaml:"critical,omitempty" json:"critical,omitempty"`
+	Deadline          string `yaml:"deadline,omitempty" json:"deadline,omitempty"`                   // "HH:MM" wall-clock deadline
+	DeadlineDayOffset int    `yaml:"deadlineDayOffset,omitempty" json:"deadlineDayOffset,omitempty"` // days after the execution date a daily deadline falls on; 0 = same day
+	ExpectedDuration  string `yaml:"expectedDuration,omitempty" json:"expectedDuration,omitempty"`   // e.g. "30m"
+	MaxDuration       string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`             // e.g. "2h"; relative SLA from first sensor arrival
+	Timezone          string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+	Critical          bool   `yaml:"critical,omitempty" json:"critical,omitempty"`
 }
 
 // ValidationConfig defines the rules that must pass before triggering.

@@ -16,38 +16,8 @@ import (
 
 // handleSLACancel deletes unfired SLA schedules and determines the final SLA outcome.
 func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonitorInput) (lambda.SLAMonitorOutput, error) {
-	if input.WarningAt == "" && input.BreachAt == "" {
-		if input.MaxDuration != "" && input.SensorArrivalAt != "" {
-			calc, err := handleRelativeSLACalculate(input)
-			if err != nil {
-				return lambda.SLAMonitorOutput{}, fmt.Errorf("cancel recalculate (relative): %w", err)
-			}
-			input.WarningAt = calc.WarningAt
-			input.BreachAt = calc.BreachAt
-		} else if input.Deadline != "" {
-			calcInput := input
-			if d.Store != nil {
-				cfg, cfgErr := d.Store.GetConfig(ctx, input.PipelineID)
-				switch {
-				case cfgErr != nil:
-					d.Logger.WarnContext(ctx, "config lookup failed in cancel, using unshifted SLA date",
-						"pipeline", input.PipelineID, "error", cfgErr)
-				case cfg == nil:
-					d.Logger.WarnContext(ctx, "config not found in cancel, using unshifted SLA date",
-						"pipeline", input.PipelineID)
-				default:
-					calcInput.Date = lambda.ResolveSLADate(cfg, input.Date)
-				}
-			}
-			calc, err := handleSLACalculate(calcInput, d.Now())
-			if err != nil {
-				return lambda.SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
-			}
-			input.WarningAt = calc.WarningAt
-			input.BreachAt = calc.BreachAt
-		}
-	}
-
+	// Schedule names need only the execution date, so delete them first: a
+	// config read error below must not leave them to fire.
 	if d.Scheduler != nil && !lambda.SkipScheduler() {
 		for _, suffix := range []string{"warning", "breach"} {
 			name := lambda.SLAScheduleName(input.PipelineID, input.ScheduleID, input.Date, suffix)
@@ -65,6 +35,36 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 	} else if lambda.SkipScheduler() {
 		d.Logger.InfoContext(ctx, "SKIP_SCHEDULER set, no-op DeleteSchedule for SLA cancel",
 			"pipeline", input.PipelineID, "date", input.Date)
+	}
+
+	if input.WarningAt == "" && input.BreachAt == "" {
+		if input.MaxDuration != "" && input.SensorArrivalAt != "" {
+			calc, err := handleRelativeSLACalculate(input)
+			if err != nil {
+				return lambda.SLAMonitorOutput{}, fmt.Errorf("cancel recalculate (relative): %w", err)
+			}
+			input.WarningAt = calc.WarningAt
+			input.BreachAt = calc.BreachAt
+		} else if input.Deadline != "" {
+			calcInput := input
+			if d.Store != nil {
+				cfg, cfgErr := d.Store.GetConfig(ctx, input.PipelineID)
+				if cfgErr != nil {
+					return lambda.SLAMonitorOutput{}, fmt.Errorf("cancel config lookup for %s: %w", input.PipelineID, cfgErr)
+				}
+				if cfg == nil {
+					d.Logger.WarnContext(ctx, "config not found in cancel, using the execution date as the SLA date",
+						"pipeline", input.PipelineID)
+				}
+				calcInput.Date = lambda.ResolveSLADate(cfg, input.Date)
+			}
+			calc, err := handleSLACalculate(calcInput, d.Now())
+			if err != nil {
+				return lambda.SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
+			}
+			input.WarningAt = calc.WarningAt
+			input.BreachAt = calc.BreachAt
+		}
 	}
 
 	now := d.Now().UTC()

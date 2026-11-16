@@ -3,6 +3,7 @@ package validation
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -101,6 +102,17 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 			errs = append(errs, fmt.Sprintf("sla.maxDuration invalid Go duration %q", cfg.SLA.MaxDuration))
 		} else if d > 24*time.Hour {
 			errs = append(errs, fmt.Sprintf("sla.maxDuration exceeds 24h (%s)", cfg.SLA.MaxDuration))
+		}
+	}
+
+	if cfg.SLA != nil && cfg.SLA.DeadlineDayOffset != 0 {
+		switch off := cfg.SLA.DeadlineDayOffset; {
+		case off < 0 || off > 7:
+			errs = append(errs, fmt.Sprintf("sla.deadlineDayOffset %d out of range [0,7]", off))
+		case cfg.SLA.Deadline == "":
+			errs = append(errs, "sla.deadlineDayOffset is not supported without sla.deadline")
+		case strings.HasPrefix(cfg.SLA.Deadline, ":"):
+			errs = append(errs, `sla.deadlineDayOffset is not supported with hourly ":MM" deadlines`)
 		}
 	}
 

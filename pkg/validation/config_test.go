@@ -332,3 +332,34 @@ func TestValidatePipelineConfig_PipelineID(t *testing.T) {
 		assert.True(t, containsSubstr(errs, "pipeline.id"), "errors %v should name pipeline.id", errs)
 	}
 }
+
+func TestValidate_SLADeadlineDayOffset(t *testing.T) {
+	tests := []struct {
+		name    string
+		sla     types.SLAConfig
+		wantErr string
+	}{
+		{"negative", types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: -1}, "sla.deadlineDayOffset -1 out of range [0,7]"},
+		{"too large", types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: 8}, "sla.deadlineDayOffset 8 out of range [0,7]"},
+		{"hourly deadline", types.SLAConfig{Deadline: ":30", DeadlineDayOffset: 1}, `sla.deadlineDayOffset is not supported with hourly ":MM" deadlines`},
+		{"no deadline", types.SLAConfig{MaxDuration: "2h", DeadlineDayOffset: 1}, "sla.deadlineDayOffset is not supported without sla.deadline"},
+		{"zero", types.SLAConfig{Deadline: "10:00"}, ""},
+		{"one", types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: 1}, ""},
+		{"seven", types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: 7}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "orders"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				SLA:      &tt.sla,
+			}
+			errs := ValidatePipelineConfig(&cfg)
+			if tt.wantErr == "" {
+				assert.Empty(t, errs)
+				return
+			}
+			assert.Equal(t, []string{tt.wantErr}, errs)
+		})
+	}
+}
