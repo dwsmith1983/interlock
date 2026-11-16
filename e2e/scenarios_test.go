@@ -64,6 +64,16 @@ func startDay(t *testing.T) (start time.Time, date string) {
 	return start, start.Format(smokeDateLayout)
 }
 
+// putRunDate writes the RUN# row that tells the watchdog the pipeline
+// expects a run on date.
+func putRunDate(t *testing.T, pipeline, date string) {
+	t.Helper()
+	putItem(t, map[string]ddbtypes.AttributeValue{
+		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipeline)},
+		"SK": &ddbtypes.AttributeValueMemberS{Value: types.RunSK(date)},
+	})
+}
+
 func writeReady(t *testing.T, pipeline, date string) {
 	t.Helper()
 	writeSensor(t, pipeline, scenarioSensor, map[string]interface{}{"status": "ready", "date": date})
@@ -174,20 +184,27 @@ func assertNothingFires(t *testing.T, pipeline string, at time.Time) {
 // SLA_MET, so nothing is left to fire. With offset 0 ("sla-same-day") the
 // deadline is 08:00 the same day: the warning fires at 07:00 and the breach at
 // 08:00 while the pipeline has not started, and the 09:00 run's cancel
-// publishes its own SLA_BREACH verdict.
+// publishes its own SLA_BREACH verdict. Both have a RUN# row for the date;
+// a third ("sla-no-row") has the same-day SLA and no row, so the watchdog
+// schedules nothing for it and it gets no alerts.
 func TestScenarioSLAMet(t *testing.T) {
-	const metID, sameDayID = "sla-met", "sla-same-day"
+	const metID, sameDayID, noRowID = "sla-met", "sla-same-day", "sla-no-row"
 	start, date := startDay(t)
 	at := func(day, hour int) time.Time {
 		return time.Date(start.Year(), start.Month(), start.Day()+day, hour, 0, 0, 0, time.UTC)
 	}
-	for id, offset := range map[string]int{metID: 1, sameDayID: 0} {
+	for id, offset := range map[string]int{metID: 1, sameDayID: 0, noRowID: 0} {
 		cfg := scenarioConfig(id)
 		cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, DeadlineDayOffset: offset, ExpectedDuration: slaExpected}
 		putConfig(t, cfg)
 	}
+	putRunDate(t, metID, date)
+	putRunDate(t, sameDayID, date)
 
 	invokeWatchdog(t)
+	if _, scanned := dueSchedules(t, noRowID, at(1, 8)); scanned != 0 {
+		t.Fatalf("%s schedules after the watchdog = %d, want 0 without a RUN# row", noRowID, scanned)
+	}
 	for id, breachAt := range map[string]time.Time{metID: at(1, 8), sameDayID: at(0, 8)} {
 		all, scanned := dueSchedules(t, id, at(1, 8))
 		got := map[string]time.Time{}
@@ -236,6 +253,7 @@ func TestScenarioSLAMet(t *testing.T) {
 		assertLaunches(t, id, 1)
 		assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
 	}
+	waitAlerts(t, noRowID)
 }
 
 // A rejected launch is a Trigger task error: the 400 is permanent for that
@@ -457,6 +475,7 @@ func TestScenarioSLAWarningDuringRetry(t *testing.T) {
 	cfg.Job.MaxRetries = 1
 	cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, DeadlineDayOffset: 1, ExpectedDuration: slaExpected}
 	putConfig(t, cfg)
+	putRunDate(t, id, date)
 
 	invokeWatchdog(t)
 	breachAt := time.Date(start.Year(), start.Month(), start.Day()+1, 8, 0, 0, 0, time.UTC)

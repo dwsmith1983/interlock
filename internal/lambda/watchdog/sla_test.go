@@ -1,16 +1,19 @@
 package watchdog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
@@ -72,9 +75,9 @@ func sItem(kv ...string) map[string]ddbtypes.AttributeValue {
 }
 
 // slaDeps wires an in-memory store holding one sensor-triggered pipeline "p"
-// with an absolute and a relative SLA, an optional trigger row and job row
-// for slaTestDate, and the recorder. The clock is 09:00 on slaTestDate, so
-// the 09:30 warning and 10:00 breach are both ahead.
+// with an absolute and a relative SLA, a RUN# row, an optional trigger row
+// and job row for slaTestDate, and the recorder. The clock is 09:00 on
+// slaTestDate, so the 09:30 warning and 10:00 breach are both ahead.
 // tweak, when given, edits the config before it is stored.
 func slaDeps(t *testing.T, trigger, jobRow string, tweak ...func(*types.PipelineConfig)) (*lambda.Deps, *storetest.Mem, *slaRecorder) {
 	t.Helper()
@@ -94,6 +97,7 @@ func slaDeps(t *testing.T, trigger, jobRow string, tweak ...func(*types.Pipeline
 	fake, mem := storetest.NewMem()
 	pk := types.PipelinePK("p")
 	mem.Put("control", sItem("PK", pk, "SK", types.ConfigSK, "config", string(data)))
+	mem.Put("control", sItem("PK", pk, "SK", types.RunSK(slaTestDate)))
 	if trigger != "" {
 		mem.Put("control", sItem("PK", pk, "SK", types.TriggerSK("stream", slaTestDate), "status", trigger))
 	}
@@ -233,6 +237,90 @@ func TestScheduleSLAAlerts_DeadlineDayOffset(t *testing.T) {
 			}
 			if !slices.Equal(rec.exprs, tt.wantExprs) {
 				t.Fatalf("schedule expressions = %v, want %v", rec.exprs, tt.wantExprs)
+			}
+		})
+	}
+}
+
+// TestScheduleSLAAlerts_RunRows pins that proactive SLA schedules come from
+// the pipeline's RUN# rows: one pair per due key of the deadline's cadence,
+// none without a row. Each case replaces slaDeps' row with its keys. The
+// deadline is 10:00 (warning 09:30) and the clock 08:00 on slaTestDate.
+// A run that finished is covered by TestScheduleSLAAlerts_RetryKeepsSchedules.
+func TestScheduleSLAAlerts_RunRows(t *testing.T) {
+	names := func(dates ...string) []string {
+		var out []string
+		for _, date := range dates {
+			out = append(out, lambda.SLAScheduleName("p", "stream", date, "warning"),
+				lambda.SLAScheduleName("p", "stream", date, "breach"))
+		}
+		return out
+	}
+	tests := []struct {
+		name      string
+		keys      []string
+		now       time.Time // zero means 08:00 on slaTestDate
+		tweak     func(*types.PipelineConfig)
+		want      []string
+		wantExprs []string
+		wantLog   string
+	}{
+		{name: "RowForDate", keys: []string{slaTestDate}, want: names(slaTestDate),
+			wantExprs: []string{"at(2026-03-10T09:30:00)", "at(2026-03-10T10:00:00)"}},
+		{name: "NoRows"},
+		{name: "TwoDates", keys: []string{slaTestDate, "2026-03-11"}, want: names(slaTestDate, "2026-03-11")},
+		{name: "BreachPassed", keys: []string{"2026-03-09"}},
+		{name: "MalformedKeys", keys: []string{"2026-3-10", "2026-03-10x", slaTestDate}, want: names(slaTestDate),
+			wantLog: "runKey=2026-03-10x"},
+		{name: "HourlyDeadline", keys: []string{slaTestDate, "2026-03-10T07"}, want: names("2026-03-10T07"),
+			wantExprs: []string{"at(2026-03-10T08:15:00)", "at(2026-03-10T08:30:00)"},
+			tweak:     func(c *types.PipelineConfig) { c.SLA.Deadline, c.SLA.ExpectedDuration = ":30", "15m" }},
+		{name: "DailyDeadlineSkipsHourlyKey", keys: []string{"2026-03-10T07"}},
+		{name: "ExcludedWeekend", keys: []string{"2026-03-13", "2026-03-14"}, want: names("2026-03-13"),
+			now:   time.Date(2026, 3, 13, 8, 0, 0, 0, time.UTC),
+			tweak: func(c *types.PipelineConfig) { c.Schedule.Exclude = &types.ExclusionConfig{Weekends: true} }},
+		{name: "DeadlineDayOffset", keys: []string{"2026-03-09"}, want: names("2026-03-09"),
+			wantExprs: []string{"at(2026-03-10T09:30:00)", "at(2026-03-10T10:00:00)"},
+			tweak:     func(c *types.PipelineConfig) { c.SLA.DeadlineDayOffset = 1 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var tweaks []func(*types.PipelineConfig)
+			if tt.tweak != nil {
+				tweaks = append(tweaks, tt.tweak)
+			}
+			d, mem, rec := slaDeps(t, "", "", tweaks...)
+			if _, err := d.Store.Client.DeleteItem(context.Background(), &dynamodb.DeleteItemInput{
+				TableName: aws.String("control"),
+				Key:       sItem("PK", types.PipelinePK("p"), "SK", types.RunSK(slaTestDate)),
+			}); err != nil {
+				t.Fatalf("delete default RUN# row: %v", err)
+			}
+			for _, key := range tt.keys {
+				mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.RunSK(key)))
+			}
+			now := time.Date(2026, 3, 10, 8, 0, 0, 0, time.UTC)
+			if !tt.now.IsZero() {
+				now = tt.now
+			}
+			d.NowFunc = func() time.Time { return now }
+			var logs bytes.Buffer
+			d.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+			if err := scheduleSLAAlerts(context.Background(), d); err != nil {
+				t.Fatalf("scheduleSLAAlerts: %v", err)
+			}
+
+			if !slices.Equal(rec.schedules, tt.want) {
+				t.Fatalf("schedules created = %v, want %v", rec.schedules, tt.want)
+			}
+			if tt.wantExprs != nil && !slices.Equal(rec.exprs, tt.wantExprs) {
+				t.Fatalf("schedule expressions = %v, want %v", rec.exprs, tt.wantExprs)
+			}
+			if tt.wantLog != "" && !slices.ContainsFunc(strings.Split(logs.String(), "\n"), func(line string) bool {
+				return strings.Contains(line, "level=WARN") && strings.Contains(line, tt.wantLog)
+			}) {
+				t.Fatalf("logs = %q, want a warning with %q", logs.String(), tt.wantLog)
 			}
 		})
 	}

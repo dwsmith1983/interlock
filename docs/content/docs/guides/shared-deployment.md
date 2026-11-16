@@ -70,6 +70,7 @@ The team's jobs write to the control table (`<environment>-interlock-control`), 
 |---|---|---|---|
 | Sensor | `PIPELINE#<id>` | `SENSOR#<key>` | `data`: a map of the fields the rules read (`status`, `count`, ...) |
 | Rerun request | `PIPELINE#<id>` | `RERUN_REQUEST#<schedule>#<date>` | `reason` (optional, default `manual`) and `requestedAt` (the request time) |
+| Expected run date | `PIPELINE#<id>` | `RUN#<runKey>` | `ttl` (optional, epoch seconds); see [Expected Run Dates](../../configuration/schedules/#expected-run-dates) |
 
 - Put sensor fields in `data`: rule evaluation reads only that map.
 - The sensor whose key starts with `schedule.trigger.key` sets the execution date from its `date` (`YYYY-MM-DD` or `YYYYMMDD`) and `hour` (`00` to `23`) fields. Both must be strings. A missing or invalid `date` gives the current UTC date.
@@ -140,6 +141,7 @@ Attach the first statement to the job role and the second to the Terraform role.
 - `StringLike` matches the partition key by prefix; for one pipeline, use `ForAllValues:StringEquals` with `PIPELINE#sales-orders-daily`.
 - `ForAllValues` passes a request that names no partition key, such as a `Scan`, so keep the `Null` condition and leave `Scan` out.
 - IAM cannot restrict by sort key, so the job role can still write any row under its prefix, `CONFIG` included.
+- The same `LeadingKeys` condition covers a team's `RUN#` rows: whichever role writes them needs only `PutItem` under its prefix.
 - An Allow confines a role only if it is that role's only access to these tables. Enforce that with a permissions boundary or an SCP.
 - Pick prefixes that don't overlap (`sales-` covers `sales-eu-`), and keep each ID in one place: a file in `pipelines_path` and a team's resource for the same ID write the same row and fight over it.
 

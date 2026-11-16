@@ -36,6 +36,10 @@ func RerunRequestSK(schedule, date string) string {
 	return "RERUN_REQUEST#" + schedule + "#" + date
 }
 
+// RunSK returns the sort key for an expected run date. runKey is YYYY-MM-DD,
+// or YYYY-MM-DDThh for an hourly run, the same forms as the execution date.
+func RunSK(runKey string) string { return "RUN#" + runKey }
+
 // DryRunSK returns the sort key for a dry-run marker.
 func DryRunSK(schedule, date string) string {
 	return "DRY_RUN#" + schedule + "#" + date

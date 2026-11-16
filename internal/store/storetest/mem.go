@@ -199,7 +199,7 @@ func (m *Mem) deleteItem(_ context.Context, in *dynamodb.DeleteItemInput) (*dyna
 
 var (
 	updateRE = regexp.MustCompile(`^SET ([^=]+ = :\w+(?:, [^=]+ = :\w+)*)(?: REMOVE ([#\w]+(?:, [#\w]+)*))?$`)
-	queryRE  = regexp.MustCompile(`^PK = (:\w+)(?: AND begins_with\(SK, (:\w+)\))?$`)
+	queryRE  = regexp.MustCompile(`^PK = (:\w+)(?: AND begins_with\(SK, (:\w+)\)| AND SK BETWEEN (:\w+) AND (:\w+))?$`)
 )
 
 // updateItem supports "SET a = :x[, b = :y] [REMOVE c[, d]]", creating the
@@ -243,8 +243,9 @@ func (m *Mem) updateItem(_ context.Context, in *dynamodb.UpdateItemInput) (*dyna
 	return &dynamodb.UpdateItemOutput{}, nil
 }
 
-// query supports "PK = :pk [AND begins_with(SK, :prefix)]" with
-// ScanIndexForward, Limit, ExclusiveStartKey and Select COUNT.
+// query supports "PK = :pk [AND begins_with(SK, :prefix) | AND SK BETWEEN
+// :from AND :to]" with ScanIndexForward, Limit, ExclusiveStartKey and Select
+// COUNT.
 func (m *Mem) query(_ context.Context, in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
 	match := queryRE.FindStringSubmatch(deref(in.KeyConditionExpression))
 	if match == nil {
@@ -257,9 +258,15 @@ func (m *Mem) query(_ context.Context, in *dynamodb.QueryInput) (*dynamodb.Query
 	if match[2] != "" {
 		prefix = str(in.ExpressionAttributeValues[match[2]])
 	}
+	inRange := func(string) bool { return true }
+	if match[3] != "" {
+		from, to := str(in.ExpressionAttributeValues[match[3]]), str(in.ExpressionAttributeValues[match[4]])
+		inRange = func(sk string) bool { return from <= sk && sk <= to }
+	}
 	m.mu.Lock()
 	items := m.sorted(*in.TableName, func(it map[string]ddbtypes.AttributeValue) bool {
-		return str(it["PK"]) == pk && strings.HasPrefix(str(it["SK"]), prefix)
+		sk := str(it["SK"])
+		return str(it["PK"]) == pk && strings.HasPrefix(sk, prefix) && inRange(sk)
 	})
 	m.mu.Unlock()
 	backward := in.ScanIndexForward != nil && !*in.ScanIndexForward

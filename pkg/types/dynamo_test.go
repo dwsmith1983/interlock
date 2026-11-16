@@ -26,6 +26,11 @@ func TestTriggerSK(t *testing.T) {
 	assert.Equal(t, "TRIGGER#hourly#2026-03-01", types.TriggerSK("hourly", "2026-03-01"))
 }
 
+func TestRunSK(t *testing.T) {
+	assert.Equal(t, "RUN#2026-03-01", types.RunSK("2026-03-01"))
+	assert.Equal(t, "RUN#2026-03-01T05", types.RunSK("2026-03-01T05"))
+}
+
 func TestJobSK(t *testing.T) {
 	assert.Equal(t,
 		"JOB#daily#2026-03-01#1709308800",

@@ -161,15 +161,15 @@ func newNoWriteFake(t *testing.T) *storetest.FakeDynamo {
 			return &dynamodb.GetItemOutput{}, nil
 		},
 		PutItemFn: func(_ context.Context, in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
-			t.Errorf("PutItem called for a REMOVE record: %v", in.Item)
+			t.Errorf("PutItem called, want no writes: %v", in.Item)
 			return &dynamodb.PutItemOutput{}, nil
 		},
 		UpdateItemFn: func(_ context.Context, in *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
-			t.Errorf("UpdateItem called for a REMOVE record: %v", in.Key)
+			t.Errorf("UpdateItem called, want no writes: %v", in.Key)
 			return &dynamodb.UpdateItemOutput{}, nil
 		},
 		DeleteItemFn: func(_ context.Context, in *dynamodb.DeleteItemInput) (*dynamodb.DeleteItemOutput, error) {
-			t.Errorf("DeleteItem called for a REMOVE record: %v", in.Key)
+			t.Errorf("DeleteItem called, want no writes: %v", in.Key)
 			return &dynamodb.DeleteItemOutput{}, nil
 		},
 	}
@@ -239,6 +239,36 @@ func TestHandleRecord_SkipsRemoveRecords(t *testing.T) {
 				t.Errorf("PutEvents called %d times, want 0 -- a REMOVE must never publish a verdict", ebFake.calls)
 			}
 		})
+	}
+}
+
+// TestHandleRecord_RunRowIsIgnored: a RUN# row (an expected run date the
+// user writes) is read by the watchdog only; inserting one starts nothing,
+// publishes nothing and writes nothing.
+func TestHandleRecord_RunRowIsIgnored(t *testing.T) {
+	s := storetest.NewStore(newNoWriteFake(t))
+	sfnFake, ebFake := &countingSFN{}, &countingEventBridge{}
+	d := &lambda.Deps{
+		Store: s, ConfigCache: store.NewConfigCache(s, 5*time.Minute), SFNClient: sfnFake,
+		EventBridge: ebFake, EventBusName: "test-bus", NowFunc: testNow, Logger: discardLogger(),
+	}
+	record := events.DynamoDBEventRecord{
+		EventID:   "evt-run",
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			SequenceNumber: "901",
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(types.PipelinePK("p")),
+				"SK": events.NewStringAttribute(types.RunSK(testDate)),
+			},
+		},
+	}
+
+	if err := handleRecord(context.Background(), d, record); err != nil {
+		t.Fatalf("handleRecord returned error: %v", err)
+	}
+	if sfnFake.calls != 0 || ebFake.calls != 0 {
+		t.Errorf("StartExecution calls = %d, PutEvents calls = %d, want 0 and 0", sfnFake.calls, ebFake.calls)
 	}
 }
 

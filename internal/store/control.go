@@ -273,6 +273,38 @@ func (s *Store) GetAllSensors(ctx context.Context, pipelineID string) (map[strin
 	return result, nil
 }
 
+// ListRunKeys returns the pipeline's expected run dates (RUN# rows) from
+// fromDate through toDate, hourly keys on toDate included, in SK order with
+// the RUN# prefix stripped. The keys are returned as written, unvalidated.
+func (s *Store) ListRunKeys(ctx context.Context, pipelineID, fromDate, toDate string) ([]string, error) {
+	var keys []string
+	err := QueryAll(ctx, s.Client, func(startKey map[string]ddbtypes.AttributeValue) *dynamodb.QueryInput {
+		return &dynamodb.QueryInput{
+			TableName:              &s.ControlTable,
+			KeyConditionExpression: aws.String("PK = :pk AND SK BETWEEN :from AND :to"),
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":pk":   &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+				":from": &ddbtypes.AttributeValueMemberS{Value: types.RunSK(fromDate)},
+				":to":   &ddbtypes.AttributeValueMemberS{Value: types.RunSK(toDate) + "~"},
+			},
+			ExclusiveStartKey: startKey,
+		}
+	}, func(items []map[string]ddbtypes.AttributeValue) error {
+		for _, item := range items {
+			var rec types.ControlRecord
+			if err := attributevalue.UnmarshalMap(item, &rec); err != nil {
+				return fmt.Errorf("unmarshal run row: %w", err)
+			}
+			keys = append(keys, strings.TrimPrefix(rec.SK, types.RunSK("")))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query run keys for %q: %w", pipelineID, err)
+	}
+	return keys, nil
+}
+
 // WriteSensor writes (or overwrites) a sensor row in the control table.
 func (s *Store) WriteSensor(ctx context.Context, pipelineID, sensorKey string, data map[string]interface{}) error {
 	rec := types.ControlRecord{
