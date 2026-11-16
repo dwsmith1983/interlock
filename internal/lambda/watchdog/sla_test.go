@@ -23,11 +23,12 @@ import (
 
 const slaTestDate = "2026-03-10"
 
-// slaRecorder records the schedules created and the event types published,
-// and both in call order. While failEvents > 0, PutEvents fails and counts
-// it down.
+// slaRecorder records the schedules created (names and, in step, their
+// expressions) and the event types published, and both in call order. While
+// failEvents > 0, PutEvents fails and counts it down.
 type slaRecorder struct {
 	schedules  []string
+	exprs      []string
 	events     []string
 	details    []types.InterlockEvent
 	order      []string
@@ -36,6 +37,7 @@ type slaRecorder struct {
 
 func (r *slaRecorder) CreateSchedule(_ context.Context, in *scheduler.CreateScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error) {
 	r.schedules = append(r.schedules, aws.ToString(in.Name))
+	r.exprs = append(r.exprs, aws.ToString(in.ScheduleExpression))
 	r.order = append(r.order, aws.ToString(in.Name))
 	return &scheduler.CreateScheduleOutput{}, nil
 }
@@ -71,7 +73,8 @@ func sItem(kv ...string) map[string]ddbtypes.AttributeValue {
 
 // slaDeps wires an in-memory store holding one sensor-triggered pipeline "p"
 // with an absolute and a relative SLA, an optional trigger row and job row
-// for slaTestDate, and the recorder. The clock is 09:00 on slaTestDate.
+// for slaTestDate, and the recorder. The clock is 09:00 on slaTestDate, so
+// the 09:30 warning and 10:00 breach are both ahead.
 // tweak, when given, edits the config before it is stored.
 func slaDeps(t *testing.T, trigger, jobRow string, tweak ...func(*types.PipelineConfig)) (*lambda.Deps, *storetest.Mem, *slaRecorder) {
 	t.Helper()
@@ -79,7 +82,7 @@ func slaDeps(t *testing.T, trigger, jobRow string, tweak ...func(*types.Pipeline
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
 		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
-		SLA:      &types.SLAConfig{Deadline: "10:00", ExpectedDuration: "1h", MaxDuration: "1h"},
+		SLA:      &types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", MaxDuration: "1h"},
 	}
 	for _, f := range tweak {
 		f(&cfg)
@@ -167,9 +170,7 @@ func TestScheduleSLAAlerts_SkipsDueWarning(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// A cron pipeline keeps its own date, so the 10:00 breach is today.
 			d, _, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
-				c.Schedule.Cron = "0 8 * * *"
 				c.SLA.ExpectedDuration = tt.expected
 			})
 
@@ -179,10 +180,59 @@ func TestScheduleSLAAlerts_SkipsDueWarning(t *testing.T) {
 
 			var want []string
 			for _, suffix := range tt.want {
-				want = append(want, lambda.SLAScheduleName("p", "cron", slaTestDate, suffix))
+				want = append(want, lambda.SLAScheduleName("p", "stream", slaTestDate, suffix))
 			}
 			if !slices.Equal(rec.schedules, want) {
 				t.Fatalf("schedules created = %v, want %v", rec.schedules, want)
+			}
+		})
+	}
+}
+
+// TestScheduleSLAAlerts_DeadlineDayOffset pins that the breach schedule
+// fires sla.deadlineDayOffset days after the execution date and is named for
+// the execution date, and that offset 0 keeps the deadline on the same day.
+func TestScheduleSLAAlerts_DeadlineDayOffset(t *testing.T) {
+	tests := []struct {
+		name      string
+		offset    int
+		now       time.Time
+		want      []string
+		wantExprs []string
+	}{
+		{
+			name:   "Offset1",
+			offset: 1,
+			now:    time.Date(2026, 3, 10, 0, 5, 0, 0, time.UTC),
+			want: []string{
+				lambda.SLAScheduleName("p", "stream", slaTestDate, "warning"),
+				lambda.SLAScheduleName("p", "stream", slaTestDate, "breach"),
+			},
+			wantExprs: []string{"at(2026-03-11T01:30:00)", "at(2026-03-11T02:00:00)"},
+		},
+		{
+			name: "Offset0PastDeadline",
+			now:  time.Date(2026, 3, 10, 3, 0, 0, 0, time.UTC),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+				c.SLA.Deadline = "02:00"
+				c.SLA.DeadlineDayOffset = tt.offset
+			})
+			now := tt.now
+			d.NowFunc = func() time.Time { return now }
+
+			if err := scheduleSLAAlerts(context.Background(), d); err != nil {
+				t.Fatalf("scheduleSLAAlerts: %v", err)
+			}
+
+			if !slices.Equal(rec.schedules, tt.want) {
+				t.Fatalf("schedules created = %v, want %v", rec.schedules, tt.want)
+			}
+			if !slices.Equal(rec.exprs, tt.wantExprs) {
+				t.Fatalf("schedule expressions = %v, want %v", rec.exprs, tt.wantExprs)
 			}
 		})
 	}

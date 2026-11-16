@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/sla"
@@ -28,6 +31,21 @@ type countingEventBridge struct {
 func (c *countingEventBridge) PutEvents(context.Context, *eventbridge.PutEventsInput, ...func(*eventbridge.Options)) (*eventbridge.PutEventsOutput, error) {
 	c.calls++
 	return &eventbridge.PutEventsOutput{}, nil
+}
+
+// deletingScheduler is a lambda.SchedulerAPI double that records the names
+// of the schedules DeleteSchedule was called for.
+type deletingScheduler struct {
+	deleted []string
+}
+
+func (s *deletingScheduler) CreateSchedule(context.Context, *scheduler.CreateScheduleInput, ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error) {
+	return &scheduler.CreateScheduleOutput{}, nil
+}
+
+func (s *deletingScheduler) DeleteSchedule(_ context.Context, in *scheduler.DeleteScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.DeleteScheduleOutput, error) {
+	s.deleted = append(s.deleted, aws.ToString(in.Name))
+	return &scheduler.DeleteScheduleOutput{}, nil
 }
 
 // configItem builds the control-table CONFIG row that store.GetConfig expects.
@@ -54,7 +72,8 @@ func triggerItem() map[string]ddbtypes.AttributeValue {
 }
 
 // newFakeDynamo returns a FakeDynamo that serves cfg for CONFIG-key reads
-// (or cfgErr, if set) and a minimal TRIGGER row for every TRIGGER-key read.
+// (cfgErr, if set, or no row when cfg has no pipeline ID) and a minimal
+// TRIGGER row for every TRIGGER-key read.
 func newFakeDynamo(t *testing.T, cfg types.PipelineConfig, cfgErr error) *storetest.FakeDynamo {
 	t.Helper()
 	return &storetest.FakeDynamo{
@@ -67,6 +86,9 @@ func newFakeDynamo(t *testing.T, cfg types.PipelineConfig, cfgErr error) *storet
 			case skAttr.Value == types.ConfigSK:
 				if cfgErr != nil {
 					return nil, cfgErr
+				}
+				if cfg.Pipeline.ID == "" {
+					return &dynamodb.GetItemOutput{}, nil
 				}
 				return &dynamodb.GetItemOutput{Item: configItem(t, cfg)}, nil
 			case strings.HasPrefix(skAttr.Value, "TRIGGER#"):
@@ -86,14 +108,17 @@ func testDeps(fake *storetest.FakeDynamo, now time.Time) *lambda.Deps {
 	}
 }
 
-// TestSLACancel_AppliesT1SLADate pins the T+1 SLA-date rule on the cancel
-// path: sensor-triggered daily pipelines shift the deadline date to D+1 (the
-// same rule the watchdog applies), while cron pipelines keep their own date.
-func TestSLACancel_AppliesT1SLADate(t *testing.T) {
-	sensorDailyCfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{},
-		SLA:      &types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m"},
+// TestSLACancel_AppliesDeadlineDayOffset pins the SLA date on the cancel
+// path: the deadline falls sla.deadlineDayOffset days after the execution
+// date, for sensor and cron pipelines alike. Every case deletes both
+// schedules, even when the config read fails.
+func TestSLACancel_AppliesDeadlineDayOffset(t *testing.T) {
+	t.Setenv("SKIP_SCHEDULER", "")
+	sensorCfg := func(offset int) types.PipelineConfig {
+		return types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "p"},
+			SLA:      &types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: offset, ExpectedDuration: "30m"},
+		}
 	}
 	cronCfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
@@ -107,23 +132,24 @@ func TestSLACancel_AppliesT1SLADate(t *testing.T) {
 		cfgErr        error
 		scheduleID    string
 		now           time.Time
+		wantErr       bool
 		wantAlertType string
 		wantBreachAt  string
 	}{
 		{
-			name:          "sensor-daily met before T+1 deadline",
-			cfg:           sensorDailyCfg,
+			name:          "sensor offset 0 breached after same-day deadline",
+			cfg:           sensorCfg(0),
 			scheduleID:    "stream",
-			now:           time.Date(2026, 3, 11, 4, 0, 0, 0, time.UTC),
-			wantAlertType: string(types.EventSLAMet),
-			wantBreachAt:  "2026-03-11T10:00:00Z",
+			now:           time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+			wantAlertType: string(types.EventSLABreach),
+			wantBreachAt:  "2026-03-10T10:00:00Z",
 		},
 		{
-			name:          "sensor-daily breached after T+1 deadline",
-			cfg:           sensorDailyCfg,
+			name:          "sensor offset 1 met before next-day deadline",
+			cfg:           sensorCfg(1),
 			scheduleID:    "stream",
-			now:           time.Date(2026, 3, 11, 11, 0, 0, 0, time.UTC),
-			wantAlertType: string(types.EventSLABreach),
+			now:           time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+			wantAlertType: string(types.EventSLAMet),
 			wantBreachAt:  "2026-03-11T10:00:00Z",
 		},
 		{
@@ -143,13 +169,19 @@ func TestSLACancel_AppliesT1SLADate(t *testing.T) {
 			wantBreachAt:  "2026-03-10T10:00:00Z",
 		},
 		{
-			name:          "config lookup failure falls back to unshifted date",
-			cfg:           sensorDailyCfg,
-			cfgErr:        errors.New("dynamodb: internal error"),
+			name:          "missing config uses the execution date",
 			scheduleID:    "stream",
 			now:           time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
 			wantAlertType: string(types.EventSLABreach),
 			wantBreachAt:  "2026-03-10T10:00:00Z",
+		},
+		{
+			name:       "config lookup failure returns an error so the step retries",
+			cfg:        sensorCfg(1),
+			cfgErr:     errors.New("dynamodb: internal error"),
+			scheduleID: "stream",
+			now:        time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+			wantErr:    true,
 		},
 	}
 
@@ -157,6 +189,8 @@ func TestSLACancel_AppliesT1SLADate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := newFakeDynamo(t, tt.cfg, tt.cfgErr)
 			d := testDeps(fake, tt.now)
+			sched := &deletingScheduler{}
+			d.Scheduler = sched
 
 			out, err := sla.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 				Mode:             "cancel",
@@ -166,6 +200,19 @@ func TestSLACancel_AppliesT1SLADate(t *testing.T) {
 				Deadline:         "10:00",
 				ExpectedDuration: "30m",
 			})
+			wantDeleted := []string{
+				lambda.SLAScheduleName("p", tt.scheduleID, "2026-03-10", "warning"),
+				lambda.SLAScheduleName("p", tt.scheduleID, "2026-03-10", "breach"),
+			}
+			if !slices.Equal(sched.deleted, wantDeleted) {
+				t.Errorf("deleted schedules = %v, want %v", sched.deleted, wantDeleted)
+			}
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("HandleSLAMonitor returned %+v, want an error", out)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("HandleSLAMonitor returned error: %v", err)
 			}

@@ -127,20 +127,35 @@ sla:
 | Field | Type | Description |
 |---|---|---|
 | `deadline` | string | `HH:MM` -- all validation rules must pass and the job must complete by this time |
+| `deadlineDayOffset` | int | Days after the execution date on which a daily `HH:MM` deadline falls, 0 to 7. Default 0 (the same day) |
 | `expectedDuration` | duration | Expected time for the job to complete (used for SLA breach detection) |
+
+### Deadline Day
+
+A daily deadline falls on the execution date plus `deadlineDayOffset` days, for cron and sensor-triggered pipelines alike. Interlock never moves it on its own. A pipeline that processes date D's data on D+1 says so:
+
+```yaml
+sla:
+  deadline: "10:00"
+  deadlineDayOffset: 1   # the run for 2026-03-10 is due 2026-03-11 10:00
+```
+
+With the default of 0, the run for 2026-03-10 is due 2026-03-10 10:00, so a run that finishes after 10:00 that day is an `SLA_BREACH`. A non-zero offset is rejected with an hourly `:MM` deadline (its date already names the hour) and without a `deadline`.
+
+The deadline is placed on the execution date, a UTC date, at `deadline` in `sla.timezone`, so a zone east of UTC with an early deadline (for example `Asia/Tokyo` and `08:00`) needs `deadlineDayOffset: 1`, or the deadline is already past when the day starts.
 
 ### Deadline Evaluation
 
-When the Step Functions execution reaches the SLA checkpoint, the sla-monitor Lambda creates two one-time EventBridge Scheduler entries:
+The watchdog creates two one-time EventBridge Scheduler entries for each pipeline with an SLA:
 
 - **Warning**: fires at `deadline - expectedDuration`
 - **Breach**: fires at `deadline`
 
 Each Scheduler entry invokes the sla-monitor Lambda at the exact timestamp to publish the corresponding event. Entries auto-delete after firing.
 
-When the pipeline job completes (or all retries are exhausted), the state machine cancels any unfired Scheduler entries. If the job completed before the warning time, a `SLA_MET` event is published.
+When the pipeline job completes (or all retries are exhausted), the state machine cancels any unfired Scheduler entries. If the run ended before the breach time, a `SLA_MET` event is published.
 
-The deadline is interpreted in the schedule's configured `timezone` (or UTC if not set).
+The deadline is interpreted in `sla.timezone` (or UTC if not set).
 
 ### EventBridge SLA Events
 

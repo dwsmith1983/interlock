@@ -19,15 +19,11 @@ func ResolveScheduleID(cfg *types.PipelineConfig) string {
 }
 
 // ResolveSLADate returns the calendar date an absolute "HH:MM" SLA deadline
-// applies to. Sensor-triggered daily pipelines (no cron) run T+1: data for
-// date D arrives on D+1, so the deadline is on D+1. Cron pipelines and hourly
-// ":MM" deadlines keep their own date. Composite hourly dates
-// ("2006-01-02T15") and unparseable dates are returned unchanged.
+// falls on: the execution date plus sla.deadlineDayOffset days. Hourly ":MM"
+// deadlines, composite hourly dates ("2006-01-02T15") and unparseable dates
+// are returned unchanged.
 func ResolveSLADate(cfg *types.PipelineConfig, date string) string {
-	if cfg == nil || cfg.SLA == nil {
-		return date
-	}
-	if cfg.Schedule.Cron != "" {
+	if cfg == nil || cfg.SLA == nil || cfg.SLA.DeadlineDayOffset == 0 {
 		return date
 	}
 	if strings.HasPrefix(cfg.SLA.Deadline, ":") {
@@ -37,7 +33,7 @@ func ResolveSLADate(cfg *types.PipelineConfig, date string) string {
 	if err != nil {
 		return date
 	}
-	return t.AddDate(0, 0, 1).Format("2006-01-02")
+	return t.AddDate(0, 0, cfg.SLA.DeadlineDayOffset).Format("2006-01-02")
 }
 
 // ResolveTriggerLockTTL returns the trigger lock TTL based on the
