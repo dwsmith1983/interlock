@@ -263,6 +263,6 @@ The framework reads sensor data from DynamoDB but does not write it. External pr
 |---|---|
 | `PK` | `PIPELINE#{pipeline-id}` |
 | `SK` | `SENSOR#{key}` |
-| Sensor fields | Any fields referenced by validation rules (e.g., `status`, `count`, `updatedAt`) |
+| `data` | A map of the fields referenced by validation rules (e.g., `status`, `count`, `updatedAt`). Rules read only this map, not top-level attributes. |
 
 When a sensor record is written, the DynamoDB stream triggers the stream-router Lambda, which starts the Step Functions execution for that pipeline.
