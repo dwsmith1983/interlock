@@ -144,9 +144,29 @@ With the default of 0, the run for 2026-03-10 is due 2026-03-10 10:00, so a run 
 
 The deadline is placed on the execution date, a UTC date, at `deadline` in `sla.timezone`, so a zone east of UTC with an early deadline (for example `Asia/Tokyo` and `08:00`) needs `deadlineDayOffset: 1`, or the deadline is already past when the day starts.
 
+### Expected Run Dates
+
+The watchdog schedules SLA alerts only for run dates the pipeline says it expects. You write one row per expected run to the control table (`<environment>-interlock-control`); Interlock never works out a run date from the clock. A pipeline with an SLA and no rows gets no proactive SLA alerts (and, in later releases, no start-by or cutoff checks).
+
+| `PK` | `SK` | Attributes |
+|---|---|---|
+| `PIPELINE#<id>` | `RUN#<runKey>` | `ttl` (optional): epoch seconds after which DynamoDB deletes the row |
+
+`<runKey>` is the execution date: `YYYY-MM-DD` for a daily `HH:MM` deadline, `YYYY-MM-DDThh` (one row per hour) for an hourly `:MM` deadline. A key of the other form is ignored, a malformed key is skipped with a warning, and a key on an excluded date is skipped. Generate a calendar of rows ahead of time, or add each day's row before its deadline:
+
+```sh
+aws dynamodb put-item --table-name production-interlock-control --item '{
+  "PK": {"S": "PIPELINE#gold-revenue"},
+  "SK": {"S": "RUN#2026-03-10"},
+  "ttl": {"N": "1775692800"}
+}'
+```
+
+The control table's TTL attribute is `ttl`; setting it (above, 2026-04-09, the run date plus 30 days) keeps old rows from piling up. Each pass the watchdog reads the rows from 8 days before to 2 days after the current UTC date and schedules alerts for every row whose breach is still ahead and whose run has not finished. That window covers any timezone and `deadlineDayOffset` up to 7, the most validation allows.
+
 ### Deadline Evaluation
 
-The watchdog creates two one-time EventBridge Scheduler entries for each pipeline with an SLA:
+The watchdog creates two one-time EventBridge Scheduler entries for each expected run date (a `RUN#` row) of a pipeline with an SLA:
 
 - **Warning**: fires at `deadline - expectedDuration`
 - **Breach**: fires at `deadline`

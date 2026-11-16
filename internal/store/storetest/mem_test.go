@@ -108,6 +108,28 @@ func TestMem_QueryOrderLimitPagingAndCount(t *testing.T) {
 	}
 }
 
+func TestMem_QueryBetween(t *testing.T) {
+	fake, mem := storetest.NewMem()
+	for _, sk := range []string{"RUN#a", "RUN#b", "RUN#b5", "RUN#c", "SENSOR#b"} {
+		mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": s("PIPELINE#p"), "SK": s(sk)})
+	}
+	out, err := fake.Query(context.Background(), &dynamodb.QueryInput{
+		TableName:                 aws.String("control"),
+		KeyConditionExpression:    aws.String("PK = :pk AND SK BETWEEN :from AND :to"),
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{":pk": s("PIPELINE#p"), ":from": s("RUN#b"), ":to": s("RUN#b~")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, it := range out.Items {
+		got = append(got, it["SK"].(*ddbtypes.AttributeValueMemberS).Value)
+	}
+	if strings.Join(got, ",") != "RUN#b,RUN#b5" {
+		t.Fatalf("between = %v, want RUN#b,RUN#b5", got)
+	}
+}
+
 func TestMem_ScanAndDelete(t *testing.T) {
 	fake, mem := storetest.NewMem()
 	mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": s("PIPELINE#p"), "SK": s(types.ConfigSK), "config": s(`{"pipeline":{"id":"p"}}`)})
