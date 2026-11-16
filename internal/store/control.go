@@ -94,6 +94,10 @@ func loadConfigRow(item map[string]ddbtypes.AttributeValue) (*types.PipelineConf
 	default:
 		if err := json.Unmarshal([]byte(raw.Value), &cfg); err != nil {
 			r.Reason = "unmarshal config: " + err.Error()
+		} else if cfg.Pipeline.ID != r.PipelineID {
+			// Handlers take the ID from the PK, so the rule on pipeline.id
+			// covers the PK only when the two match.
+			r.Reason = fmt.Sprintf("PK id %q does not match pipeline.id %q", r.PipelineID, cfg.Pipeline.ID)
 		} else if errs := validation.ValidatePipelineConfig(&cfg); len(errs) > 0 {
 			r.Reason = strings.Join(errs, "; ")
 		} else {

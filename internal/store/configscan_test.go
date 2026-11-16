@@ -50,6 +50,10 @@ func TestScanConfigs_SkipsBadRows(t *testing.T) {
 		{"config not a string", types.PipelinePK("num-config"), "num-config", "config is not a string", &ddbtypes.AttributeValueMemberN{Value: "1"}},
 		{"bad JSON", types.PipelinePK("bad-json"), "bad-json", "unmarshal config", sAttr(`{not valid`)},
 		{"JSON type mismatch", types.PipelinePK("type-mismatch"), "type-mismatch", "unmarshal config", sAttr(`{"job":{"maxRetries":"3"}}`)},
+		{"PK id differs from pipeline.id", types.PipelinePK("pk-id"), "pk-id", `PK id "pk-id" does not match pipeline.id "other"`, sAttr(`{"pipeline":{"id":"other"}}`)},
+		{"bad PK id, good pipeline.id", types.PipelinePK("bad.id"), "bad.id", `PK id "bad.id" does not match pipeline.id "bad-id"`, sAttr(`{"pipeline":{"id":"bad-id"}}`)},
+		{"pipeline.id missing", types.PipelinePK("no-id"), "no-id", `PK id "no-id" does not match pipeline.id ""`, sAttr(`{}`)},
+		{"pipeline.id breaks the rule", types.PipelinePK("a.b"), "a.b", `pipeline.id "a.b"`, sAttr(`{"pipeline":{"id":"a.b"}}`)},
 	}
 	fake, mem := storetest.NewMem()
 	for _, id := range []string{"good-a", "good-b"} {

@@ -295,6 +295,7 @@ func TestValidatePipelineConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			tt.cfg.Pipeline.ID = "orders" // the ID rule has its own test
 			errs := ValidatePipelineConfig(&tt.cfg)
 			assert.Len(t, errs, tt.wantCount)
 			if tt.wantSubstr != "" {
@@ -302,5 +303,19 @@ func TestValidatePipelineConfig(t *testing.T) {
 					"expected one of %v to contain %q", errs, tt.wantSubstr)
 			}
 		})
+	}
+}
+
+func TestValidatePipelineConfig_PipelineID(t *testing.T) {
+	maxID := strings.Repeat("a", MaxPipelineIDLen)
+	for _, id := range []string{"orders", "Gold_Revenue-2", "0", "a-b_c", maxID} {
+		cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}}
+		assert.Empty(t, ValidatePipelineConfig(&cfg), "ID %q should be accepted", id)
+	}
+	for _, id := range []string{"", maxID + "a", "a b", "a/b", "a#b", "a:b", "a.b", "a\nb", "orders\n", "caf\u00e9"} {
+		cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}}
+		errs := ValidatePipelineConfig(&cfg)
+		assert.Len(t, errs, 1, "ID %q should be rejected", id)
+		assert.True(t, containsSubstr(errs, "pipeline.id"), "errors %v should name pipeline.id", errs)
 	}
 }

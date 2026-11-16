@@ -19,9 +19,12 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 		return fmt.Errorf("unexpected PK format: %q", pk)
 	}
 
+	// A bad row is skipped, not returned as an error: a retry cannot fix it
+	// and would hold up the rest of the shard.
 	schedule, date, err := parseRerunRequestSK(sk)
 	if err != nil {
-		return err
+		d.Logger.Warn("skipping rerun request", "pipelineId", pipelineID, "error", err)
+		return nil
 	}
 
 	cfg, err := lambda.GetValidatedConfig(ctx, d, pipelineID)
@@ -30,6 +33,11 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 	}
 	if cfg == nil {
 		d.Logger.Warn("no config found for pipeline, skipping rerun request", "pipelineId", pipelineID)
+		return nil
+	}
+	if want := lambda.ResolveScheduleID(cfg); schedule != want {
+		d.Logger.Warn("skipping rerun request for a schedule the pipeline does not use",
+			"pipelineId", pipelineID, "schedule", schedule, "want", want)
 		return nil
 	}
 
@@ -151,7 +159,8 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 	}
 
 	// Write rerun record AFTER lock is confirmed.
-	if _, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, reason, ""); err != nil {
+	attempt, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, reason, "")
+	if err != nil {
 		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); relErr != nil {
 			d.Logger.Warn("failed to release lock after rerun write failure", "error", relErr)
 		}
@@ -168,7 +177,8 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunAccepted, "error", pubErr)
 	}
 
-	execName := lambda.TruncateExecName(fmt.Sprintf("%s-%s-%s-%s-rerun-%d", pipelineID, schedule, date, reason, d.Now().Unix()))
+	// The attempt keeps two reruns started in the same second apart.
+	execName := fmt.Sprintf("%s-%s-%s-rerun%d-%d", pipelineID, schedule, date, attempt, d.Now().Unix())
 	if err := lambda.StartSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
 		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); relErr != nil {
 			d.Logger.Warn("failed to release lock after SFN start failure", "error", relErr)
@@ -181,12 +191,15 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 	return nil
 }
 
-// parseRerunRequestSK extracts schedule and date from a RERUN_REQUEST# sort key.
+// parseRerunRequestSK extracts schedule and date from a RERUN_REQUEST# sort
+// key. Anyone who can write the table can write one, and the date goes into
+// the execution name, so it must be a valid execution date. The caller checks
+// the schedule against the pipeline's config.
 func parseRerunRequestSK(sk string) (schedule, date string, err error) {
 	trimmed := strings.TrimPrefix(sk, "RERUN_REQUEST#")
 	parts := strings.SplitN(trimmed, "#", 2)
-	if len(parts) < 2 {
-		return "", "", fmt.Errorf("invalid RERUN_REQUEST SK format: %q", sk)
+	if len(parts) < 2 || !lambda.IsValidExecutionDate(parts[1]) {
+		return "", "", fmt.Errorf("invalid RERUN_REQUEST SK: %q", sk)
 	}
 	return parts[0], parts[1], nil
 }

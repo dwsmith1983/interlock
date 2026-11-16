@@ -103,6 +103,7 @@ func (s *Store) CountReruns(ctx context.Context, pipelineID, schedule, date stri
 				":prefix": &ddbtypes.AttributeValueMemberS{Value: prefix},
 			},
 			ExclusiveStartKey: startKey,
+			ConsistentRead:    aws.Bool(true), // the count is the next rerun's attempt, which names its execution
 		}
 	})
 	if err != nil {

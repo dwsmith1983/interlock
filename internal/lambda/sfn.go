@@ -118,6 +118,9 @@ func BuildSFNInput(cfg *types.PipelineConfig, pipelineID, scheduleID, date, sens
 // TruncateExecName ensures an SFN execution name does not exceed the 80-character
 // AWS limit. When truncation is needed the suffix (date + timestamp) is preserved
 // by trimming characters from the beginning of the name.
+//
+// Only the deprecated root handler copies call it. Live names need no
+// truncation: validation.MaxPipelineIDLen makes every one fit.
 func TruncateExecName(name string) string {
 	if len(name) <= SFNExecNameMaxLen {
 		return name
@@ -127,7 +130,7 @@ func TruncateExecName(name string) string {
 
 // retrySuffixRE matches the -r<N> suffix of a failure retry's execution name.
 // First runs, reconciler runs and requested reruns end in -<unix seconds> or
-// -rerun-<unix seconds>, so they never match.
+// -rerun<attempt>-<unix seconds>, so they never match.
 var retrySuffixRE = regexp.MustCompile(`-r(\d+)$`)
 
 // RetriesSoFar is N from the execution name's -r<N> suffix, or 0 without one.
@@ -145,21 +148,20 @@ func RetriesSoFar(name string) int {
 }
 
 // NextExecName names the failure retry after current: its -r<N> suffix is
-// replaced by (or, when absent, appended as) -r<N+1>, within the Step
-// Functions name limit.
+// replaced by (or, when absent, appended as) -r<N+1>.
 func NextExecName(current string) string {
 	base := current
 	if loc := retrySuffixRE.FindStringIndex(current); loc != nil {
 		base = current[:loc[0]]
 	}
-	return TruncateExecName(fmt.Sprintf("%s-r%d", base, RetriesSoFar(current)+1))
+	return fmt.Sprintf("%s-r%d", base, RetriesSoFar(current)+1)
 }
 
 // StartSFN starts a Step Function execution with a unique execution name.
 // The name includes a Unix timestamp suffix to avoid ExecutionAlreadyExists
 // errors when a previous execution for the same pipeline/schedule/date failed.
 func StartSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string) error {
-	name := TruncateExecName(fmt.Sprintf("%s-%s-%s-%d", pipelineID, scheduleID, date, d.Now().Unix()))
+	name := fmt.Sprintf("%s-%s-%s-%d", pipelineID, scheduleID, date, d.Now().Unix())
 	return StartSFNWithName(ctx, d, cfg, pipelineID, scheduleID, date, name)
 }
 
