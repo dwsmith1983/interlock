@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -360,6 +361,57 @@ func TestValidate_SLADeadlineDayOffset(t *testing.T) {
 				return
 			}
 			assert.Equal(t, []string{tt.wantErr}, errs)
+		})
+	}
+}
+
+func TestValidate_Cron(t *testing.T) {
+	tests := []struct {
+		name    string
+		cron    string
+		wantErr bool
+	}{
+		{"four fields", "0 8 * *", true},
+		{"minute out of range", "61 8 * * *", true},
+		{"six fields", "0 0 8 * * *", true},
+		{"tag", "@daily", true},
+		{"weekday list item out of range", "0 8 * * 0-6,9", true},
+		{"month list item out of range", "0 8 * 1-12,13 *", true},
+		{"every descriptor", "@every 1h", true},
+		{"TZ prefix", "TZ=UTC 0 8 * * *", true},
+		{"CRON_TZ prefix", "CRON_TZ=UTC 0 8 * * *", true},
+		{"TZ prefix with no spaces", "TZ=UTC\t0\t8\t*\t*", true},
+		{"last day of month", "0 8 L * *", true},
+		{"nearest weekday", "0 8 15W * *", true},
+		{"nth weekday", "0 8 * * 5#3", true},
+		{"last weekday of month", "0 8 * * 5L", true},
+		{"weekday range with L", "0 8 * * 1-3-L", true},
+		{"day of month range with L", "0 8 3-5-L * *", true},
+		{"sunday as 7", "0 8 * * 7", true},
+		{"day of month of only commas", "0 8 , * *", true},
+		{"minute of only commas", ", 8 * * *", true},
+		{"weekday range", "0 8 * * 1-5", false},
+		{"step", "*/15 * * * *", false},
+		{"day of month list", "30 6 1,15 * *", false},
+		{"names", "0 8 * JAN,JUL MON-FRI", false},
+		{"question mark", "0 8 ? * MON", false},
+		{"trailing newline", "0 8 * * *\n", false},
+		{"double space", "0  8 * * *", false},
+		{"tab", "0\t8 * * *", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "orders"},
+				Schedule: types.ScheduleConfig{Cron: tt.cron},
+			}
+			errs := ValidatePipelineConfig(&cfg)
+			if !tt.wantErr {
+				assert.Empty(t, errs)
+				return
+			}
+			want := fmt.Sprintf("schedule.cron %q is not a valid five-field cron expression", tt.cron)
+			assert.Equal(t, []string{want}, errs)
 		})
 	}
 }

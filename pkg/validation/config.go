@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
+
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -37,6 +39,34 @@ var triggerTypes = map[types.TriggerType]bool{
 	types.TriggerDatabricks:    true,
 	types.TriggerStepFunction:  true,
 	types.TriggerLambda:        true,
+}
+
+// ParseCron parses expr as a standard five-field cron expression (minute,
+// hour, day of month, month, day of week) with robfig/cron's ParseStandard.
+// ParseStandard also takes descriptors ("@daily", "@every 1h") and a "TZ=" or
+// "CRON_TZ=" prefix; the field count rejects them. A field of only commas
+// ("0 8 , * *") parses with no values and never fires, so it is rejected too.
+func ParseCron(expr string) (*cron.SpecSchedule, error) {
+	if len(strings.Fields(expr)) != 5 {
+		return nil, fmt.Errorf("cron %q does not have five fields", expr)
+	}
+	// ParseStandard panics on a TZ prefix with no space after it, so this
+	// check must run before it.
+	if strings.HasPrefix(expr, "TZ=") || strings.HasPrefix(expr, "CRON_TZ=") {
+		return nil, fmt.Errorf("cron %q has a time zone prefix", expr)
+	}
+	parsed, err := cron.ParseStandard(expr)
+	if err != nil {
+		return nil, fmt.Errorf("parse cron %q: %w", expr, err)
+	}
+	spec, ok := parsed.(*cron.SpecSchedule)
+	if !ok {
+		return nil, fmt.Errorf("cron %q is not a field schedule", expr)
+	}
+	if spec.Minute == 0 || spec.Hour == 0 || spec.Dom == 0 || spec.Month == 0 || spec.Dow == 0 {
+		return nil, fmt.Errorf("cron %q has a field with no values", expr)
+	}
+	return spec, nil
 }
 
 // ValidatePipelineConfig checks the pipeline ID and that all retry and
@@ -73,6 +103,12 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	// values that are negative, below the minimum, or above 24 hours.
 	if p := cfg.Job.JobPollWindowSeconds; p != nil && *p != 0 && (*p < 60 || *p > 86400) {
 		errs = append(errs, fmt.Sprintf("job.jobPollWindowSeconds %d out of range [60,86400]", *p))
+	}
+
+	if c := cfg.Schedule.Cron; c != "" {
+		if _, err := ParseCron(c); err != nil {
+			errs = append(errs, fmt.Sprintf("schedule.cron %q is not a valid five-field cron expression", c))
+		}
 	}
 
 	// Cron and Include are mutually exclusive.
