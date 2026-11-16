@@ -275,14 +275,19 @@ func launches(t *testing.T, pipeline string) []string {
 
 // reportJob writes the JOB# row an http job writes to report its result:
 // SK JOB#<schedule>#<date>#<millis> with the simulated clock's millis, and
-// the run ID the trigger sent. Every e2e pipeline is sensor-triggered, so the
-// row is on the stream schedule.
+// the run ID the trigger sent. The row is on the stream schedule, the one of
+// every pipeline without a cron; reportJobOn takes the schedule.
 func reportJob(t *testing.T, pipeline, date, runID, event string) {
+	t.Helper()
+	reportJobOn(t, streamSchedule, pipeline, date, runID, event)
+}
+
+func reportJobOn(t *testing.T, schedule, pipeline, date, runID, event string) {
 	t.Helper()
 	now := mockNow(t)
 	item := map[string]ddbtypes.AttributeValue{
 		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipeline)},
-		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(streamSchedule, date, strconv.FormatInt(now.UnixMilli(), 10))},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK(schedule, date, strconv.FormatInt(now.UnixMilli(), 10))},
 		"event": &ddbtypes.AttributeValueMemberS{Value: event},
 		"runId": &ddbtypes.AttributeValueMemberS{Value: runID},
 		"ttl":   &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(now.Add(jobRowTTL).Unix(), 10)},

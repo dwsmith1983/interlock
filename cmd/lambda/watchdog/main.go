@@ -57,7 +57,6 @@ func main() {
 		SLAMonitorARN:      os.Getenv("SLA_MONITOR_ARN"),
 		SchedulerRoleARN:   os.Getenv("SCHEDULER_ROLE_ARN"),
 		SchedulerGroupName: os.Getenv("SCHEDULER_GROUP_NAME"),
-		StartedAt:          time.Now(),
 		Logger:             logger,
 	}
 	ilambda.ApplyE2EHooks(deps, cfg)

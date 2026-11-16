@@ -130,7 +130,7 @@ When a Scheduler entry fires, it invokes this Lambda to publish the correspondin
 Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs nine independent checks in a table-driven loop:
 
 1. **Stale triggers** -- scans for `TRIGGER#` records with `RUNNING` status whose TTL has expired. Publishes `SFN_TIMEOUT` events and sets status to `FAILED_FINAL`.
-2. **Missed schedules** -- loads all cron-scheduled pipeline configs, checks for missing `TRIGGER#` records for today's date. Publishes `SCHEDULE_MISSED` events for pipelines past their expected start time.
+2. **Missed schedules** -- for each `RUN#` date of a cron pipeline whose start-by time (the cron time) has passed, checks the trigger row for the job-started mark. Publishes `SCHEDULE_MISSED` once per date when the job has not started.
 3. **Missed inclusion schedules** -- checks pipelines with inclusion calendar config for missing triggers on scheduled dates. Publishes `IRREGULAR_SCHEDULE_MISSED` events.
 4. **Sensor-trigger reconciliation** -- re-evaluates trigger conditions for sensor-triggered pipelines. Self-heals missed triggers caused by silent completion-write failures.
 5. **SLA scheduling** -- proactively creates EventBridge Scheduler entries for each expected run date (`RUN#<runKey>` row, written by the user) of a pipeline with an SLA config, ensuring warnings and breaches fire even when data never arrives. A pipeline with no `RUN#` rows gets none.

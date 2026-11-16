@@ -79,6 +79,8 @@ type ControlRecord struct {
 	Data   map[string]interface{} `dynamodbav:"data,omitempty"`
 	Status string                 `dynamodbav:"status,omitempty"`
 	TTL    int64                  `dynamodbav:"ttl,omitempty"`
+	// StartedAt is when the job last started (RFC3339 UTC), on TRIGGER# rows.
+	StartedAt string `dynamodbav:"startedAt,omitempty"`
 }
 
 // JobLogRecord represents a row in the job log table (append-only).

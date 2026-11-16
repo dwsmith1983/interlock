@@ -3,48 +3,15 @@ package watchdog
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// lastCronFire returns the most recent expected fire time for a cron expression.
-func lastCronFire(cron string, now time.Time, loc *time.Location) time.Time {
-	fields := strings.Fields(cron)
-	if len(fields) < 5 {
-		return time.Time{}
-	}
-	minute, err := strconv.Atoi(fields[0])
-	if err != nil {
-		return time.Time{}
-	}
-	localNow := now.In(loc)
-
-	if fields[1] == "*" {
-		candidate := time.Date(localNow.Year(), localNow.Month(), localNow.Day(),
-			localNow.Hour(), minute, 0, 0, loc)
-		if candidate.After(localNow) {
-			candidate = candidate.Add(-time.Hour)
-		}
-		return candidate
-	}
-
-	hour, err := strconv.Atoi(fields[1])
-	if err != nil {
-		return time.Time{}
-	}
-	candidate := time.Date(localNow.Year(), localNow.Month(), localNow.Day(),
-		hour, minute, 0, 0, loc)
-	if candidate.After(localNow) {
-		candidate = candidate.Add(-24 * time.Hour)
-	}
-	return candidate
-}
-
-// detectMissedSchedules checks all cron-scheduled pipelines.
+// detectMissedSchedules is the start-by check for cron pipelines: for each RUN#
+// key whose start-by time (the cron time) passed before its job started, it
+// publishes SCHEDULE_MISSED once (a SENSOR# marker per key keeps later passes quiet).
 func detectMissedSchedules(ctx context.Context, d *lambda.Deps) error {
 	configs, err := d.ConfigCache.GetAll(ctx)
 	if err != nil {
@@ -52,66 +19,80 @@ func detectMissedSchedules(ctx context.Context, d *lambda.Deps) error {
 	}
 
 	now := d.Now()
-	today := now.Format("2006-01-02")
+	from := now.UTC().AddDate(0, 0, -runKeysDaysBack).Format("2006-01-02")
+	to := now.UTC().AddDate(0, 0, runKeysDaysAhead).Format("2006-01-02")
 
 	for id, cfg := range configs {
-		if cfg.Schedule.Cron == "" {
+		if cfg.Schedule.Cron == "" || cfg.DryRun {
 			continue
 		}
 
-		if cfg.DryRun {
-			continue
-		}
-
-		if lambda.IsExcluded(cfg, now) {
-			continue
-		}
-
-		if !d.StartedAt.IsZero() {
-			loc := lambda.ResolveTimezone(cfg.Schedule.Timezone)
-			if lastFire := lastCronFire(cfg.Schedule.Cron, now, loc); !lastFire.IsZero() && lastFire.Before(d.StartedAt) {
-				continue
-			}
-		}
-
-		scheduleID := lambda.ResolveScheduleID(cfg)
-
-		found, err := d.Store.HasTriggerForDate(ctx, id, scheduleID, today)
+		keys, err := d.Store.ListRunKeys(ctx, id, from, to)
 		if err != nil {
-			d.Logger.Error("failed to check trigger for missed schedule",
-				"pipelineId", id, "error", err)
+			d.Logger.Error("run key lookup failed in start-by check", "pipelineId", id, "error", err)
 			continue
 		}
-		if found {
+		if len(keys) == 0 {
+			d.Logger.Debug("no RUN# rows in range, no start-by check", "pipelineId", id)
 			continue
 		}
 
-		if cfg.Schedule.Time != "" {
-			loc := lambda.ResolveTimezone(cfg.Schedule.Timezone)
-			localNow := now.In(loc)
-			expectedStart, err := time.ParseInLocation("2006-01-02 15:04", today+" "+cfg.Schedule.Time, loc)
-			if err == nil && localNow.Before(expectedStart) {
+		loc := lambda.ResolveTimezone(cfg.Schedule.Timezone)
+		for _, key := range keys {
+			if !lambda.IsValidExecutionDate(key) {
+				d.Logger.Warn("skipping malformed RUN# key", "pipelineId", id, "runKey", key)
 				continue
 			}
+			if lambda.IsExcludedDate(cfg, key) {
+				continue
+			}
+			startBy, ok, err := lambda.StartByTime(cfg.Schedule.Cron, key, loc)
+			if err != nil {
+				d.Logger.Warn("start-by time failed", "pipelineId", id, "runKey", key, "error", err)
+				continue
+			}
+			if !ok || now.Before(startBy) {
+				continue
+			}
+			checkStartBy(ctx, d, id, cfg, key, startBy)
 		}
-
-		alertDetail := map[string]interface{}{
-			"source":     "watchdog",
-			"cron":       cfg.Schedule.Cron,
-			"actionHint": fmt.Sprintf("cron %s expected to fire — no trigger found", cfg.Schedule.Cron),
-		}
-		if cfg.Schedule.Time != "" {
-			alertDetail["expectedTime"] = cfg.Schedule.Time
-		}
-		if err := lambda.PublishEvent(ctx, d, string(types.EventScheduleMissed), id, scheduleID, today,
-			fmt.Sprintf("missed schedule for %s on %s", id, today), alertDetail); err != nil {
-			d.Logger.Warn("failed to publish missed schedule event", "error", err, "pipeline", id, "schedule", scheduleID, "date", today)
-		}
-
-		d.Logger.Info("detected missed schedule",
-			"pipelineId", id, "schedule", scheduleID, "date", today)
 	}
 	return nil
+}
+
+// checkStartBy publishes SCHEDULE_MISSED for one run key past its start-by
+// time, unless its job started, its run finished, or it was alerted already.
+func checkStartBy(ctx context.Context, d *lambda.Deps, id string, cfg *types.PipelineConfig, key string, startBy time.Time) {
+	scheduleID := lambda.ResolveScheduleID(cfg)
+	tr, err := d.Store.GetTrigger(ctx, id, scheduleID, key)
+	if err != nil {
+		d.Logger.Error("trigger lookup failed in start-by check", "pipelineId", id, "date", key, "error", err)
+		return
+	}
+	// FAILED_FINAL has sent its own final alert.
+	if tr != nil && (tr.StartedAt != "" || tr.Status == types.TriggerStatusCompleted || tr.Status == types.TriggerStatusFailedFinal) {
+		return
+	}
+
+	dedupKey := "schedule-missed-check#" + key
+	if marker, err := d.Store.GetSensorData(ctx, id, dedupKey); err != nil || marker != nil {
+		if err != nil {
+			d.Logger.Error("dedup marker lookup failed in start-by check", "pipelineId", id, "date", key, "error", err)
+		}
+		return
+	}
+
+	alertDetail := map[string]interface{}{"source": "watchdog", "cron": cfg.Schedule.Cron, "startBy": startBy.UTC().Format(time.RFC3339),
+		"actionHint": "start-by time passed and the job has not started; the SLA is at risk"}
+	if err := lambda.PublishEvent(ctx, d, string(types.EventScheduleMissed), id, scheduleID, key,
+		fmt.Sprintf("job for %s on %s has not started by %s", id, key, alertDetail["startBy"]), alertDetail); err != nil {
+		d.Logger.Warn("failed to publish missed schedule event", "error", err, "pipeline", id, "schedule", scheduleID, "date", key)
+		return // no marker, so the next pass retries
+	}
+	if err := d.Store.WriteSensor(ctx, id, dedupKey, map[string]interface{}{"alerted": "true"}); err != nil {
+		d.Logger.Warn("failed to write start-by dedup marker", "error", err, "pipeline", id, "date", key)
+	}
+	d.Logger.Info("detected missed start-by time", "pipelineId", id, "schedule", scheduleID, "date", key, "startBy", alertDetail["startBy"])
 }
 
 // detectMissedInclusionSchedules checks pipelines with inclusion calendar config.
