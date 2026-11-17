@@ -20,6 +20,7 @@ InitEvalLoop → Evaluate → IsReady
   → (not ready) WaitInterval → IncrementElapsed → CheckWindowExhausted
       → (window remaining) Evaluate (loop)
       → (window exhausted) ValidationExhausted → Done
+  → (cutoff) ValidationExhausted → Done
 ```
 
 SLA monitoring uses EventBridge Scheduler instead of a parallel branch. The watchdog creates one-time Scheduler entries for each run date with a `RUN#` row; at their exact timestamps they invoke the sla-monitor Lambda, which fires the alert. When the job completes, unfired entries are cancelled.
@@ -51,6 +52,11 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
         "Variable": "$.evaluateResult.status",
         "StringEquals": "passed",
         "Next": "Trigger"
+      },
+      {
+        "Variable": "$.evaluateResult.status",
+        "StringEquals": "cutoff",
+        "Next": "ValidationExhausted"
       }
     ],
     "Default": "WaitInterval"
@@ -66,7 +72,7 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
 ### How it works
 
 1. **Evaluate** calls the orchestrator with `mode: evaluate`. The orchestrator reads sensor data from DynamoDB and evaluates all validation rules defined in the pipeline config.
-2. **IsReady** branches on the result: if `passed`, proceed to trigger; otherwise, wait and re-evaluate.
+2. **IsReady** branches on the result: if `passed`, proceed to trigger; if `cutoff` (the run date's cutoff passed and it is not a rerun), go to **ValidationExhausted**, which sets `FAILED_FINAL`, publishes `SENSOR_DEADLINE_EXPIRED` and ends the execution; otherwise, wait and re-evaluate.
 3. **WaitInterval** uses `SecondsPath` for configurable poll intervals (set via `evaluation.interval` in the pipeline config).
 4. **IncrementElapsed** tracks total elapsed time using `States.MathAdd`.
 5. **CheckWindowExhausted** compares elapsed time against `evaluationWindowSeconds`. If the window is exhausted, **ValidationExhausted** has the orchestrator publish a `VALIDATION_EXHAUSTED` event and ends the execution. No job ran, so it skips the SLA cleanup; the run's unfired SLA schedules fire and sla-monitor suppresses them because the run is finished.

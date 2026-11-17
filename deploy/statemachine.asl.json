@@ -46,12 +46,17 @@
     },
     "IsReady": {
       "Type": "Choice",
-      "Comment": "Check if all traits passed evaluation",
+      "Comment": "Trigger when evaluation passed; end the run in ValidationExhausted when the cutoff has passed; otherwise wait and evaluate again",
       "Choices": [
         {
           "Variable": "$.evaluateResult.status",
           "StringEquals": "passed",
           "Next": "Trigger"
+        },
+        {
+          "Variable": "$.evaluateResult.status",
+          "StringEquals": "cutoff",
+          "Next": "ValidationExhausted"
         }
       ],
       "Default": "WaitInterval"
@@ -85,7 +90,7 @@
     },
     "ValidationExhausted": {
       "Type": "Task",
-      "Comment": "Publish VALIDATION_EXHAUSTED event; window closed without passing. No job ran, so the SLA cancel is skipped",
+      "Comment": "Publish VALIDATION_EXHAUSTED event; window closed without passing. No job ran, so the SLA cancel is skipped. Past the cutoff, for a date that is not a rerun, set FAILED_FINAL and publish SENSOR_DEADLINE_EXPIRED instead",
       "Resource": "${orchestrator_arn}",
       "Parameters": {
         "mode": "validation-exhausted",

@@ -176,13 +176,14 @@ InitEvalLoop → Evaluate → IsReady
   → (not ready) WaitInterval → IncrementElapsed → CheckWindowExhausted
       → (window remaining) Evaluate (loop)
       → (window exhausted) ValidationExhausted → Done
+  → (cutoff) ValidationExhausted → Done
 ```
 
 ### Evaluation Loop (7 states)
 
 1. **InitEvalLoop** — initialize elapsed-seconds counter
 2. **Evaluate** — invoke orchestrator with `mode=evaluate`
-3. **IsReady** — if `passed`, go to Trigger; otherwise WaitInterval
+3. **IsReady**: if `passed`, go to Trigger; if `cutoff` (the cutoff passed and the date is not a rerun), go to ValidationExhausted, which sets `FAILED_FINAL` and publishes `SENSOR_DEADLINE_EXPIRED`; otherwise WaitInterval
 4. **WaitInterval** — configurable delay between evaluation attempts
 5. **IncrementElapsed** — track total elapsed time via `States.MathAdd`
 6. **CheckWindowExhausted** — if elapsed >= window, go to ValidationExhausted
