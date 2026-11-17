@@ -69,7 +69,7 @@ type OrchestratorInput struct {
 // OrchestratorOutput is the output of the orchestrator Lambda.
 type OrchestratorOutput struct {
 	Mode     string                 `json:"mode"`
-	Status   string                 `json:"status,omitempty"` // evaluate: "passed", "not_ready", "error" or "cutoff"
+	Status   string                 `json:"status,omitempty"` // evaluate: "passed", "not_ready", "error" or "cutoff"; validation-exhausted: "released", "exhausted" or "cutoff"
 	Results  interface{}            `json:"results,omitempty"`
 	RunID    string                 `json:"runId"` // always emitted: SFN CheckJob dereferences $.triggerResult.runId
 	JobType  string                 `json:"jobType,omitempty"`

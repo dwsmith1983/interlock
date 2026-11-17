@@ -3,66 +3,108 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"time"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// handleValidationExhausted ends an evaluation that did not launch the job.
-// At or after the cutoff, for a date that is not a rerun, it closes the run
-// (failAtCutoff). Otherwise the window closed without all rules passing: it
-// writes the validation-exhausted joblog row and publishes VALIDATION_EXHAUSTED.
+// Validation-exhausted statuses: a first run released before its cutoff, and
+// a date that ends with VALIDATION_EXHAUSTED.
+const (
+	statusReleased  = "released"
+	statusExhausted = "exhausted"
+)
+
+// handleValidationExhausted ends an evaluation whose window closed without
+// all rules passing. With no cutoff for the date, or for a rerun, the run
+// ends (failExhausted). Otherwise, at or after the cutoff the run closes
+// (failAtCutoff), and before it the date is released (releaseEvaluation) so
+// readiness can be evaluated again until the cutoff.
 func handleValidationExhausted(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
 	cfg, err := d.Store.GetConfig(ctx, input.PipelineID)
 	if err != nil {
 		return lambda.OrchestratorOutput{}, fmt.Errorf("validation-exhausted get config: %w", err)
 	}
-	if cfg != nil && lambda.CutoffPassed(cfg, input.Date, d.Now()) {
-		rerun, err := lambda.IsRerun(ctx, d, input.PipelineID, input.ScheduleID, input.Date)
-		if err != nil {
+	cutoffAt := lambda.ResolveCutoffTime(cfg, input.Date)
+	rerun := false
+	if !cutoffAt.IsZero() {
+		if rerun, err = lambda.IsRerun(ctx, d, input.PipelineID, input.ScheduleID, input.Date); err != nil {
 			return lambda.OrchestratorOutput{}, fmt.Errorf("validation-exhausted: %w", err)
 		}
-		if !rerun {
-			if err := failAtCutoff(ctx, d, cfg, input); err != nil {
-				return lambda.OrchestratorOutput{}, err
-			}
-			return lambda.OrchestratorOutput{Mode: "validation-exhausted", Status: statusCutoff}, nil
-		}
 	}
 
-	if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, types.JobEventValidationExhausted, "", 0, "evaluation window exhausted without passing"); err != nil {
-		return lambda.OrchestratorOutput{}, fmt.Errorf("write validation-exhausted joblog: %w", err)
+	var status string
+	switch {
+	case cutoffAt.IsZero() || rerun:
+		status, err = statusExhausted, failExhausted(ctx, d, input)
+	case !d.Now().Before(cutoffAt):
+		status, err = statusCutoff, failAtCutoff(ctx, d, cfg, input)
+	default:
+		status, err = statusReleased, releaseEvaluation(ctx, d, cfg, input, cutoffAt)
 	}
-
-	if err := lambda.PublishEvent(ctx, d, string(types.EventValidationExhausted), input.PipelineID, input.ScheduleID, input.Date, "evaluation window exhausted without passing"); err != nil {
-		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventValidationExhausted, "error", err)
+	if err != nil {
+		return lambda.OrchestratorOutput{}, err
 	}
+	return lambda.OrchestratorOutput{Mode: "validation-exhausted", Status: status}, nil
+}
 
-	return lambda.OrchestratorOutput{
-		Mode:   "validation-exhausted",
-		Status: "exhausted",
-	}, nil
+// releaseEvaluation writes the evaluation-released joblog row, deletes the
+// RUNNING trigger row so a later sensor write or the watchdog can start
+// evaluation again, then publishes EVALUATION_RELEASED (best effort). A
+// failed delete is retried with a second joblog row, which is harmless.
+func releaseEvaluation(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, input lambda.OrchestratorInput, cutoffAt time.Time) error {
+	pipelineID, schedule, date := input.PipelineID, input.ScheduleID, input.Date
+	if running, err := triggerRunning(ctx, d, input); err != nil || !running {
+		return err
+	}
+	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventEvaluationReleased, "", 0, "evaluation window exhausted before the cutoff"); err != nil {
+		return fmt.Errorf("write evaluation-released joblog: %w", err)
+	}
+	if err := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); err != nil {
+		return fmt.Errorf("validation-exhausted: %w", err)
+	}
+	at := cutoffAt.UTC().Format(time.RFC3339)
+	detail := map[string]interface{}{"source": "orchestrator", "cutoff": cfg.Schedule.Trigger.Cutoff, "cutoffAt": at,
+		"actionHint": "the lock is released; a new sensor write or the watchdog starts evaluation again before the cutoff"}
+	if err := lambda.PublishEvent(ctx, d, string(types.EventEvaluationReleased), pipelineID, schedule, date,
+		fmt.Sprintf("%s was not ready for %s within its evaluation window; evaluation can start again until the cutoff %s", pipelineID, date, at), detail); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventEvaluationReleased, "error", err)
+	}
+	d.Logger.InfoContext(ctx, "evaluation released before its cutoff",
+		"pipelineId", pipelineID, "schedule", schedule, "date", date, "cutoffAt", at)
+	return nil
+}
+
+// failExhausted writes the validation-exhausted joblog row, publishes
+// VALIDATION_EXHAUSTED (the date's final alert, so a failed publish fails the
+// state), then sets the RUNNING trigger row FAILED_FINAL.
+func failExhausted(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) error {
+	pipelineID, schedule, date := input.PipelineID, input.ScheduleID, input.Date
+	if running, err := triggerRunning(ctx, d, input); err != nil || !running {
+		return err
+	}
+	const msg = "evaluation window exhausted without passing"
+	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventValidationExhausted, "", 0, msg); err != nil {
+		return fmt.Errorf("write validation-exhausted joblog: %w", err)
+	}
+	if err := lambda.PublishEvent(ctx, d, string(types.EventValidationExhausted), pipelineID, schedule, date, msg); err != nil {
+		return fmt.Errorf("publish %s: %w", types.EventValidationExhausted, err)
+	}
+	if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, types.TriggerStatusFailedFinal); err != nil {
+		return fmt.Errorf("validation-exhausted: %w", err)
+	}
+	return nil
 }
 
 // failAtCutoff publishes SENSOR_DEADLINE_EXPIRED, then sets the RUNNING
 // trigger row FAILED_FINAL. Publishing first keeps a failed publish
 // retryable: FAILED_FINAL removes the TTL, so a write to revert would leave a
-// row RUNNING for good. A missing or finished row (a Task retry after
-// success, or a run someone else ended) is left alone.
+// row RUNNING for good.
 func failAtCutoff(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, input lambda.OrchestratorInput) error {
 	pipelineID, schedule, date := input.PipelineID, input.ScheduleID, input.Date
-	tr, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
-	if err != nil {
-		return fmt.Errorf("validation-exhausted cutoff: %w", err)
-	}
-	if tr == nil || tr.Status != types.TriggerStatusRunning {
-		status := "missing"
-		if tr != nil {
-			status = tr.Status
-		}
-		d.Logger.InfoContext(ctx, "cutoff passed, trigger row not RUNNING, leaving it",
-			"pipelineId", pipelineID, "schedule", schedule, "date", date, "status", status)
-		return nil
+	if running, err := triggerRunning(ctx, d, input); err != nil || !running {
+		return err
 	}
 	if err := lambda.PublishCutoffExpired(ctx, d, cfg, pipelineID, schedule, date, "orchestrator"); err != nil {
 		return fmt.Errorf("validation-exhausted cutoff: %w", err)
@@ -73,6 +115,26 @@ func failAtCutoff(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig
 	d.Logger.InfoContext(ctx, "run ended at its cutoff without starting",
 		"pipelineId", pipelineID, "schedule", schedule, "date", date)
 	return nil
+}
+
+// triggerRunning reports whether the date's trigger row is RUNNING. A
+// missing or finished row (a Task retry after success, or a run someone else
+// ended) is logged and left alone.
+func triggerRunning(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (bool, error) {
+	tr, err := d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
+	if err != nil {
+		return false, fmt.Errorf("validation-exhausted: %w", err)
+	}
+	if tr != nil && tr.Status == types.TriggerStatusRunning {
+		return true, nil
+	}
+	status := "missing"
+	if tr != nil {
+		status = tr.Status
+	}
+	d.Logger.InfoContext(ctx, "validation exhausted, trigger row not RUNNING, leaving it",
+		"pipelineId", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date, "status", status)
+	return false, nil
 }
 
 // handleJobPollExhausted writes a timeout row for the run when the job poll

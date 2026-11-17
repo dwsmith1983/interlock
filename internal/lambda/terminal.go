@@ -35,11 +35,12 @@ func IsJobTerminal(ctx context.Context, d *Deps, pipelineID, scheduleID, date st
 // RUNNING while the previous attempt's row is the newest, and the run is
 // still going. Nor is it finished with no job row or a non-terminal newest
 // row. Any other terminal newest row finishes it: a success is never
-// retried (a requested rerun after one has had its SLA verdict), validation
-// exhaustion writes its row without touching the trigger row, and a failed
-// lock release leaves infra-trigger-exhausted under a RUNNING row. Without
-// a trigger row IsJobTerminal decides, for example a trigger-exhausted run
-// whose lock was released.
+// retried (a requested rerun after one has had its SLA verdict), a
+// validation-exhausted row under a RUNNING row is only a failed status write
+// (validation exhaustion sets FAILED_FINAL, or releases the lock), and a
+// failed lock release leaves infra-trigger-exhausted under a RUNNING row.
+// Without a trigger row IsJobTerminal decides, for example a
+// trigger-exhausted run whose lock was released.
 func RunFinished(ctx context.Context, d *Deps, tr *types.ControlRecord, pipelineID, scheduleID, date string) (finished bool, reason string) {
 	if tr == nil {
 		if IsJobTerminal(ctx, d, pipelineID, scheduleID, date) {

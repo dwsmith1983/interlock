@@ -522,6 +522,28 @@ func runningExecutions(t *testing.T) []sfntypes.ExecutionListItem {
 	return running
 }
 
+// executionNames returns the names of the state machine's executions, of any
+// status, that start with prefix.
+func executionNames(t *testing.T, prefix string) []string {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	var names []string
+	p := sfn.NewListExecutionsPaginator(sfnAPI, &sfn.ListExecutionsInput{StateMachineArn: aws.String(stateMachineARN)})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			t.Fatalf("list executions: %v", err)
+		}
+		for _, e := range page.Executions {
+			if name := aws.ToString(e.Name); strings.HasPrefix(name, prefix) {
+				names = append(names, name)
+			}
+		}
+	}
+	return names
+}
+
 // invoke calls a Lambda synchronously and fails on an invoke or function error.
 func invoke(t *testing.T, fn string, payload []byte) {
 	t.Helper()

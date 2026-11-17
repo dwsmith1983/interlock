@@ -459,6 +459,92 @@ func TestScenarioCutoffDuringEvaluation(t *testing.T) {
 	assertLaunches(t, id, 0)
 }
 
+// Two pipelines with a 14:00 cutoff and a 10 s evaluation window become ready
+// at 13:00 without their "upstream" sensor. Each evaluation runs out before
+// the cutoff, so ValidationExhausted releases the date: no trigger row, an
+// evaluation-released job row, EVALUATION_RELEASED and no launch.
+// "released-then-ready" gets its upstream sensor at 13:30 and a new trigger
+// sensor write, which starts it again; it launches and completes.
+// "released-never-ready" is restarted by the watchdog's reconciler at 13:40
+// (JOB_TRIGGERED, not TRIGGER_RECOVERED), runs out again, and the 14:01 pass
+// closes it with one SENSOR_DEADLINE_EXPIRED; a later pass adds nothing, and
+// EVALUATION_RELEASED is never an alert.
+func TestScenarioEvaluationReleased(t *testing.T) {
+	const readyID, neverID = "released-then-ready", "released-never-ready"
+	start, date := startDay(t)
+	at := func(hour, minute int) time.Time {
+		return time.Date(start.Year(), start.Month(), start.Day(), hour, minute, 0, 0, time.UTC)
+	}
+	for _, id := range []string{readyID, neverID} {
+		cfg := scenarioConfig(id)
+		cfg.Schedule.Trigger.Cutoff = "14:00"
+		cfg.Schedule.Evaluation = types.EvaluationWindow{Window: "10s", Interval: "5s"} // real seconds
+		cfg.Validation.Rules = append(cfg.Validation.Rules, types.ValidationRule{Key: "upstream", Check: types.CheckExists})
+		putConfig(t, cfg)
+	}
+
+	advanceTo(t, at(13, 0))
+	jt, released := string(types.EventJobTriggered), string(types.EventEvaluationReleased)
+	writeReady(t, readyID, date)
+	writeReady(t, neverID, date)
+	for _, id := range []string{readyID, neverID} {
+		waitEvents(t, id, date, map[string]int{jt: 1, released: 1})
+		assertReleased(t, id, date, 1)
+	}
+
+	// An identical item makes no stream record, so the trigger sensor changes.
+	advanceTo(t, at(13, 30))
+	writeSensor(t, readyID, "upstream", map[string]interface{}{"date": date})
+	writeSensor(t, readyID, scenarioSensor, map[string]interface{}{"status": "ready", "date": date, "attempt": 2})
+	reportJob(t, readyID, date, waitLaunch(t, readyID, 1), types.JobEventSuccess)
+	waitCompleted(t, readyID, date)
+	vp, jc := string(types.EventValidationPassed), string(types.EventJobCompleted)
+	waitEvents(t, readyID, date, map[string]int{jt: 3, released: 1, vp: 1, jc: 1}, []string{released, vp, jc})
+	assertLaunches(t, readyID, 1)
+
+	advanceTo(t, at(13, 40))
+	invokeWatchdog(t) // restarts only neverID: readyID has a trigger row
+	waitEvents(t, neverID, date, map[string]int{jt: 2, released: 2})
+	assertReleased(t, neverID, date, 2)
+
+	advanceTo(t, at(14, 1))
+	invokeWatchdog(t)
+	expired := string(types.EventSensorDeadlineExpired)
+	waitEvents(t, neverID, date, map[string]int{jt: 2, released: 2, expired: 1})
+	assertTriggerStatus(t, neverID, date, types.TriggerStatusFailedFinal)
+
+	advanceTo(t, at(14, 2))
+	invokeWatchdog(t)
+	waitAlerts(t, neverID, alert{neverID, date, expired})
+	waitEvents(t, neverID, date, map[string]int{jt: 2, released: 2, expired: 1})
+	assertLaunches(t, neverID, 0)
+	waitAlerts(t, readyID, alert{readyID, date, jc})
+	assertTriggerStatus(t, readyID, date, types.TriggerStatusCompleted)
+}
+
+// assertReleased checks a date whose n evaluations all ran out before its
+// cutoff: no trigger row, n evaluation-released job rows, n executions that
+// succeeded through ValidationExhausted without Trigger, and no launch.
+func assertReleased(t *testing.T, id, date string, n int) {
+	t.Helper()
+	assertTriggerStatus(t, id, date, "")
+	if got, want := jobEvents(t, id), slices.Repeat([]string{types.JobEventEvaluationReleased}, n); !slices.Equal(got, want) {
+		t.Fatalf("%s job log = %v, want %v", id, got, want)
+	}
+	names := executionNames(t, id+"-"+streamSchedule+"-")
+	if len(names) != n {
+		t.Fatalf("%s executions = %v, want %d", id, names, n)
+	}
+	for _, name := range names {
+		waitFor(t, settleTimeout, name+" to end", func() bool { return executionStatus(t, name) != sfntypes.ExecutionStatusRunning })
+		h := executionHistory(t, name)
+		if got := executionStatus(t, name); got != sfntypes.ExecutionStatusSucceeded || !stateExited(h, "ValidationExhausted") || stateExited(h, "Trigger") {
+			t.Fatalf("execution %s = %s, want SUCCEEDED through ValidationExhausted without Trigger", name, got)
+		}
+	}
+	assertLaunches(t, id, 0)
+}
+
 // The job reports fail for run A. Execution A's CompleteTrigger is the only
 // actor that reacts (job.maxRetries 1): it keeps the trigger row RUNNING,
 // starts B as <A>-r1 and ends through IsRetrying and Done, leaving the SLA to
