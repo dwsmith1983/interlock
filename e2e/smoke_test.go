@@ -13,7 +13,7 @@ import (
 const (
 	smokePipeline   = "smoke"
 	smokeSensor     = "smoke-ready"
-	smokeDeadline   = "10:00"         // trigger window closes at 10:00 UTC each day
+	smokeCutoff     = "10:00"         // latest start time, 10:00 UTC each day
 	settleTimeout   = 3 * time.Minute // first run: includes Lambda cold starts
 	deliverTimeout  = time.Minute     // EventBridge delivery after a known publish
 	streamSchedule  = "stream"        // lambda.ResolveScheduleID for a pipeline without cron
@@ -21,15 +21,15 @@ const (
 )
 
 // smokeConfig is a sensor-triggered pipeline whose http job is the mock. The
-// trigger deadline gives the watchdog something to do on the next simulated
-// day, which is how the test sees the advanced clock reach the Lambdas.
+// cutoff gives the watchdog something to do on the next simulated day, which
+// is how the test sees the advanced clock reach the Lambdas.
 func smokeConfig() types.PipelineConfig {
 	return types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: smokePipeline},
 		Schedule: types.ScheduleConfig{
 			Trigger: &types.TriggerCondition{
 				Key: smokeSensor, Check: types.CheckEquals, Field: "status", Value: "ready",
-				Deadline: smokeDeadline,
+				Cutoff: smokeCutoff,
 			},
 			Evaluation: types.EvaluationWindow{Window: "60s", Interval: "5s"},
 		},
@@ -73,7 +73,7 @@ func TestHarnessSmoke(t *testing.T) {
 		return exactRunEvents(evs, string(types.EventValidationPassed), string(types.EventJobCompleted))
 	})
 
-	// Next simulated day, past the trigger deadline. No sensor arrives, so
+	// Next simulated day, past the cutoff. No sensor arrives, so
 	// the watchdog closes that day's window: a FAILED_FINAL row keyed on the
 	// simulated date and SENSOR_DEADLINE_EXPIRED stamped with simulated time.
 	next := time.Date(day.Year(), day.Month(), day.Day()+1, 12, 0, 0, 0, time.UTC)

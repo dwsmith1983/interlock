@@ -1609,11 +1609,11 @@ func TestWatchdog_ScheduleSLAAlerts_SensorDeadlineExpired_WritesFAILEDFINAL(t *t
 		Pipeline: types.PipelineIdentity{ID: "silver-seq-hour"},
 		Schedule: types.ScheduleConfig{
 			Trigger: &types.TriggerCondition{
-				Key:      "audit-result",
-				Check:    "equals",
-				Field:    "match",
-				Value:    true,
-				Deadline: ":45",
+				Key:    "audit-result",
+				Check:  "equals",
+				Field:  "match",
+				Value:  true,
+				Cutoff: ":45",
 			},
 			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
 		},
@@ -1673,11 +1673,11 @@ func TestWatchdog_ScheduleSLAAlerts_SensorDeadlineExpired_SkipsIfTriggerExists(t
 		Pipeline: types.PipelineIdentity{ID: "silver-seq-hour"},
 		Schedule: types.ScheduleConfig{
 			Trigger: &types.TriggerCondition{
-				Key:      "audit-result",
-				Check:    "equals",
-				Field:    "match",
-				Value:    true,
-				Deadline: ":45",
+				Key:    "audit-result",
+				Check:  "equals",
+				Field:  "match",
+				Value:  true,
+				Cutoff: ":45",
 			},
 			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
 		},
@@ -1730,11 +1730,11 @@ func TestWatchdog_ScheduleSLAAlerts_SensorDeadlineNotExpired_SchedulesSLAOnly(t 
 		Pipeline: types.PipelineIdentity{ID: "silver-seq-hour"},
 		Schedule: types.ScheduleConfig{
 			Trigger: &types.TriggerCondition{
-				Key:      "audit-result",
-				Check:    "equals",
-				Field:    "match",
-				Value:    true,
-				Deadline: ":45",
+				Key:    "audit-result",
+				Check:  "equals",
+				Field:  "match",
+				Value:  true,
+				Cutoff: ":45",
 			},
 			Evaluation: types.EvaluationWindow{Window: "15m", Interval: "2m"},
 		},
@@ -1791,11 +1791,11 @@ func TestWatchdog_ScheduleSLAAlerts_DailySensorDeadlineExpired_WritesFAILEDFINAL
 		Pipeline: types.PipelineIdentity{ID: "silver-seq-day"},
 		Schedule: types.ScheduleConfig{
 			Trigger: &types.TriggerCondition{
-				Key:      "daily-status",
-				Check:    "equals",
-				Field:    "all_hours_complete",
-				Value:    true,
-				Deadline: "09:00",
+				Key:    "daily-status",
+				Check:  "equals",
+				Field:  "all_hours_complete",
+				Value:  true,
+				Cutoff: "09:00",
 			},
 			Evaluation: types.EvaluationWindow{Window: "30m", Interval: "5m"},
 		},
@@ -3151,11 +3151,11 @@ func TestWatchdog_DryRun_SkipsAllSchedulingAndAlerts(t *testing.T) {
 			Cron:       "0 * * * *",
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 			Trigger: &types.TriggerCondition{
-				Key:      "weather-data",
-				Check:    "field_equals",
-				Field:    "complete",
-				Value:    "true",
-				Deadline: ":45",
+				Key:    "weather-data",
+				Check:  "field_equals",
+				Field:  "complete",
+				Value:  "true",
+				Cutoff: ":45",
 			},
 		},
 		SLA: &types.SLAConfig{
@@ -3306,11 +3306,11 @@ func TestCloseSensorTriggerWindow_PrefersScheduleTimezone(t *testing.T) {
 		Schedule: types.ScheduleConfig{
 			Timezone: "US/Eastern", // EDT = UTC-4 in March
 			Trigger: &types.TriggerCondition{
-				Key:      "sensor-data",
-				Check:    "equals",
-				Field:    "ready",
-				Value:    true,
-				Deadline: "09:00", // 09:00 Eastern = 13:00 UTC
+				Key:    "sensor-data",
+				Check:  "equals",
+				Field:  "ready",
+				Value:  true,
+				Cutoff: "09:00", // 09:00 Eastern = 13:00 UTC
 			},
 			Evaluation: types.EvaluationWindow{Window: "1h", Interval: "5m"},
 		},
