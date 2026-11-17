@@ -96,16 +96,29 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 		return handleDryRunTrigger(ctx, d, cfg, pipelineID, scheduleID, date, now)
 	}
 
+	// After the cutoff nothing starts for the date. Close it when it has no
+	// trigger row yet; otherwise only late data is handled. An error fails
+	// the record, so its redelivery retries the close.
+	if lambda.CutoffPassed(cfg, date, now) {
+		closed, err := lambda.CloseRunAtCutoff(ctx, d, cfg, pipelineID, scheduleID, date, "stream-router")
+		if err != nil {
+			return fmt.Errorf("close %q at its cutoff: %w", pipelineID, err)
+		}
+		if !closed {
+			handleLateData(ctx, d, pipelineID, scheduleID, date)
+			d.Logger.InfoContext(ctx, "sensor ignored: run date will not start",
+				"pipelineId", pipelineID, "schedule", scheduleID, "date", date)
+		}
+		return nil
+	}
+
 	// Acquire trigger lock to prevent duplicate executions.
 	acquired, err := d.Store.AcquireTriggerLock(ctx, pipelineID, scheduleID, date, lambda.ResolveTriggerLockTTL())
 	if err != nil {
 		return fmt.Errorf("acquire trigger lock for %q: %w", pipelineID, err)
 	}
 	if !acquired {
-		// Check if this is late data arriving after a completed pipeline.
-		if err := checkLateDataArrival(ctx, d, pipelineID, scheduleID, date); err != nil {
-			d.Logger.WarnContext(ctx, "late data check failed", "error", err)
-		}
+		handleLateData(ctx, d, pipelineID, scheduleID, date)
 		d.Logger.InfoContext(ctx, "trigger lock already held",
 			"pipelineId", pipelineID,
 			"schedule", scheduleID,
@@ -143,4 +156,12 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 		"date", date,
 	)
 	return nil
+}
+
+// handleLateData requests a rerun when the sensor is late data for a date
+// whose run completed, and logs a failed check.
+func handleLateData(ctx context.Context, d *lambda.Deps, pipelineID, scheduleID, date string) {
+	if err := checkLateDataArrival(ctx, d, pipelineID, scheduleID, date); err != nil {
+		d.Logger.WarnContext(ctx, "late data check failed", "error", err)
+	}
 }

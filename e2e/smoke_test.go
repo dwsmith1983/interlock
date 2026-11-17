@@ -46,8 +46,9 @@ func smokeConfig() types.PipelineConfig {
 }
 
 func TestHarnessSmoke(t *testing.T) {
-	day := mockNow(t).UTC()
-	date := day.Format(smokeDateLayout)
+	// A fresh day at 06:00, before the 10:00 cutoff, whichever test ran
+	// before: a sensor after the cutoff would start nothing.
+	day, date := startDay(t)
 
 	// The config goes in first: the stream-router's config cache is pinned
 	// to the simulated clock, so it must see the config on its first load.

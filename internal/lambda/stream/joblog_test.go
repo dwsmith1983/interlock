@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"testing"
 	"time"
@@ -23,10 +24,18 @@ type publishedEvent struct {
 }
 
 // recordingEventBridge is a lambda.EventBridgeAPI double that keeps each
-// event's detail-type and detail.
-type recordingEventBridge struct{ events []publishedEvent }
+// event's detail-type and detail. While fail > 0, PutEvents fails and counts
+// it down.
+type recordingEventBridge struct {
+	events []publishedEvent
+	fail   int
+}
 
 func (r *recordingEventBridge) PutEvents(_ context.Context, in *eventbridge.PutEventsInput, _ ...func(*eventbridge.Options)) (*eventbridge.PutEventsOutput, error) {
+	if r.fail > 0 {
+		r.fail--
+		return nil, errors.New("put events failed")
+	}
 	for _, e := range in.Entries {
 		var evt types.InterlockEvent
 		if err := json.Unmarshal([]byte(*e.Detail), &evt); err != nil {
