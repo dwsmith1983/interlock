@@ -348,3 +348,32 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 		})
 	}
 }
+
+// TestCompleteTrigger_SuccessStampsCompletedAt: a success sets COMPLETED with
+// the completion time and no TTL; a later completion moves the time forward.
+func TestCompleteTrigger_SuccessStampsCompletedAt(t *testing.T) {
+	d, mem, rec := memDeps(t, failCfg(0))
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return now }
+	row := strItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("s", ctDate), "status", types.TriggerStatusRunning)
+	row["ttl"] = &ddbtypes.AttributeValueMemberN{Value: "1"}
+	mem.Put("control", row)
+
+	for _, want := range []string{"2026-03-01T12:00:00Z", "2026-03-01T12:05:00Z"} {
+		out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+			Mode: "complete-trigger", PipelineID: "p", ScheduleID: "s", Date: ctDate,
+			Event: types.JobEventSuccess, ExecutionName: ctExec, RunID: ctExec,
+		})
+		if err != nil || out.Status != types.TriggerStatusCompleted {
+			t.Fatalf("complete-trigger at %s: status %q err %v, want %q", want, out.Status, err, types.TriggerStatusCompleted)
+		}
+		item := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", ctDate))
+		if _, hasTTL := item["ttl"]; strAttr(t, item, "status") != types.TriggerStatusCompleted || strAttr(t, item, "completedAt") != want || hasTTL {
+			t.Errorf("trigger row %v, want status COMPLETED, completedAt %s and no ttl", item, want)
+		}
+		now = now.Add(5 * time.Minute)
+	}
+	if !slices.Contains(rec.ops, "status "+types.TriggerStatusCompleted) {
+		t.Errorf("ops %q, want them to hold %q", rec.ops, "status "+types.TriggerStatusCompleted)
+	}
+}

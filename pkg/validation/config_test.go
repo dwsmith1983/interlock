@@ -460,3 +460,46 @@ func TestValidate_ScheduleTimeWithCron(t *testing.T) {
 	cfg.Schedule = types.ScheduleConfig{Time: "08:30", Include: &types.InclusionConfig{Dates: []string{"2026-03-31"}}}
 	assert.Empty(t, ValidatePipelineConfig(&cfg))
 }
+
+func TestValidate_PostRunWatchWindow(t *testing.T) {
+	rule := []types.ValidationRule{{Key: "quality", Check: types.CheckExists}}
+	window := func(w string) *types.PostRunConfig { return &types.PostRunConfig{WatchWindow: w} }
+	timeout := func(s, w string) *types.PostRunConfig {
+		return &types.PostRunConfig{Rules: rule, SensorTimeout: s, WatchWindow: w}
+	}
+	tests := []struct {
+		name     string
+		postRun  *types.PostRunConfig
+		wantErrs []string
+	}{
+		{"postRun nil", nil, nil},
+		{"window empty", window(""), nil},
+		{"6h", window("6h"), nil},
+		{"90m", window("90m"), nil},
+		{"1s", window("1s"), nil},
+		{"720h", window("720h"), nil},
+		{"abc", window("abc"), []string{`postRun.watchWindow invalid Go duration "abc"`}},
+		{"no unit", window("6"), []string{`postRun.watchWindow invalid Go duration "6"`}},
+		{"0s", window("0s"), []string{`postRun.watchWindow "0s" out of range (0s,720h]`}},
+		{"negative", window("-1h"), []string{`postRun.watchWindow "-1h" out of range (0s,720h]`}},
+		{"721h", window("721h"), []string{`postRun.watchWindow "721h" out of range (0s,720h]`}},
+		{"timeout 2h, default window", timeout("2h", ""), nil},
+		{"timeout 4h, default window", timeout("4h", ""), nil},
+		{"timeout 5h, default window", timeout("5h", ""), []string{"postRun.sensorTimeout 5h0m0s exceeds postRun.watchWindow 4h0m0s (default)"}},
+		{"timeout 5h, window 6h", timeout("5h", "6h"), nil},
+		{"timeout 6h, window 6h", timeout("6h", "6h"), nil},
+		{"timeout 5h, window does not parse", timeout("5h", "abc"), []string{`postRun.watchWindow invalid Go duration "abc"`}},
+		{"timeout 7h, window 6h", timeout("7h", "6h"), []string{"postRun.sensorTimeout 7h0m0s exceeds postRun.watchWindow 6h0m0s"}},
+		{"timeout 5h, no rules", &types.PostRunConfig{SensorTimeout: "5h"}, nil},
+		{"timeout does not parse", timeout("abc", ""), []string{`postRun.sensorTimeout invalid Go duration "abc"`}},
+		{"timeout zero", timeout("0s", ""), []string{`postRun.sensorTimeout "0s" must be positive`}},
+		{"timeout negative", timeout("-1h", ""), []string{`postRun.sensorTimeout "-1h" must be positive`}},
+		{"default timeout, window 1h", timeout("", "1h"), []string{"postRun.sensorTimeout 2h0m0s (default) exceeds postRun.watchWindow 1h0m0s"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "orders"}, PostRun: tt.postRun}
+			assert.Equal(t, tt.wantErrs, ValidatePipelineConfig(&cfg))
+		})
+	}
+}

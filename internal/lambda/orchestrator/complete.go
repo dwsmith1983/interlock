@@ -16,15 +16,16 @@ import (
 const StatusRetrying = "retrying"
 
 // handleCompleteTrigger decides what happens after a run ends, and is the
-// only place that retries a failed job. Success sets COMPLETED and captures
-// the post-run baseline. A fail or timeout starts the next attempt, or sets
+// only place that retries a failed job. Success sets COMPLETED, records the
+// completion time (which starts the post-run watch window) and captures the
+// post-run baseline. A fail or timeout starts the next attempt, or sets
 // FAILED_FINAL when the date is excluded or the retry budget is spent.
 func handleCompleteTrigger(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
 	if input.Event != types.JobEventSuccess {
 		return handleRunFailure(ctx, d, input)
 	}
 
-	if err := d.Store.SetTriggerStatus(ctx, input.PipelineID, input.ScheduleID, input.Date, types.TriggerStatusCompleted); err != nil {
+	if err := d.Store.MarkTriggerCompleted(ctx, input.PipelineID, input.ScheduleID, input.Date, d.Now()); err != nil {
 		return lambda.OrchestratorOutput{}, fmt.Errorf("set trigger status: %w", err)
 	}
 

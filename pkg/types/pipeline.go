@@ -4,6 +4,7 @@ package types
 import (
 	"encoding/json"
 	"slices"
+	"time"
 )
 
 // PipelineConfig is the full configuration for a pipeline, loaded from YAML.
@@ -126,6 +127,14 @@ func IntOrDefault(p *int, def int) int {
 	return def
 }
 
+// DefaultPostRunWatchWindow is how long a completed date is watched when
+// postRun.watchWindow is unset.
+const DefaultPostRunWatchWindow = 4 * time.Hour
+
+// DefaultPostRunSensorTimeout is the watchdog's grace period for post-run
+// sensors when postRun.sensorTimeout is unset.
+const DefaultPostRunSensorTimeout = 2 * time.Hour
+
 // PostRunConfig defines optional post-completion validation.
 type PostRunConfig struct {
 	Evaluation     *EvaluationWindow `yaml:"evaluation,omitempty" json:"evaluation,omitempty"`
@@ -133,6 +142,10 @@ type PostRunConfig struct {
 	SensorTimeout  string            `yaml:"sensorTimeout,omitempty" json:"sensorTimeout,omitempty"`   // e.g. "2h"; default 2h
 	DriftThreshold *float64          `yaml:"driftThreshold,omitempty" json:"driftThreshold,omitempty"` // minimum absolute delta to trigger drift; default 0 (any change)
 	DriftField     string            `yaml:"driftField,omitempty" json:"driftField,omitempty"`         // sensor field for drift comparison; default "sensor_count"
+	// WatchWindow is how long after a run completes its date is watched for
+	// late data, drift and the post-run checks, a Go duration such as "6h";
+	// default 4h.
+	WatchWindow string `yaml:"watchWindow,omitempty" json:"watchWindow,omitempty"`
 }
 
 func shallowCopyMap(src map[string]interface{}) map[string]interface{} {

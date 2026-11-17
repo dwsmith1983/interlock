@@ -43,6 +43,7 @@ job:
     jobName: gold-revenue-etl
   maxRetries: 2
 postRun:
+  watchWindow: "6h"
   rules:
     - key: SENSOR#output-count
       check: gte
@@ -72,6 +73,7 @@ func TestPipelineConfig_UnmarshalYAML(t *testing.T) {
 	assert.Equal(t, 2, cfg.Job.MaxRetries)
 	require.NotNil(t, cfg.PostRun)
 	assert.Len(t, cfg.PostRun.Rules, 1)
+	assert.Equal(t, "6h", cfg.PostRun.WatchWindow)
 }
 
 const streamTriggeredYAML = `
@@ -299,6 +301,7 @@ func TestPipelineConfig_DeepCopy(t *testing.T) {
 		require.NotNil(t, cp.PostRun)
 		require.Len(t, cp.PostRun.Rules, len(cfg.PostRun.Rules))
 		assert.Equal(t, cfg.PostRun.Rules[0], cp.PostRun.Rules[0])
+		assert.Equal(t, "6h", cp.PostRun.WatchWindow)
 
 		assert.Equal(t, cfg.DryRun, cp.DryRun)
 

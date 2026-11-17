@@ -245,7 +245,7 @@ postRun:
 |---|---|---|---|
 | `rules` | list | -- (required) | Validation rules using the same syntax as pre-trigger rules. Uses `ALL` mode. |
 | `driftThreshold` | float* | `0` | Minimum sensor count change to trigger a drift rerun. Set to `0` for any change. |
-| `sensorTimeout` | string | `"2h"` | Grace period after job completion before the watchdog alerts on missing sensors. |
+| `sensorTimeout` | string | `"2h"` | Grace period after job completion before the watchdog alerts on missing sensors. It must be a positive Go duration and, with `rules`, at most the post-run watch window (`postRun.watchWindow`, default `"4h"`). |
 
 ### How It Works
 
