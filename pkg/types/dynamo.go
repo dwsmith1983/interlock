@@ -65,6 +65,7 @@ const (
 	JobEventRerunAccepted         = "rerun-accepted"
 	JobEventRerunRejected         = "rerun-rejected"
 	JobEventValidationExhausted   = "validation-exhausted"
+	JobEventEvaluationReleased    = "evaluation-released" // evaluation ran out before the cutoff; the lock was released
 )
 
 // ---------------------------------------------------------------------------

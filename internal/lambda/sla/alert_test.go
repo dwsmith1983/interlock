@@ -36,6 +36,7 @@ func TestSLAFireAlert_RetryKeepsAlerts(t *testing.T) {
 		{name: "FailedFinalSuppresses", trigger: types.TriggerStatusFailedFinal, jobRow: types.JobEventFail, alertType: "SLA_BREACH", wantPublish: 0},
 		{name: "NoTriggerTerminalRowSuppresses", jobRow: types.JobEventInfraTriggerExhausted, alertType: "SLA_BREACH", wantPublish: 0},
 		{name: "NotStartedPublishes", alertType: "SLA_BREACH", wantPublish: 1},
+		{name: "ReleasedEvaluationPublishes", jobRow: types.JobEventEvaluationReleased, alertType: "SLA_BREACH", wantPublish: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

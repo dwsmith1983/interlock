@@ -10,6 +10,7 @@ const (
 	EventSLABreach               EventDetailType = "SLA_BREACH"
 	EventSLAMet                  EventDetailType = "SLA_MET"
 	EventValidationExhausted     EventDetailType = "VALIDATION_EXHAUSTED"
+	EventEvaluationReleased      EventDetailType = "EVALUATION_RELEASED"
 	EventRetryExhausted          EventDetailType = "RETRY_EXHAUSTED"
 	EventSFNTimeout              EventDetailType = "SFN_TIMEOUT"
 	EventScheduleMissed          EventDetailType = "SCHEDULE_MISSED"
