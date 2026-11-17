@@ -654,6 +654,29 @@ func (s *Store) MarkTriggerStarted(ctx context.Context, pipelineID, schedule, da
 	return nil
 }
 
+// MarkTriggerCompleted sets the trigger row to COMPLETED with completedAt = at
+// (RFC3339 UTC; a later completion overwrites it) and removes its TTL. Like
+// SetTriggerStatus it creates the row when absent.
+func (s *Store) MarkTriggerCompleted(ctx context.Context, pipelineID, schedule, date string, at time.Time) error {
+	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.ControlTable,
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
+		},
+		UpdateExpression:         aws.String("SET #status = :s, completedAt = :t REMOVE #ttl"),
+		ExpressionAttributeNames: map[string]string{"#status": "status", "#ttl": "ttl"},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+			":s": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+			":t": &ddbtypes.AttributeValueMemberS{Value: at.UTC().Format(time.RFC3339)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("mark trigger completed %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	return nil
+}
+
 // FailTriggerUnlessCompleted sets the trigger row to FAILED_FINAL (removing
 // its TTL, creating it when absent) unless it is COMPLETED. It returns false,
 // and writes nothing, for a COMPLETED row.

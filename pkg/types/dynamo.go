@@ -82,6 +82,9 @@ type ControlRecord struct {
 	TTL    int64                  `dynamodbav:"ttl,omitempty"`
 	// StartedAt is when the job last started (RFC3339 UTC), on TRIGGER# rows.
 	StartedAt string `dynamodbav:"startedAt,omitempty"`
+	// CompletedAt is when the run last completed (RFC3339 UTC), on TRIGGER# rows;
+	// meaningful only while status is COMPLETED.
+	CompletedAt string `dynamodbav:"completedAt,omitempty"`
 }
 
 // JobLogRecord represents a row in the job log table (append-only).

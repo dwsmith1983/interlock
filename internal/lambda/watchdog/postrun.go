@@ -11,8 +11,6 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-const defaultSensorTimeout = 2 * time.Hour
-
 // detectMissingPostRunSensors checks pipelines with PostRun config for missing
 // post-run sensor data.
 func detectMissingPostRunSensors(ctx context.Context, d *lambda.Deps) error {
@@ -147,11 +145,11 @@ func resolveCompletionTime(ctx context.Context, d *lambda.Deps, pipelineID, sche
 
 func parseSensorTimeout(s string) time.Duration {
 	if s == "" {
-		return defaultSensorTimeout
+		return types.DefaultPostRunSensorTimeout
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil {
-		return defaultSensorTimeout
+		return types.DefaultPostRunSensorTimeout
 	}
 	return d
 }

@@ -173,6 +173,10 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		}
 	}
 
+	if cfg.PostRun != nil {
+		errs = append(errs, validatePostRun(cfg.PostRun)...)
+	}
+
 	// Dry-run validation.
 	if cfg.DryRun {
 		if cfg.Job.Type == "" {
@@ -184,4 +188,51 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	}
 
 	return errs
+}
+
+// maxPostRunWatchWindow bounds postRun.watchWindow: job and rerun rows live 30 days.
+const maxPostRunWatchWindow = 720 * time.Hour
+
+// validatePostRun checks the post-run durations. With rules, the watchdog's
+// sensor timeout must end inside the watch window (both at their defaults
+// when unset); an unparseable value is reported once, on its own.
+func validatePostRun(pr *types.PostRunConfig) []string {
+	var errs []string
+	window, windowOK := types.DefaultPostRunWatchWindow, true
+	if pr.WatchWindow != "" {
+		d, err := time.ParseDuration(pr.WatchWindow)
+		switch {
+		case err != nil:
+			errs, windowOK = append(errs, fmt.Sprintf("postRun.watchWindow invalid Go duration %q", pr.WatchWindow)), false
+		case d <= 0 || d > maxPostRunWatchWindow:
+			errs, windowOK = append(errs, fmt.Sprintf("postRun.watchWindow %q out of range (0s,720h]", pr.WatchWindow)), false
+		default:
+			window = d
+		}
+	}
+	timeout, timeoutOK := types.DefaultPostRunSensorTimeout, true
+	if pr.SensorTimeout != "" {
+		d, err := time.ParseDuration(pr.SensorTimeout)
+		switch {
+		case err != nil:
+			errs, timeoutOK = append(errs, fmt.Sprintf("postRun.sensorTimeout invalid Go duration %q", pr.SensorTimeout)), false
+		case d <= 0:
+			errs, timeoutOK = append(errs, fmt.Sprintf("postRun.sensorTimeout %q must be positive", pr.SensorTimeout)), false
+		default:
+			timeout = d
+		}
+	}
+	if len(pr.Rules) > 0 && windowOK && timeoutOK && timeout > window {
+		errs = append(errs, fmt.Sprintf("postRun.sensorTimeout %s exceeds postRun.watchWindow %s",
+			withDefaultMark(timeout, pr.SensorTimeout), withDefaultMark(window, pr.WatchWindow)))
+	}
+	return errs
+}
+
+// withDefaultMark formats d, adding " (default)" when the setting was unset.
+func withDefaultMark(d time.Duration, set string) string {
+	if set == "" {
+		return d.String() + " (default)"
+	}
+	return d.String()
 }
