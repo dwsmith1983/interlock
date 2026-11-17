@@ -28,12 +28,7 @@ func CloseRunAtCutoff(ctx context.Context, d *Deps, cfg *types.PipelineConfig, p
 		return false, nil
 	}
 
-	cutoffAt := ResolveCutoffTime(cfg, date).UTC().Format(time.RFC3339)
-	alertDetail := map[string]interface{}{"source": source, "cutoff": cfg.Schedule.Trigger.Cutoff, "cutoffAt": cutoffAt,
-		"actionHint": "cutoff passed and the pipeline did not start; nothing more will start for this date. " +
-			"Investigate, then submit a RERUN_REQUEST to run it manually"}
-	if err := PublishEvent(ctx, d, string(types.EventSensorDeadlineExpired), pipelineID, scheduleID, date,
-		fmt.Sprintf("%s did not start for %s by its cutoff %s", pipelineID, date, cutoffAt), alertDetail); err != nil {
+	if err := PublishCutoffExpired(ctx, d, cfg, pipelineID, scheduleID, date, source); err != nil {
 		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, scheduleID, date); relErr != nil {
 			d.Logger.Error("failed to delete FAILED_FINAL after a failed publish",
 				"pipelineId", pipelineID, "schedule", scheduleID, "date", date, "error", relErr)
@@ -42,8 +37,31 @@ func CloseRunAtCutoff(ctx context.Context, d *Deps, cfg *types.PipelineConfig, p
 	}
 
 	d.Logger.Info("run date closed at its cutoff",
-		"pipelineId", pipelineID, "schedule", scheduleID, "date", date, "cutoffAt", cutoffAt, "source", source)
+		"pipelineId", pipelineID, "schedule", scheduleID, "date", date, "cutoffAt", ResolveCutoffTime(cfg, date).UTC().Format(time.RFC3339), "source", source)
 	return true, nil
+}
+
+// PublishCutoffExpired publishes SENSOR_DEADLINE_EXPIRED for a run date that
+// did not start by its cutoff, with the given source in its detail. cfg must
+// have a trigger cutoff (callers check CutoffPassed first). The publish error
+// is returned unwrapped for the caller to wrap.
+func PublishCutoffExpired(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, source string) error {
+	cutoffAt := ResolveCutoffTime(cfg, date).UTC().Format(time.RFC3339)
+	alertDetail := map[string]interface{}{"source": source, "cutoff": cfg.Schedule.Trigger.Cutoff, "cutoffAt": cutoffAt,
+		"actionHint": "cutoff passed and the pipeline did not start; nothing more will start for this date. " +
+			"Investigate, then submit a RERUN_REQUEST to run it manually"}
+	return PublishEvent(ctx, d, string(types.EventSensorDeadlineExpired), pipelineID, scheduleID, date,
+		fmt.Sprintf("%s did not start for %s by its cutoff %s", pipelineID, date, cutoffAt), alertDetail)
+}
+
+// IsRerun reports whether the run date has had a rerun accepted: a RERUN#
+// row is written before any rerun or failure retry starts.
+func IsRerun(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) (bool, error) {
+	n, err := d.Store.CountReruns(ctx, pipelineID, scheduleID, date)
+	if err != nil {
+		return false, fmt.Errorf("check reruns for %q/%s/%s: %w", pipelineID, scheduleID, date, err)
+	}
+	return n > 0, nil
 }
 
 // jobRan reports whether the date's latest job row is a success, fail or

@@ -118,11 +118,7 @@ stream-router starts SFN
  Passed    Window Exhausted
    │         │
    ▼         ▼
- Trigger   VALIDATION_EXHAUSTED
-   │         │
-   ├─────────┘
-   ▼
-CheckSLA → ScheduleSLAAlerts (EventBridge Scheduler)
+ Trigger   VALIDATION_EXHAUSTED → Done
    │
    ▼
  WaitForJob → CheckJob → IsJobDone
@@ -138,9 +134,9 @@ CheckCancelSLA → CancelSLASchedules
 
 The Step Functions state machine uses 24 sequential states:
 
-1. **Evaluation loop** — evaluates validation rules at a configurable interval. When all rules pass, triggers the job. If the evaluation window expires, publishes `VALIDATION_EXHAUSTED`.
+1. **Evaluation loop**: evaluates validation rules at a configurable interval. When all rules pass, triggers the job. If the evaluation window expires, publishes `VALIDATION_EXHAUSTED` and ends the execution: no job ran, so the SLA cleanup is skipped, and the run's unfired SLA schedules still fire and are suppressed because the run is finished.
 
-2. **SLA scheduling** — after trigger (or validation exhaustion), creates one-time EventBridge Scheduler entries for SLA warning and breach deadlines. The Scheduler fires alerts independently at exact timestamps.
+2. **SLA scheduling**: not a state machine step. The watchdog creates one-time EventBridge Scheduler entries for the SLA warning and breach of each run date that has a `RUN#` row. The Scheduler fires alerts independently at exact timestamps.
 
 3. **Job polling** — polls the triggered job for completion via `check-job` mode. Terminal events (success, fail, timeout) proceed to SLA cleanup.
 

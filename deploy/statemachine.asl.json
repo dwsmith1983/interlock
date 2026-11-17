@@ -85,7 +85,7 @@
     },
     "ValidationExhausted": {
       "Type": "Task",
-      "Comment": "Publish VALIDATION_EXHAUSTED event; window closed without passing",
+      "Comment": "Publish VALIDATION_EXHAUSTED event; window closed without passing. No job ran, so the SLA cancel is skipped",
       "Resource": "${orchestrator_arn}",
       "Parameters": {
         "mode": "validation-exhausted",
@@ -94,7 +94,7 @@
         "date.$": "$.date"
       },
       "ResultPath": "$.validationExhaustedResult",
-      "Next": "CheckCancelSLA",
+      "Next": "Done",
       "Retry": [
         {
           "ErrorEquals": [
@@ -186,7 +186,7 @@
     },
     "HasTriggerResult": {
       "Type": "Choice",
-      "Comment": "If a job was triggered, poll for completion; otherwise finish (validation exhausted)",
+      "Comment": "Poll the job when Trigger wrote $.triggerResult; otherwise fail the execution",
       "Choices": [
         {
           "Variable": "$.triggerResult",
