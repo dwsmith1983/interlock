@@ -10,6 +10,7 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
+	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -92,12 +93,16 @@ func TestReconcile_Cutoff(t *testing.T) {
 // evaluation-released was not ready within its evaluation window and had its
 // lock released. Before the cutoff the reconciler starts it again and reports
 // JOB_TRIGGERED, not TRIGGER_RECOVERED; past the cutoff it closes the date.
+// A cron pipeline is reconciled the same way (cron is only its start-by
+// time), under its own schedule ID, and one never started is recovered.
 func TestReconcile_RestartsAfterRelease(t *testing.T) {
 	at := func(hour, minute int) time.Time { return time.Date(2026, 3, 10, hour, minute, 0, 0, time.UTC) }
-	triggered := string(types.EventJobTriggered)
+	triggered, recovered := string(types.EventJobTriggered), string(types.EventTriggerRecovered)
 	tests := []struct {
 		name       string
 		now        time.Time
+		cron       string // schedule.cron of the pipeline
+		notStarted bool   // no evaluation-released job row
 		olderRow   string // a job row older than the evaluation-released one
 		wantSFN    int
 		wantStatus string
@@ -108,15 +113,25 @@ func TestReconcile_RestartsAfterRelease(t *testing.T) {
 			wantEvents: []string{string(types.EventSensorDeadlineExpired)}},
 		{name: "infra-trigger-exhausted then released", now: at(13, 0), olderRow: types.JobEventInfraTriggerExhausted,
 			wantSFN: 1, wantStatus: types.TriggerStatusRunning, wantEvents: []string{triggered}},
+		{name: "released, cron pipeline", now: at(13, 0), cron: "0 8 * * *",
+			wantSFN: 1, wantStatus: types.TriggerStatusRunning, wantEvents: []string{triggered}},
+		{name: "cron pipeline, never started", now: at(13, 0), cron: "0 8 * * *", notStarted: true,
+			wantSFN: 1, wantStatus: types.TriggerStatusRunning, wantEvents: []string{recovered}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, mem, rec := slaDeps(t, "", types.JobEventEvaluationReleased, func(c *types.PipelineConfig) { c.SLA, c.Schedule.Trigger.Cutoff = nil, "14:00" })
+			d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+				c.SLA, c.Schedule.Trigger.Cutoff, c.Schedule.Cron = nil, "14:00", tt.cron
+			})
 			sfnFake := &countingSFN{}
 			d.SFNClient, d.NowFunc = sfnFake, func() time.Time { return tt.now }
 			pk := types.PipelinePK("p")
+			schedule := lambda.ResolveScheduleID(&types.PipelineConfig{Schedule: types.ScheduleConfig{Cron: tt.cron}})
 			if tt.olderRow != "" {
-				mem.Put("joblog", sItem("PK", pk, "SK", types.JobSK("stream", slaTestDate, "1773129500000"), "event", tt.olderRow))
+				mem.Put("joblog", sItem("PK", pk, "SK", types.JobSK(schedule, slaTestDate, "1773129500000"), "event", tt.olderRow))
+			}
+			if !tt.notStarted {
+				mem.Put("joblog", sItem("PK", pk, "SK", types.JobSK(schedule, slaTestDate, "1773129600000"), "event", types.JobEventEvaluationReleased))
 			}
 			mem.Put("control", map[string]ddbtypes.AttributeValue{
 				"PK": &ddbtypes.AttributeValueMemberS{Value: pk}, "SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK("upstream")},
@@ -133,10 +148,14 @@ func TestReconcile_RestartsAfterRelease(t *testing.T) {
 				t.Fatalf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, rec.events, tt.wantSFN, tt.wantEvents)
 			}
 			wantDetail := map[string]interface{}{"source": "reconciliation", "actionHint": "evaluation restarted after its window closed"}
-			if e := rec.details[0]; rec.events[0] == triggered && (!maps.Equal(e.Detail, wantDetail) || e.Message != "evaluation restarted for p/stream/"+slaTestDate) {
-				t.Errorf("JOB_TRIGGERED %q with %v, want detail %v", e.Message, e.Detail, wantDetail)
+			wantMsg := "evaluation restarted for p/" + schedule + "/" + slaTestDate
+			if rec.events[0] == recovered {
+				wantDetail["actionHint"], wantMsg = "watchdog recovered missed sensor trigger", "trigger recovered for p/"+schedule+"/"+slaTestDate
 			}
-			if row := mem.Get("control", pk, types.TriggerSK("stream", slaTestDate)); row == nil || row["status"].(*ddbtypes.AttributeValueMemberS).Value != tt.wantStatus {
+			if e := rec.details[0]; tt.wantSFN == 1 && (!maps.Equal(e.Detail, wantDetail) || e.Message != wantMsg) {
+				t.Errorf("%s %q with %v, want %q with %v", rec.events[0], e.Message, e.Detail, wantMsg, wantDetail)
+			}
+			if row := mem.Get("control", pk, types.TriggerSK(schedule, slaTestDate)); row == nil || row["status"].(*ddbtypes.AttributeValueMemberS).Value != tt.wantStatus {
 				t.Errorf("trigger row = %v, want status %q", row, tt.wantStatus)
 			}
 		})
