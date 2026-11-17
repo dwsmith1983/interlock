@@ -38,6 +38,76 @@ func ResolveSLADate(cfg *types.PipelineConfig, date string) string {
 	return t.AddDate(0, 0, cfg.SLA.DeadlineDayOffset).Format("2006-01-02")
 }
 
+// ResolveCutoffTime returns the instant schedule.trigger.cutoff falls on for
+// runKey, in schedule.timezone (else sla.timezone, else UTC). A daily "HH:MM"
+// cutoff on a daily key is that wall time on the key's date plus
+// cutoffDayOffset days; an hourly ":MM" cutoff on an hourly key is minute MM
+// of the following hour. It is the zero time without a cutoff, for a key of
+// the other cadence, or when the key or cutoff does not parse.
+func ResolveCutoffTime(cfg *types.PipelineConfig, runKey string) time.Time {
+	if cfg == nil || cfg.Schedule.Trigger == nil || cfg.Schedule.Trigger.Cutoff == "" || !IsValidExecutionDate(runKey) {
+		return time.Time{}
+	}
+	tz := cfg.Schedule.Timezone
+	if tz == "" && cfg.SLA != nil {
+		tz = cfg.SLA.Timezone
+	}
+	loc := ResolveTimezone(tz)
+	datePart, hourPart := ParseExecutionDate(runKey)
+	day, _ := time.Parse("2006-01-02", datePart)
+	y, m, d := day.Date()
+
+	hh, mm, ok := strings.Cut(cfg.Schedule.Trigger.Cutoff, ":")
+	minute, err := strconv.Atoi(mm)
+	if !ok || err != nil {
+		return time.Time{}
+	}
+	if hh == "" {
+		if hourPart == "" {
+			return time.Time{}
+		}
+		h, _ := strconv.Atoi(hourPart)
+		return firstLocalInstant(y, m, d, h+1, minute, loc)
+	}
+	hour, err := strconv.Atoi(hh)
+	if err != nil || hourPart != "" {
+		return time.Time{}
+	}
+	return firstLocalInstant(y, m, d+cfg.Schedule.Trigger.CutoffDayOffset, hour, minute, loc)
+}
+
+// firstLocalInstant returns the first instant the wall clock in loc reads
+// y-m-d h:min or later (d and h may overflow, as with time.Date): the gap's
+// end for a time inside a spring-forward gap, the first occurrence of a
+// repeated fall-back time. It does not rely on time.Date's choice in either.
+func firstLocalInstant(y int, m time.Month, d, h, minute int, loc *time.Location) time.Time {
+	t := time.Date(y, m, d, h, minute, 0, 0, loc)
+	want := time.Date(y, m, d, h, minute, 0, 0, time.UTC)
+	got := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), 0, 0, time.UTC)
+	start, end := t.ZoneBounds()
+	switch {
+	case got.Before(want): // landed before the gap
+		return end
+	case got.After(want): // landed after the gap
+		return start
+	case start.IsZero():
+		return t
+	}
+	// The same wall time in the previous zone period, if it falls there, is earlier.
+	_, off := t.Zone()
+	_, prevOff := start.Add(-time.Second).Zone()
+	if earlier := t.Add(time.Duration(off-prevOff) * time.Second); earlier.Before(start) {
+		return earlier
+	}
+	return t
+}
+
+// CutoffPassed reports whether runKey's cutoff is set and now is at or after it.
+func CutoffPassed(cfg *types.PipelineConfig, runKey string, now time.Time) bool {
+	cutoff := ResolveCutoffTime(cfg, runKey)
+	return !cutoff.IsZero() && !now.Before(cutoff)
+}
+
 // StartByTime returns the first fire of the cron expression expr inside the
 // period of runKey, read in loc, and true; or false when expr does not fire
 // in that period. A daily

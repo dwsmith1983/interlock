@@ -11,7 +11,7 @@ The watchdog is one of six Lambda functions in the Interlock framework. It runs 
 3. **Missed inclusion schedules** -- a pipeline with an inclusion calendar has no trigger on a scheduled date
 4. **Sensor-trigger reconciliation** -- a sensor-triggered pipeline's conditions are met but no trigger exists (self-heals missed triggers)
 5. **SLA scheduling** -- proactively ensures EventBridge Scheduler entries exist for each expected run date (`RUN#` row) of a pipeline with an SLA config
-6. **Cutoffs** -- a sensor-triggered pipeline passed its `schedule.trigger.cutoff` (latest start time) with no trigger
+6. **Cutoffs** -- an expected run date (`RUN#` row) passed its `schedule.trigger.cutoff` without starting; it is closed with `FAILED_FINAL` and one `SENSOR_DEADLINE_EXPIRED`
 7. **Missing post-run sensors** -- a pipeline completed but the expected post-run sensor never arrived
 8. **Relative SLA breaches** -- a pipeline with `maxDuration` SLA has exceeded its time budget since first sensor arrival
 9. **Invalid configs** -- a pipeline's `CONFIG` row was rejected (malformed or failing validation), so that pipeline is skipped while the others run; reported as `CONFIG_INVALID` once per broken config version and day

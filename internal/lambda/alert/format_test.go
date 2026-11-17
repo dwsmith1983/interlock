@@ -106,3 +106,16 @@ func TestFormatAlertText_ControlCharacters(t *testing.T) {
 		t.Fatalf("text = %q, want %q", text, want)
 	}
 }
+
+// TestFormatAlertText_CutoffPassed: a run date closed at its cutoff is a
+// final failure, so the alert is red and shows the cutoff and when it fell.
+func TestFormatAlertText_CutoffPassed(t *testing.T) {
+	text := alert.FormatAlertText(string(types.EventSensorDeadlineExpired), types.InterlockEvent{
+		PipelineID: "p", Date: "2026-03-10", Message: "m",
+		Detail: map[string]interface{}{"source": "watchdog", "cutoff": "14:00", "cutoffAt": "2026-03-10T14:00:00Z", "actionHint": "rerun"},
+	})
+	want := "\xf0\x9f\x94\xb4 *SENSOR_DEADLINE_EXPIRED* | p | 2026-03-10\nm\nSource: watchdog · Cutoff: 14:00 · Cutoff at: 2026-03-10T14:00:00Z\n→ rerun"
+	if text != want {
+		t.Fatalf("text = %q, want %q", text, want)
+	}
+}

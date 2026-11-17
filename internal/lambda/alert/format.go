@@ -41,7 +41,9 @@ func FormatAlertText(detailType string, detail types.InterlockEvent) string {
 			parts = append(parts, "Deadline "+esc(v))
 		}
 	}
-	for _, f := range []struct{ key, label string }{{"status", "Status"}, {"source", "Source"}, {"cron", "Cron"}, {"hash", "Config hash"}} {
+	for _, f := range []struct{ key, label string }{
+		{"status", "Status"}, {"source", "Source"}, {"cron", "Cron"}, {"cutoff", "Cutoff"}, {"cutoffAt", "Cutoff at"}, {"hash", "Config hash"},
+	} {
 		if v, ok := detail.Detail[f.key]; ok {
 			parts = append(parts, f.label+": "+esc(v))
 		}
@@ -87,7 +89,7 @@ func alertEmoji(detailType string) string {
 		string(types.EventValidationExhausted), string(types.EventRetryExhausted),
 		string(types.EventInfraFailure), string(types.EventSFNTimeout),
 		string(types.EventScheduleMissed), string(types.EventDataDrift),
-		string(types.EventConfigInvalid):
+		string(types.EventConfigInvalid), string(types.EventSensorDeadlineExpired):
 		return "\xf0\x9f\x94\xb4" // red circle
 	case string(types.EventSLAWarning):
 		return "\xf0\x9f\x9f\xa1" // yellow circle

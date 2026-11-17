@@ -48,7 +48,30 @@ When the trigger condition is met (e.g., an upstream pipeline signals completion
 
 The trigger condition uses the same check syntax as validation rules: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_gt`.
 
-The optional `cutoff` (`HH:MM` daily, `:MM` hourly) is the latest start time. If it passes with no trigger, the watchdog writes `FAILED_FINAL` and publishes `SENSOR_DEADLINE_EXPIRED`; submit a `RERUN_REQUEST` to run that date manually.
+### Cutoff
+
+The cutoff is the latest time a run date may start. Until then Interlock keeps waiting for readiness, and the start-by check (`schedule.cron`) and the SLA warning and breach are what alert. A run that starts one minute before the cutoff made it.
+
+```yaml
+schedule:
+  timezone: America/New_York
+  trigger:
+    key: upstream-complete
+    check: equals
+    field: status
+    value: ready
+    cutoff: "02:00"
+    cutoffDayOffset: 1
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `cutoff` | string | none | `HH:MM` for daily run dates, `:MM` for hourly ones |
+| `cutoffDayOffset` | int | `0` | Days after the run date a daily cutoff falls on, 0 to 7 |
+
+A daily cutoff falls on the run date plus `cutoffDayOffset` days, at that wall-clock time in `schedule.timezone` (or `sla.timezone` when that is not set, else UTC). Above, the run for 2026-03-10 must start by 2026-03-11 02:00 New York time. An hourly `:MM` cutoff falls at minute MM of the hour after the run's hour: run `2026-03-10T10` with `cutoff: ":15"` must start by 11:15. A cutoff is never earlier than its wall time: one inside a spring-forward gap falls at the end of the gap (02:30 becomes 03:00), and a time repeated at fall-back falls at its first occurrence. A non-zero offset is rejected with an hourly cutoff and without a cutoff.
+
+The cutoff applies only to run dates with a `RUN#` row (see [Expected Run Dates](#expected-run-dates)) whose key matches its cadence (`YYYY-MM-DD` for `HH:MM`, `YYYY-MM-DDThh` for `:MM`). When the cutoff passes and the run date has no trigger row, the watchdog writes a `FAILED_FINAL` trigger row for it and publishes `SENSOR_DEADLINE_EXPIRED` once, with `cutoff` and `cutoffAt` in its detail. If the publish fails, the row is removed and the next pass tries again. Once the watchdog has closed the date (on its first pass after the cutoff), nothing more starts for it: investigate, then submit a `RERUN_REQUEST` to run it manually.
 
 ### Evaluation Window
 
@@ -157,7 +180,7 @@ The deadline is placed on the execution date, a UTC date, at `deadline` in `sla.
 
 ### Expected Run Dates
 
-The watchdog schedules SLA alerts only for run dates the pipeline says it expects. You write one row per expected run to the control table (`<environment>-interlock-control`); Interlock never works out a run date from the clock. A pipeline with an SLA and no rows gets no proactive SLA alerts (and, in later releases, no start-by or cutoff checks).
+The watchdog schedules SLA alerts only for run dates the pipeline says it expects. You write one row per expected run to the control table (`<environment>-interlock-control`); Interlock never works out a run date from the clock. A pipeline with no rows gets no proactive SLA alerts, start-by checks or cutoff checks.
 
 | `PK` | `SK` | Attributes |
 |---|---|---|

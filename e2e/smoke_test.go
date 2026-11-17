@@ -13,7 +13,7 @@ import (
 const (
 	smokePipeline   = "smoke"
 	smokeSensor     = "smoke-ready"
-	smokeCutoff     = "10:00"         // latest start time, 10:00 UTC each day
+	smokeCutoff     = "10:00"         // latest start time, 10:00 UTC on each run date
 	settleTimeout   = 3 * time.Minute // first run: includes Lambda cold starts
 	deliverTimeout  = time.Minute     // EventBridge delivery after a known publish
 	streamSchedule  = "stream"        // lambda.ResolveScheduleID for a pipeline without cron
@@ -21,8 +21,9 @@ const (
 )
 
 // smokeConfig is a sensor-triggered pipeline whose http job is the mock. The
-// cutoff gives the watchdog something to do on the next simulated day, which
-// is how the test sees the advanced clock reach the Lambdas.
+// cutoff gives the watchdog something to do on the next simulated day (which
+// has a RUN# row), which is how the test sees the advanced clock reach the
+// Lambdas.
 func smokeConfig() types.PipelineConfig {
 	return types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: smokePipeline},
@@ -73,11 +74,12 @@ func TestHarnessSmoke(t *testing.T) {
 		return exactRunEvents(evs, string(types.EventValidationPassed), string(types.EventJobCompleted))
 	})
 
-	// Next simulated day, past the cutoff. No sensor arrives, so
-	// the watchdog closes that day's window: a FAILED_FINAL row keyed on the
-	// simulated date and SENSOR_DEADLINE_EXPIRED stamped with simulated time.
+	// Next simulated day, which has a RUN# row, past its cutoff. No sensor
+	// arrives, so the watchdog closes that date: a FAILED_FINAL row keyed on
+	// the simulated date and SENSOR_DEADLINE_EXPIRED stamped with simulated time.
 	next := time.Date(day.Year(), day.Month(), day.Day()+1, 12, 0, 0, 0, time.UTC)
 	nextDate := next.Format(smokeDateLayout)
+	putRunDate(t, smokePipeline, nextDate)
 	advanceTo(t, next)
 	invokeWatchdog(t)
 	if got := triggerStatus(t, smokePipeline, nextDate); got != types.TriggerStatusFailedFinal {
@@ -96,6 +98,9 @@ func TestHarnessSmoke(t *testing.T) {
 		t.Fatalf("last event = %+v, want %s for %s stamped in [%s, %s]", expired, types.EventSensorDeadlineExpired,
 			nextDate, next.Format(time.RFC3339), simNow.Format(time.RFC3339))
 	}
+	// A later pass finds the FAILED_FINAL row and alerts nothing more; the
+	// alerts drain below gives a second publish time to arrive.
+	invokeWatchdog(t)
 
 	// No SLA is configured, so nothing may have been scheduled.
 	if scanned, fired := fireDueSchedules(t, smokePipeline); scanned != 0 || fired != 0 {
@@ -113,6 +118,10 @@ func TestHarnessSmoke(t *testing.T) {
 	})
 	if len(got) != len(wantAlerts) {
 		t.Fatalf("alerts = %+v, want only %+v", got, wantAlerts)
+	}
+	if evs = events(t, smokePipeline); !exactRunEvents(evs, string(types.EventValidationPassed), string(types.EventJobCompleted),
+		string(types.EventSensorDeadlineExpired)) {
+		t.Fatalf("events after the second watchdog pass = %v, want one SENSOR_DEADLINE_EXPIRED", eventTypes(evs))
 	}
 	if n := len(launches(t, smokePipeline)); n != 1 {
 		t.Fatalf("mock job launches at the end = %d, want still 1", n)
