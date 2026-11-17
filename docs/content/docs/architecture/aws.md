@@ -175,7 +175,7 @@ InitEvalLoop → Evaluate → IsReady
               → (exhausted) JobPollExhausted → InjectTimeoutEvent → CompleteTrigger → ...
   → (not ready) WaitInterval → IncrementElapsed → CheckWindowExhausted
       → (window remaining) Evaluate (loop)
-      → (window exhausted) ValidationExhausted → CheckCancelSLA → ... → Done
+      → (window exhausted) ValidationExhausted → Done
 ```
 
 ### Evaluation Loop (7 states)
@@ -186,7 +186,7 @@ InitEvalLoop → Evaluate → IsReady
 4. **WaitInterval** — configurable delay between evaluation attempts
 5. **IncrementElapsed** — track total elapsed time via `States.MathAdd`
 6. **CheckWindowExhausted** — if elapsed >= window, go to ValidationExhausted
-7. **ValidationExhausted** — publish `VALIDATION_EXHAUSTED` event
+7. **ValidationExhausted**: publish `VALIDATION_EXHAUSTED` event and end the execution. No job ran, so there is no SLA cleanup: the run's unfired SLA warning and breach schedules fire, and sla-monitor suppresses them because the run is finished (a newest `validation-exhausted` joblog row, or a `FAILED_FINAL` trigger row)
 
 ### Trigger and Job Polling (12 states)
 

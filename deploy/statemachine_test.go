@@ -366,13 +366,14 @@ func TestASL_CancelSLAFlow(t *testing.T) {
 	assert.Equal(t, "Done", cancel.Next)
 }
 
-func TestASL_ValidationExhaustedToSLA(t *testing.T) {
+// TestASL_ValidationExhaustedSkipsSLACancel: no job ran, so there is no SLA
+// verdict to publish; unfired SLA schedules are suppressed by RunFinished.
+func TestASL_ValidationExhaustedSkipsSLACancel(t *testing.T) {
 	asl := loadASL(t)
 
-	// ValidationExhausted → CheckCancelSLA (proactive SLA: scheduling moved to watchdog)
 	var exhausted taskState
 	require.NoError(t, json.Unmarshal(asl.States["ValidationExhausted"], &exhausted))
-	assert.Equal(t, "CheckCancelSLA", exhausted.Next)
+	assert.Equal(t, "Done", exhausted.Next)
 }
 
 func TestASL_TerminalStates(t *testing.T) {

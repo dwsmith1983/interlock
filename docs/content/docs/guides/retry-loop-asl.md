@@ -13,16 +13,16 @@ The state machine is defined in `deploy/statemachine.asl.json`. The Terraform mo
 
 ```
 InitEvalLoop → Evaluate → IsReady
-  → (passed) Trigger → CheckSLAConfig → ScheduleSLAAlerts → HasTriggerResult
+  → (passed) Trigger → HasTriggerResult
       → WaitForJob → CheckJob → IsJobDone
           → (terminal) CheckCancelSLA → CancelSLASchedules → Done
           → (running) WaitForJob (loop)
   → (not ready) WaitInterval → IncrementElapsed → CheckWindowExhausted
       → (window remaining) Evaluate (loop)
-      → (window exhausted) ValidationExhausted → CheckSLAConfig → ... → Done
+      → (window exhausted) ValidationExhausted → Done
 ```
 
-SLA monitoring uses EventBridge Scheduler instead of a parallel branch. The sla-monitor Lambda creates one-time Scheduler entries that fire alerts at exact timestamps. When the job completes, unfired entries are cancelled.
+SLA monitoring uses EventBridge Scheduler instead of a parallel branch. The watchdog creates one-time Scheduler entries for each run date with a `RUN#` row; at their exact timestamps they invoke the sla-monitor Lambda, which fires the alert. When the job completes, unfired entries are cancelled.
 
 ## Evaluation Loop
 
@@ -69,7 +69,7 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
 2. **IsReady** branches on the result: if `passed`, proceed to trigger; otherwise, wait and re-evaluate.
 3. **WaitInterval** uses `SecondsPath` for configurable poll intervals (set via `evaluation.interval` in the pipeline config).
 4. **IncrementElapsed** tracks total elapsed time using `States.MathAdd`.
-5. **CheckWindowExhausted** compares elapsed time against `evaluationWindowSeconds`. If the window is exhausted, the orchestrator publishes a `VALIDATION_EXHAUSTED` event.
+5. **CheckWindowExhausted** compares elapsed time against `evaluationWindowSeconds`. If the window is exhausted, **ValidationExhausted** has the orchestrator publish a `VALIDATION_EXHAUSTED` event and ends the execution. No job ran, so it skips the SLA cleanup; the run's unfired SLA schedules fire and sla-monitor suppresses them because the run is finished.
 
 ## Trigger and Job Polling
 
