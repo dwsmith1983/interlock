@@ -459,7 +459,7 @@ func TestScenarioCutoffDuringEvaluation(t *testing.T) {
 	assertLaunches(t, id, 0)
 }
 
-// Two pipelines with a 14:00 cutoff and a 10 s evaluation window become ready
+// Three pipelines with a 14:00 cutoff and a 10 s evaluation window become ready
 // at 13:00 without their "upstream" sensor. Each evaluation runs out before
 // the cutoff, so ValidationExhausted releases the date: no trigger row, an
 // evaluation-released job row, EVALUATION_RELEASED and no launch.
@@ -468,15 +468,21 @@ func TestScenarioCutoffDuringEvaluation(t *testing.T) {
 // "released-never-ready" is restarted by the watchdog's reconciler at 13:40
 // (JOB_TRIGGERED, not TRIGGER_RECOVERED), runs out again, and the 14:01 pass
 // closes it with one SENSOR_DEADLINE_EXPIRED; a later pass adds nothing, and
-// EVALUATION_RELEASED is never an alert.
+// EVALUATION_RELEASED is never an alert. "released-cron" has schedule.cron (only
+// its start-by time) and gets its upstream sensor at 13:30 with no new trigger
+// write: the 13:40 reconciler pass restarts it (JOB_TRIGGERED, not
+// TRIGGER_RECOVERED) and it launches once and completes.
 func TestScenarioEvaluationReleased(t *testing.T) {
-	const readyID, neverID = "released-then-ready", "released-never-ready"
+	const readyID, neverID, cronID, cronSchedule = "released-then-ready", "released-never-ready", "released-cron", "cron"
 	start, date := startDay(t)
 	at := func(hour, minute int) time.Time {
 		return time.Date(start.Year(), start.Month(), start.Day(), hour, minute, 0, 0, time.UTC)
 	}
-	for _, id := range []string{readyID, neverID} {
+	for _, id := range []string{readyID, neverID, cronID} {
 		cfg := scenarioConfig(id)
+		if id == cronID {
+			cfg.Schedule.Cron = "0 8 * * *"
+		}
 		cfg.Schedule.Trigger.Cutoff = "14:00"
 		cfg.Schedule.Evaluation = types.EvaluationWindow{Window: "10s", Interval: "5s"} // real seconds
 		cfg.Validation.Rules = append(cfg.Validation.Rules, types.ValidationRule{Key: "upstream", Check: types.CheckExists})
@@ -487,13 +493,16 @@ func TestScenarioEvaluationReleased(t *testing.T) {
 	jt, released := string(types.EventJobTriggered), string(types.EventEvaluationReleased)
 	writeReady(t, readyID, date)
 	writeReady(t, neverID, date)
+	writeReady(t, cronID, date)
 	for _, id := range []string{readyID, neverID} {
 		waitEvents(t, id, date, map[string]int{jt: 1, released: 1})
 		assertReleased(t, id, date, 1)
 	}
+	waitEvents(t, cronID, date, map[string]int{jt: 1, released: 1})
 
 	// An identical item makes no stream record, so the trigger sensor changes.
 	advanceTo(t, at(13, 30))
+	writeSensor(t, cronID, "upstream", map[string]interface{}{"date": date})
 	writeSensor(t, readyID, "upstream", map[string]interface{}{"date": date})
 	writeSensor(t, readyID, scenarioSensor, map[string]interface{}{"status": "ready", "date": date, "attempt": 2})
 	reportJob(t, readyID, date, waitLaunch(t, readyID, 1), types.JobEventSuccess)
@@ -503,9 +512,15 @@ func TestScenarioEvaluationReleased(t *testing.T) {
 	assertLaunches(t, readyID, 1)
 
 	advanceTo(t, at(13, 40))
-	invokeWatchdog(t) // restarts only neverID: readyID has a trigger row
+	invokeWatchdog(t) // restarts neverID and cronID: readyID has a trigger row
 	waitEvents(t, neverID, date, map[string]int{jt: 2, released: 2})
 	assertReleased(t, neverID, date, 2)
+	cronRun := waitLaunch(t, cronID, 1)
+	reportJobOn(t, cronSchedule, cronID, date, cronRun, types.JobEventSuccess)
+	waitFor(t, settleTimeout, cronID+" execution to succeed", func() bool {
+		return executionStatus(t, cronRun) == sfntypes.ExecutionStatusSucceeded
+	})
+	waitEvents(t, cronID, date, map[string]int{jt: 3, released: 1, vp: 1, jc: 1}, []string{released, vp, jc})
 
 	advanceTo(t, at(14, 1))
 	invokeWatchdog(t)
@@ -520,6 +535,8 @@ func TestScenarioEvaluationReleased(t *testing.T) {
 	assertLaunches(t, neverID, 0)
 	waitAlerts(t, readyID, alert{readyID, date, jc})
 	assertTriggerStatus(t, readyID, date, types.TriggerStatusCompleted)
+	waitAlerts(t, cronID, alert{cronID, date, jc})
+	assertLaunches(t, cronID, 1)
 }
 
 // assertReleased checks a date whose n evaluations all ran out before its

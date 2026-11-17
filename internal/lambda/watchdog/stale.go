@@ -86,7 +86,8 @@ func parseTriggerRecord(tr types.ControlRecord) (pipelineID, schedule, date stri
 }
 
 // reconcileSensorTriggers re-evaluates trigger conditions for sensor-triggered
-// pipelines. Self-heals missed triggers caused by silent completion-write failures.
+// pipelines, with or without schedule.cron (cron is only the start-by time).
+// Self-heals missed triggers caused by silent completion-write failures.
 func reconcileSensorTriggers(ctx context.Context, d *lambda.Deps) error {
 	configs, err := d.ConfigCache.GetAll(ctx)
 	if err != nil {
@@ -97,7 +98,7 @@ func reconcileSensorTriggers(ctx context.Context, d *lambda.Deps) error {
 
 	for id, cfg := range configs {
 		trigger := cfg.Schedule.Trigger
-		if trigger == nil || cfg.Schedule.Cron != "" {
+		if trigger == nil {
 			continue
 		}
 

@@ -17,6 +17,7 @@ import (
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
+	schedulerTypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/store"
@@ -28,7 +29,8 @@ const slaTestDate = "2026-03-10"
 
 // slaRecorder records the schedules created (names and, in step, their
 // expressions) and the event types published, and both in call order. While
-// failEvents > 0, PutEvents fails and counts it down.
+// failEvents > 0, PutEvents fails and counts it down. With exists set,
+// CreateSchedule records the name and answers as for an existing schedule.
 type slaRecorder struct {
 	schedules  []string
 	exprs      []string
@@ -36,12 +38,16 @@ type slaRecorder struct {
 	details    []types.InterlockEvent
 	order      []string
 	failEvents int
+	exists     bool
 }
 
 func (r *slaRecorder) CreateSchedule(_ context.Context, in *scheduler.CreateScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error) {
 	r.schedules = append(r.schedules, aws.ToString(in.Name))
 	r.exprs = append(r.exprs, aws.ToString(in.ScheduleExpression))
 	r.order = append(r.order, aws.ToString(in.Name))
+	if r.exists {
+		return nil, &schedulerTypes.ConflictException{Message: aws.String("schedule exists")}
+	}
 	return &scheduler.CreateScheduleOutput{}, nil
 }
 
@@ -157,6 +163,31 @@ func TestScheduleSLAAlerts_RetryKeepsSchedules(t *testing.T) {
 				t.Fatalf("schedules created = %v, want %v", rec.schedules, want)
 			}
 		})
+	}
+}
+
+// TestScheduleSLAAlerts_ExistingSchedulesAreNotErrors pins that a pass over a
+// run date whose warning and breach schedules exist already (a released date
+// that restarts, or any later pass) attempts both, logs no error and returns nil.
+func TestScheduleSLAAlerts_ExistingSchedulesAreNotErrors(t *testing.T) {
+	d, _, rec := slaDeps(t, "", "")
+	rec.exists = true
+	var logs bytes.Buffer
+	d.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	if err := scheduleSLAAlerts(context.Background(), d); err != nil {
+		t.Fatalf("scheduleSLAAlerts: %v", err)
+	}
+
+	want := []string{
+		lambda.SLAScheduleName("p", "stream", slaTestDate, "warning"),
+		lambda.SLAScheduleName("p", "stream", slaTestDate, "breach"),
+	}
+	if !slices.Equal(rec.schedules, want) {
+		t.Fatalf("schedules attempted = %v, want %v", rec.schedules, want)
+	}
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("logs = %q, want no error", logs.String())
 	}
 }
 
