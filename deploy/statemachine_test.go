@@ -366,6 +366,29 @@ func TestASL_CancelSLAFlow(t *testing.T) {
 	assert.Equal(t, "Done", cancel.Next)
 }
 
+// TestASL_IsReadyRoutesCutoff: a cutoff status ends the evaluation loop in
+// ValidationExhausted, which closes the run; passed still triggers.
+func TestASL_IsReadyRoutesCutoff(t *testing.T) {
+	asl := loadASL(t)
+
+	var ready struct {
+		Choices []struct {
+			Variable     string `json:"Variable"`
+			StringEquals string `json:"StringEquals"`
+			Next         string `json:"Next"`
+		} `json:"Choices"`
+		Default string `json:"Default"`
+	}
+	require.NoError(t, json.Unmarshal(asl.States["IsReady"], &ready))
+	routes := map[string]string{}
+	for _, c := range ready.Choices {
+		assert.Equal(t, "$.evaluateResult.status", c.Variable)
+		routes[c.StringEquals] = c.Next
+	}
+	assert.Equal(t, map[string]string{"passed": "Trigger", "cutoff": "ValidationExhausted"}, routes)
+	assert.Equal(t, "WaitInterval", ready.Default)
+}
+
 // TestASL_ValidationExhaustedSkipsSLACancel: no job ran, so there is no SLA
 // verdict to publish; unfired SLA schedules are suppressed by RunFinished.
 func TestASL_ValidationExhaustedSkipsSLACancel(t *testing.T) {

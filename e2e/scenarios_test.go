@@ -405,6 +405,60 @@ func TestScenarioSensorAfterCutoff(t *testing.T) {
 	assertLaunches(t, id, 0)
 }
 
+// A run whose evaluation began before its 14:00 cutoff, and whose rules pass
+// only after it, ends at the next evaluation: Evaluate reports cutoff,
+// IsReady sends it to ValidationExhausted, which publishes one
+// SENSOR_DEADLINE_EXPIRED (source orchestrator) and sets FAILED_FINAL, and the
+// execution ends without Trigger or the SLA cancel. A later watchdog pass adds
+// nothing and the job never launches.
+func TestScenarioCutoffDuringEvaluation(t *testing.T) {
+	const id = "cutoff-during-eval"
+	start, date := startDay(t)
+	at := func(hour, minute int) time.Time {
+		return time.Date(start.Year(), start.Month(), start.Day(), hour, minute, 0, 0, time.UTC)
+	}
+	cfg := scenarioConfig(id)
+	cfg.Schedule.Trigger.Cutoff = "14:00"
+	cfg.Validation.Rules = append(cfg.Validation.Rules, types.ValidationRule{Key: "upstream", Check: types.CheckExists})
+	putConfig(t, cfg)
+
+	// The window is 60 s of real time, so nothing here waits on anything slow.
+	advanceTo(t, at(13, 50))
+	writeReady(t, id, date)
+	var exec string
+	waitFor(t, settleTimeout, id+" first evaluation", func() bool {
+		for _, e := range runningExecutions(t) {
+			if name := aws.ToString(e.Name); strings.HasPrefix(name, id+"-") {
+				exec = name
+			}
+		}
+		return exec != "" && stateExited(executionHistory(t, exec), "IsReady")
+	})
+	assertTriggerStatus(t, id, date, types.TriggerStatusRunning)
+	assertLaunches(t, id, 0)
+
+	advanceTo(t, at(14, 0))
+	writeSensor(t, id, "upstream", map[string]interface{}{"date": date})
+	jt, expired := string(types.EventJobTriggered), string(types.EventSensorDeadlineExpired)
+	waitEvents(t, id, date, map[string]int{jt: 1, expired: 1})
+	waitFor(t, settleTimeout, id+" execution to end", func() bool {
+		return executionStatus(t, exec) != sfntypes.ExecutionStatusRunning
+	})
+	if got := executionStatus(t, exec); got != sfntypes.ExecutionStatusSucceeded {
+		t.Fatalf("execution %s = %s, want SUCCEEDED", exec, got)
+	}
+	if h := executionHistory(t, exec); !stateExited(h, "ValidationExhausted") || stateExited(h, "Trigger") || stateExited(h, "CheckCancelSLA") {
+		t.Fatalf("execution %s did not end through ValidationExhausted alone", exec)
+	}
+	assertTriggerStatus(t, id, date, types.TriggerStatusFailedFinal)
+
+	advanceTo(t, at(14, 1))
+	invokeWatchdog(t)
+	waitAlerts(t, id, alert{id, date, expired})
+	waitEvents(t, id, date, map[string]int{jt: 1, expired: 1})
+	assertLaunches(t, id, 0)
+}
+
 // The job reports fail for run A. Execution A's CompleteTrigger is the only
 // actor that reacts (job.maxRetries 1): it keeps the trigger row RUNNING,
 // starts B as <A>-r1 and ends through IsRetrying and Done, leaving the SLA to

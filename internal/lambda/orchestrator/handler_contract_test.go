@@ -143,6 +143,16 @@ func TestEvaluate_AlwaysEmitsStatus(t *testing.T) {
 			},
 			wantStatus: "not_ready",
 		},
+		{
+			// The clock is real, so 2026-03-01 14:00 has passed.
+			name: "cutoff passed",
+			fake: &storetest.FakeDynamo{
+				GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+					return &dynamodb.GetItemOutput{Item: configItem(t, cutoffCfg())}, nil
+				},
+			},
+			wantStatus: "cutoff",
+		},
 	}
 
 	for _, tt := range tests {

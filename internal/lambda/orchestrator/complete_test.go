@@ -43,6 +43,7 @@ type published struct {
 type recorder struct {
 	mu       sync.Mutex
 	startErr error
+	putErr   error // PutEvents fails with it, recording nothing
 	started  []string
 	events   []published
 	ops      []string
@@ -69,6 +70,12 @@ func (r *recorder) StartExecution(_ context.Context, in *sfn.StartExecutionInput
 }
 
 func (r *recorder) PutEvents(_ context.Context, in *eventbridge.PutEventsInput, _ ...func(*eventbridge.Options)) (*eventbridge.PutEventsOutput, error) {
+	r.mu.Lock()
+	putErr := r.putErr
+	r.mu.Unlock()
+	if putErr != nil {
+		return nil, putErr
+	}
 	for _, e := range in.Entries {
 		var evt types.InterlockEvent
 		if err := json.Unmarshal([]byte(*e.Detail), &evt); err != nil {

@@ -16,6 +16,11 @@ import (
 // until the evaluation window closes.
 const statusError = "error"
 
+// statusCutoff is the status of an evaluation at or after the run date's
+// cutoff that is not a rerun. IsReady sends it to ValidationExhausted, which
+// ends the run without launching the job.
+const statusCutoff = "cutoff"
+
 // handleEvaluate fetches config and sensors, evaluates validation rules, and
 // optionally publishes a VALIDATION_PASSED event.
 func handleEvaluate(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
@@ -28,6 +33,20 @@ func handleEvaluate(ctx context.Context, d *lambda.Deps, input lambda.Orchestrat
 		notFoundErr := fmt.Sprintf("config not found for pipeline %q", input.PipelineID)
 		d.Logger.ErrorContext(ctx, "evaluate failed", "pipelineId", input.PipelineID, "error", notFoundErr)
 		return lambda.OrchestratorOutput{Mode: "evaluate", Status: statusError, Error: notFoundErr}, nil
+	}
+
+	// The cutoff limits only the first start: a rerun evaluates as usual.
+	if lambda.CutoffPassed(cfg, input.Date, d.Now()) {
+		rerun, err := lambda.IsRerun(ctx, d, input.PipelineID, input.ScheduleID, input.Date)
+		if err != nil {
+			d.Logger.ErrorContext(ctx, "evaluate failed", "pipelineId", input.PipelineID, "error", err)
+			return lambda.OrchestratorOutput{Mode: "evaluate", Status: statusError, Error: err.Error()}, nil
+		}
+		if !rerun {
+			d.Logger.InfoContext(ctx, "cutoff passed during evaluation, not starting",
+				"pipelineId", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
+			return lambda.OrchestratorOutput{Mode: "evaluate", Status: statusCutoff}, nil
+		}
 	}
 
 	sensors, err := d.Store.GetAllSensors(ctx, input.PipelineID)
