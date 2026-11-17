@@ -3,10 +3,8 @@ package watchdog
 import (
 	"context"
 	"fmt"
-	"time"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
-	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // checkTriggerDeadlines closes each RUN# key whose schedule.trigger.cutoff
@@ -43,7 +41,7 @@ func checkTriggerDeadlines(ctx context.Context, d *lambda.Deps) error {
 				d.Logger.Warn("skipping malformed RUN# key", "pipelineId", id, "runKey", key)
 				continue
 			}
-			if lambda.IsExcludedDate(cfg, key) || !lambda.CutoffPassed(cfg, key, now) {
+			if !lambda.CutoffPassed(cfg, key, now) {
 				continue
 			}
 			tr, err := d.Store.GetTrigger(ctx, id, scheduleID, key)
@@ -51,45 +49,14 @@ func checkTriggerDeadlines(ctx context.Context, d *lambda.Deps) error {
 				d.Logger.Error("trigger lookup failed in cutoff check", "pipelineId", id, "date", key, "error", err)
 				continue
 			}
-			if tr != nil || lambda.IsJobTerminal(ctx, d, id, scheduleID, key) {
+			if tr != nil {
 				continue
 			}
-			closeSensorTriggerWindow(ctx, d, id, scheduleID, key, cfg)
+			// An error is retried on the next pass.
+			if _, err := lambda.CloseRunAtCutoff(ctx, d, cfg, id, scheduleID, key, "watchdog"); err != nil {
+				d.Logger.Error("cutoff close failed", "pipelineId", id, "date", key, "error", err)
+			}
 		}
 	}
 	return nil
-}
-
-// closeSensorTriggerWindow writes FAILED_FINAL for a run date past its cutoff
-// and, only when it created the row, publishes SENSOR_DEADLINE_EXPIRED. A
-// failed publish deletes the row again, so the next pass retries both.
-func closeSensorTriggerWindow(ctx context.Context, d *lambda.Deps, pipelineID, scheduleID, date string, cfg *types.PipelineConfig) {
-	created, err := d.Store.CreateTriggerIfAbsent(ctx, pipelineID, scheduleID, date, types.TriggerStatusFailedFinal)
-	if err != nil {
-		d.Logger.Error("failed to write FAILED_FINAL for expired trigger deadline",
-			"pipelineId", pipelineID, "schedule", scheduleID, "date", date, "error", err)
-		return
-	}
-	if !created {
-		d.Logger.Info("trigger appeared during deadline check, skipping window close",
-			"pipelineId", pipelineID, "schedule", scheduleID, "date", date)
-		return
-	}
-
-	cutoffAt := lambda.ResolveCutoffTime(cfg, date).UTC().Format(time.RFC3339)
-	alertDetail := map[string]interface{}{"source": "watchdog", "cutoff": cfg.Schedule.Trigger.Cutoff, "cutoffAt": cutoffAt,
-		"actionHint": "cutoff passed and the pipeline did not start; nothing more will start for this date. " +
-			"Investigate, then submit a RERUN_REQUEST to run it manually"}
-	if err := lambda.PublishEvent(ctx, d, string(types.EventSensorDeadlineExpired), pipelineID, scheduleID, date,
-		fmt.Sprintf("%s did not start for %s by its cutoff %s", pipelineID, date, cutoffAt), alertDetail); err != nil {
-		d.Logger.Error("failed to publish sensor deadline expired event", "pipelineId", pipelineID, "schedule", scheduleID, "date", date, "error", err)
-		if err := d.Store.ReleaseTriggerLock(ctx, pipelineID, scheduleID, date); err != nil {
-			d.Logger.Error("failed to delete FAILED_FINAL after a failed publish", "pipelineId", pipelineID, "schedule", scheduleID, "date", date, "error", err)
-		}
-		return
-	}
-
-	d.Logger.Info("sensor trigger window closed",
-		"pipelineId", pipelineID, "schedule", scheduleID, "date", date,
-		"cutoffAt", cutoffAt)
 }

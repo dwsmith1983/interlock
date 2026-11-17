@@ -71,7 +71,11 @@ schedule:
 
 A daily cutoff falls on the run date plus `cutoffDayOffset` days, at that wall-clock time in `schedule.timezone` (or `sla.timezone` when that is not set, else UTC). Above, the run for 2026-03-10 must start by 2026-03-11 02:00 New York time. An hourly `:MM` cutoff falls at minute MM of the hour after the run's hour: run `2026-03-10T10` with `cutoff: ":15"` must start by 11:15. A cutoff is never earlier than its wall time: one inside a spring-forward gap falls at the end of the gap (02:30 becomes 03:00), and a time repeated at fall-back falls at its first occurrence. A non-zero offset is rejected with an hourly cutoff and without a cutoff.
 
-The cutoff applies only to run dates with a `RUN#` row (see [Expected Run Dates](#expected-run-dates)) whose key matches its cadence (`YYYY-MM-DD` for `HH:MM`, `YYYY-MM-DDThh` for `:MM`). When the cutoff passes and the run date has no trigger row, the watchdog writes a `FAILED_FINAL` trigger row for it and publishes `SENSOR_DEADLINE_EXPIRED` once, with `cutoff` and `cutoffAt` in its detail. If the publish fails, the row is removed and the next pass tries again. Once the watchdog has closed the date (on its first pass after the cutoff), nothing more starts for it: investigate, then submit a `RERUN_REQUEST` to run it manually.
+The cutoff applies to a run date whose key matches its cadence (`YYYY-MM-DD` for `HH:MM`, `YYYY-MM-DDThh` for `:MM`). A key of the other cadence, such as a date-only sensor on a pipeline with an hourly `:MM` cutoff, has no cutoff, and its sensors start runs as before.
+
+A sensor processed at or after the cutoff starts nothing (the stream-router goes by the time it handles the record), for any date it names, whether or not the date has a `RUN#` row. If the date has no trigger row yet, the stream-router closes it: it writes a `FAILED_FINAL` trigger row and publishes `SENSOR_DEADLINE_EXPIRED` once, with `cutoff` and `cutoffAt` in its detail and `source: stream-router`. The watchdog's sensor-trigger reconciliation does the same for a ready sensor it finds (`source: reconciliation`). An excluded date, or one whose job ran (its latest job row is `success`, `fail` or `timeout`), is left alone. A date whose launch or evaluation was exhausted never ran, so it is closed at the cutoff too, and a `RERUN_REQUEST` can then run it. Without a sensor, the watchdog closes only run dates with a `RUN#` row (see [Expected Run Dates](#expected-run-dates)), on its next pass after the cutoff (`source: watchdog`). If the publish fails, the row is removed and the close is tried again: the stream record is redelivered up to three times, after which reconciliation closes the date while the sensor stays ready, and the watchdog retries on its next pass.
+
+Once the date is closed, nothing more starts for it: investigate, then submit a `RERUN_REQUEST` to run it manually. The cutoff limits only the first start of a run date. A `RERUN_REQUEST`, manual or the late-data one written when a sensor changes after a `COMPLETED` run, still runs after the cutoff.
 
 ### Evaluation Window
 
@@ -180,7 +184,7 @@ The deadline is placed on the execution date, a UTC date, at `deadline` in `sla.
 
 ### Expected Run Dates
 
-The watchdog schedules SLA alerts only for run dates the pipeline says it expects. You write one row per expected run to the control table (`<environment>-interlock-control`); Interlock never works out a run date from the clock. A pipeline with no rows gets no proactive SLA alerts, start-by checks or cutoff checks.
+The watchdog schedules SLA alerts only for run dates the pipeline says it expects. You write one row per expected run to the control table (`<environment>-interlock-control`); Interlock never works out a run date from the clock. A pipeline with no rows gets no proactive SLA alerts, start-by checks or watchdog cutoff checks (a sensor processed after the cutoff still starts nothing).
 
 | `PK` | `SK` | Attributes |
 |---|---|---|

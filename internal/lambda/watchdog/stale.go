@@ -146,6 +146,15 @@ func reconcileSensorTriggers(ctx context.Context, d *lambda.Deps) error {
 				continue
 			}
 
+			// After the cutoff nothing starts: close the date instead.
+			if lambda.CutoffPassed(cfg, date, now) {
+				if _, err := lambda.CloseRunAtCutoff(ctx, d, cfg, id, scheduleID, date, "reconciliation"); err != nil {
+					d.Logger.Error("cutoff close failed during reconciliation",
+						"pipelineId", id, "date", date, "error", err)
+				}
+				continue
+			}
+
 			if lambda.IsJobTerminal(ctx, d, id, scheduleID, date) {
 				continue
 			}

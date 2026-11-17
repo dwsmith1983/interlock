@@ -374,6 +374,37 @@ func TestScenarioCalendarExclusion(t *testing.T) {
 	assertTriggerStatus(t, id, date, "")
 }
 
+// A sensor that turns ready after the 14:00 cutoff starts nothing. The date
+// has no RUN# row, so the watchdog's 13:00 pass does nothing; the
+// stream-router closes the date with FAILED_FINAL and one
+// SENSOR_DEADLINE_EXPIRED, and a later watchdog pass, whose reconciler sees
+// the ready sensor, adds nothing.
+func TestScenarioSensorAfterCutoff(t *testing.T) {
+	const id = "sensor-after-cutoff"
+	start, date := startDay(t)
+	at := func(hour, minute int) time.Time {
+		return time.Date(start.Year(), start.Month(), start.Day(), hour, minute, 0, 0, time.UTC)
+	}
+	cfg := scenarioConfig(id)
+	cfg.Schedule.Trigger.Cutoff = "14:00"
+	putConfig(t, cfg)
+
+	advanceTo(t, at(13, 0))
+	invokeWatchdog(t)
+	advanceTo(t, at(14, 30))
+	writeReady(t, id, date)
+	expired := string(types.EventSensorDeadlineExpired)
+	waitEvents(t, id, date, map[string]int{expired: 1})
+	assertTriggerStatus(t, id, date, types.TriggerStatusFailedFinal)
+
+	advanceTo(t, at(14, 31)) // a duplicate would get its own millisecond in the events table
+	invokeWatchdog(t)
+	waitAlerts(t, id, alert{id, date, expired})
+	waitEvents(t, id, date, map[string]int{expired: 1})
+	assertTriggerStatus(t, id, date, types.TriggerStatusFailedFinal)
+	assertLaunches(t, id, 0)
+}
+
 // The job reports fail for run A. Execution A's CompleteTrigger is the only
 // actor that reacts (job.maxRetries 1): it keeps the trigger row RUNNING,
 // starts B as <A>-r1 and ends through IsRetrying and Done, leaving the SLA to
