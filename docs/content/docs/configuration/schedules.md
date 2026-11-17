@@ -48,6 +48,8 @@ When the trigger condition is met (e.g., an upstream pipeline signals completion
 
 The trigger condition uses the same check syntax as validation rules: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_gt`.
 
+The optional `cutoff` (`HH:MM` daily, `:MM` hourly) is the latest start time. If it passes with no trigger, the watchdog writes `FAILED_FINAL` and publishes `SENSOR_DEADLINE_EXPIRED`; submit a `RERUN_REQUEST` to run that date manually.
+
 ### Evaluation Window
 
 The `evaluation` block controls how long and how often the pipeline checks its validation rules after the schedule activates.

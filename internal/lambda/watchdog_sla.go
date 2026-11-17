@@ -122,7 +122,7 @@ func checkTriggerDeadlines(ctx context.Context, d *Deps) error {
 	now := d.Now()
 
 	for id, cfg := range configs {
-		if cfg.Schedule.Trigger == nil || cfg.Schedule.Trigger.Deadline == "" {
+		if cfg.Schedule.Trigger == nil || cfg.Schedule.Trigger.Cutoff == "" {
 			continue
 		}
 
@@ -174,7 +174,7 @@ func resolveWatchdogSLADate(cfg *types.PipelineConfig, now time.Time) string {
 // deadline evaluation. Uses the trigger deadline format (not SLA deadline)
 // to decide between hourly composite date and daily date.
 func resolveTriggerDeadlineDate(cfg *types.PipelineConfig, now time.Time) string {
-	if strings.HasPrefix(cfg.Schedule.Trigger.Deadline, ":") {
+	if strings.HasPrefix(cfg.Schedule.Trigger.Cutoff, ":") {
 		prev := now.Add(-time.Hour)
 		return prev.Format("2006-01-02") + "T" + fmt.Sprintf("%02d", prev.Hour())
 	}
@@ -247,7 +247,7 @@ func closeSensorTriggerWindow(ctx context.Context, d *Deps, pipelineID, schedule
 	if tz == "" && cfg.SLA != nil {
 		tz = cfg.SLA.Timezone
 	}
-	triggerDeadline := resolveTriggerDeadlineTime(cfg.Schedule.Trigger.Deadline, date, tz)
+	triggerDeadline := resolveTriggerDeadlineTime(cfg.Schedule.Trigger.Cutoff, date, tz)
 	if triggerDeadline.IsZero() || triggerDeadline.After(now) {
 		return
 	}
@@ -269,7 +269,7 @@ func closeSensorTriggerWindow(ctx context.Context, d *Deps, pipelineID, schedule
 
 	alertDetail := map[string]interface{}{
 		"source":          "watchdog",
-		"triggerDeadline": cfg.Schedule.Trigger.Deadline,
+		"triggerDeadline": cfg.Schedule.Trigger.Cutoff,
 		"actionHint":      "auto-trigger window closed — use RERUN_REQUEST to restart",
 	}
 	if err := PublishEvent(ctx, d, string(types.EventSensorDeadlineExpired), pipelineID, scheduleID, date,
@@ -281,6 +281,6 @@ func closeSensorTriggerWindow(ctx context.Context, d *Deps, pipelineID, schedule
 		"pipelineId", pipelineID,
 		"schedule", scheduleID,
 		"date", date,
-		"triggerDeadline", cfg.Schedule.Trigger.Deadline,
+		"triggerDeadline", cfg.Schedule.Trigger.Cutoff,
 	)
 }

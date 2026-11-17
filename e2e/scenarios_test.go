@@ -35,7 +35,7 @@ const (
 )
 
 // scenarioConfig is a sensor-triggered pipeline whose http job is the mock,
-// like smokeConfig without the trigger deadline.
+// like smokeConfig without the cutoff.
 func scenarioConfig(id string) types.PipelineConfig {
 	return types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: id},

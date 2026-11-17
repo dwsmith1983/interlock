@@ -44,11 +44,14 @@ type InclusionConfig struct {
 
 // TriggerCondition defines which sensor write starts evaluation.
 type TriggerCondition struct {
-	Key      string      `yaml:"key" json:"key"`
-	Check    CheckOp     `yaml:"check" json:"check"`
-	Field    string      `yaml:"field" json:"field"`
-	Value    interface{} `yaml:"value" json:"value"`
-	Deadline string      `yaml:"deadline,omitempty" json:"deadline,omitempty"` // ":MM" or "HH:MM" — auto-trigger window closes after this deadline
+	Key   string      `yaml:"key" json:"key"`
+	Check CheckOp     `yaml:"check" json:"check"`
+	Field string      `yaml:"field" json:"field"`
+	Value interface{} `yaml:"value" json:"value"`
+	// Cutoff is the latest start time, ":MM" (hourly) or "HH:MM" (daily), in
+	// schedule.timezone (falling back to sla.timezone, then UTC). If no
+	// trigger exists by then, the watchdog closes the date with one final alert.
+	Cutoff string `yaml:"cutoff,omitempty" json:"cutoff,omitempty"`
 }
 
 // ExclusionConfig defines when a pipeline should NOT run.
