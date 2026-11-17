@@ -1,6 +1,7 @@
 package orchestrator_test
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"reflect"
@@ -8,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/orchestrator"
@@ -38,16 +41,23 @@ func TestJobPollExhausted_TimeoutRowCarriesRunID(t *testing.T) {
 	}
 }
 
-// TestValidationExhausted_Cutoff: an exhausted evaluation at or after the
-// cutoff, for a date that is not a rerun, ends the RUNNING run with one
-// SENSOR_DEADLINE_EXPIRED, published before FAILED_FINAL, and no joblog row.
-// Every other case writes the validation-exhausted row as before.
-func TestValidationExhausted_Cutoff(t *testing.T) {
+// TestValidationExhausted: an exhausted evaluation has four outcomes. Before
+// a cutoff that applies to the date, a first run is released: the trigger row
+// is deleted after an evaluation-released joblog row, then
+// EVALUATION_RELEASED (best effort). With no cutoff, or for a rerun, the run
+// ends: validation-exhausted, VALIDATION_EXHAUSTED, then FAILED_FINAL. At or
+// after the cutoff a first run ends with one SENSOR_DEADLINE_EXPIRED, published
+// before FAILED_FINAL, and no joblog row. A missing or finished trigger row is
+// left alone. No rerun lookup is made when no cutoff applies.
+func TestValidationExhausted(t *testing.T) {
 	expired, exhausted := "event "+string(types.EventSensorDeadlineExpired), "event "+string(types.EventValidationExhausted)
-	running, final := types.TriggerStatusRunning, types.TriggerStatusFailedFinal
+	released := "event " + string(types.EventEvaluationReleased)
+	running, final, completed := types.TriggerStatusRunning, types.TriggerStatusFailedFinal, types.TriggerStatusCompleted
 	wantDetail := map[string]interface{}{"source": "orchestrator", "cutoff": "14:00", "cutoffAt": "2026-03-10T14:00:00Z",
 		"actionHint": "cutoff passed and the pipeline did not start; nothing more will start for this date. " +
 			"Investigate, then submit a RERUN_REQUEST to run it manually"}
+	releaseHint := "the lock is released; a new sensor write or the watchdog starts evaluation again before the cutoff"
+	releasedDetail := map[string]interface{}{"source": "orchestrator", "cutoff": "14:00", "cutoffAt": "2026-03-10T14:00:00Z", "actionHint": releaseHint}
 	type call struct {
 		now        time.Time
 		putErr     error
@@ -55,29 +65,73 @@ func TestValidationExhausted_Cutoff(t *testing.T) {
 		wantStatus string
 		wantRow    string // trigger row status after the call, "" for none; a RUNNING row keeps its ttl, a FAILED_FINAL one has none
 	}
-	asBefore := func(now time.Time) []call { return []call{{now: now, wantStatus: "exhausted", wantRow: running}} }
+	noCutoff := func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = "" }
+	hourly := func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = ":15" }
+	release := func(now time.Time) []call { return []call{{now: now, wantStatus: "released"}} }
+	exhaust := func(now time.Time) []call { return []call{{now: now, wantStatus: "exhausted", wantRow: final}} }
+	ve, er := types.JobEventValidationExhausted, types.JobEventEvaluationReleased
 	tests := []struct {
-		name       string
-		tweak      func(*types.PipelineConfig)
-		noRow      bool
-		rerun      bool
-		failConfig bool
-		failRerun  bool
-		calls      []call
-		wantJoblog []string
-		wantOps    []string
-		wantDetail map[string]interface{}
+		name         string
+		tweak        func(*types.PipelineConfig)
+		date         string // "" for cutoffDate
+		noRow        bool
+		startStatus  string // set on the trigger row before the first call
+		rerun        bool
+		noConfig     bool
+		failConfig   bool
+		failRerun    bool
+		deleteFails  int // DeleteItem fails this many times first
+		noRerunQuery bool
+		calls        []call
+		wantJoblog   []string
+		wantOps      []string
+		wantDetail   map[string]interface{}
 	}{
+		{name: "BeforeCutoffReleased", calls: release(at(0, 13, 59)),
+			wantJoblog: []string{er}, wantOps: []string{"release", released}, wantDetail: releasedDetail},
+		{name: "ReleasedThenTaskRetry", calls: append(release(at(0, 13, 59)), release(at(0, 13, 59))...),
+			wantJoblog: []string{er}, wantOps: []string{"release", released}, wantDetail: releasedDetail},
+		{name: "ReleaseEventFails", calls: []call{{now: at(0, 13, 59), putErr: errors.New("eventbridge: throttled"), wantStatus: "released"}},
+			wantJoblog: []string{er}, wantOps: []string{"release"}},
+		{name: "ReleaseDeleteFailsThenWorks", deleteFails: 1, calls: []call{
+			{now: at(0, 13, 58), wantErr: true, wantRow: running},
+			{now: at(0, 13, 59), wantStatus: "released"},
+		}, wantJoblog: []string{er, er}, wantOps: []string{"release", released}, wantDetail: releasedDetail},
+		{name: "HourlyCutoffHourlyKeyReleased", tweak: hourly, date: "2026-03-10T10", calls: release(at(0, 11, 0)),
+			wantJoblog: []string{er}, wantOps: []string{"release", released}, wantDetail: map[string]interface{}{
+				"source": "orchestrator", "cutoff": ":15", "cutoffAt": "2026-03-10T11:15:00Z", "actionHint": releaseHint}},
+		{name: "NoTriggerRowBeforeCutoff", noRow: true, calls: release(at(0, 13, 59))},
+		{name: "TriggerAlreadyFinishedReleaseFailedFinal", startStatus: final,
+			calls: []call{{now: at(0, 13, 59), wantStatus: "released", wantRow: final}}},
+		{name: "TriggerAlreadyFinishedReleaseCompleted", startStatus: completed,
+			calls: []call{{now: at(0, 13, 59), wantStatus: "released", wantRow: completed}}},
+		{name: "RerunLookupFailsBeforeCutoff", failRerun: true, calls: []call{{now: at(0, 13, 59), wantErr: true, wantRow: running}}},
+		{name: "NoCutoff", tweak: noCutoff, noRerunQuery: true, calls: exhaust(at(0, 14, 30)),
+			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
+		{name: "HourlyCutoffDailyDate", tweak: hourly, noRerunQuery: true, calls: exhaust(at(0, 13, 0)),
+			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
+		{name: "DailyCutoffHourlyKey", date: "2026-03-10T10", noRerunQuery: true, calls: exhaust(at(0, 13, 0)),
+			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
+		{name: "NoConfigExhausted", noConfig: true, noRerunQuery: true, calls: exhaust(at(0, 14, 30)),
+			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
+		{name: "RerunBeforeCutoff", rerun: true, calls: exhaust(at(0, 13, 59)),
+			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
+		{name: "RerunAfterCutoff", rerun: true, calls: exhaust(at(0, 14, 30)),
+			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
+		{name: "ExhaustedPublishFailsThenWorks", tweak: noCutoff, calls: []call{
+			{now: at(0, 14, 29), putErr: errors.New("eventbridge: throttled"), wantErr: true, wantRow: running},
+			{now: at(0, 14, 30), wantStatus: "exhausted", wantRow: final},
+		}, wantJoblog: []string{ve, ve}, wantOps: []string{exhausted, "status " + final}},
+		{name: "ExhaustedTaskRetry", tweak: noCutoff, calls: append(exhaust(at(0, 14, 30)), exhaust(at(0, 14, 30))...),
+			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
+		{name: "TriggerAlreadyFinishedExhaustFailedFinal", tweak: noCutoff, startStatus: final,
+			calls: []call{{now: at(0, 14, 30), wantStatus: "exhausted", wantRow: final}}},
+		{name: "TriggerAlreadyFinishedExhaustCompleted", tweak: noCutoff, startStatus: completed,
+			calls: []call{{now: at(0, 14, 30), wantStatus: "exhausted", wantRow: completed}}},
 		{name: "AtCutoffThenTaskRetry", calls: []call{
 			{now: at(0, 14, 0), wantStatus: "cutoff", wantRow: final},
 			{now: at(0, 14, 0), wantStatus: "cutoff", wantRow: final},
 		}, wantOps: []string{expired, "status " + final}, wantDetail: wantDetail},
-		{name: "BeforeCutoff", calls: asBefore(at(0, 13, 59)),
-			wantJoblog: []string{types.JobEventValidationExhausted}, wantOps: []string{exhausted}},
-		{name: "NoCutoff", tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = "" }, calls: asBefore(at(0, 14, 30)),
-			wantJoblog: []string{types.JobEventValidationExhausted}, wantOps: []string{exhausted}},
-		{name: "RerunAfterCutoff", rerun: true, calls: asBefore(at(0, 14, 30)),
-			wantJoblog: []string{types.JobEventValidationExhausted}, wantOps: []string{exhausted}},
 		{name: "PublishFailsThenWorks", calls: []call{
 			{now: at(0, 14, 30), putErr: errors.New("eventbridge: throttled"), wantErr: true, wantRow: running},
 			{now: at(0, 14, 30), wantStatus: "cutoff", wantRow: final},
@@ -93,32 +147,61 @@ func TestValidationExhausted_Cutoff(t *testing.T) {
 			if tt.tweak != nil {
 				tt.tweak(&cfg)
 			}
+			date := cmp.Or(tt.date, cutoffDate)
 			now := tt.calls[0].now
 			d, mem, rec := cutoffDeps(t, cfg, &now)
+			d.Store.Now = d.NowFunc // joblog rows written at different times get different keys
+			fake := d.Store.Client.(*storetest.FakeDynamo)
 			if !tt.noRow {
-				if ok, err := d.Store.AcquireTriggerLock(ctx, "p", "s", cutoffDate, time.Hour); err != nil || !ok {
+				if ok, err := d.Store.AcquireTriggerLock(ctx, "p", "s", date, time.Hour); err != nil || !ok {
 					t.Fatalf("acquire trigger lock = %v, %v", ok, err)
 				}
 			}
+			if tt.startStatus != "" {
+				if err := d.Store.SetTriggerStatus(ctx, "p", "s", date, tt.startStatus); err != nil {
+					t.Fatalf("set trigger status: %v", err)
+				}
+			}
 			if tt.rerun {
-				if _, err := d.Store.WriteRerun(ctx, "p", "s", cutoffDate, "manual", ""); err != nil {
+				if _, err := d.Store.WriteRerun(ctx, "p", "s", date, "manual", ""); err != nil {
 					t.Fatalf("write rerun: %v", err)
 				}
 			}
+			if tt.noConfig {
+				if _, err := fake.DeleteItem(ctx, &dynamodb.DeleteItemInput{TableName: aws.String("control"), Key: map[string]ddbtypes.AttributeValue{
+					"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")}, "SK": &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK}}}); err != nil {
+					t.Fatalf("delete config: %v", err)
+				}
+			}
 			if tt.failConfig {
-				d.Store.Client.(*storetest.FakeDynamo).GetItemFn = func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+				fake.GetItemFn = func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
 					return nil, errors.New("dynamodb: internal error")
 				}
 			}
+			rerunQueries, query := 0, fake.QueryFn
+			fake.QueryFn = func(ctx context.Context, in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+				if *in.TableName == "rerun" {
+					rerunQueries++
+				}
+				return query(ctx, in)
+			}
 			if tt.failRerun {
 				failRerunQuery(d)
+			}
+			deleteFails, del := tt.deleteFails, fake.DeleteItemFn
+			fake.DeleteItemFn = func(ctx context.Context, in *dynamodb.DeleteItemInput) (*dynamodb.DeleteItemOutput, error) {
+				if deleteFails > 0 {
+					deleteFails--
+					return nil, errors.New("dynamodb: throttled")
+				}
+				return del(ctx, in)
 			}
 			rec.ops = nil
 
 			for i, c := range tt.calls {
 				now, rec.putErr = c.now, c.putErr
 				out, err := orchestrator.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
-					Mode: "validation-exhausted", PipelineID: "p", ScheduleID: "s", Date: cutoffDate,
+					Mode: "validation-exhausted", PipelineID: "p", ScheduleID: "s", Date: date,
 				})
 				if (err != nil) != c.wantErr {
 					t.Fatalf("call %d: err = %v, wantErr %v", i, err, c.wantErr)
@@ -126,7 +209,7 @@ func TestValidationExhausted_Cutoff(t *testing.T) {
 				if !c.wantErr && (out.Mode != "validation-exhausted" || out.Status != c.wantStatus) {
 					t.Errorf("call %d: output = %+v, want status %q", i, out, c.wantStatus)
 				}
-				row := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", cutoffDate))
+				row := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", date))
 				if got := strAttr(t, row, "status"); got != c.wantRow {
 					t.Errorf("call %d: trigger row status = %q, want %q", i, got, c.wantRow)
 				}
@@ -146,6 +229,9 @@ func TestValidationExhausted_Cutoff(t *testing.T) {
 			}
 			if tt.wantDetail != nil && (len(rec.events) != 1 || !reflect.DeepEqual(rec.events[0].Detail, tt.wantDetail)) {
 				t.Errorf("events = %+v, want one with detail %v", rec.events, tt.wantDetail)
+			}
+			if tt.noRerunQuery && rerunQueries != 0 {
+				t.Errorf("rerun table queried %d times, want none without a cutoff", rerunQueries)
 			}
 		})
 	}

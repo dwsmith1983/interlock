@@ -91,13 +91,13 @@ func (r *recorder) PutEvents(_ context.Context, in *eventbridge.PutEventsInput, 
 
 // memDeps wires an in-memory store holding cfg, and the recorder. Trigger
 // status writes and rerun rows that reach the store are logged as
-// "status <S>" and "rerun <execution>".
+// "status <S>" and "rerun <execution>", and trigger row deletes as "release".
 func memDeps(t *testing.T, cfg types.PipelineConfig) (*lambda.Deps, *storetest.Mem, *recorder) {
 	t.Helper()
 	fake, mem := storetest.NewMem()
 	mem.Put("control", configItem(t, cfg))
 	rec := &recorder{}
-	put, update := fake.PutItemFn, fake.UpdateItemFn
+	put, update, del := fake.PutItemFn, fake.UpdateItemFn, fake.DeleteItemFn
 	fake.PutItemFn = func(ctx context.Context, in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
 		out, err := put(ctx, in)
 		if sk := strAttr(t, in.Item, "SK"); err == nil && *in.TableName == "rerun" {
@@ -113,6 +113,13 @@ func memDeps(t *testing.T, cfg types.PipelineConfig) (*lambda.Deps, *storetest.M
 			if av, ok := in.ExpressionAttributeValues[v]; ok && err == nil && strings.Contains(*in.UpdateExpression, v) {
 				rec.log("status " + av.(*ddbtypes.AttributeValueMemberS).Value)
 			}
+		}
+		return out, err
+	}
+	fake.DeleteItemFn = func(ctx context.Context, in *dynamodb.DeleteItemInput) (*dynamodb.DeleteItemOutput, error) {
+		out, err := del(ctx, in)
+		if err == nil && strings.HasPrefix(strAttr(t, in.Key, "SK"), "TRIGGER#") {
+			rec.log("release")
 		}
 		return out, err
 	}

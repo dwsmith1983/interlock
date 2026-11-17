@@ -192,7 +192,7 @@ func reconcileSensorTriggers(ctx context.Context, d *lambda.Deps) error {
 			}
 
 			d.Logger.Info("recovered missed trigger",
-				"pipelineId", id, "schedule", scheduleID, "date", date)
+				"pipelineId", id, "schedule", scheduleID, "date", date, "type", eventType)
 		}
 	}
 	return nil

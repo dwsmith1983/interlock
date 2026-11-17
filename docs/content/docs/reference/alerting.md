@@ -43,8 +43,9 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | Detail Type | Meaning | When |
 |---|---|---|
 | `VALIDATION_PASSED` | All validation rules passed | Readiness evaluation succeeds, before trigger |
-| `VALIDATION_EXHAUSTED` | Evaluation window closed without passing | Max evaluation time exceeded |
-| `JOB_TRIGGERED` | Pipeline job was triggered | Trigger fired successfully |
+| `VALIDATION_EXHAUSTED` | Evaluation window closed without passing, and the date ends | The window closed for a date with no cutoff (none set, or a run key of the other cadence) or for a rerun. The trigger row becomes `FAILED_FINAL`, so this is the date's final alert; only a `RERUN_REQUEST` runs it again |
+| `EVALUATION_RELEASED` | Evaluation window closed before the cutoff, and the date can start again | A first run's window closed before its cutoff: the trigger row is deleted and an `evaluation-released` job row written, so the next trigger sensor write or watchdog pass starts evaluation again. Detail carries `cutoff`, `cutoffAt` and `source: orchestrator`. Not an alert: it is recorded in the events table but is not on the alert rule |
+| `JOB_TRIGGERED` | Pipeline job was triggered | Trigger fired successfully: the stream-router started an execution, the orchestrator launched the job, or the watchdog's reconciliation restarted a date whose evaluation was released (`source: reconciliation`) |
 | `JOB_COMPLETED` | Triggered job completed successfully | The stream-router sees a `success` job log row (written by the job, by CheckJob after polling, or by the orchestrator for `lambda`), with the same gates as `JOB_FAILED` |
 | `JOB_FAILED` | Triggered job failed | The stream-router sees a `fail` or `timeout` job log row: one the job wrote, one CheckJob wrote after polling a failure, the `fail` row the orchestrator writes when a `lambda` function returns an error, or the `timeout` row written when the job poll window closes. Only new rows for a date with a trigger row are reported. Detail carries `event`, `error` (cut to 2 KB), `runId` and, when set, `category` |
 | `RETRY_EXHAUSTED` | All retry attempts consumed | Job failed `maxRetries` (or `maxCodeRetries` for permanent failures) times without success |
@@ -91,7 +92,7 @@ Published by the **watchdog** Lambda, invoked on an EventBridge schedule (defaul
 | Detail Type | Meaning | When |
 |---|---|---|
 | `SCHEDULE_MISSED` | The job for a run date has not started by the cron's start-by time, so the SLA is at risk | Once per `RUN#` date of a cron pipeline, on the first watchdog pass after the start-by time; detail carries `cron` and `startBy` |
-| `TRIGGER_RECOVERED` | Sensor trigger condition met but no trigger existed | Watchdog re-evaluated sensor data and self-healed a missed trigger |
+| `TRIGGER_RECOVERED` | Sensor trigger condition met but no trigger existed | Watchdog re-evaluated sensor data and self-healed a trigger the stream-router missed. A restart of a date whose evaluation was released publishes `JOB_TRIGGERED` instead |
 | `CONFIG_INVALID` | A pipeline's `CONFIG` row was rejected, so that pipeline does not run | At the end of a watchdog pass, for a row whose PK is not `PIPELINE#<id>`, whose `config` is missing, not a string or not valid JSON for the config, or that fails validation. Once per broken config version and day: a marker row `CONFIG_INVALID#<hash>` with a 24 h TTL holds it, so a changed but still broken config reports at once, while a config fixed and broken again with the same content within 24 h does not report again. At most 20 reports per pass; the rest follow on later passes. `pipelineId` is the parsed ID, or the raw PK; detail carries `reason` (cut to 1 KB) and `hash` (first 16 hex characters of the SHA-256 of the `config` string, absent when there is none) |
 
 ## Event Payload Structure
