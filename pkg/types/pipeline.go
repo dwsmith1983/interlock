@@ -49,9 +49,12 @@ type TriggerCondition struct {
 	Field string      `yaml:"field" json:"field"`
 	Value interface{} `yaml:"value" json:"value"`
 	// Cutoff is the latest start time, ":MM" (hourly) or "HH:MM" (daily), in
-	// schedule.timezone (falling back to sla.timezone, then UTC). If no
-	// trigger exists by then, the watchdog closes the date with one final alert.
+	// schedule.timezone (falling back to sla.timezone, then UTC). A run date
+	// with a RUN# row and no trigger by then is closed with one final alert.
 	Cutoff string `yaml:"cutoff,omitempty" json:"cutoff,omitempty"`
+	// CutoffDayOffset is the number of days after the run date a daily
+	// cutoff falls on; 0 means the same day.
+	CutoffDayOffset int `yaml:"cutoffDayOffset,omitempty" json:"cutoffDayOffset,omitempty"`
 }
 
 // ExclusionConfig defines when a pipeline should NOT run.

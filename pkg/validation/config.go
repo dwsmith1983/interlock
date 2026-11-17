@@ -27,6 +27,9 @@ const MaxPipelineIDLen = 31
 // Functions and the Scheduler name alphabets.
 var pipelineIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// cutoffRe is a schedule.trigger.cutoff: "HH:MM" (daily) or ":MM" (hourly).
+var cutoffRe = regexp.MustCompile(`^([01]\d|2[0-3])?:[0-5]\d$`)
+
 // triggerTypes is every job.type the orchestrator can launch. Keep it in step
 // with the trigger registry in internal/lambda; a test there fails when a
 // registered type is missing here.
@@ -152,6 +155,21 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 			errs = append(errs, "sla.deadlineDayOffset is not supported without sla.deadline")
 		case strings.HasPrefix(cfg.SLA.Deadline, ":"):
 			errs = append(errs, `sla.deadlineDayOffset is not supported with hourly ":MM" deadlines`)
+		}
+	}
+
+	if tr := cfg.Schedule.Trigger; tr != nil {
+		if tr.Cutoff != "" && !cutoffRe.MatchString(tr.Cutoff) {
+			errs = append(errs, fmt.Sprintf("schedule.trigger.cutoff %q must be HH:MM or :MM", tr.Cutoff))
+		}
+		switch off := tr.CutoffDayOffset; {
+		case off == 0:
+		case off < 0 || off > 7:
+			errs = append(errs, fmt.Sprintf("schedule.trigger.cutoffDayOffset %d out of range [0,7]", off))
+		case tr.Cutoff == "":
+			errs = append(errs, "schedule.trigger.cutoffDayOffset is not supported without schedule.trigger.cutoff")
+		case strings.HasPrefix(tr.Cutoff, ":"):
+			errs = append(errs, `schedule.trigger.cutoffDayOffset is not supported with hourly ":MM" cutoffs`)
 		}
 	}
 

@@ -134,7 +134,7 @@ Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs nine i
 3. **Missed inclusion schedules** -- checks pipelines with inclusion calendar config for missing triggers on scheduled dates. Publishes `IRREGULAR_SCHEDULE_MISSED` events.
 4. **Sensor-trigger reconciliation** -- re-evaluates trigger conditions for sensor-triggered pipelines. Self-heals missed triggers caused by silent completion-write failures.
 5. **SLA scheduling** -- proactively creates EventBridge Scheduler entries for each expected run date (`RUN#<runKey>` row, written by the user) of a pipeline with an SLA config, ensuring warnings and breaches fire even when data never arrives. A pipeline with no `RUN#` rows gets none.
-6. **Cutoffs** -- evaluates `schedule.trigger.cutoff`, the latest start time, for sensor-triggered pipelines. Writes `FAILED_FINAL` and publishes `SENSOR_DEADLINE_EXPIRED` when the cutoff passes with no trigger.
+6. **Cutoffs** -- for each expected run date (`RUN#` row) whose `schedule.trigger.cutoff` passed with no trigger row, writes `FAILED_FINAL` and publishes `SENSOR_DEADLINE_EXPIRED` once.
 7. **Missing post-run sensors** -- for pipelines with `postRun` config and a completed trigger, checks whether post-run sensors have arrived within the `sensorTimeout` grace period. Publishes `POST_RUN_SENSOR_MISSING` events.
 8. **Relative SLA breaches** -- checks pipelines with `maxDuration` SLA config for breaches relative to the first sensor arrival time.
 9. **Invalid configs** -- publishes `CONFIG_INVALID` for each `CONFIG` row the config cache rejected, once per broken config version and day, at most 20 per pass.

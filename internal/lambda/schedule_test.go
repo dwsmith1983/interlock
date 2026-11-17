@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 func TestStartByTime(t *testing.T) {
@@ -77,4 +79,64 @@ func TestStartByTime(t *testing.T) {
 			assert.Equal(t, tt.want, got.UTC().Format(time.RFC3339))
 		})
 	}
+}
+
+func cutoffConfig(cutoff string, offset int, tz string) *types.PipelineConfig {
+	return &types.PipelineConfig{Schedule: types.ScheduleConfig{
+		Timezone: tz,
+		Trigger:  &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: cutoff, CutoffDayOffset: offset},
+	}}
+}
+
+func TestResolveCutoffTime(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *types.PipelineConfig
+		key  string
+		want string // RFC3339 in UTC; empty means the zero time
+	}{
+		{"same day", cutoffConfig("14:00", 0, "UTC"), "2026-03-10", "2026-03-10T14:00:00Z"},
+		{"offset 1", cutoffConfig("02:00", 1, "UTC"), "2026-03-10", "2026-03-11T02:00:00Z"},
+		{"offset across month", cutoffConfig("02:00", 1, "UTC"), "2026-03-31", "2026-04-01T02:00:00Z"},
+		{"new york", cutoffConfig("14:00", 0, "America/New_York"), "2026-03-10", "2026-03-10T18:00:00Z"},
+		// The cutoff is the first instant the local clock reads the cutoff or
+		// later. 02:30 does not exist in New York on 2026-03-08, so it is the
+		// gap's end, 03:00 EDT; a repeated wall time is its first occurrence.
+		{"offset over DST start", cutoffConfig("02:30", 1, "America/New_York"), "2026-03-07", "2026-03-08T07:00:00Z"},
+		{"DST end, first occurrence", cutoffConfig("01:30", 0, "America/New_York"), "2026-11-01", "2026-11-01T05:30:00Z"},
+		{"DST end east of UTC, first occurrence", cutoffConfig("02:30", 0, "Europe/Berlin"), "2026-10-25", "2026-10-25T00:30:00Z"},
+		{"DST start east of UTC", cutoffConfig("02:30", 0, "Europe/Berlin"), "2026-03-29", "2026-03-29T01:00:00Z"},
+		{"hourly into the DST gap", cutoffConfig(":15", 0, "America/New_York"), "2026-03-08T01", "2026-03-08T07:00:00Z"},
+		{"hourly", cutoffConfig(":15", 0, "UTC"), "2026-03-10T10", "2026-03-10T11:15:00Z"},
+		{"hourly at day end", cutoffConfig(":15", 0, "UTC"), "2026-03-10T23", "2026-03-11T00:15:00Z"},
+		{"daily cutoff, hourly key", cutoffConfig("14:00", 0, "UTC"), "2026-03-10T10", ""},
+		{"hourly cutoff, daily key", cutoffConfig(":15", 0, "UTC"), "2026-03-10", ""},
+		{"sla timezone fallback", func() *types.PipelineConfig {
+			c := cutoffConfig("14:00", 0, "")
+			c.SLA = &types.SLAConfig{Timezone: "America/New_York"}
+			return c
+		}(), "2026-03-10", "2026-03-10T18:00:00Z"},
+		{"bad key", cutoffConfig("14:00", 0, "UTC"), "2026-3-10", ""},
+		{"no cutoff", cutoffConfig("", 0, "UTC"), "2026-03-10", ""},
+		{"none", &types.PipelineConfig{}, "2026-03-10", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveCutoffTime(tt.cfg, tt.key)
+			if tt.want == "" {
+				assert.True(t, got.IsZero(), "got %s", got.UTC().Format(time.RFC3339))
+				return
+			}
+			assert.Equal(t, tt.want, got.UTC().Format(time.RFC3339))
+		})
+	}
+}
+
+func TestCutoffPassed(t *testing.T) {
+	cfg := cutoffConfig("14:00", 0, "UTC")
+	at := func(h, m int) time.Time { return time.Date(2026, 3, 10, h, m, 0, 0, time.UTC) }
+	assert.False(t, CutoffPassed(cfg, "2026-03-10", at(13, 59)))
+	assert.True(t, CutoffPassed(cfg, "2026-03-10", at(14, 0)))
+	assert.True(t, CutoffPassed(cfg, "2026-03-10", at(14, 1)))
+	assert.False(t, CutoffPassed(cutoffConfig("", 0, "UTC"), "2026-03-10", at(14, 1)))
 }

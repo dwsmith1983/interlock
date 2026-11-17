@@ -11,7 +11,8 @@ import (
 )
 
 // The RUN# query window around now: wide enough for any timezone and a
-// deadlineDayOffset up to 7. The breach time decides what is still due.
+// deadlineDayOffset or cutoffDayOffset up to 7. The breach time (or the
+// cutoff) decides what is still due.
 const (
 	runKeysDaysBack  = 8
 	runKeysDaysAhead = 2

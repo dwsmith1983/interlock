@@ -365,6 +365,42 @@ func TestValidate_SLADeadlineDayOffset(t *testing.T) {
 	}
 }
 
+func TestValidate_Cutoff(t *testing.T) {
+	tests := []struct {
+		name    string
+		cutoff  string
+		offset  int
+		wantErr string
+	}{
+		{"daily", "14:00", 0, ""},
+		{"hourly", ":15", 0, ""},
+		{"offset with daily", "02:00", 1, ""},
+		{"hour out of range", "25:00", 0, `schedule.trigger.cutoff "25:00" must be HH:MM or :MM`},
+		{"no minutes", "14", 0, `schedule.trigger.cutoff "14" must be HH:MM or :MM`},
+		{"minute out of range", ":75", 0, `schedule.trigger.cutoff ":75" must be HH:MM or :MM`},
+		{"negative offset", "02:00", -1, "schedule.trigger.cutoffDayOffset -1 out of range [0,7]"},
+		{"offset too large", "02:00", 8, "schedule.trigger.cutoffDayOffset 8 out of range [0,7]"},
+		{"offset with hourly", ":15", 1, `schedule.trigger.cutoffDayOffset is not supported with hourly ":MM" cutoffs`},
+		{"offset without cutoff", "", 1, "schedule.trigger.cutoffDayOffset is not supported without schedule.trigger.cutoff"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "orders"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{
+					Key: "upstream", Check: types.CheckExists, Cutoff: tt.cutoff, CutoffDayOffset: tt.offset,
+				}},
+			}
+			errs := ValidatePipelineConfig(&cfg)
+			if tt.wantErr == "" {
+				assert.Empty(t, errs)
+				return
+			}
+			assert.Equal(t, []string{tt.wantErr}, errs)
+		})
+	}
+}
+
 func TestValidate_Cron(t *testing.T) {
 	tests := []struct {
 		name    string

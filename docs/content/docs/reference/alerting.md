@@ -55,7 +55,7 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `POST_RUN_DRIFT_INFLIGHT` | Post-run sensor changed while job running | Informational drift detected during an active execution |
 | `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Watchdog detected no post-run sensor within `sensorTimeout` |
 | `BASELINE_CAPTURE_FAILED` | Baseline capture error | Error occurred while capturing the post-run baseline at trigger completion |
-| `SENSOR_DEADLINE_EXPIRED` | Cutoff passed without the pipeline starting | `schedule.trigger.cutoff` (the latest start time) passed with no trigger; manual restart required via `RERUN_REQUEST` |
+| `SENSOR_DEADLINE_EXPIRED` | A run date passed its cutoff without starting | The watchdog closes the run date (`FAILED_FINAL`) on its first pass after the cutoff, and from then nothing more starts for it; detail has `cutoff` and `cutoffAt`; run it manually with `RERUN_REQUEST` |
 | `PIPELINE_EXCLUDED` | Pipeline excluded by calendar | Sensor, rerun, job-failure, or post-run drift skipped due to calendar exclusion |
 
 ### Rerun Events
