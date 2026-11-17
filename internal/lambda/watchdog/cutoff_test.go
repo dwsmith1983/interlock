@@ -41,6 +41,7 @@ func TestCheckTriggerDeadlines(t *testing.T) {
 		{name: "running trigger row", now: at(10, 14, 5), trigger: types.TriggerStatusRunning},
 		{name: "terminal job row", now: at(10, 14, 5), jobRow: types.JobEventSuccess},
 		{name: "exhausted launch", now: at(10, 14, 5), jobRow: types.JobEventInfraTriggerExhausted, wantDate: slaTestDate, wantAt: "2026-03-10T14:00:00Z"},
+		{name: "released evaluation", now: at(10, 14, 5), jobRow: types.JobEventEvaluationReleased, wantDate: slaTestDate, wantAt: "2026-03-10T14:00:00Z"},
 		{name: "one key passed, one ahead", keys: []string{slaTestDate, "2026-03-11"}, now: at(10, 14, 5), wantDate: slaTestDate, wantAt: "2026-03-10T14:00:00Z"},
 		{name: "no RUN# rows", keys: []string{}, now: at(10, 14, 5)},
 		{name: "malformed key", keys: []string{"2026-3-10"}, now: at(10, 14, 5)},

@@ -158,6 +158,7 @@ func reconcileSensorTriggers(ctx context.Context, d *lambda.Deps) error {
 			if lambda.IsJobTerminal(ctx, d, id, scheduleID, date) {
 				continue
 			}
+			released := lambda.EvaluationReleased(ctx, d, id, scheduleID, date)
 
 			acquired, err := d.Store.AcquireTriggerLock(ctx, id, scheduleID, date, lambda.ResolveTriggerLockTTL())
 			if err != nil {
@@ -178,13 +179,16 @@ func reconcileSensorTriggers(ctx context.Context, d *lambda.Deps) error {
 				continue
 			}
 
-			alertDetail := map[string]interface{}{
-				"source":     "reconciliation",
-				"actionHint": "watchdog recovered missed sensor trigger",
+			// A restart after a released evaluation is a normal start, not a
+			// recovered trigger.
+			eventType, msg, hint := types.EventTriggerRecovered, "trigger recovered for %s/%s/%s", "watchdog recovered missed sensor trigger"
+			if released {
+				eventType, msg, hint = types.EventJobTriggered, "evaluation restarted for %s/%s/%s", "evaluation restarted after its window closed"
 			}
-			if err := lambda.PublishEvent(ctx, d, string(types.EventTriggerRecovered), id, scheduleID, date,
-				fmt.Sprintf("trigger recovered for %s/%s/%s", id, scheduleID, date), alertDetail); err != nil {
-				d.Logger.Warn("failed to publish trigger recovered event", "error", err, "pipeline", id, "schedule", scheduleID, "date", date)
+			alertDetail := map[string]interface{}{"source": "reconciliation", "actionHint": hint}
+			if err := lambda.PublishEvent(ctx, d, string(eventType), id, scheduleID, date,
+				fmt.Sprintf(msg, id, scheduleID, date), alertDetail); err != nil {
+				d.Logger.Warn("failed to publish reconciliation event", "type", eventType, "error", err, "pipeline", id, "schedule", scheduleID, "date", date)
 			}
 
 			d.Logger.Info("recovered missed trigger",

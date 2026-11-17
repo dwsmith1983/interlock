@@ -134,6 +134,7 @@ var slaSiteCases = []struct {
 	{"FailedFinal", types.TriggerStatusFailedFinal, types.JobEventFail, false},
 	{"NoTriggerTerminalRow", "", types.JobEventInfraTriggerExhausted, false},
 	{"NotStarted", "", "", true},
+	{"ReleasedEvaluation", "", types.JobEventEvaluationReleased, true},
 }
 
 func TestScheduleSLAAlerts_RetryKeepsSchedules(t *testing.T) {

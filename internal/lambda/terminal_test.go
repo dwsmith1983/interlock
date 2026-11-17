@@ -2,10 +2,13 @@ package lambda_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
@@ -36,6 +39,8 @@ func TestRunFinished(t *testing.T) {
 		{name: "FailedFinal", trigger: types.TriggerStatusFailedFinal, jobRow: types.JobEventFail, want: true},
 		{name: "NoTriggerTerminalRow", jobRow: types.JobEventInfraTriggerExhausted, want: true},
 		{name: "NoTriggerNoRows", want: false},
+		{name: "NoTriggerEvaluationReleased", jobRow: types.JobEventEvaluationReleased, want: false},
+		{name: "RunningWithEvaluationReleased", trigger: types.TriggerStatusRunning, jobRow: types.JobEventEvaluationReleased, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -60,6 +65,45 @@ func TestRunFinished(t *testing.T) {
 			}
 			if finished == (reason == "") {
 				t.Fatalf("RunFinished = %v with reason %q, want a reason exactly when finished", finished, reason)
+			}
+		})
+	}
+}
+
+// TestEvaluationReleased: only a newest evaluation-released job row means the
+// date's evaluation was released; a failed lookup is not a release.
+func TestEvaluationReleased(t *testing.T) {
+	const date = "2026-03-01"
+	tests := []struct {
+		name    string
+		jobRows []string // oldest first
+		failQ   bool
+		want    bool
+	}{
+		{name: "NoRows", want: false},
+		{name: "LatestReleased", jobRows: []string{types.JobEventInfraTriggerExhausted, types.JobEventEvaluationReleased}, want: true},
+		{name: "ReleasedThenSuccess", jobRows: []string{types.JobEventEvaluationReleased, types.JobEventSuccess}, want: false},
+		{name: "LookupFails", jobRows: []string{types.JobEventEvaluationReleased}, failQ: true, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake, mem := storetest.NewMem()
+			for i, event := range tt.jobRows {
+				mem.Put("joblog", map[string]ddbtypes.AttributeValue{
+					"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
+					"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("s", date, fmt.Sprintf("%d", 1772366400000+i))},
+					"event": &ddbtypes.AttributeValueMemberS{Value: event},
+				})
+			}
+			if tt.failQ {
+				fake.QueryFn = func(context.Context, *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+					return nil, errors.New("dynamodb: throttled")
+				}
+			}
+			d := &lambda.Deps{Store: storetest.NewStore(fake), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+			if got := lambda.EvaluationReleased(context.Background(), d, "p", "s", date); got != tt.want {
+				t.Fatalf("EvaluationReleased = %v, want %v", got, tt.want)
 			}
 		})
 	}

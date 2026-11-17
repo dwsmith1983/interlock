@@ -66,3 +66,17 @@ func RunFinished(ctx context.Context, d *Deps, tr *types.ControlRecord, pipeline
 		return false, ""
 	}
 }
+
+// EvaluationReleased reports whether the date's newest job row is
+// evaluation-released: its evaluation ran out before the cutoff and the
+// trigger lock was released, so a new start is a restart. A failed lookup
+// logs a warning and reports false.
+func EvaluationReleased(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) bool {
+	rec, err := d.Store.GetLatestJobEvent(ctx, pipelineID, scheduleID, date)
+	if err != nil {
+		d.Logger.WarnContext(ctx, "joblog lookup failed, not treating the date as released",
+			"pipelineId", pipelineID, "schedule", scheduleID, "date", date, "error", err)
+		return false
+	}
+	return rec != nil && rec.Event == types.JobEventEvaluationReleased
+}

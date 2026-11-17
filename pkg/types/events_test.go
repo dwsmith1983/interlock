@@ -19,6 +19,7 @@ func TestEventDetailTypeConstants(t *testing.T) {
 		{types.EventSLABreach, "SLA_BREACH"},
 		{types.EventSLAMet, "SLA_MET"},
 		{types.EventValidationExhausted, "VALIDATION_EXHAUSTED"},
+		{types.EventEvaluationReleased, "EVALUATION_RELEASED"},
 		{types.EventRetryExhausted, "RETRY_EXHAUSTED"},
 		{types.EventSFNTimeout, "SFN_TIMEOUT"},
 		{types.EventScheduleMissed, "SCHEDULE_MISSED"},

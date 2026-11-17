@@ -2,6 +2,7 @@ package watchdog
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -82,6 +83,61 @@ func TestReconcile_Cutoff(t *testing.T) {
 			}
 			if status != tt.wantStatus {
 				t.Errorf("trigger status = %q, want %q", status, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// TestReconcile_RestartsAfterRelease: a date whose newest job row is
+// evaluation-released was not ready within its evaluation window and had its
+// lock released. Before the cutoff the reconciler starts it again and reports
+// JOB_TRIGGERED, not TRIGGER_RECOVERED; past the cutoff it closes the date.
+func TestReconcile_RestartsAfterRelease(t *testing.T) {
+	at := func(hour, minute int) time.Time { return time.Date(2026, 3, 10, hour, minute, 0, 0, time.UTC) }
+	triggered := string(types.EventJobTriggered)
+	tests := []struct {
+		name       string
+		now        time.Time
+		olderRow   string // a job row older than the evaluation-released one
+		wantSFN    int
+		wantStatus string
+		wantEvents []string
+	}{
+		{name: "released, before the cutoff", now: at(13, 0), wantSFN: 1, wantStatus: types.TriggerStatusRunning, wantEvents: []string{triggered}},
+		{name: "released, past the cutoff", now: at(14, 30), wantStatus: types.TriggerStatusFailedFinal,
+			wantEvents: []string{string(types.EventSensorDeadlineExpired)}},
+		{name: "infra-trigger-exhausted then released", now: at(13, 0), olderRow: types.JobEventInfraTriggerExhausted,
+			wantSFN: 1, wantStatus: types.TriggerStatusRunning, wantEvents: []string{triggered}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, mem, rec := slaDeps(t, "", types.JobEventEvaluationReleased, func(c *types.PipelineConfig) { c.SLA, c.Schedule.Trigger.Cutoff = nil, "14:00" })
+			sfnFake := &countingSFN{}
+			d.SFNClient, d.NowFunc = sfnFake, func() time.Time { return tt.now }
+			pk := types.PipelinePK("p")
+			if tt.olderRow != "" {
+				mem.Put("joblog", sItem("PK", pk, "SK", types.JobSK("stream", slaTestDate, "1773129500000"), "event", tt.olderRow))
+			}
+			mem.Put("control", map[string]ddbtypes.AttributeValue{
+				"PK": &ddbtypes.AttributeValueMemberS{Value: pk}, "SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK("upstream")},
+				"data": &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{"date": &ddbtypes.AttributeValueMemberS{Value: slaTestDate}}},
+			})
+
+			for pass := 0; pass < 2; pass++ {
+				if err := reconcileSensorTriggers(context.Background(), d); err != nil {
+					t.Fatalf("pass %d: %v", pass, err)
+				}
+			}
+
+			if sfnFake.calls != tt.wantSFN || !slices.Equal(rec.events, tt.wantEvents) {
+				t.Fatalf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, rec.events, tt.wantSFN, tt.wantEvents)
+			}
+			wantDetail := map[string]interface{}{"source": "reconciliation", "actionHint": "evaluation restarted after its window closed"}
+			if e := rec.details[0]; rec.events[0] == triggered && (!maps.Equal(e.Detail, wantDetail) || e.Message != "evaluation restarted for p/stream/"+slaTestDate) {
+				t.Errorf("JOB_TRIGGERED %q with %v, want detail %v", e.Message, e.Detail, wantDetail)
+			}
+			if row := mem.Get("control", pk, types.TriggerSK("stream", slaTestDate)); row == nil || row["status"].(*ddbtypes.AttributeValueMemberS).Value != tt.wantStatus {
+				t.Errorf("trigger row = %v, want status %q", row, tt.wantStatus)
 			}
 		})
 	}
