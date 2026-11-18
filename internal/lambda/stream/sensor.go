@@ -105,7 +105,7 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 			return fmt.Errorf("close %q at its cutoff: %w", pipelineID, err)
 		}
 		if !closed {
-			handleLateData(ctx, d, pipelineID, scheduleID, date)
+			handleLateData(ctx, d, cfg, pipelineID, scheduleID, date, now)
 			d.Logger.InfoContext(ctx, "sensor ignored: run date will not start",
 				"pipelineId", pipelineID, "schedule", scheduleID, "date", date)
 		}
@@ -118,7 +118,7 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 		return fmt.Errorf("acquire trigger lock for %q: %w", pipelineID, err)
 	}
 	if !acquired {
-		handleLateData(ctx, d, pipelineID, scheduleID, date)
+		handleLateData(ctx, d, cfg, pipelineID, scheduleID, date, now)
 		d.Logger.InfoContext(ctx, "trigger lock already held",
 			"pipelineId", pipelineID,
 			"schedule", scheduleID,
@@ -160,8 +160,8 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 
 // handleLateData requests a rerun when the sensor is late data for a date
 // whose run completed, and logs a failed check.
-func handleLateData(ctx context.Context, d *lambda.Deps, pipelineID, scheduleID, date string) {
-	if err := checkLateDataArrival(ctx, d, pipelineID, scheduleID, date); err != nil {
+func handleLateData(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string, now time.Time) {
+	if err := checkLateDataArrival(ctx, d, cfg, pipelineID, scheduleID, date, now); err != nil {
 		d.Logger.WarnContext(ctx, "late data check failed", "error", err)
 	}
 }

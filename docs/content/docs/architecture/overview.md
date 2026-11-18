@@ -230,4 +230,6 @@ postRun:
    - If the trigger is **COMPLETED**, the sensor count is compared against the baseline. Drift above `driftThreshold` triggers a rerun via the circuit breaker.
 3. **Watchdog safety net**: If no post-run sensor arrives within `sensorTimeout` after job completion, the watchdog publishes a `POST_RUN_SENSOR_MISSING` event.
 
+complete-trigger records the completion as `completedAt` on the trigger row. Late data is acted on only within `postRun.watchWindow` (default `4h`) of it, and an automatic rerun request (late data or drift) handled after the window is skipped. Drift detection itself is not bounded yet: a drift after the window still publishes `POST_RUN_DRIFT`, but no rerun runs. See [Watch window](../../configuration/pipelines/#watch-window).
+
 Post-run rules always use `ALL` mode (every rule must pass).
