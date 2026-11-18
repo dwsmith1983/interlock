@@ -2,20 +2,26 @@ package lambda_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/stream"
+	"github.com/dwsmith1983/interlock/internal/store"
+	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/dwsmith1983/interlock/pkg/validation"
 )
@@ -39,9 +45,9 @@ func TestNamesFitAtMaxInputs(t *testing.T) {
 		id := first + strings.Repeat("x", validation.MaxPipelineIDLen-1)
 		require.Empty(t, validation.ValidatePipelineConfig(&types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}}))
 
-		d, mock, sfnM := nameDeps(t, id, date, time.Unix(unix, 0))
+		d, mem, sfnM := newNameDeps(t, id, date, time.Unix(unix, 0))
 		for attempt := 0; attempt < maxRerunAttempt; attempt++ { // earlier reruns, so this one is attempt 999
-			mock.putRaw("rerun", map[string]ddbtypes.AttributeValue{"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(id)},
+			mem.Put("rerun", map[string]ddbtypes.AttributeValue{"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(id)},
 				"SK": &ddbtypes.AttributeValueMemberS{Value: types.RerunSK("stream", date, attempt)}})
 		}
 		require.NoError(t, lambda.StartSFN(context.Background(), d, &types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}}, id, "stream", date))
@@ -76,23 +82,53 @@ func TestNamesFitAtMaxInputs(t *testing.T) {
 // start fails as AlreadyExists and releases the lock the first run holds.
 func TestRerunNamesDifferInOneSecond(t *testing.T) {
 	const id, date = "orders", "2026-03-07"
-	d, _, sfnM := nameDeps(t, id, date, time.Unix(1772870400, 0))
+	d, _, sfnM := newNameDeps(t, id, date, time.Unix(1772870400, 0))
 	requestRerun(t, d, id, date, "manual")
-	requestRerun(t, d, id, date, "data-drift") // its own budget, so it is accepted too
+	// The stubbed per-source budget queries answer zero, so this rerun is
+	// accepted too; CountReruns reads the first rerun's row from Mem, which
+	// makes this one attempt 1.
+	requestRerun(t, d, id, date, "data-drift")
 
 	assert.Equal(t, []string{"orders-stream-2026-03-07-rerun0-1772870400", "orders-stream-2026-03-07-rerun1-1772870400"}, executionNames(sfnM))
 }
 
-// nameDeps returns deps fixed at now, with a config and trigger lock for id and date.
-func nameDeps(t *testing.T, id, date string, now time.Time) (*lambda.Deps, *mockDDB, *mockSFN) {
+// nameSFN records the name of every execution it is asked to start.
+type nameSFN struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (n *nameSFN) StartExecution(_ context.Context, in *sfn.StartExecutionInput, _ ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.names = append(n.names, *in.Name)
+	return &sfn.StartExecutionOutput{}, nil
+}
+
+// newNameDeps returns deps fixed at now, with a config and trigger lock for id
+// and date. Mem has no FilterExpression, so the per-source rerun budget
+// queries answer zero; CountReruns has no filter and still counts Mem's rows.
+func newNameDeps(t *testing.T, id, date string, now time.Time) (*lambda.Deps, *storetest.Mem, *nameSFN) {
 	t.Helper()
-	mock := newMockDDB()
-	d, sfnM, _ := buildE2EDeps(mock, &mockTriggerRunner{}, &mockStatusPoller{})
-	d.NowFunc = func() time.Time { return now }
-	d.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
-	seedConfig(mock, types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}})
-	seedTriggerLock(mock, id, date)
-	return d, mock, sfnM
+	fake, mem := storetest.NewMem()
+	query := fake.QueryFn
+	fake.QueryFn = func(ctx context.Context, in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if *in.TableName == "rerun" && in.FilterExpression != nil {
+			return &dynamodb.QueryOutput{}, nil
+		}
+		return query(ctx, in)
+	}
+	cfg, err := json.Marshal(types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}})
+	require.NoError(t, err)
+	pk := &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(id)}
+	mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": pk,
+		"SK": &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK}, "config": &ddbtypes.AttributeValueMemberS{Value: string(cfg)}})
+	mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": pk,
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning}})
+	s, sfnN := storetest.NewStore(fake), &nameSFN{}
+	return &lambda.Deps{Store: s, ConfigCache: store.NewConfigCache(s, 5*time.Minute), SFNClient: sfnN,
+		NowFunc: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, mem, sfnN
 }
 
 // requestRerun sends a RERUN_REQUEST# record with reason through the stream router.
@@ -110,11 +146,8 @@ func requestRerun(t *testing.T, d *lambda.Deps, id, date, reason string) {
 	require.Empty(t, resp.BatchItemFailures, "rerun %q", reason)
 }
 
-func executionNames(sfnM *mockSFN) (names []string) {
-	sfnM.mu.Lock()
-	defer sfnM.mu.Unlock()
-	for _, in := range sfnM.executions {
-		names = append(names, *in.Name)
-	}
-	return names
+func executionNames(sfnN *nameSFN) []string {
+	sfnN.mu.Lock()
+	defer sfnN.mu.Unlock()
+	return append([]string(nil), sfnN.names...)
 }

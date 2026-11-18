@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/scheduler"
+	schedulerTypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -30,7 +32,24 @@ func assertValidSchedulerName(t *testing.T, name string) {
 	assert.Regexp(t, schedulerNameRe, name)
 }
 
-func newSchedulerDeps(sched *mockScheduler) *lambda.Deps {
+// recordingScheduler records every schedule it creates and the name of every
+// one it deletes.
+type recordingScheduler struct {
+	created []*scheduler.CreateScheduleInput
+	deleted []string
+}
+
+func (r *recordingScheduler) CreateSchedule(_ context.Context, in *scheduler.CreateScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error) {
+	r.created = append(r.created, in)
+	return &scheduler.CreateScheduleOutput{}, nil
+}
+
+func (r *recordingScheduler) DeleteSchedule(_ context.Context, in *scheduler.DeleteScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.DeleteScheduleOutput, error) {
+	r.deleted = append(r.deleted, *in.Name)
+	return &scheduler.DeleteScheduleOutput{}, nil
+}
+
+func newSchedulerDeps(sched *recordingScheduler) *lambda.Deps {
 	return &lambda.Deps{
 		Scheduler:          sched,
 		SLAMonitorARN:      "arn:aws:lambda:us-east-1:123:function:sla-monitor",
@@ -48,7 +67,7 @@ var testSLACalc = lambda.SLAMonitorOutput{
 
 func TestCreateSLASchedules_NameShape(t *testing.T) {
 	t.Setenv("SKIP_SCHEDULER", "")
-	sched := &mockScheduler{}
+	sched := &recordingScheduler{}
 	d := newSchedulerDeps(sched)
 
 	err := lambda.CreateSLASchedules(context.Background(), d, maxPipelineID, "stream", "2026-03-03T10", testSLACalc, false)
@@ -61,12 +80,51 @@ func TestCreateSLASchedules_NameShape(t *testing.T) {
 	}
 }
 
+// TestCreateSLASchedules_Payload pins each one-time schedule the SLA monitor
+// creates: its name, its at() time in UTC, the alert it fires, and that it
+// deletes itself after firing. Only the warning carries the breach time.
+func TestCreateSLASchedules_Payload(t *testing.T) {
+	t.Setenv("SKIP_SCHEDULER", "")
+	s := &recordingScheduler{}
+
+	err := lambda.CreateSLASchedules(context.Background(), newSchedulerDeps(s), "orders", "stream", "2026-03-03T10", testSLACalc, false)
+	require.NoError(t, err)
+
+	require.Len(t, s.created, 2)
+	for i, want := range []struct{ name, expr, input string }{
+		{"orders-stream-2026-03-03T10-sla-warning", "at(2026-03-03T11:45:00)",
+			`{"mode":"fire-alert","pipelineId":"orders","scheduleId":"stream","date":"2026-03-03T10","alertType":"SLA_WARNING","breachAt":"2026-03-03T12:00:00Z"}`},
+		{"orders-stream-2026-03-03T10-sla-breach", "at(2026-03-03T12:00:00)",
+			`{"mode":"fire-alert","pipelineId":"orders","scheduleId":"stream","date":"2026-03-03T10","alertType":"SLA_BREACH"}`},
+	} {
+		in := s.created[i]
+		require.NotNil(t, in.Name)
+		require.NotNil(t, in.GroupName)
+		require.NotNil(t, in.ScheduleExpression)
+		require.NotNil(t, in.ScheduleExpressionTimezone)
+		require.NotNil(t, in.FlexibleTimeWindow)
+		require.NotNil(t, in.Target)
+		require.NotNil(t, in.Target.Arn)
+		require.NotNil(t, in.Target.RoleArn)
+		require.NotNil(t, in.Target.Input)
+		assert.Equal(t, want.name, *in.Name)
+		assert.Equal(t, "interlock-sla", *in.GroupName)
+		assert.Equal(t, want.expr, *in.ScheduleExpression)
+		assert.Equal(t, "UTC", *in.ScheduleExpressionTimezone)
+		assert.Equal(t, schedulerTypes.FlexibleTimeWindowModeOff, in.FlexibleTimeWindow.Mode)
+		assert.Equal(t, schedulerTypes.ActionAfterCompletionDelete, in.ActionAfterCompletion)
+		assert.Equal(t, "arn:aws:lambda:us-east-1:123:function:sla-monitor", *in.Target.Arn)
+		assert.Equal(t, "arn:aws:iam::123:role/scheduler-role", *in.Target.RoleArn)
+		assert.Equal(t, want.input, *in.Target.Input)
+	}
+}
+
 func TestSLACancel_DeletesTheCreatedScheduleNames(t *testing.T) {
 	t.Setenv("SKIP_SCHEDULER", "")
 
 	for _, pipelineID := range []string{"orders", maxPipelineID} {
 		t.Run(pipelineID, func(t *testing.T) {
-			sched := &mockScheduler{}
+			sched := &recordingScheduler{}
 			d := newSchedulerDeps(sched)
 
 			err := lambda.CreateSLASchedules(context.Background(), d, pipelineID, "stream", "2026-03-03T10", testSLACalc, false)
@@ -85,7 +143,7 @@ func TestSLACancel_DeletesTheCreatedScheduleNames(t *testing.T) {
 			require.Len(t, sched.created, 2)
 			require.Len(t, sched.deleted, 2)
 			for i := range sched.created {
-				assert.Equal(t, *sched.created[i].Name, *sched.deleted[i].Name)
+				assert.Equal(t, *sched.created[i].Name, sched.deleted[i])
 			}
 		})
 	}
