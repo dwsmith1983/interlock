@@ -535,3 +535,30 @@ func TestValidate_RelativeSLAExpectedDuration(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_Timezone(t *testing.T) {
+	valid := []string{"", "UTC", "America/New_York", "Asia/Tokyo", "Europe/Berlin"}
+	invalid := []string{"America/NewYork", "EST5EDTX", "Mars/Olympus", "Local", "+05:00"}
+	withZones := func(schedule, sla string) *types.PipelineConfig {
+		return &types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "orders"},
+			Schedule: types.ScheduleConfig{Timezone: schedule},
+			SLA:      &types.SLAConfig{Timezone: sla},
+		}
+	}
+	for _, tz := range valid {
+		t.Run("valid "+tz, func(t *testing.T) {
+			assert.Empty(t, ValidatePipelineConfig(withZones(tz, "")), "schedule.timezone")
+			assert.Empty(t, ValidatePipelineConfig(withZones("", tz)), "sla.timezone")
+		})
+	}
+	for _, tz := range invalid {
+		t.Run("invalid "+tz, func(t *testing.T) {
+			scheduleErr := fmt.Sprintf("schedule.timezone %q is not an IANA time zone name", tz)
+			slaErr := fmt.Sprintf("sla.timezone %q is not an IANA time zone name", tz)
+			assert.Equal(t, []string{scheduleErr}, ValidatePipelineConfig(withZones(tz, "")))
+			assert.Equal(t, []string{slaErr}, ValidatePipelineConfig(withZones("", tz)))
+			assert.Equal(t, []string{scheduleErr, slaErr}, ValidatePipelineConfig(withZones(tz, tz)))
+		})
+	}
+}

@@ -27,7 +27,7 @@ schedule:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `cron` | string | no | Five-field cron expression (minute, hour, day of month, month, day of week), evaluated in `timezone` |
-| `timezone` | string | no | IANA timezone for cron and deadline interpretation (defaults to `UTC`) |
+| `timezone` | string | no | IANA time zone name (for example `America/New_York`) for cron and deadline interpretation. Empty means `UTC`. An unknown name, or `Local`, rejects the config as `CONFIG_INVALID` |
 | `trigger` | object | no | Condition that activates the evaluation loop (see below) |
 | `evaluation` | object | no | Window and interval settings for the evaluation loop |
 
@@ -174,6 +174,7 @@ sla:
 | `deadlineDayOffset` | int | Days after the execution date on which a daily `HH:MM` deadline falls, 0 to 7. Default 0 (the same day) |
 | `expectedDuration` | duration | Expected time for the job to complete; the warning fires this long before the breach. With `maxDuration` it must be positive and below `maxDuration` |
 | `maxDuration` | duration | Relative SLA: the time budget from the first sensor arrival, at most `24h`. Needs `schedule.trigger` |
+| `timezone` | string | IANA time zone name (for example `America/New_York`) for `deadline`. Empty means `UTC`. An unknown name, or `Local`, rejects the config as `CONFIG_INVALID` |
 
 ### Deadline Day
 

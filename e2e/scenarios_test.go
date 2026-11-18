@@ -405,8 +405,10 @@ func TestScenarioSensorAfterCutoff(t *testing.T) {
 	assertLaunches(t, id, 0)
 }
 
-// A run whose evaluation began before its 14:00 cutoff, and whose rules pass
-// only after it, ends at the next evaluation: Evaluate reports cutoff,
+// A run whose evaluation began before its cutoff (14:00 UTC, set as New York
+// wall time so a Lambda that cannot load the zone puts it hours earlier, before
+// the sensor), and whose rules pass only after it, ends at the next
+// evaluation: Evaluate reports cutoff,
 // IsReady sends it to ValidationExhausted, which publishes one
 // SENSOR_DEADLINE_EXPIRED (source orchestrator) and sets FAILED_FINAL, and the
 // execution ends without Trigger or the SLA cancel. A later watchdog pass adds
@@ -417,8 +419,13 @@ func TestScenarioCutoffDuringEvaluation(t *testing.T) {
 	at := func(hour, minute int) time.Time {
 		return time.Date(start.Year(), start.Month(), start.Day(), hour, minute, 0, 0, time.UTC)
 	}
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load zone: %v", err)
+	}
 	cfg := scenarioConfig(id)
-	cfg.Schedule.Trigger.Cutoff = "14:00"
+	cfg.Schedule.Timezone = "America/New_York"
+	cfg.Schedule.Trigger.Cutoff = at(14, 0).In(newYork).Format("15:04")
 	cfg.Validation.Rules = append(cfg.Validation.Rules, types.ValidationRule{Key: "upstream", Check: types.CheckExists})
 	putConfig(t, cfg)
 
@@ -760,15 +767,18 @@ func TestScenarioSLAWarningDuringRetry(t *testing.T) {
 // pass. The absence is checked against a sentinel on the same path: a third
 // pass after the marker's 24 h TTL reports again, so exactly two alerts and
 // two events arrive (a report from the second pass would make three). A
-// pipeline whose ID breaks the ID rule, and one whose job.type is not a
-// trigger type (command), are reported the same way and never launch, though
-// their sensors are ready.
+// pipeline whose ID breaks the ID rule, one whose job.type is not a trigger
+// type (command), and one whose schedule.timezone is not a zone name
+// (America/NewYork) are reported the same way and never launch, though their
+// sensors are ready.
 func TestScenarioBadConfigIsolated(t *testing.T) {
-	const id, bad, badID, badType = "bad-config-neighbour", "bad-config", "bad.config-id", "bad-config-type"
+	const id, bad, badID, badType, badZone = "bad-config-neighbour", "bad-config", "bad.config-id", "bad-config-type", "bad-config-zone"
 	typeCfg := scenarioConfig(badType)
 	typeCfg.Job = types.JobConfig{Type: "command", Config: map[string]interface{}{"command": "true"}}
+	zoneCfg := scenarioConfig(badZone)
+	zoneCfg.Schedule.Timezone = "America/NewYork"
 	badConfigs := map[string]string{bad: `{"pipeline":{"id":"bad-config"},"job":{"maxRetries":"3"}}`}
-	for pipeline, cfg := range map[string]types.PipelineConfig{badID: scenarioConfig(badID), badType: typeCfg} {
+	for pipeline, cfg := range map[string]types.PipelineConfig{badID: scenarioConfig(badID), badType: typeCfg, badZone: zoneCfg} {
 		data, err := json.Marshal(cfg)
 		if err != nil {
 			t.Fatalf("marshal config: %v", err)
@@ -799,6 +809,7 @@ func TestScenarioBadConfigIsolated(t *testing.T) {
 
 	writeReady(t, badID, date)
 	writeReady(t, badType, date)
+	writeReady(t, badZone, date)
 	writeReady(t, id, date)
 	reportJob(t, id, date, waitLaunch(t, id, 1), types.JobEventSuccess)
 	waitCompleted(t, id, date)
@@ -810,11 +821,12 @@ func TestScenarioBadConfigIsolated(t *testing.T) {
 	waitEvents(t, bad, "", map[string]int{invalid: 1})
 	waitEvents(t, badID, "", map[string]int{invalid: 1})
 	waitEvents(t, badType, "", map[string]int{invalid: 1})
+	waitEvents(t, badZone, "", map[string]int{invalid: 1})
 	advanceTo(t, start.Add(time.Hour))
 	invokeWatchdog(t) // the marker holds: no report
 	advanceTo(t, start.Add(25*time.Hour))
 	invokeWatchdog(t) // the marker has expired: the sentinel report
-	for _, b := range []string{bad, badID, badType} {
+	for _, b := range []string{bad, badID, badType, badZone} {
 		waitEvents(t, b, "", map[string]int{invalid: 2})
 		waitAlerts(t, b, alert{b, "", invalid}, alert{b, "", invalid})
 	}
@@ -822,6 +834,7 @@ func TestScenarioBadConfigIsolated(t *testing.T) {
 	assertLaunches(t, id, 1)
 	assertLaunches(t, badID, 0)
 	assertLaunches(t, badType, 0)
+	assertLaunches(t, badZone, 0)
 }
 
 func stateExited(h []sfntypes.HistoryEvent, state string) bool {

@@ -72,7 +72,9 @@ func IsValidExecutionDate(date string) bool {
 }
 
 // ResolveTimezone loads the time.Location for the given timezone name.
-// Returns time.UTC if tz is empty or cannot be loaded.
+// Returns time.UTC if tz is empty or cannot be loaded. Configs from the
+// config cache are validated, so a zone that does not load reaches the
+// fallback only through an unvalidated read such as Store.GetConfig.
 func ResolveTimezone(tz string) *time.Location {
 	if tz == "" {
 		return time.UTC
