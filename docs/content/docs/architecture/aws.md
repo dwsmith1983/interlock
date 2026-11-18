@@ -91,7 +91,7 @@ Processes DynamoDB Stream events from the control and joblog tables. Routes reco
 | `SENSOR#` | Evaluate trigger condition; if matched and not excluded, acquire trigger lock and start Step Function execution. For a `COMPLETED` date inside its post-run watch window (from the `completedAt` complete-trigger records), the write is late data: `LATE_DATA_ARRIVAL` and a `late-data` rerun request; after the window it is ignored |
 | `CONFIG` | Invalidate the config cache |
 | `JOB#` | On success: publish `JOB_COMPLETED`. On fail/timeout: publish `JOB_FAILED` (retries belong to the run's CompleteTrigger). Dry-run pipelines: publish what a retry would do |
-| `SENSOR#` (post-run) | If sensor matches a `postRun.rules[].key` and trigger is COMPLETED: compare against baseline, publish drift/pass/fail events, request rerun on drift. If trigger is RUNNING: publish informational `POST_RUN_DRIFT_INFLIGHT` event |
+| `SENSOR#` (post-run) | If sensor matches a `postRun.rules[].key` and trigger is COMPLETED: inside the date's post-run watch window (from `completedAt`), compare against baseline, publish drift/pass/fail events, request rerun on drift; after the window the sensor is ignored. If trigger is RUNNING: publish informational `POST_RUN_DRIFT_INFLIGHT` event |
 
 The stream-router maintains a config cache to avoid redundant DynamoDB reads. Pipeline configs are parsed and validated at load time (`ValidatePipelineConfig`): a bad `CONFIG` row is skipped and logged as a warning (the watchdog also publishes `CONFIG_INVALID`), and every other pipeline keeps running.
 
@@ -135,7 +135,7 @@ Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs nine i
 4. **Sensor-trigger reconciliation** -- re-evaluates trigger conditions for sensor-triggered pipelines, cron ones included. Self-heals missed triggers caused by silent completion-write failures. Past the date's `schedule.trigger.cutoff` it starts nothing and closes the date with `FAILED_FINAL` and one `SENSOR_DEADLINE_EXPIRED`.
 5. **SLA scheduling** -- proactively creates EventBridge Scheduler entries for each expected run date (`RUN#<runKey>` row, written by the user) of a pipeline with an SLA config, ensuring warnings and breaches fire even when data never arrives. A pipeline with no `RUN#` rows gets none.
 6. **Cutoffs** -- for each expected run date (`RUN#` row) whose `schedule.trigger.cutoff` passed with no trigger row, writes `FAILED_FINAL` and publishes `SENSOR_DEADLINE_EXPIRED` once.
-7. **Missing post-run sensors** -- for pipelines with `postRun` config and a completed trigger, checks whether post-run sensors have arrived within the `sensorTimeout` grace period. Publishes `POST_RUN_SENSOR_MISSING` events.
+7. **Missing post-run sensors** -- for pipelines with `postRun` config and a completed trigger, checks whether post-run sensors have arrived within the `sensorTimeout` grace period, counted from the trigger row's `completedAt`. Publishes `POST_RUN_SENSOR_MISSING` events.
 8. **Relative SLA breaches** -- checks pipelines with `maxDuration` SLA config for breaches relative to the first sensor arrival time.
 9. **Invalid configs** -- publishes `CONFIG_INVALID` for each `CONFIG` row the config cache rejected, once per broken config version and day, at most 20 per pass.
 

@@ -52,9 +52,10 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `INFRA_FAILURE` | Unrecoverable infrastructure error | Step Functions execution reaches Fail state |
 | `SFN_TIMEOUT` | Step Functions execution timed out | Global `TimeoutSeconds` exceeded (configurable via `sfn_timeout_seconds` Terraform variable) |
 | `DATA_DRIFT` | Post-run drift detected | Post-run evaluation detected data quality drift against baseline |
-| `POST_RUN_DRIFT` | Post-run sensor changed after completion | Sensor value drifted from baseline after job completed |
+| `POST_RUN_DRIFT` | Post-run sensor changed after completion | Sensor value drifted from baseline after job completed, inside the [watch window](../../configuration/pipelines/#watch-window) |
 | `POST_RUN_DRIFT_INFLIGHT` | Post-run sensor changed while job running | Informational drift detected during an active execution |
-| `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Watchdog detected no post-run sensor within `sensorTimeout` |
+| `POST_RUN_FAILED` | Post-run rules failed | A post-run sensor arrived inside the watch window, did not drift, and the `postRun.rules` failed (`POST_RUN_PASSED`, not an alert, when they pass) |
+| `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Watchdog detected no post-run sensor within `sensorTimeout` of the trigger row's `completedAt` |
 | `BASELINE_CAPTURE_FAILED` | Baseline capture error | Error occurred while capturing the post-run baseline at trigger completion |
 | `SENSOR_DEADLINE_EXPIRED` | A run date passed its cutoff without starting | The run date is closed (`FAILED_FINAL`) by the stream-router or the watchdog's reconciliation when a sensor is processed after the cutoff, by the watchdog on its next pass for a date with a `RUN#` row, or by the orchestrator when a run is still evaluating at the cutoff, and from then nothing more starts for it; `source` says which; detail has `cutoff` and `cutoffAt`; run it manually with `RERUN_REQUEST` |
 | `PIPELINE_EXCLUDED` | Pipeline excluded by calendar | Sensor, rerun, job-failure, or post-run drift skipped due to calendar exclusion |

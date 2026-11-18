@@ -134,18 +134,10 @@ func configScanItem(t *testing.T) map[string]ddbtypes.AttributeValue {
 	}
 }
 
-// completedTriggerItem is a COMPLETED TRIGGER# row, the state that sends a
-// SENSOR# record down the post-run verdict path.
-func completedTriggerItem() map[string]ddbtypes.AttributeValue {
-	return map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", testDate)},
-		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
-	}
-}
-
-// newNoWriteFake serves the CONFIG row on Scan and a COMPLETED TRIGGER row on
-// GetItem, and fails the test if the router issues any write.
+// newNoWriteFake serves the CONFIG row on Scan and, on GetItem, a COMPLETED
+// TRIGGER row inside its post-run watch window at testNow (so a SENSOR#
+// record reaches the post-run verdict path), and fails the test if the
+// router issues any write.
 func newNoWriteFake(t *testing.T) *storetest.FakeDynamo {
 	t.Helper()
 	return &storetest.FakeDynamo{
@@ -156,7 +148,7 @@ func newNoWriteFake(t *testing.T) *storetest.FakeDynamo {
 		},
 		GetItemFn: func(_ context.Context, in *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
 			if skAttr, ok := in.Key["SK"].(*ddbtypes.AttributeValueMemberS); ok && strings.HasPrefix(skAttr.Value, "TRIGGER#") {
-				return &dynamodb.GetItemOutput{Item: completedTriggerItem()}, nil
+				return &dynamodb.GetItemOutput{Item: completedRow(testDate, "2026-03-07T11:00:00Z")}, nil
 			}
 			return &dynamodb.GetItemOutput{}, nil
 		},
