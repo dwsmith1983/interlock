@@ -237,15 +237,17 @@ postRun:
       value: 1000
   driftThreshold: 10
   sensorTimeout: "2h"
+  watchWindow: "6h"
 ```
 
 ### Post-Run Fields
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `rules` | list | -- (required) | Validation rules using the same syntax as pre-trigger rules. Uses `ALL` mode. |
+| `rules` | list | -- | Validation rules using the same syntax as pre-trigger rules. Uses `ALL` mode. Required for drift and the post-run checks; a `postRun` block with only `watchWindow` is valid. |
 | `driftThreshold` | float* | `0` | Minimum sensor count change to trigger a drift rerun. Set to `0` for any change. |
 | `sensorTimeout` | string | `"2h"` | Grace period after job completion before the watchdog alerts on missing sensors. It must be a positive Go duration and, with `rules`, at most the post-run watch window (`postRun.watchWindow`, default `"4h"`). |
+| `watchWindow` | string | `"4h"` | How long after a run completes its date is watched for late data (see [Watch window](#watch-window)). A Go duration above 0 and at most `720h`. |
 
 ### How It Works
 
@@ -254,6 +256,21 @@ postRun:
    - **Trigger RUNNING**: drift is logged as `POST_RUN_DRIFT_INFLIGHT` (informational, no rerun)
    - **Trigger COMPLETED**: sensor count is compared against the baseline. Drift above `driftThreshold` triggers a rerun via the circuit breaker
 3. If no post-run sensor arrives within `sensorTimeout`, the watchdog publishes `POST_RUN_SENSOR_MISSING`.
+
+### Watch window
+
+A completed date is watched for late data from the run's completion until `watchWindow` later (default `4h`). complete-trigger records the completion as `completedAt` on the trigger row, and a rerun's completion starts a new window. At the limit the watch has ended.
+
+- Inside the window, a trigger sensor written again for the date is late data: `LATE_DATA_ARRIVAL` and a `late-data` `RERUN_REQUEST`.
+- After it, the write is ignored with no event and no rerun request. A `COMPLETED` row without `completedAt` is not watched.
+- An automatic `RERUN_REQUEST` (reason `late-data` or `data-drift`) is checked again when the stream-router handles it: for a `COMPLETED` date outside the window it is skipped with no rerun, row or event. A request written just inside the window but handled at or after the limit is skipped too. A manual `RERUN_REQUEST` (any other reason) still runs.
+- The window is independent of `schedule.trigger.cutoff`: a late-data rerun inside the window runs after the cutoff, and a sensor after the window and before the cutoff starts nothing.
+- A sensor is judged by when the stream-router handles it, not when it was written.
+- Nothing is published when a window ends.
+
+Drift and the post-run checks (`POST_RUN_DRIFT`, `POST_RUN_PASSED`, `POST_RUN_FAILED`) are bounded by the window in the next change. Until then they still run for any `COMPLETED` date: a drift after the window still publishes `POST_RUN_DRIFT`, but its automatic rerun request is skipped.
+
+Dry-run pipelines are not bounded by the window; their late data and drift last as long as the dry-run marker (7-day TTL).
 
 ## Pushing Sensor Data
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 
@@ -45,6 +46,30 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 		return handleDryRunRerunRequest(ctx, d, cfg, pipelineID, schedule, date, record)
 	}
 
+	// Extract reason from stream record NewImage. Default to "manual".
+	reason := "manual"
+	if img := record.Change.NewImage; img != nil {
+		if r, ok := img["reason"]; ok && r.DataType() == events.DataTypeString {
+			if v := r.String(); v != "" {
+				reason = v
+			}
+		}
+	}
+
+	// An automatic request is re-checked: the post-run watch window may have
+	// ended since it was written.
+	if reason == "late-data" || reason == "data-drift" {
+		tr, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
+		if err != nil {
+			return fmt.Errorf("re-check rerun request: %w", err)
+		}
+		if tr != nil && tr.Status == types.TriggerStatusCompleted && !lambda.PostRunWatched(cfg, tr, d.Now()) {
+			d.Logger.InfoContext(ctx, "rerun request skipped: post-run watch window has ended",
+				"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason, "completedAt", tr.CompletedAt)
+			return nil
+		}
+	}
+
 	// Calendar exclusion check (execution date).
 	if lambda.IsExcludedDate(cfg, date) {
 		if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventRerunRejected, "", 0, "excluded by calendar"); err != nil {
@@ -55,16 +80,6 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
 		}
 		return nil
-	}
-
-	// Extract reason from stream record NewImage. Default to "manual".
-	reason := "manual"
-	if img := record.Change.NewImage; img != nil {
-		if r, ok := img["reason"]; ok && r.DataType() == events.DataTypeString {
-			if v := r.String(); v != "" {
-				reason = v
-			}
-		}
 	}
 
 	// Rerun limit check.
@@ -264,13 +279,21 @@ func checkSensorFreshness(ctx context.Context, d *lambda.Deps, pipelineID, jobSK
 }
 
 // checkLateDataArrival detects sensor updates after a pipeline has completed.
-func checkLateDataArrival(ctx context.Context, d *lambda.Deps, pipelineID, schedule, date string) error {
+// Only a date inside its post-run watch window at now is acted on; after the
+// window the sensor is ignored.
+func checkLateDataArrival(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string, now time.Time) error {
 	trigger, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
 	if err != nil || trigger == nil {
 		return err
 	}
 
 	if trigger.Status != types.TriggerStatusCompleted {
+		return nil
+	}
+
+	if !lambda.PostRunWatched(cfg, trigger, now) {
+		d.Logger.InfoContext(ctx, "sensor ignored: post-run watch window has ended",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date, "completedAt", trigger.CompletedAt)
 		return nil
 	}
 

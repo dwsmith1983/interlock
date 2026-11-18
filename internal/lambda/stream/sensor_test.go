@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -98,9 +99,14 @@ func TestSensorEvent_Cutoff(t *testing.T) {
 			d, mem, sfnFake, eb := jobWorld(t, cfg)
 			pk := &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")}
 			if tt.trigger != "" {
-				mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": pk,
+				row := map[string]ddbtypes.AttributeValue{"PK": pk,
 					"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
-					"status": &ddbtypes.AttributeValueMemberS{Value: tt.trigger}})
+					"status": &ddbtypes.AttributeValueMemberS{Value: tt.trigger}}
+				if tt.trigger == types.TriggerStatusCompleted {
+					// Inside the default 4h post-run watch window at 14:30.
+					row["completedAt"] = &ddbtypes.AttributeValueMemberS{Value: "2026-03-10T13:00:00Z"}
+				}
+				mem.Put("control", row)
 			}
 			if tt.jobRow != "" {
 				mem.Put("joblog", map[string]ddbtypes.AttributeValue{"PK": pk,
@@ -144,4 +150,119 @@ func TestSensorEvent_Cutoff(t *testing.T) {
 			}
 		})
 	}
+}
+
+// completedRow is a COMPLETED trigger row for pipeline p on date, with
+// completedAt when it is not empty.
+func completedRow(date, completedAt string) map[string]ddbtypes.AttributeValue {
+	row := map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
+	}
+	if completedAt != "" {
+		row["completedAt"] = &ddbtypes.AttributeValueMemberS{Value: completedAt}
+	}
+	return row
+}
+
+// jobEvents lists the event of each job row, oldest first.
+func jobEvents(mem *storetest.Mem) []string {
+	var got []string
+	for _, row := range mem.Items("joblog") {
+		got = append(got, row["event"].(*ddbtypes.AttributeValueMemberS).Value)
+	}
+	return got
+}
+
+// TestLateData_WatchWindow: a trigger sensor for a COMPLETED date is late data
+// only while the post-run watch window is open: from completedAt until
+// completedAt plus postRun.watchWindow (6h here unless a row says otherwise,
+// 4h by default). At the limit, or with no completedAt, it is ignored.
+func TestLateData_WatchWindow(t *testing.T) {
+	const date = "2026-03-10"
+	late := []string{string(types.EventLateDataArrival)}
+	lateJobs := []string{types.JobEventSuccess, types.JobEventLateDataArrival}
+	window := func(w string) func(*types.PipelineConfig) {
+		return func(c *types.PipelineConfig) { c.PostRun = &types.PostRunConfig{WatchWindow: w} }
+	}
+	cutoff := func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = "14:00" }
+	tests := []struct {
+		name        string
+		tweaks      []func(*types.PipelineConfig)
+		completedAt string
+		now         string
+		wantEvents  []string // nil means none; a late sensor also writes a request and a job row
+	}{
+		{name: "inside (guard)", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z", wantEvents: late},
+		{name: "at the limit", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T18:00:00Z"},
+		{name: "two days later", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-12T09:00:00Z"},
+		{name: "default window, inside (guard)", tweaks: []func(*types.PipelineConfig){func(c *types.PipelineConfig) { c.PostRun = nil }},
+			completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T15:59:59Z", wantEvents: late},
+		{name: "default window, at the limit", tweaks: []func(*types.PipelineConfig){func(c *types.PipelineConfig) { c.PostRun = nil }},
+			completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T16:00:00Z"},
+		{name: "no completedAt", now: "2026-03-10T12:30:00Z"},
+		{name: "inside, past the cutoff (guard)", tweaks: []func(*types.PipelineConfig){cutoff},
+			completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T14:30:00Z", wantEvents: late},
+		{name: "outside, before the cutoff", tweaks: []func(*types.PipelineConfig){window("1h"), cutoff},
+			completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T13:30:00Z"},
+		{name: "rerun completed later (guard)", completedAt: "2026-03-11T08:00:00Z", now: "2026-03-11T13:59:59Z", wantEvents: late},
+		{name: "rerun's window ended", completedAt: "2026-03-11T08:00:00Z", now: "2026-03-11T14:00:00Z"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "p"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Job:      types.JobConfig{Type: types.TriggerHTTP},
+				PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
+			}
+			for _, f := range tt.tweaks {
+				f(&cfg)
+			}
+			d, mem, sfnFake, eb := jobWorld(t, cfg)
+			pk := types.PipelinePK("p")
+			mem.Put("control", completedRow(date, tt.completedAt))
+			mem.Put("joblog", map[string]ddbtypes.AttributeValue{"PK": &ddbtypes.AttributeValueMemberS{Value: pk},
+				"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
+				"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess}})
+			now := mustTime(t, tt.now)
+			d.NowFunc = func() time.Time { return now }
+
+			if err := handleRecord(context.Background(), d, sensorRecord(date)); err != nil {
+				t.Fatalf("handleRecord: %v", err)
+			}
+
+			var gotEvents []string
+			for _, e := range eb.events {
+				gotEvents = append(gotEvents, e.Type)
+			}
+			wantJobs, wantRerun := []string{types.JobEventSuccess}, tt.wantEvents != nil
+			if wantRerun {
+				wantJobs = lateJobs
+			}
+			if sfnFake.calls != 0 || !slices.Equal(gotEvents, tt.wantEvents) {
+				t.Errorf("StartExecution calls %d, events %v; want 0 and %v", sfnFake.calls, gotEvents, tt.wantEvents)
+			}
+			if got := mem.Get("control", pk, types.TriggerSK("stream", date))["status"].(*ddbtypes.AttributeValueMemberS).Value; got != types.TriggerStatusCompleted {
+				t.Errorf("trigger status = %q, want COMPLETED", got)
+			}
+			if rerun := mem.Get("control", pk, types.RerunRequestSK("stream", date)) != nil; rerun != wantRerun {
+				t.Errorf("rerun request written = %v, want %v", rerun, wantRerun)
+			}
+			if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
+				t.Errorf("job rows = %v, want %v", got, wantJobs)
+			}
+		})
+	}
+}
+
+// mustTime parses an RFC3339 instant.
+func mustTime(t *testing.T, s string) time.Time {
+	t.Helper()
+	v, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }

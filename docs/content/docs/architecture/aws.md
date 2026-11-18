@@ -88,7 +88,7 @@ Processes DynamoDB Stream events from the control and joblog tables. Routes reco
 
 | SK Prefix | Action |
 |---|---|
-| `SENSOR#` | Evaluate trigger condition; if matched and not excluded, acquire trigger lock and start Step Function execution |
+| `SENSOR#` | Evaluate trigger condition; if matched and not excluded, acquire trigger lock and start Step Function execution. For a `COMPLETED` date inside its post-run watch window (from the `completedAt` complete-trigger records), the write is late data: `LATE_DATA_ARRIVAL` and a `late-data` rerun request; after the window it is ignored |
 | `CONFIG` | Invalidate the config cache |
 | `JOB#` | On success: publish `JOB_COMPLETED`. On fail/timeout: publish `JOB_FAILED` (retries belong to the run's CompleteTrigger). Dry-run pipelines: publish what a retry would do |
 | `SENSOR#` (post-run) | If sensor matches a `postRun.rules[].key` and trigger is COMPLETED: compare against baseline, publish drift/pass/fail events, request rerun on drift. If trigger is RUNNING: publish informational `POST_RUN_DRIFT_INFLIGHT` event |
