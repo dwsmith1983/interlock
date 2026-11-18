@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	// Validation and the Lambdas must load the same zones whatever the runtime image has.
+	_ "time/tzdata"
 
 	"github.com/robfig/cron/v3"
 
@@ -114,6 +116,13 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		}
 	}
 
+	if tz := cfg.Schedule.Timezone; !isZoneName(tz) {
+		errs = append(errs, fmt.Sprintf("schedule.timezone %q is not an IANA time zone name", tz))
+	}
+	if cfg.SLA != nil && !isZoneName(cfg.SLA.Timezone) {
+		errs = append(errs, fmt.Sprintf("sla.timezone %q is not an IANA time zone name", cfg.SLA.Timezone))
+	}
+
 	// Cron and Include are mutually exclusive.
 	if cfg.Schedule.Cron != "" && cfg.Schedule.Include != nil {
 		errs = append(errs, "schedule.cron and schedule.include are mutually exclusive")
@@ -196,6 +205,19 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	}
 
 	return errs
+}
+
+// isZoneName reports whether tz is empty (UTC) or a zone time.LoadLocation
+// loads. "Local" is rejected: it is the host's zone, not a named one.
+func isZoneName(tz string) bool {
+	if tz == "" {
+		return true
+	}
+	if tz == "Local" {
+		return false
+	}
+	_, err := time.LoadLocation(tz)
+	return err == nil
 }
 
 // maxPostRunWatchWindow bounds postRun.watchWindow: job and rerun rows live 30 days.
