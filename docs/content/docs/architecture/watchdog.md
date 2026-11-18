@@ -13,7 +13,7 @@ The watchdog is one of six Lambda functions in the Interlock framework. It runs 
 5. **SLA scheduling** -- proactively ensures EventBridge Scheduler entries exist for each expected run date (`RUN#` row) of a pipeline with an SLA config
 6. **Cutoffs** -- an expected run date (`RUN#` row) passed its `schedule.trigger.cutoff` without starting; it is closed with `FAILED_FINAL` and one `SENSOR_DEADLINE_EXPIRED`
 7. **Missing post-run sensors** -- a pipeline completed but the expected post-run sensor never arrived
-8. **Relative SLA breaches** -- a pipeline with `maxDuration` SLA has exceeded its time budget since first sensor arrival
+8. **Relative SLA** -- a pipeline with `maxDuration` SLA whose run has not finished: `RELATIVE_SLA_WARNING` once at first sensor arrival + `maxDuration` - `expectedDuration` (75% of `maxDuration` without `expectedDuration`), then `RELATIVE_SLA_BREACH` once at arrival + `maxDuration`
 9. **Invalid configs** -- a pipeline's `CONFIG` row was rejected (malformed or failing validation), so that pipeline is skipped while the others run; reported as `CONFIG_INVALID` once per broken config version and day
 
 In STAMP terms, these are safety constraint violations caused by _what didn't happen_ rather than what went wrong.

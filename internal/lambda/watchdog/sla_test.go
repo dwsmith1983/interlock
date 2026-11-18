@@ -207,7 +207,8 @@ func TestScheduleSLAAlerts_SkipsDueWarning(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d, _, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
-				c.SLA.ExpectedDuration = tt.expected
+				// No maxDuration: expectedDuration must stay below it, and these rows reach it.
+				c.SLA.ExpectedDuration, c.SLA.MaxDuration = tt.expected, ""
 			})
 
 			if err := scheduleSLAAlerts(context.Background(), d); err != nil {

@@ -503,3 +503,35 @@ func TestValidate_PostRunWatchWindow(t *testing.T) {
 		})
 	}
 }
+
+// TestValidate_RelativeSLAExpectedDuration: with sla.maxDuration, the warning
+// offset sla.expectedDuration must be a positive duration below it.
+func TestValidate_RelativeSLAExpectedDuration(t *testing.T) {
+	below := func(v string) []string {
+		return []string{fmt.Sprintf(`sla.expectedDuration %q must be positive and below sla.maxDuration "2h"`, v)}
+	}
+	tests := []struct {
+		name, maxDuration, expected string
+		wantErrs                    []string
+	}{
+		{"empty", "2h", "", nil},
+		{"30m", "2h", "30m", nil},
+		{"1h59m", "2h", "1h59m", nil},
+		{"abc", "2h", "abc", []string{`sla.expectedDuration invalid Go duration "abc"`}},
+		{"0s", "2h", "0s", below("0s")},
+		{"-1m", "2h", "-1m", below("-1m")},
+		{"2h", "2h", "2h", below("2h")},
+		{"3h", "2h", "3h", below("3h")},
+		{"no maxDuration", "", "3h", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "orders"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				SLA:      &types.SLAConfig{MaxDuration: tt.maxDuration, ExpectedDuration: tt.expected},
+			}
+			assert.Equal(t, tt.wantErrs, ValidatePipelineConfig(&cfg))
+		})
+	}
+}
