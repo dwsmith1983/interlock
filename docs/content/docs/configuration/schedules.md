@@ -172,7 +172,8 @@ sla:
 |---|---|---|
 | `deadline` | string | `HH:MM` -- all validation rules must pass and the job must complete by this time |
 | `deadlineDayOffset` | int | Days after the execution date on which a daily `HH:MM` deadline falls, 0 to 7. Default 0 (the same day) |
-| `expectedDuration` | duration | Expected time for the job to complete (used for SLA breach detection) |
+| `expectedDuration` | duration | Expected time for the job to complete; the warning fires this long before the breach. With `maxDuration` it must be positive and below `maxDuration` |
+| `maxDuration` | duration | Relative SLA: the time budget from the first sensor arrival, at most `24h`. Needs `schedule.trigger` |
 
 ### Deadline Day
 
@@ -220,6 +221,19 @@ Each Scheduler entry invokes the sla-monitor Lambda at the exact timestamp to pu
 When the pipeline job completes (or all retries are exhausted), the state machine cancels any unfired Scheduler entries. If the run ended before the breach time, a `SLA_MET` event is published.
 
 The deadline is interpreted in `sla.timezone` (or UTC if not set).
+
+### Relative SLA
+
+With `maxDuration`, the SLA counts from the date's first sensor arrival instead of a wall-clock deadline. The watchdog checks it on each pass while the run has not finished:
+
+- **Warning**: `RELATIVE_SLA_WARNING` once at first sensor arrival + `maxDuration` - `expectedDuration` (75% of `maxDuration` without `expectedDuration`)
+- **Breach**: `RELATIVE_SLA_BREACH` once at first sensor arrival + `maxDuration`
+
+A pass that first sees a date after its breach time publishes only the breach. `expectedDuration` must be below `maxDuration`, or the config is rejected.
+
+The watchdog checks only daily run dates for today and yesterday (UTC), so hourly run dates get no relative SLA alerts, and a date whose first sensor arrives a day or more late may be missed. Keep `expectedDuration` above the watchdog interval (5 minutes by default), or a pass may land after the breach and send only `RELATIVE_SLA_BREACH`.
+
+The relative SLA creates no Scheduler entries: with both `deadline` and `maxDuration` (and a `RUN#` row), a run that has not finished gets both `SLA_WARNING`/`SLA_BREACH` from its deadline schedules and `RELATIVE_SLA_WARNING`/`RELATIVE_SLA_BREACH` from the watchdog. For any run with `maxDuration` and a first sensor arrival, the `SLA_MET` or `SLA_BREACH` verdict at the end of the run is judged against the relative breach time, so a relative-only run that finishes late gets both `RELATIVE_SLA_BREACH` and a final `SLA_BREACH`.
 
 ### EventBridge SLA Events
 

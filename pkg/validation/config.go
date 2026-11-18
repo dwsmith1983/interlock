@@ -145,6 +145,14 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		} else if d > 24*time.Hour {
 			errs = append(errs, fmt.Sprintf("sla.maxDuration exceeds 24h (%s)", cfg.SLA.MaxDuration))
 		}
+		// expectedDuration is the warning offset before the relative breach.
+		if exp := cfg.SLA.ExpectedDuration; err == nil && exp != "" {
+			if e, perr := time.ParseDuration(exp); perr != nil {
+				errs = append(errs, fmt.Sprintf("sla.expectedDuration invalid Go duration %q", exp))
+			} else if e <= 0 || e >= d {
+				errs = append(errs, fmt.Sprintf("sla.expectedDuration %q must be positive and below sla.maxDuration %q", exp, cfg.SLA.MaxDuration))
+			}
+		}
 	}
 
 	if cfg.SLA != nil && cfg.SLA.DeadlineDayOffset != 0 {
