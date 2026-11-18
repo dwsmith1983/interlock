@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 func TestExtractFloatOk(t *testing.T) {
@@ -59,4 +61,9 @@ func TestDetectDrift(t *testing.T) {
 			assert.Equal(t, tt.wantDrift, result.Drifted)
 		})
 	}
+}
+
+func TestResolveDriftField(t *testing.T) {
+	assert.Equal(t, "sensor_count", ResolveDriftField(&types.PostRunConfig{}))
+	assert.Equal(t, "count", ResolveDriftField(&types.PostRunConfig{DriftField: "count"}))
 }

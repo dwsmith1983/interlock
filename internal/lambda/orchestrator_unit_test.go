@@ -199,4 +199,31 @@ func TestRemapPerPeriodSensors(t *testing.T) {
 		assert.NotNil(t, sensors["daily-check"])
 		assert.Equal(t, true, sensors["daily-check"]["passed"])
 	})
+
+	t.Run("no_match_other_hour", func(t *testing.T) {
+		sensors := map[string]map[string]interface{}{
+			"hourly-status#20260303T08": {"complete": true},
+		}
+		lambda.RemapPerPeriodSensors(sensors, "2026-03-03T07")
+		_, exists := sensors["hourly-status"]
+		assert.False(t, exists, "another hour's sensor must not be remapped")
+		assert.Len(t, sensors, 1)
+	})
+
+	t.Run("per_period_overwrites_base", func(t *testing.T) {
+		sensors := map[string]map[string]interface{}{
+			"hourly-status":             {"source": "base"},
+			"hourly-status#20260303T07": {"source": "per-period"},
+		}
+		lambda.RemapPerPeriodSensors(sensors, "2026-03-03T07")
+		assert.Equal(t, "per-period", sensors["hourly-status"]["source"])
+	})
+
+	t.Run("compact_input_date", func(t *testing.T) {
+		sensors := map[string]map[string]interface{}{
+			"hourly-status#20260303T07": {"complete": true},
+		}
+		lambda.RemapPerPeriodSensors(sensors, "20260303T07")
+		assert.Contains(t, sensors, "hourly-status")
+	})
 }

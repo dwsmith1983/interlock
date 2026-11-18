@@ -40,6 +40,12 @@ func TestRunFinished(t *testing.T) {
 		{name: "NoTriggerTerminalRow", jobRow: types.JobEventInfraTriggerExhausted, want: true},
 		{name: "NoTriggerNoRows", want: false},
 		{name: "NoTriggerEvaluationReleased", jobRow: types.JobEventEvaluationReleased, want: false},
+		{name: "NoTriggerSuccess", jobRow: types.JobEventSuccess, want: true},
+		{name: "NoTriggerFail", jobRow: types.JobEventFail, want: true},
+		{name: "NoTriggerTimeout", jobRow: types.JobEventTimeout, want: true},
+		{name: "NoTriggerValidationExhausted", jobRow: types.JobEventValidationExhausted, want: true},
+		{name: "NoTriggerInfraTriggerFailure", jobRow: types.JobEventInfraTriggerFailure, want: false},
+		{name: "NoTriggerRerunAccepted", jobRow: types.JobEventRerunAccepted, want: false},
 		{name: "RunningWithEvaluationReleased", trigger: types.TriggerStatusRunning, jobRow: types.JobEventEvaluationReleased, want: false},
 	}
 	for _, tt := range tests {
