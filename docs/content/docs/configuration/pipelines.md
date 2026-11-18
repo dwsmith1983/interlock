@@ -62,7 +62,7 @@ Identity and ownership metadata.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | Unique pipeline identifier (used as DynamoDB partition key) |
-| `owner` | string | yes | Team or individual responsible for the pipeline |
+| `owner` | string | no | Team or individual responsible for the pipeline |
 | `description` | string | no | Human-readable description |
 
 The `id` is 1 to 31 characters of `A-Z`, `a-z`, `0-9`, `_` and `-`. Step Functions execution names and EventBridge Scheduler names are built from it, and at that length every one fits its AWS limit as is (the 64-character Scheduler name is the tightest). The file name without `.yaml` or `.yml` must equal the `id`: the Terraform module keys the `CONFIG` row by the file name and fails `terraform plan` when they differ, and a `CONFIG` row whose `PIPELINE#<id>` key differs from its `pipeline.id` is rejected at load.
@@ -132,7 +132,6 @@ The `validation` block replaces the old archetype/trait system with a declarativ
 | `lt` | Field is less than the value (numeric) | `check: lt`, `field: errorRate`, `value: 5` |
 | `lte` | Field is less than or equal to the value (numeric) | `check: lte`, `field: latency`, `value: 100` |
 | `age_lt` | Field timestamp is newer than the duration | `check: age_lt`, `field: updatedAt`, `value: 2h` |
-| `age_gt` | Field timestamp is older than the duration | `check: age_gt`, `field: createdAt`, `value: 24h` |
 
 ### Example: Event-Driven Pipeline
 
@@ -245,9 +244,11 @@ postRun:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `rules` | list | -- | Validation rules using the same syntax as pre-trigger rules. Uses `ALL` mode. Required for drift and the post-run checks; a `postRun` block with only `watchWindow` is valid. |
-| `driftThreshold` | float* | `0` | Minimum sensor count change to trigger a drift rerun. Set to `0` for any change. |
+| `driftThreshold` | float* | `0` | Minimum change in `driftField` to trigger a drift rerun. Set to `0` for any change. |
+| `driftField` | string | `"sensor_count"` | Sensor field compared with the baseline for drift. |
 | `sensorTimeout` | string | `"2h"` | Grace period after job completion before the watchdog alerts on missing sensors. It must be a positive Go duration and, with `rules`, at most the post-run watch window (`postRun.watchWindow`, default `"4h"`). |
 | `watchWindow` | string | `"4h"` | How long after a run completes its date is watched for late data, drift and the post-run checks (see [Watch window](#watch-window)). A Go duration above 0 and at most `720h`. |
+| `evaluation` | object | -- | Accepted but not read. |
 
 ### How It Works
 

@@ -48,7 +48,7 @@ For each trigger:
 
 ### Stale Threshold
 
-The default stale trigger threshold is 24 hours. Triggers whose TTL has expired are considered timed-out Step Function executions. The watchdog transitions them to `FAILED_FINAL` status. It does not retry: retries start only from a run's CompleteTrigger, and a stale trigger has no run left to start one.
+A trigger lock's TTL is `sfn_timeout_seconds` plus 30 minutes (4h30m by default). Triggers whose TTL has expired are considered timed-out Step Function executions. The watchdog transitions them to `FAILED_FINAL` status. It does not retry: retries start only from a run's CompleteTrigger, and a stale trigger has no run left to start one.
 
 ### Event Format
 
@@ -179,14 +179,16 @@ EventBridge rule (rate) → watchdog Lambda → DynamoDB (read configs, triggers
                                           → EventBridge custom bus (publish events)
 ```
 
-The watchdog reads from all three DynamoDB tables (configs from control, job events from joblog, reruns from rerun) but only writes to the control table (to update stale trigger status).
+The watchdog reads from the control, joblog and rerun tables and writes only to the control table (trigger status, dedup markers, released locks). It also starts executions during sensor-trigger reconciliation and creates the SLA Scheduler entries.
 
 ### IAM Permissions
 
 | Action | Scope |
 |---|---|
 | DynamoDB read (GetItem, Query, Scan, etc.) | All 3 tables + indexes |
-| DynamoDB write (PutItem, UpdateItem) | Control table only |
+| DynamoDB write (PutItem, UpdateItem, DeleteItem) | Control table only |
+| Step Functions StartExecution | Pipeline state machine |
+| EventBridge Scheduler CreateSchedule | SLA schedule group |
 | EventBridge PutEvents | Custom event bus |
 
 ### Terraform Configuration
@@ -205,7 +207,7 @@ variable "watchdog_schedule" {
 
 All nine checks run independently in sequence. An error in any check does not prevent the remaining checks from running. Errors are collected into an aggregate error and returned to the Lambda runtime.
 
-When one or more checks fail, the watchdog publishes a `WATCHDOG_DEGRADED` event to EventBridge listing the failed check names. This allows operators to detect partial watchdog failures through the standard alerting pipeline.
+When one or more checks fail, the watchdog publishes a `WATCHDOG_DEGRADED` event to EventBridge listing the failed check names. The event-sink records it, but it is not on the module's alert rule, so it does not reach Slack; add a rule on the bus to route it.
 
 ```json
 {

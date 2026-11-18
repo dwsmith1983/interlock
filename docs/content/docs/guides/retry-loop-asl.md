@@ -5,7 +5,7 @@ weight: 10
 
 # Step Functions State Machine
 
-This guide explains the ASL patterns used in Interlock's Step Functions state machine. The state machine uses 18 sequential states to orchestrate pipeline evaluation, job triggering, and SLA monitoring via EventBridge Scheduler.
+This guide explains the ASL patterns used in Interlock's Step Functions state machine. The state machine uses 28 states to orchestrate pipeline evaluation, job triggering, and SLA monitoring via EventBridge Scheduler.
 
 ## Architecture Overview
 
@@ -14,9 +14,13 @@ The state machine is defined in `deploy/statemachine.asl.json`. The Terraform mo
 ```
 InitEvalLoop → Evaluate → IsReady
   → (passed) Trigger → HasTriggerResult
-      → WaitForJob → CheckJob → IsJobDone
-          → (terminal) CheckCancelSLA → CancelSLASchedules → Done
-          → (running) WaitForJob (loop)
+      → InitJobPollLoop → WaitForJob → CheckJob → IsJobDone
+          → (terminal) CompleteTrigger → IsRetrying
+              → (retrying) Done
+              → CheckCancelSLA → CancelSLASchedules → Done
+          → (running) IncrementJobPollElapsed → CheckJobPollExhausted
+              → (window remaining) WaitForJob (loop)
+              → (exhausted) JobPollExhausted → InjectTimeoutEvent → CompleteTrigger
   → (not ready) WaitInterval → IncrementElapsed → CheckWindowExhausted
       → (window remaining) Evaluate (loop)
       → (window exhausted) ValidationExhausted (release, end or cutoff) → Done
@@ -88,10 +92,11 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
       "mode": "trigger",
       "pipelineId.$": "$.pipelineId",
       "scheduleId.$": "$.scheduleId",
-      "date.$": "$.date"
+      "date.$": "$.date",
+      "executionName.$": "$$.Execution.Name"
     },
     "ResultPath": "$.triggerResult",
-    "Next": "CheckSLAConfig",
+    "Next": "HasTriggerResult",
     "Retry": [
       {
         "ErrorEquals": [
@@ -109,7 +114,7 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
       {
         "ErrorEquals": ["States.ALL"],
         "ResultPath": "$.errorInfo",
-        "Next": "CheckCancelSLA"
+        "Next": "TriggerRetryExhausted"
       }
     ]
   },
@@ -135,61 +140,49 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
           "Variable": "$.checkJobResult.event",
           "IsPresent": true
         },
-        "Next": "WaitForJob"
+        "Next": "IncrementJobPollElapsed"
       },
       {
         "Variable": "$.checkJobResult.event",
         "StringEquals": "success",
-        "Next": "CheckCancelSLA"
+        "Next": "CompleteTrigger"
       },
       {
         "Variable": "$.checkJobResult.event",
         "StringEquals": "fail",
-        "Next": "CheckCancelSLA"
+        "Next": "CompleteTrigger"
       },
       {
         "Variable": "$.checkJobResult.event",
         "StringEquals": "timeout",
-        "Next": "CheckCancelSLA"
+        "Next": "CompleteTrigger"
       }
     ],
-    "Default": "WaitForJob"
+    "Default": "IncrementJobPollElapsed"
   }
 }
 ```
 
-The Trigger state has a dedicated retry policy for infrastructure failures. When the orchestrator cannot start the job (e.g., Glue `ConcurrentRunsExceededException`), it returns a Lambda error. Step Functions retries up to `trigger_max_attempts` times (default 3, so four attempts in all), waiting 30s, 60s and 120s. If all retries exhaust, the Catch routes to `CheckCancelSLA` for graceful SLA cleanup instead of crashing.
+The Trigger state has a dedicated retry policy for infrastructure failures. When the orchestrator cannot start the job (e.g., Glue `ConcurrentRunsExceededException`), it returns a Lambda error. Step Functions retries up to `trigger_max_attempts` times (default 3, so four attempts in all), waiting 30s, 60s and 120s. If all retries exhaust, the Catch routes to `TriggerRetryExhausted`, which records the failure and releases the trigger lock, then to `CheckCancelSLA` for SLA cleanup instead of crashing.
 
-Once triggered, the state machine polls job status via `check-job` mode. The `IsJobDone` Choice state first checks whether the `event` field is present (missing means still running), then routes terminal events (`success`, `fail`, `timeout`) to SLA cleanup.
+Once triggered, the state machine polls job status via `check-job` mode. The `IsJobDone` Choice state first checks whether the `event` field is present (missing means still running), then routes terminal events (`success`, `fail`, `timeout`) to **CompleteTrigger**, which sets `COMPLETED`, starts the next retry attempt (`status: retrying`, which skips the SLA cleanup so the retry keeps the schedules) or sets `FAILED_FINAL`. When `jobPollWindowSeconds` passes first, **JobPollExhausted** writes a `timeout` row and the run goes to CompleteTrigger as a timeout.
 
-## SLA Scheduling
+## SLA Cleanup
+
+SLA alerts are scheduled outside the state machine: the watchdog creates the warning and breach Scheduler entries for each `RUN#` date, and each entry invokes the sla-monitor Lambda with `mode=fire-alert` at its time. The state machine only cleans up when the run ends.
 
 ```json
 {
-  "CheckSLAConfig": {
+  "CheckCancelSLA": {
     "Type": "Choice",
     "Choices": [
       {
         "Variable": "$.config.sla",
         "IsPresent": true,
-        "Next": "ScheduleSLAAlerts"
+        "Next": "CancelSLASchedules"
       }
     ],
-    "Default": "HasTriggerResult"
-  },
-  "ScheduleSLAAlerts": {
-    "Type": "Task",
-    "Resource": "${sla_monitor_arn}",
-    "Parameters": {
-      "mode": "schedule",
-      "pipelineId.$": "$.pipelineId",
-      "scheduleId.$": "$.scheduleId",
-      "date.$": "$.date",
-      "deadline.$": "$.config.sla.deadline",
-      "expectedDuration.$": "$.config.sla.expectedDuration"
-    },
-    "ResultPath": "$.slaSchedule",
-    "Next": "HasTriggerResult"
+    "Default": "Done"
   },
   "CancelSLASchedules": {
     "Type": "Task",
@@ -199,8 +192,11 @@ Once triggered, the state machine polls job status via `check-job` mode. The `Is
       "pipelineId.$": "$.pipelineId",
       "scheduleId.$": "$.scheduleId",
       "date.$": "$.date",
-      "warningAt.$": "$.slaSchedule.warningAt",
-      "breachAt.$": "$.slaSchedule.breachAt"
+      "deadline.$": "$.config.sla.deadline",
+      "expectedDuration.$": "$.config.sla.expectedDuration",
+      "maxDuration.$": "$.config.sla.maxDuration",
+      "timezone.$": "$.config.sla.timezone",
+      "sensorArrivalAt.$": "$.sensorArrivalAt"
     },
     "ResultPath": "$.slaResult",
     "Next": "Done"
@@ -210,10 +206,9 @@ Once triggered, the state machine polls job status via `check-job` mode. The `Is
 
 ### How it works
 
-1. **CheckSLAConfig** skips SLA scheduling if no `sla` config is present in the pipeline config.
-2. **ScheduleSLAAlerts** creates two one-time EventBridge Scheduler entries — one for the warning timestamp and one for the breach timestamp. Each entry invokes the sla-monitor Lambda with `mode=fire-alert` at the exact time. Entries auto-delete after execution.
-3. After the job reaches a terminal state, **CheckCancelSLA** checks if SLA was configured (by checking for `$.slaSchedule`).
-4. **CancelSLASchedules** deletes any unfired Scheduler entries and publishes `SLA_MET` if the job completed before the warning deadline.
+1. **CheckCancelSLA** skips the cleanup when the pipeline has no `sla` config.
+2. **CancelSLASchedules** deletes any unfired Scheduler entries and publishes `SLA_MET` if the run ended before the breach time, `SLA_BREACH` otherwise.
+3. If CompleteTrigger itself fails after its retries, **CheckSLAForCompleteTriggerFailure** and **CancelSLAOnCompleteTriggerFailure** cancel the schedules before the execution ends in **CompleteTriggerFailed**.
 
 ## Error Handling
 
@@ -248,17 +243,19 @@ The default retry policy handles transient Lambda errors with exponential backof
 
 Catch routing varies by state:
 - **Most states**: Catch routes to `InfraFailure` (Fail state — terminates execution)
-- **Trigger**: Catch routes to `CheckCancelSLA` (graceful termination with SLA cleanup)
-- **ScheduleSLAAlerts**: Catch routes to `HasTriggerResult` (SLA failure is non-fatal)
+- **Trigger**: Catch routes to `TriggerRetryExhausted`, then `CheckCancelSLA` (graceful termination with SLA cleanup)
+- **CompleteTrigger**: Catch routes to `CheckSLAForCompleteTriggerFailure` (SLA cleanup, then `CompleteTriggerFailed`)
 - **CancelSLASchedules**: Catch routes to `Done` (cleanup failure is non-fatal)
 
 ## Customization
 
-The ASL is a template file (`deploy/statemachine.asl.json`) processed by Terraform's `templatefile` function. The two substitution variables are:
+The ASL is a template file (`deploy/statemachine.asl.json`) processed by Terraform's `templatefile` function. The substitution variables are:
 
-| Variable | Terraform Resource |
+| Variable | Terraform Source |
 |---|---|
 | `${orchestrator_arn}` | `aws_lambda_function.orchestrator.arn` |
 | `${sla_monitor_arn}` | `aws_lambda_function.sla_monitor.arn` |
+| `${sfn_timeout_seconds}` | `var.sfn_timeout_seconds` |
+| `${trigger_max_attempts}` | `var.trigger_max_attempts` |
 
 The evaluation interval, window duration, and job check interval are driven by pipeline config values passed in the Step Functions input (`$.config`), not hardcoded in the ASL.

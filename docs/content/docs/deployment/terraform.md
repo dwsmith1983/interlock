@@ -38,6 +38,11 @@ pipeline:
 schedule:
   cron: "0 8 * * *"
   timezone: UTC
+  trigger:                 # the sensor's data.date sets the run date
+    key: upstream-complete
+    check: equals
+    field: status
+    value: ready
   evaluation:
     window: 1h
     interval: 5m
@@ -79,7 +84,6 @@ module "interlock" {
   environment    = "production"
   dist_path      = "path/to/interlock/deploy/dist"
   pipelines_path = "${path.module}/pipelines"
-  calendars_path = "${path.module}/calendars"
 
   tags = {
     Project     = "interlock"
@@ -103,7 +107,7 @@ terraform apply
 | `environment` | string | -- | Environment name (e.g., `staging`, `production`). Prefixes all resource names. |
 | `dist_path` | string | -- | Path to the directory containing Lambda zip files |
 | `pipelines_path` | string | -- | Path to directory containing pipeline YAML configuration files |
-| `calendars_path` | string | `""` | Path to directory containing calendar YAML files (optional) |
+| `calendars_path` | string | `""` | Accepted but not read (named calendars are not loaded) |
 | `tags` | map(string) | `{}` | Tags to apply to all resources |
 | `lambda_memory_size` | number | `128` | Memory size for Lambda functions (MB) |
 | `log_retention_days` | number | `30` | CloudWatch log retention in days |
@@ -115,7 +119,7 @@ terraform apply
 | `enable_emr_serverless_trigger` | bool | `false` | Grant orchestrator Lambda permission to start EMR Serverless jobs |
 | `enable_sfn_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Step Functions executions |
 | `enable_lambda_trigger` | bool | `false` | Grant orchestrator Lambda permission to invoke Lambda functions |
-| `lambda_trigger_arns` | list(string) | `["*"]` | Lambda function ARNs the orchestrator may invoke (scoped IAM). Only used when `enable_lambda_trigger` is `true` |
+| `lambda_trigger_arns` | list(string) | `[]` | Lambda function ARNs the orchestrator may invoke (scoped IAM). Required, non-empty, when `enable_lambda_trigger` is `true` |
 | `slack_bot_token` | string (sensitive) | `""` | Slack Bot API token with `chat:write` scope for alert-dispatcher |
 | `slack_channel_id` | string | `""` | Slack channel ID for alert notifications (required when `slack_bot_token` or `slack_secret_arn` is set; all three empty = logging only) |
 | `slack_secret_arn` | string | `""` | AWS Secrets Manager ARN containing the Slack bot token. When set, alert-dispatcher reads the token from Secrets Manager instead of the `slack_bot_token` environment variable |
@@ -244,8 +248,8 @@ Each Lambda gets its own execution role with least-privilege policies:
 |---|---|
 | stream-router | DynamoDB read/write (all 3 tables), DynamoDB Streams (control + joblog), Step Functions `StartExecution`, EventBridge `PutEvents`, SQS `SendMessage` (DLQs) |
 | orchestrator | DynamoDB read/write (all 3 tables), Step Functions `StartExecution` (failure retries), EventBridge `PutEvents`, conditional trigger permissions |
-| sla-monitor | EventBridge `PutEvents` |
-| watchdog | DynamoDB read (all 3 tables), DynamoDB write (control only), EventBridge `PutEvents` |
+| sla-monitor | DynamoDB read (control, joblog), EventBridge Scheduler create/delete, EventBridge `PutEvents` |
+| watchdog | DynamoDB read (all 3 tables), DynamoDB write and delete (control only), Step Functions `StartExecution` (reconciliation), EventBridge Scheduler create (SLA schedules), EventBridge `PutEvents` |
 
 The Step Functions execution role has permission to invoke the orchestrator and sla-monitor Lambdas.
 

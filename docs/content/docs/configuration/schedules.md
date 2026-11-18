@@ -30,6 +30,9 @@ schedule:
 | `timezone` | string | no | IANA time zone name (for example `America/New_York`) for cron and deadline interpretation. Empty means `UTC`. An unknown name, or `Local`, rejects the config as `CONFIG_INVALID` |
 | `trigger` | object | no | Condition that activates the evaluation loop (see below) |
 | `evaluation` | object | no | Window and interval settings for the evaluation loop |
+| `exclude` | object | no | Dates the pipeline does not run (see [Calendar Exclusions](#calendar-exclusions)) |
+| `include` | object | no | `dates` (`YYYY-MM-DD` list) the pipeline is expected to run on; the watchdog publishes `IRREGULAR_SCHEDULE_MISSED` for a past date with no trigger row. It does not stop runs on other dates. Not allowed with `cron` |
+| `time` | string | no | `HH:MM` in `timezone`: on an `include` date, the missed-date check waits until this time. Not allowed with `cron` |
 
 ### Trigger Condition
 
@@ -46,7 +49,15 @@ schedule:
 
 When the trigger condition is met (e.g., an upstream pipeline signals completion), the evaluation loop begins. The loop then evaluates the full set of `validation` rules at the configured interval.
 
-The trigger condition uses the same check syntax as validation rules: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_gt`.
+| Field | Type | Description |
+|---|---|---|
+| `key` | string | Sensor key whose writes are checked (`SENSOR#<key>`) |
+| `check` | string | Operator, as in validation rules |
+| `field` | string | Field in the sensor's `data` map (not needed for `exists`) |
+| `value` | any | Value to compare against (not needed for `exists`) |
+| `cutoff`, `cutoffDayOffset` | | See [Cutoff](#cutoff) |
+
+The trigger condition uses the same check syntax as validation rules: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`.
 
 ### Cutoff
 
@@ -94,10 +105,10 @@ schedule:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `window` | duration | — | Maximum time to keep evaluating after activation |
-| `interval` | duration | — | Time between evaluation attempts within the window |
+| `window` | duration | `1h` | Maximum time to keep evaluating after activation |
+| `interval` | duration | `5m` | Time between evaluation attempts within the window |
 
-If the validation rules are not satisfied within the evaluation window, the Step Functions execution transitions to a timeout state and emits an EventBridge event.
+If the validation rules are not satisfied within the evaluation window, the execution ends without launching the job: before the date's cutoff the date is released (`EVALUATION_RELEASED`) and can start again, and otherwise it ends with `VALIDATION_EXHAUSTED` (see [Cutoff](#cutoff)).
 
 ### Event-Driven Schedules
 
@@ -170,11 +181,12 @@ sla:
 
 | Field | Type | Description |
 |---|---|---|
-| `deadline` | string | `HH:MM` -- all validation rules must pass and the job must complete by this time |
+| `deadline` | string | `HH:MM` for daily execution dates, `:MM` for hourly ones -- all validation rules must pass and the job must complete by this time |
 | `deadlineDayOffset` | int | Days after the execution date on which a daily `HH:MM` deadline falls, 0 to 7. Default 0 (the same day) |
 | `expectedDuration` | duration | Expected time for the job to complete; the warning fires this long before the breach. With `maxDuration` it must be positive and below `maxDuration` |
 | `maxDuration` | duration | Relative SLA: the time budget from the first sensor arrival, at most `24h`. Needs `schedule.trigger` |
 | `timezone` | string | IANA time zone name (for example `America/New_York`) for `deadline`. Empty means `UTC`. An unknown name, or `Local`, rejects the config as `CONFIG_INVALID` |
+| `critical` | bool | Accepted and passed into the state machine input; nothing reads it |
 
 ### Deadline Day
 
@@ -244,7 +256,7 @@ SLA events are published to the custom EventBridge bus. You can create rules to 
 |---|---|
 | `SLA_WARNING` | Warning deadline reached (job still running) |
 | `SLA_BREACH` | Final deadline reached (job still running) |
-| `SLA_MET` | Job completed before the warning deadline |
+| `SLA_MET` | Run ended before the breach time |
 
 Example event:
 
@@ -263,54 +275,22 @@ Example event:
 
 ## Calendar Exclusions
 
-Pipelines can be excluded from running on specific days of the week or calendar dates. When excluded, the pipeline is dormant -- no evaluation, no SLA monitoring.
-
-### Inline Exclusions
+Pipelines can be excluded from running on weekends or specific dates with `schedule.exclude`.
 
 ```yaml
-exclusions:
-  days:
-    - saturday
-    - sunday
-  dates:
-    - "2026-12-25"
-    - "2026-01-01"
+schedule:
+  timezone: America/New_York
+  exclude:
+    weekends: true
+    dates:
+      - "2026-12-25"
+      - "2026-01-01"
 ```
 
-### Named Calendar Reference
+| Field | Type | Description |
+|---|---|---|
+| `weekends` | bool | Exclude Saturdays and Sundays |
+| `dates` | list | Excluded dates, `YYYY-MM-DD` |
+| `holidays` | string | Accepted but not read |
 
-Define reusable calendars in YAML files and reference them from pipeline configs:
-
-```yaml
-# calendars/holidays.yaml
-name: holidays
-days:
-  - saturday
-  - sunday
-dates:
-  - "2026-12-25"
-  - "2026-01-01"
-  - "2026-07-04"
-```
-
-Reference from a pipeline:
-
-```yaml
-exclusions:
-  calendar: holidays
-```
-
-### Combining Calendar and Inline Exclusions
-
-Inline `days` and `dates` are merged with the named calendar. A date or day matching any source triggers exclusion.
-
-```yaml
-exclusions:
-  calendar: holidays
-  days:
-    - friday
-  dates:
-    - "2026-03-15"
-```
-
-Calendar YAML files are loaded from the `calendars_path` directory configured in the Terraform module.
+A trigger sensor write, and the watchdog's sensor-trigger reconciliation, start nothing while the current day in `schedule.timezone` is excluded. Reruns, failure retries, the post-run drift rerun, and the SLA, start-by and cutoff checks look at the execution date instead (its date part for an hourly `YYYY-MM-DDThh` date); a skipped rerun or retry publishes `PIPELINE_EXCLUDED`. `schedule.calendar` and the Terraform `calendars_path` variable are accepted but not read: named calendar files are not loaded, so list the dates in `exclude.dates`.

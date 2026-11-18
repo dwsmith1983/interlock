@@ -92,9 +92,9 @@ job:
 |---|---|
 | `pipeline` | Identity: `id`, `owner`, `description` |
 | `schedule` | When to evaluate: `cron`, `timezone`, trigger condition, evaluation window/interval |
-| `sla` | SLA deadlines: `deadline`, `expectedDuration` |
+| `sla` | SLA deadlines: `deadline`, `deadlineDayOffset`, `expectedDuration`, `maxDuration` |
 | `validation` | Readiness rules: `trigger` mode (`ALL` or `ANY`), list of `rules` |
-| `job` | What to trigger: `type` (http, glue, emr, emr-serverless, step-function), `config`, `maxRetries` |
+| `job` | What to trigger: `type` (http, airflow, glue, emr, emr-serverless, step-function, databricks, lambda), `config`, `maxRetries` |
 
 ### Validation Rule Checks
 
@@ -154,6 +154,7 @@ table.put_item(Item={
     "SK": "SENSOR#upstream-complete",
     "data": {
         "status": "ready",
+        "date": "2026-03-01",  # the run date; without it the watchdog uses today's UTC date
         "updatedAt": "2026-03-01T08:05:00Z",
     },
 })
@@ -177,7 +178,7 @@ When sensor data is written to DynamoDB, the following happens automatically:
 3. The state machine calls the **orchestrator** Lambda to evaluate validation rules against sensor data
 4. If rules pass (all or any, depending on `validation.trigger`), the orchestrator triggers the job
 5. The state machine polls job status until completion
-6. If SLA is configured, the state machine creates **EventBridge Scheduler** entries that fire `SLA_WARNING` / `SLA_BREACH` events at exact deadlines
+6. If SLA is configured, the watchdog creates **EventBridge Scheduler** entries that fire `SLA_WARNING` / `SLA_BREACH` events at exact deadlines, for each run date with a `RUN#` row (see [Expected Run Dates](../configuration/schedules/#expected-run-dates))
 
 No manual intervention required. The entire lifecycle is automated.
 

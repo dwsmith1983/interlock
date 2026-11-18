@@ -45,7 +45,8 @@ The primary state table. Stores pipeline configs, sensor data, trigger locks, an
 |---|---|---|---|
 | Pipeline config | `PIPELINE#{id}` | `CONFIG` | YAML config stored as JSON |
 | Sensor data | `PIPELINE#{id}` | `SENSOR#{key}` | External sensor writes |
-| Trigger lock | `PIPELINE#{id}` | `TRIGGER#{schedule}#{date}` | Dedup lock for executions |
+| Trigger lock | `PIPELINE#{id}` | `TRIGGER#{schedule}#{date}` | Dedup lock for executions; `startedAt` and `completedAt` mark the job's launch and the run's completion |
+| Expected run date | `PIPELINE#{id}` | `RUN#{runKey}` | Written by the user; drives the SLA schedules, start-by and cutoff checks |
 
 DynamoDB Streams are enabled with `NEW_IMAGE` view type. The stream-router Lambda processes sensor writes and config changes from this stream.
 
@@ -116,14 +117,13 @@ Supported trigger types: `http`, `airflow`, `glue`, `emr`, `emr-serverless`, `st
 
 ### sla-monitor
 
-Manages SLA deadlines using EventBridge Scheduler. Creates one-time schedule entries that fire alerts at exact warning and breach timestamps. Invoked by the Step Functions state machine at two points:
+Publishes the SLA alerts. The watchdog creates the one-time EventBridge Scheduler entries (warning and breach) for each `RUN#` date; sla-monitor is invoked:
 
 | When | Action |
 |---|---|
-| After trigger (or validation exhaustion) | Creates two one-time EventBridge Scheduler entries — one for warning, one for breach. Entries auto-delete after firing. |
-| When the run ends without starting a retry | Cancels unfired Scheduler entries. Publishes `SLA_MET` if the job completed before the warning deadline. |
+| A Scheduler entry fires | Publishes `SLA_WARNING` or `SLA_BREACH`, unless the run has finished. Entries auto-delete after firing. |
+| The run ends without starting a retry (state machine) | Cancels unfired Scheduler entries. Publishes `SLA_MET` if the run ended before the breach time, else `SLA_BREACH`. |
 
-When a Scheduler entry fires, it invokes this Lambda to publish the corresponding `SLA_WARNING` or `SLA_BREACH` event to EventBridge.
 
 ### watchdog
 
@@ -189,30 +189,35 @@ InitEvalLoop → Evaluate → IsReady
 6. **CheckWindowExhausted** — if elapsed >= window, go to ValidationExhausted
 7. **ValidationExhausted**: end the execution without SLA cleanup, since no job ran. Before the cutoff, a first run is released (`evaluation-released` joblog row, trigger row deleted, `EVALUATION_RELEASED`), so a later sensor write or watchdog pass can start it again and its SLA schedules still fire. With no cutoff, or for a rerun, it publishes `VALIDATION_EXHAUSTED` and sets `FAILED_FINAL`, and sla-monitor suppresses the unfired SLA schedules because the run is finished. At or after the cutoff it publishes `SENSOR_DEADLINE_EXPIRED` and then sets `FAILED_FINAL`
 
-### Trigger and Job Polling (12 states)
+### Trigger and Job Polling (13 states)
 
 1. **Trigger**: invoke orchestrator with `mode=trigger`. A job that could not be started is retried up to `trigger_max_attempts` times after the first attempt (default 3, so four attempts, waiting 30s, 60s and 120s between them)
-2. **HasTriggerResult** — if a job was triggered, poll for completion; otherwise finish
-3. **InitJobPollLoop** — initialize job poll elapsed counter
-4. **WaitForJob** — configurable delay between job status checks
-5. **CheckJob** — invoke orchestrator with `mode=check-job`
-6. **IsJobDone** — route on terminal events (success/fail/timeout) or keep polling
-7. **IncrementJobPollElapsed** — track total job polling time via `States.MathAdd`
-8. **CheckJobPollExhausted** — if elapsed >= `jobPollWindowSeconds`, go to JobPollExhausted
-9. **JobPollExhausted**: invoke orchestrator with `mode=job-poll-exhausted` (best effort)
-10. **InjectTimeoutEvent**: inject `event: timeout` for CompleteTrigger routing
-11. **CompleteTrigger**: invoke orchestrator with `mode=complete-trigger`, passing the run ID and execution name; it sets the terminal status or starts the next attempt
-12. **IsRetrying**: if CompleteTrigger started a retry, finish without cancelling the SLA (the retry owns it); otherwise go to CheckCancelSLA
+2. **HasTriggerResult**: if a job was triggered, poll for completion; otherwise go to FailValidationExhausted
+3. **TriggerRetryExhausted**: after the Trigger retries run out, invoke orchestrator with `mode=trigger-exhausted` (records the failure and releases the trigger lock), then go to CheckCancelSLA
+4. **InitJobPollLoop**: initialize job poll elapsed counter
+5. **WaitForJob**: configurable delay between job status checks
+6. **CheckJob**: invoke orchestrator with `mode=check-job`
+7. **IsJobDone**: route on terminal events (success/fail/timeout) or keep polling
+8. **IncrementJobPollElapsed**: track total job polling time via `States.MathAdd`
+9. **CheckJobPollExhausted**: if elapsed >= `jobPollWindowSeconds`, go to JobPollExhausted
+10. **JobPollExhausted**: invoke orchestrator with `mode=job-poll-exhausted` (best effort)
+11. **InjectTimeoutEvent**: inject `event: timeout` for CompleteTrigger routing
+12. **CompleteTrigger**: invoke orchestrator with `mode=complete-trigger`, passing the run ID and execution name; it sets the terminal status or starts the next attempt. If it still fails after its retries, go to CheckSLAForCompleteTriggerFailure
+13. **IsRetrying**: if CompleteTrigger started a retry, finish without cancelling the SLA (the retry owns it); otherwise go to CheckCancelSLA
 
-### SLA Cleanup (2 states)
+### SLA Cleanup (4 states)
 
 1. **CheckCancelSLA** — if SLA was scheduled, cancel unfired entries
 2. **CancelSLASchedules** — invoke sla-monitor to delete Scheduler entries and record final SLA outcome
+3. **CheckSLAForCompleteTriggerFailure**: if SLA was configured, go to CancelSLAOnCompleteTriggerFailure; otherwise CompleteTriggerFailed
+4. **CancelSLAOnCompleteTriggerFailure**: best-effort SLA cancellation, then CompleteTriggerFailed
 
-### Terminal States (2 states)
+### Terminal States (4 states)
 
 1. **InfraFailure** — Fail state for unrecoverable infrastructure errors
-2. **Done** — Succeed state
+2. **FailValidationExhausted**: Fail state when Trigger returned no result
+3. **CompleteTriggerFailed**: Fail state when CompleteTrigger could not set a terminal status, leaving the trigger row `RUNNING`
+4. **Done**: Succeed state
 
 ### Error Handling
 
@@ -271,8 +276,8 @@ Each Lambda function has its own IAM role with least-privilege policies:
 |---|---|---|---|
 | stream-router | Read/write control, joblog, rerun + stream access | PutEvents | `states:StartExecution`, SQS SendMessage (DLQs) |
 | orchestrator | Read/write control, joblog, rerun | PutEvents | `states:StartExecution` (failure retries), conditional trigger permissions (Glue, EMR, etc.) |
-| sla-monitor | None | PutEvents | `scheduler:CreateSchedule`, `scheduler:DeleteSchedule` |
-| watchdog | Read control, joblog, rerun; write control only | PutEvents | -- |
+| sla-monitor | Read control, joblog | PutEvents | `scheduler:CreateSchedule`, `scheduler:DeleteSchedule` |
+| watchdog | Read control, joblog, rerun; write and delete in control only | PutEvents | `states:StartExecution` (reconciliation), `scheduler:CreateSchedule` (SLA schedules) |
 | event-sink | Write events table | -- | -- |
 | alert-dispatcher | Read/write events table (thread storage) | -- | SQS ReceiveMessage/DeleteMessage, conditional `secretsmanager:GetSecretValue` |
 
@@ -306,7 +311,7 @@ deploy/
 | `environment` | Environment prefix for all resource names | -- (required) |
 | `dist_path` | Path to Lambda zip files | -- (required) |
 | `lambda_memory_size` | Memory allocation for all Lambdas | `128` |
-| `log_retention_days` | CloudWatch log retention | `14` |
+| `log_retention_days` | CloudWatch log retention | `30` |
 | `watchdog_schedule` | EventBridge schedule expression | `rate(5 minutes)` |
 | `enable_glue_trigger` | Add Glue + CloudWatch Logs RCA permissions to orchestrator | `false` |
 | `enable_emr_trigger` | Add EMR permissions to orchestrator | `false` |

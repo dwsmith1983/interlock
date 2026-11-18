@@ -14,7 +14,7 @@ A scheduler fires because the clock says so. An orchestrator sequences tasks onc
 
 ## How It Works
 
-External processes push sensor data into a DynamoDB **control table**. When a trigger condition is met (cron schedule or sensor arrival), a Step Functions workflow evaluates all validation rules against the current sensor state. If all rules pass, the pipeline job is triggered. EventBridge events provide observability at every stage.
+External processes push sensor data into a DynamoDB **control table**. When a sensor write meets a pipeline's trigger condition, a Step Functions workflow evaluates all validation rules against the current sensor state. If all rules pass, the pipeline job is triggered. EventBridge events provide observability at every stage.
 
 ```
 Sensor data → DynamoDB Stream → stream-router Lambda → Step Functions
@@ -41,7 +41,7 @@ Interlock maps directly to STAMP's control-theoretic safety structure. Each comp
 | STAMP Concept | Interlock Component | Role |
 |---------------|---------------------|------|
 | Controlled Process | User's pipeline or job | The workload being safeguarded (Glue, EMR, Airflow DAG, Databricks, etc.) |
-| Actuator | Trigger | Fires the job via REST call, AWS SDK, or subprocess — only when the controller says go |
+| Actuator | Trigger | Fires the job via REST call or AWS SDK, only when the controller says go |
 | Controller | orchestrator Lambda (coordinated by Step Functions) | Evaluates validation rules against sensor state; decides whether to trigger |
 | Sensor | DynamoDB sensor records | External processes write readiness signals (status, counts, timestamps, lag) to the control table |
 | Feedback | Post-run drift detection, job logs, SLA monitoring | Monitors completed jobs for late data, source drift, SLA breaches, and silent failures |
@@ -71,7 +71,7 @@ validation:
       value: 2h
 ```
 
-Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_gt`.
+Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`.
 
 ## Architecture
 
@@ -86,7 +86,7 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
 └───────────────────┘                                 │
                                           ┌───────────▼──────────────┐
                                           │     Step Functions       │
-                                          │  24 sequential states:   │
+                                          │  28 states:              │
                                           │  Evaluate → Trigger →    │
                                           │  Poll → SLA → Done       │
                                           └──────────┬───────────────┘
@@ -94,9 +94,9 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
                                     ┌────────────────┼────────────────┐
                                     ▼                ▼                ▼
                               orchestrator     sla-monitor       watchdog
-                              (evaluate,       (schedule SLA     (stale runs,
-                               trigger,         via EventBridge   missed cron,
-                               check-job)       Scheduler)       post-run gaps)
+                              (evaluate,       (fire and cancel  (stale runs,
+                               trigger,         SLA alerts)       start-by, SLA
+                               check-job)                         schedules)
 ```
 
 ### Lambda Functions
@@ -105,8 +105,8 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`, `age_g
 |----------|---------|
 | `stream-router` | Routes DynamoDB Stream events, starts Step Function executions, evaluates post-run drift |
 | `orchestrator` | Multi-mode handler: evaluate rules, trigger jobs, check status, complete triggers |
-| `sla-monitor` | Schedules SLA alerts via EventBridge Scheduler; cancels on job completion |
-| `watchdog` | Detects stale triggers, missed cron schedules, and missing post-run sensors |
+| `sla-monitor` | Publishes SLA alerts when the watchdog's Scheduler entries fire; cancels unfired entries and records the verdict when a run ends |
+| `watchdog` | Detects stale triggers, missed start-by times, passed cutoffs and missing post-run sensors; schedules SLA alerts for `RUN#` dates |
 | `event-sink` | Writes all EventBridge events to the events table for centralized logging |
 | `alert-dispatcher` | Delivers Slack notifications from SQS alert queue with message threading |
 
@@ -130,7 +130,7 @@ pipeline:
 schedule:
   cron: "0 8 * * *"
   timezone: UTC
-  trigger:
+  trigger:                 # the sensor's data.date sets the run date
     key: upstream-complete
     check: equals
     field: status
@@ -196,7 +196,7 @@ job:
 dryRun: true
 ```
 
-Dry-run publishes four observation events:
+Dry-run publishes observation events, among them:
 
 | Event | Meaning |
 |-------|---------|
@@ -204,6 +204,9 @@ Dry-run publishes four observation events:
 | `DRY_RUN_LATE_DATA` | Sensor updated after the trigger point — would have triggered a re-run |
 | `DRY_RUN_SLA_PROJECTION` | Estimated completion vs. deadline — would the SLA be met or breached? |
 | `DRY_RUN_DRIFT` | Post-run sensor data changed — would have detected drift and re-run |
+| `DRY_RUN_COMPLETED` | Observation closed, with the SLA verdict |
+
+`DRY_RUN_WOULD_RERUN`, `DRY_RUN_RERUN_REJECTED`, `DRY_RUN_WOULD_RETRY` and `DRY_RUN_RETRY_EXHAUSTED` report what a rerun request or job failure would do; see the [alerting reference](https://dwsmith1983.github.io/interlock/docs/reference/alerting/).
 
 No Step Function executions, no job triggers, no rerun requests. Remove `dryRun: true` to switch to live mode — `DRY_RUN#` markers have a 7-day TTL and don't interfere with `TRIGGER#` rows.
 
@@ -232,7 +235,12 @@ Wait for an upstream job to report completion and a minimum row count before tri
 
 ```yaml
 schedule:
-  cron: "0 8 * * *"
+  cron: "0 8 * * *"        # start-by time, not a trigger
+  trigger:                 # the sensor's data.date sets the run date
+    key: upstream-complete
+    check: equals
+    field: status
+    value: ready
   evaluation:
     window: 1h
     interval: 5m
@@ -336,9 +344,9 @@ Interlock ships as a **reusable Terraform module** — no framework code in your
 module "interlock" {
   source = "github.com/dwsmith1983/interlock//deploy/terraform"
 
-  project_name     = "my-data-platform"
-  environment      = "prod"
-  pipeline_configs = "s3://my-bucket/pipelines/"
+  environment    = "prod"
+  dist_path      = "path/to/interlock/deploy/dist"  # output of ./deploy/build.sh
+  pipelines_path = "${path.module}/pipelines"
 }
 ```
 
@@ -378,7 +386,7 @@ interlock/
 │   ├── client/              # Circuit breaker for external HTTP calls
 │   ├── resilience/          # Exponential backoff retry with jitter
 │   ├── concurrency/         # Bounded worker pool (errgroup + semaphore)
-│   ├── store/               # DynamoDB storage layer (3-table design)
+│   ├── store/               # DynamoDB storage layer (4 tables)
 │   ├── config/              # Pipeline YAML config loading
 │   ├── trigger/             # Trigger execution (8 types)
 │   └── calendar/            # Calendar exclusion registry
