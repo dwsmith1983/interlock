@@ -12,7 +12,7 @@ Interlock is deployed as infrastructure, not installed as a binary. You deploy t
 |---|---|---|
 | Terraform | 1.5+ | Deploy the Interlock module |
 | AWS CLI v2 | Latest | AWS credential configuration |
-| Go | 1.24+ | Build Lambda handler binaries |
+| Go | 1.26+ | Build Lambda handler binaries |
 | AWS Account | N/A | DynamoDB, Lambda, Step Functions, EventBridge |
 
 ## Deploy the Terraform Module
@@ -40,7 +40,6 @@ module "interlock" {
   environment    = "production"
   dist_path      = "path/to/interlock/deploy/dist"  # build output from step 1
   pipelines_path = "${path.module}/pipelines"
-  calendars_path = "${path.module}/calendars"  # optional
 
   tags = {
     Project = "interlock"
@@ -57,8 +56,8 @@ terraform apply
 ```
 
 This provisions:
-- 3 DynamoDB tables (control, joblog, rerun)
-- 4 Lambda functions (stream-router, orchestrator, sla-monitor, watchdog)
+- 4 DynamoDB tables (control, joblog, rerun, events)
+- 6 Lambda functions (stream-router, orchestrator, sla-monitor, watchdog, event-sink, alert-dispatcher)
 - 1 Step Functions state machine
 - 1 EventBridge custom event bus
 - EventBridge schedule for the watchdog
@@ -75,7 +74,9 @@ This provisions:
 | stream-router | Processes DynamoDB Stream events, starts Step Function executions |
 | orchestrator | Evaluates validation rules, triggers jobs, checks job status |
 | sla-monitor | Calculates SLA deadlines, fires SLA_WARNING and SLA_BREACH alerts |
-| watchdog | Scans for missed schedules on an EventBridge timer |
+| watchdog | Runs the safety checks on an EventBridge timer: stale triggers, start-by times, cutoffs, SLA schedules, post-run sensors, invalid configs |
+| event-sink | Writes every event to the events table |
+| alert-dispatcher | Sends alert events to Slack, or logs them when Slack is not configured |
 
 ### DynamoDB Tables
 
@@ -84,6 +85,7 @@ This provisions:
 | control | Pipeline configs, sensor data, evaluation state |
 | joblog | Run history and job tracking |
 | rerun | Rerun request tracking |
+| events | Event log and Slack thread records |
 
 ### Module Variables
 
@@ -92,11 +94,11 @@ This provisions:
 | `environment` | yes | -- | Environment name (e.g., staging, production) |
 | `dist_path` | yes | -- | Path to Lambda zip files |
 | `pipelines_path` | yes | -- | Path to pipeline YAML configs |
-| `calendars_path` | no | `""` | Path to calendar YAML files |
+| `calendars_path` | no | `""` | Accepted but not read |
 | `lambda_memory_size` | no | `128` | Lambda memory in MB |
 | `log_retention_days` | no | `30` | CloudWatch log retention |
 | `watchdog_schedule` | no | `rate(5 minutes)` | EventBridge watchdog schedule |
-| `sfn_timeout_seconds` | no | `43200` | Step Functions execution timeout (12h default) |
+| `sfn_timeout_seconds` | no | `14400` | Step Functions execution timeout (4h default) |
 
 ### Module Outputs
 

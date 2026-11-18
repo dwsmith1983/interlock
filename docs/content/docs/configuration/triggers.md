@@ -337,5 +337,6 @@ The Terraform module provides opt-in variables to grant the orchestrator Lambda 
 | `enable_emr_trigger` | `false` | `elasticmapreduce:AddJobFlowSteps`, `elasticmapreduce:DescribeStep` |
 | `enable_emr_serverless_trigger` | `false` | `emr-serverless:StartJobRun`, `emr-serverless:GetJobRun` |
 | `enable_sfn_trigger` | `false` | `states:StartExecution`, `states:DescribeExecution` |
+| `enable_lambda_trigger` | `false` | `lambda:InvokeFunction` on `lambda_trigger_arns` (required when enabled) |
 
 Enable only the trigger types your pipelines use to maintain least-privilege IAM policies.

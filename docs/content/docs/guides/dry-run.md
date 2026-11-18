@@ -18,23 +18,30 @@ Dry-run mode lets you evaluate a pipeline against real sensor data without trigg
 Add `dryRun: true` to your pipeline config. The pipeline must have `schedule.trigger` (sensor-driven evaluation) and `job.type` configured.
 
 ```yaml
-id: bronze-hourly-dryrun
+pipeline:
+  id: bronze-hourly-dryrun
 dryRun: true
 
 schedule:
-  trigger: "sensor"
   timezone: "UTC"
+  trigger:
+    key: files-landed
+    check: gte
+    field: files_processed
+    value: 4
 
 validation:
-  trigger: all_pass
+  trigger: "ALL"
   rules:
-    - field: "files_processed"
-      operator: ">="
+    - key: files-landed
+      check: gte
+      field: files_processed
       value: 4
 
 job:
   type: glue
-  name: bronze-etl
+  config:
+    jobName: bronze-etl
 
 sla:
   deadline: "06:00"
@@ -42,8 +49,9 @@ sla:
 
 postRun:
   rules:
-    - field: "count"
-      operator: ">="
+    - key: output-count
+      check: gte
+      field: count
       value: 1000
   driftField: "count"
 ```
@@ -72,7 +80,7 @@ Sensor arrives → Stream-router
 
 ## Monitoring Events
 
-Dry-run pipelines emit five event types to EventBridge:
+Dry-run pipelines emit these event types to EventBridge:
 
 | Event | Meaning |
 |---|---|
@@ -81,6 +89,8 @@ Dry-run pipelines emit five event types to EventBridge:
 | `DRY_RUN_COMPLETED` | Observation loop closed — carries the SLA verdict (`met`, `breach`, or `n/a`) |
 | `DRY_RUN_LATE_DATA` | Sensor data arrived after the trigger point was already recorded |
 | `DRY_RUN_DRIFT` | Post-run sensor data changed from the baseline captured at trigger time |
+| `DRY_RUN_WOULD_RERUN` / `DRY_RUN_RERUN_REJECTED` | What a `RERUN_REQUEST` for the pipeline would do |
+| `DRY_RUN_WOULD_RETRY` / `DRY_RUN_RETRY_EXHAUSTED` | What CompleteTrigger would decide for a `fail` or `timeout` job row |
 
 Create an EventBridge rule to capture these events:
 
@@ -131,10 +141,12 @@ You can run a dry-run pipeline alongside a live pipeline watching the same senso
 
 ```yaml
 # Live pipeline
-id: bronze-hourly
+pipeline:
+  id: bronze-hourly
 
 # Dry-run shadow
-id: bronze-hourly-dryrun
+pipeline:
+  id: bronze-hourly-dryrun
 dryRun: true
 ```
 
@@ -142,7 +154,7 @@ Both pipelines receive the same sensor events. The live pipeline triggers jobs; 
 
 ## Troubleshooting
 
-**No events appearing.** Verify that `schedule.trigger` is set to `"sensor"`. Dry-run requires sensor-driven evaluation — cron-only pipelines won't produce events.
+**No events appearing.** Verify that `schedule.trigger` names the sensor key being written. Dry-run requires a trigger condition; a config without one is rejected.
 
 **Stale markers.** `DRY_RUN#` markers have a 7-day TTL. If you need to re-evaluate the same date, wait for the marker to expire or delete it manually from the control table.
 

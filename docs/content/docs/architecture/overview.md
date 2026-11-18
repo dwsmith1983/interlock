@@ -132,7 +132,7 @@ CheckCancelSLA → CancelSLASchedules
 
 ### State Summary
 
-The Step Functions state machine uses 24 sequential states:
+The Step Functions state machine has 28 states:
 
 1. **Evaluation loop**: evaluates validation rules at a configurable interval. When all rules pass, triggers the job. If the evaluation window expires, ValidationExhausted ends the execution without the SLA cleanup, since no job ran. Before the run date's cutoff, a first run is released: the orchestrator writes an `evaluation-released` job row, deletes the trigger row and publishes `EVALUATION_RELEASED` (not an alert), so the next trigger sensor write or watchdog pass can start evaluation again until the cutoff, and the date's SLA schedules still fire. With no cutoff for the date, or for a rerun, it publishes `VALIDATION_EXHAUSTED` and sets `FAILED_FINAL`, and the run's unfired SLA schedules fire and are suppressed because the run is finished. At or after the cutoff, a first run publishes `SENSOR_DEADLINE_EXPIRED` and then sets `FAILED_FINAL`. An evaluation still running at the cutoff, for a first run, ends that way too instead of launching the job.
 
@@ -140,7 +140,7 @@ The Step Functions state machine uses 24 sequential states:
 
 3. **Job polling** — polls the triggered job for completion via `check-job` mode. Terminal events (success, fail, timeout) proceed to SLA cleanup.
 
-4. **SLA cleanup** — cancels unfired SLA Scheduler entries and publishes `SLA_MET` if the job completed before the warning deadline.
+4. **SLA cleanup**: cancels unfired SLA Scheduler entries and publishes `SLA_MET` if the run ended before the breach time (`SLA_BREACH` otherwise).
 
 ## Event System
 
@@ -156,10 +156,12 @@ All lifecycle events are published to a custom EventBridge event bus. This repla
 | `JOB_FAILED` | Triggered job failed |
 | `SLA_WARNING` | SLA warning deadline reached |
 | `SLA_BREACH` | SLA breach deadline reached |
-| `SLA_MET` | Job completed before SLA warning deadline |
+| `SLA_MET` | Run ended before the SLA breach time |
 | `RETRY_EXHAUSTED` | All retry attempts consumed |
 | `SFN_TIMEOUT` | Step Function execution timed out (watchdog) |
 | `SCHEDULE_MISSED` | A run date's cron start-by time passed before its job started (watchdog) |
+| `SENSOR_DEADLINE_EXPIRED` | A run date passed its `schedule.trigger.cutoff` without starting and is closed |
+| `RELATIVE_SLA_WARNING` / `RELATIVE_SLA_BREACH` | A relative SLA (`sla.maxDuration`) is at risk or exceeded (watchdog) |
 | `POST_RUN_PASSED` | Post-run rules pass after job completion, inside the watch window |
 | `POST_RUN_FAILED` | Post-run rules fail (no drift detected), inside the watch window |
 | `POST_RUN_DRIFT` | Sensor count drifted from baseline after completion, inside the watch window → rerun requested |
@@ -167,6 +169,8 @@ All lifecycle events are published to a custom EventBridge event bus. This repla
 | `POST_RUN_BASELINE_CAPTURED` | Baseline sensor snapshot captured on job success |
 | `POST_RUN_SENSOR_MISSING` | Post-run sensor not received within timeout (watchdog) |
 | `INFRA_FAILURE` | Unrecoverable infrastructure error |
+
+See [Alerting](../../reference/alerting/) for every event type and which ones alert.
 
 ### Event Payload
 
