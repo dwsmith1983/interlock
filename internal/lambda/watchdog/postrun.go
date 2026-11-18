@@ -65,13 +65,13 @@ func detectMissingPostRunSensors(ctx context.Context, d *lambda.Deps) error {
 			continue
 		}
 
-		completionTime, err := resolveCompletionTime(ctx, d, id, scheduleID, today)
+		// The run's completion on the trigger row starts the sensor timeout.
+		completionTime, err := time.Parse(time.RFC3339, tr.CompletedAt)
 		if err != nil {
-			d.Logger.Error("completion time resolution failed",
-				"pipelineId", id, "error", err)
-			continue
-		}
-		if completionTime.IsZero() {
+			if tr.CompletedAt != "" {
+				d.Logger.Warn("unparseable completedAt in post-run sensor check",
+					"pipelineId", id, "date", today, "completedAt", tr.CompletedAt)
+			}
 			continue
 		}
 
@@ -118,29 +118,6 @@ func detectMissingPostRunSensors(ctx context.Context, d *lambda.Deps) error {
 			"pipelineId", id, "schedule", scheduleID, "date", today)
 	}
 	return nil
-}
-
-func resolveCompletionTime(ctx context.Context, d *lambda.Deps, pipelineID, scheduleID, date string) (time.Time, error) {
-	rec, err := d.Store.GetLatestJobEvent(ctx, pipelineID, scheduleID, date)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("get latest job event: %w", err)
-	}
-	if rec == nil {
-		return time.Time{}, nil
-	}
-	if rec.Event != types.JobEventSuccess {
-		return time.Time{}, nil
-	}
-
-	parts := strings.Split(rec.SK, "#")
-	if len(parts) < 4 {
-		return time.Time{}, fmt.Errorf("unexpected job SK format: %q", rec.SK)
-	}
-	tsMillis, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("parse job timestamp %q: %w", parts[len(parts)-1], err)
-	}
-	return time.UnixMilli(tsMillis), nil
 }
 
 func parseSensorTimeout(s string) time.Duration {

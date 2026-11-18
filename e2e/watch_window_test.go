@@ -82,3 +82,60 @@ func TestScenarioLateDataWatchWindow(t *testing.T) {
 	waitAlerts(t, id, alert{id, date, jc}, alert{id, date, jc}, alert{id, date, jc},
 		alert{id, date, late}, alert{id, date, accepted}, alert{id, date, accepted})
 }
+
+// Drift on a completed date is acted on only inside its post-run watch window
+// (2h). The post-run sensor's count is 100 when the run completes near 06:00,
+// and complete-trigger captures it as the baseline (POST_RUN_BASELINE_CAPTURED,
+// not an alert). At 07:00 it is 120, which publishes POST_RUN_DRIFT and a
+// data-drift rerun request, rejected because maxDriftReruns is 0. At 08:15,
+// after the window, a count of 130 publishes nothing and writes no request. A
+// manual RERUN_REQUEST written after it is rejected (maxManualReruns 0); the
+// router handles the control stream in order, so that RERUN_REJECTED shows the
+// 08:15 sensor was handled first.
+func TestScenarioDriftWatchWindow(t *testing.T) {
+	const id, postRunSensor = "drift-window", "row-count"
+	start, date := startDay(t)
+	at := func(hour, minute int) time.Time {
+		return time.Date(start.Year(), start.Month(), start.Day(), hour, minute, 0, 0, time.UTC)
+	}
+	zero := 0
+	cfg := scenarioConfig(id)
+	cfg.Job.MaxDriftReruns, cfg.Job.MaxManualReruns = &zero, &zero
+	cfg.PostRun = &types.PostRunConfig{
+		Rules:      []types.ValidationRule{{Key: postRunSensor, Check: types.CheckExists}},
+		DriftField: "count", WatchWindow: "2h",
+	}
+	putConfig(t, cfg)
+	jt, vp, jc := string(types.EventJobTriggered), string(types.EventValidationPassed), string(types.EventJobCompleted)
+	drift, rejected, base := string(types.EventPostRunDrift), string(types.EventRerunRejected), string(types.EventPostRunBaselineCaptured)
+
+	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 100, "date": date})
+	writeReady(t, id, date)
+	run := waitLaunch(t, id, 1)
+	reportJob(t, id, date, run, types.JobEventSuccess)
+	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1})
+	waitCompleted(t, id, date)
+	waitExecutionDone(t, run)
+
+	advanceTo(t, at(7, 0))
+	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 120, "date": date})
+	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1, drift: 1, rejected: 1})
+
+	advanceTo(t, at(8, 15))
+	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 130, "date": date})
+	putItem(t, map[string]ddbtypes.AttributeValue{
+		"PK":          &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(id)},
+		"SK":          &ddbtypes.AttributeValueMemberS{Value: types.RerunRequestSK(streamSchedule, date)},
+		"reason":      &ddbtypes.AttributeValueMemberS{Value: "manual"},
+		"requestedAt": &ddbtypes.AttributeValueMemberS{Value: mockNow(t).UTC().Format(time.RFC3339)},
+	})
+	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1, drift: 1, rejected: 2})
+
+	wantLog := []string{types.JobEventSuccess, types.JobEventRerunRejected, types.JobEventRerunRejected}
+	if got := jobEvents(t, id); !slices.Equal(got, wantLog) {
+		t.Fatalf("job log = %v, want %v", got, wantLog)
+	}
+	assertLaunches(t, id, 1)
+	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
+	waitAlerts(t, id, alert{id, date, jc}, alert{id, date, drift}, alert{id, date, rejected}, alert{id, date, rejected})
+}

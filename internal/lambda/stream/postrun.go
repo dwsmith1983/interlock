@@ -11,14 +11,16 @@ import (
 )
 
 // handlePostRunSensorEvent evaluates post-run rules reactively when a sensor
-// arrives via DynamoDB Stream.
+// arrives via DynamoDB Stream. A completed date is checked only inside its
+// post-run watch window.
 func handlePostRunSensorEvent(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, sensorKey string, sensorData map[string]interface{}) error {
 	if cfg.DryRun {
 		return handleDryRunPostRunSensor(ctx, d, cfg, pipelineID, sensorKey, sensorData)
 	}
 
+	now := d.Now()
 	scheduleID := lambda.ResolveScheduleID(cfg)
-	date := lambda.ResolveExecutionDate(sensorData, d.Now())
+	date := lambda.ResolveExecutionDate(sensorData, now)
 
 	trigger, err := d.Store.GetTrigger(ctx, pipelineID, scheduleID, date)
 	if err != nil {
@@ -32,6 +34,12 @@ func handlePostRunSensorEvent(ctx context.Context, d *lambda.Deps, cfg *types.Pi
 	case types.TriggerStatusRunning:
 		return handlePostRunInflight(ctx, d, cfg, pipelineID, scheduleID, date, sensorKey, sensorData)
 	case types.TriggerStatusCompleted:
+		if !lambda.PostRunWatched(cfg, trigger, now) {
+			d.Logger.InfoContext(ctx, "post-run sensor ignored: post-run watch window has ended",
+				"pipelineId", pipelineID, "schedule", scheduleID, "date", date, "sensor", sensorKey,
+				"completedAt", trigger.CompletedAt)
+			return nil
+		}
 		return handlePostRunCompleted(ctx, d, cfg, pipelineID, scheduleID, date, sensorKey, sensorData)
 	default:
 		return nil

@@ -160,9 +160,9 @@ All lifecycle events are published to a custom EventBridge event bus. This repla
 | `RETRY_EXHAUSTED` | All retry attempts consumed |
 | `SFN_TIMEOUT` | Step Function execution timed out (watchdog) |
 | `SCHEDULE_MISSED` | A run date's cron start-by time passed before its job started (watchdog) |
-| `POST_RUN_PASSED` | Post-run rules pass after job completion |
-| `POST_RUN_FAILED` | Post-run rules fail (no drift detected) |
-| `POST_RUN_DRIFT` | Sensor count drifted from baseline after completion → rerun requested |
+| `POST_RUN_PASSED` | Post-run rules pass after job completion, inside the watch window |
+| `POST_RUN_FAILED` | Post-run rules fail (no drift detected), inside the watch window |
+| `POST_RUN_DRIFT` | Sensor count drifted from baseline after completion, inside the watch window → rerun requested |
 | `POST_RUN_DRIFT_INFLIGHT` | Sensor count drifted while job is still running (informational) |
 | `POST_RUN_BASELINE_CAPTURED` | Baseline sensor snapshot captured on job success |
 | `POST_RUN_SENSOR_MISSING` | Post-run sensor not received within timeout (watchdog) |
@@ -227,9 +227,9 @@ postRun:
 1. **Baseline capture**: When a job completes successfully, the orchestrator reads all sensors and writes a date-scoped baseline (`postrun-baseline#<date>`) to the control table.
 2. **Stream-based evaluation**: When a sensor matching a post-run rule arrives via DynamoDB Stream, the stream-router evaluates it:
    - If the trigger is **RUNNING**, drift is logged as an informational `POST_RUN_DRIFT_INFLIGHT` event (no rerun).
-   - If the trigger is **COMPLETED**, the sensor count is compared against the baseline. Drift above `driftThreshold` triggers a rerun via the circuit breaker.
+   - If the trigger is **COMPLETED** and the date is inside its watch window, the sensor count is compared against the baseline. Drift above `driftThreshold` triggers a rerun via the circuit breaker.
 3. **Watchdog safety net**: If no post-run sensor arrives within `sensorTimeout` after job completion, the watchdog publishes a `POST_RUN_SENSOR_MISSING` event.
 
-complete-trigger records the completion as `completedAt` on the trigger row. Late data is acted on only within `postRun.watchWindow` (default `4h`) of it, and an automatic rerun request (late data or drift) handled after the window is skipped. Drift detection itself is not bounded yet: a drift after the window still publishes `POST_RUN_DRIFT`, but no rerun runs. See [Watch window](../../configuration/pipelines/#watch-window).
+complete-trigger records the completion as `completedAt` on the trigger row. Late data, drift and the post-run checks are acted on only within `postRun.watchWindow` (default `4h`) of it, an automatic rerun request (late data or drift) handled after the window is skipped, and the watchdog counts `sensorTimeout` from it. See [Watch window](../../configuration/pipelines/#watch-window).
 
 Post-run rules always use `ALL` mode (every rule must pass).

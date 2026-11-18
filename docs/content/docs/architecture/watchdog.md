@@ -128,9 +128,9 @@ Load all pipeline configs (via config cache)
 
 For each pipeline with postRun config:
   Find TRIGGER# record for today with status=COMPLETED
-  If no completed trigger → skip
+  If no completed trigger, or it has no completedAt → skip
 
-  Calculate elapsed time since trigger completion
+  Calculate elapsed time since completedAt
   If elapsed < sensorTimeout → skip (still within grace period)
 
   For each postRun rule key:
@@ -142,7 +142,7 @@ For each pipeline with postRun config:
 
 ### Configuration
 
-The `sensorTimeout` field on `postRun` controls the grace period. Defaults to `"2h"` (2 hours).
+The `sensorTimeout` field on `postRun` controls the grace period, counted from the trigger row's `completedAt`. Defaults to `"2h"` (2 hours). Only today's UTC daily trigger key is checked, so hourly keys and dates past UTC midnight get no `POST_RUN_SENSOR_MISSING`.
 
 ```yaml
 postRun:
