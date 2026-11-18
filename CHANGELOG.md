@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+- **A `lambda` job with no `payload` now receives a JSON event** (the run object below) instead of an empty one, and an `airflow` job with no `body` a DAG run `conf`.
+- **Step function input and EMR step arguments gain the date keys**, replacing a configured key of the same name. EMR step arguments are now sent in key order.
+- **`${INTERLOCK_PIPELINE_ID}`, `${INTERLOCK_SCHEDULE_ID}`, `${INTERLOCK_DATE}` and `${INTERLOCK_RUN_ID}` in a `lambda` payload or `airflow` body** expand to the run's values, JSON-escaped, instead of environment variables of those names.
+
+### Fixed
+
+- **Every job learns the date it runs for, so a rerun or retry processes its own date.** A `step-function` job gets `par_day` (`YYYYMMDD`) and, for an hourly date, `par_hour` (`HH`) as top-level keys of its execution input, and an `emr` step gets `--par_day=YYYYMMDD` and `--par_hour=HH`, like `glue`. A `lambda` payload and an `airflow` body expand the run identity variables; with none configured, the function's event or the DAG run's `conf` is the object the `http` default body is (`par_day`, `par_hour` for hourly dates, `pipelineId`, `scheduleId`, `date`, `runId`). `emr-serverless` and `databricks` jobs do not receive the date yet.
+- **The `step-function` docs showed an `input` field that was never read.** The config field is `arguments`, a map whose entries become top-level keys of the execution input; the docs now say so. Nothing was removed.
+
 ## [0.11.0] - 2026-11-18
 
 ### Upgrading from 0.10.0

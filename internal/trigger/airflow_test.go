@@ -369,3 +369,51 @@ func TestCheckAirflowStatus_WithHeaders(t *testing.T) {
 	assert.Equal(t, "running", state)
 	assert.Equal(t, "Bearer test-token", receivedAuth)
 }
+
+// postedConf runs ExecuteAirflow with cfg and returns the request body's conf
+// (nil when absent) and the request headers.
+func postedConf(t *testing.T, cfg *types.AirflowTriggerConfig) (interface{}, http.Header) {
+	t.Helper()
+	var payload map[string]interface{}
+	var headers http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers = r.Header.Clone()
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"dag_run_id": "run-1"})
+	}))
+	t.Cleanup(srv.Close)
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	t.Cleanup(func() { defaultHTTPClient = origClient })
+
+	cfg.URL, cfg.DagID = srv.URL, "d"
+	_, err := ExecuteAirflow(context.Background(), cfg)
+	require.NoError(t, err)
+	return payload["conf"], headers
+}
+
+// The DAG run's conf carries the run: a generated body as is, a configured
+// one with the identity variables expanded (JSON-escaped, ahead of env). The
+// headers keep env-only expansion, since the status poll re-sends them
+// without a run identity.
+func TestExecuteAirflow_RunIdentity(t *testing.T) {
+	t.Setenv("INTERLOCK_DATE", "from-env")
+	t.Setenv("INTERLOCK_X", "expanded")
+	run := types.RunIdentity{PipelineID: "orders", ScheduleID: "stream", Date: "2026-03-01", RunID: `exec"4\2`}
+
+	conf, headers := postedConf(t, &types.AirflowTriggerConfig{
+		Body:    `{"p":"${INTERLOCK_PIPELINE_ID}","s":"${INTERLOCK_SCHEDULE_ID}","d":"${INTERLOCK_DATE}","r":"${INTERLOCK_RUN_ID}"}`,
+		Headers: map[string]string{"X-Date": "${INTERLOCK_DATE}"},
+		Run:     run,
+	})
+	assert.Equal(t, map[string]interface{}{"p": "orders", "s": "stream", "d": "2026-03-01", "r": `exec"4\2`}, conf)
+	assert.Equal(t, "from-env", headers.Get("X-Date"))
+
+	conf, _ = postedConf(t, &types.AirflowTriggerConfig{
+		Body: `{"pipelineId":"a${INTERLOCK_X}","par_day":"20260301"}`, BodyGenerated: true, Run: run,
+	})
+	assert.Equal(t, map[string]interface{}{"pipelineId": "a${INTERLOCK_X}", "par_day": "20260301"}, conf)
+
+	conf, _ = postedConf(t, &types.AirflowTriggerConfig{})
+	assert.Nil(t, conf, "a direct caller with no body sends no conf")
+}

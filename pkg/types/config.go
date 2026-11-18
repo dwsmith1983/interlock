@@ -48,6 +48,12 @@ type AirflowTriggerConfig struct {
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	Body    string            `yaml:"body,omitempty" json:"body,omitempty"`
 	Timeout int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	// Run identifies the launch. The orchestrator sets it; it is never
+	// configured. Its fields expand as ${INTERLOCK_*} variables in Body.
+	Run RunIdentity `yaml:"-" json:"-"`
+	// BodyGenerated marks a Body Interlock built itself (the default conf).
+	// It is sent as is, without variable expansion.
+	BodyGenerated bool `yaml:"-" json:"-"`
 }
 
 // GlueTriggerConfig holds configuration for AWS Glue triggers.
@@ -88,6 +94,12 @@ type DatabricksTriggerConfig struct {
 type LambdaTriggerConfig struct {
 	FunctionName string `yaml:"functionName" json:"functionName"`
 	Payload      string `yaml:"payload,omitempty" json:"payload,omitempty"`
+	// Run identifies the launch. The orchestrator sets it; it is never
+	// configured. Its fields expand as ${INTERLOCK_*} variables in Payload.
+	Run RunIdentity `yaml:"-" json:"-"`
+	// PayloadGenerated marks a Payload Interlock built itself (the default
+	// event). It is sent as is, without variable expansion.
+	PayloadGenerated bool `yaml:"-" json:"-"`
 }
 
 // TriggerArguments returns the arguments map for the active trigger variant, or nil.

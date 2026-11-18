@@ -120,6 +120,17 @@ func jsonStringContent(s string) string {
 	return out[1 : len(out)-1]
 }
 
+// expandRunBody expands a configured JSON body: the run identity variables
+// to this launch's values, JSON-escaped since identity values are free-form,
+// and every other variable through the INTERLOCK_ env allowlist. A generated
+// body is already marshalled and is returned as is.
+func expandRunBody(body string, generated bool, run types.RunIdentity) string {
+	if generated {
+		return body
+	}
+	return os.Expand(body, identityLookup(runFields(run), jsonStringContent))
+}
+
 // ExecuteHTTP fires an HTTP trigger. A 2xx only means the job was accepted.
 func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 	method := cfg.Method
@@ -132,10 +143,7 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 	// follows the INTERLOCK_ env allowlist. A generated body is sent as is.
 	fields := runFields(cfg.Run)
 	headerLookup := identityLookup(fields, func(v string) string { return v })
-	bodyStr := cfg.Body
-	if cfg.Body != "" && !cfg.BodyGenerated {
-		bodyStr = os.Expand(cfg.Body, identityLookup(fields, jsonStringContent))
-	}
+	bodyStr := expandRunBody(cfg.Body, cfg.BodyGenerated, cfg.Run)
 
 	var bodyReader io.Reader
 	if bodyStr != "" {

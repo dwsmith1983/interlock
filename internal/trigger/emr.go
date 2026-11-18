@@ -3,6 +3,8 @@ package trigger
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/aws/aws-sdk-go-v2/service/emr"
 	emrtypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
@@ -27,9 +29,11 @@ func ExecuteEMR(ctx context.Context, cfg *types.EMRTriggerConfig, client EMRAPI)
 		return nil, fmt.Errorf("emr trigger: command is required (JAR path)")
 	}
 
-	args := make([]string, 0, len(cfg.Arguments))
-	for k, v := range cfg.Arguments {
-		args = append(args, k+"="+v)
+	// Sorted by key, so the same arguments always give the same command line.
+	keys := slices.Sorted(maps.Keys(cfg.Arguments))
+	args := make([]string, 0, len(keys))
+	for _, k := range keys {
+		args = append(args, k+"="+cfg.Arguments[k])
 	}
 
 	input := &emr.AddJobFlowStepsInput{

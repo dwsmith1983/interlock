@@ -16,9 +16,11 @@ type mockEMRClient struct {
 	addErr      error
 	describeOut *emr.DescribeStepOutput
 	describeErr error
+	addIn       *emr.AddJobFlowStepsInput // the last AddJobFlowSteps input
 }
 
 func (m *mockEMRClient) AddJobFlowSteps(ctx context.Context, params *emr.AddJobFlowStepsInput, optFns ...func(*emr.Options)) (*emr.AddJobFlowStepsOutput, error) {
+	m.addIn = params
 	return m.addOut, m.addErr
 }
 
@@ -41,6 +43,23 @@ func TestExecuteEMR_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "j-CLUSTER1", meta["emr_cluster_id"])
 	assert.Equal(t, "s-ABC123", meta["emr_step_id"])
+}
+
+// Arguments are a map, so the step args are sorted by key: the same config
+// always yields the same command line.
+func TestExecuteEMR_ArgsSortedByKey(t *testing.T) {
+	client := &mockEMRClient{addOut: &emr.AddJobFlowStepsOutput{StepIds: []string{"s-1"}}}
+	cfg := &types.EMRTriggerConfig{
+		ClusterID: "j-1", StepName: "step", Command: "jar",
+		Arguments: map[string]string{"--par_day": "20260301", "--b": "2", "--a": "1", "--par_hour": "05", "--z": "26"},
+	}
+	for range 20 { // map iteration order is random, so one call could pass by luck
+		_, err := ExecuteEMR(context.Background(), cfg, client)
+		require.NoError(t, err)
+		require.Len(t, client.addIn.Steps, 1)
+		assert.Equal(t, []string{"--a=1", "--b=2", "--par_day=20260301", "--par_hour=05", "--z=26"},
+			client.addIn.Steps[0].HadoopJarStep.Args)
+	}
 }
 
 func TestExecuteEMR_MissingClusterID(t *testing.T) {
