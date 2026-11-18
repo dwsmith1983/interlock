@@ -3,7 +3,6 @@ package trigger
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
@@ -39,7 +38,7 @@ func ExecuteLambda(ctx context.Context, cfg *types.LambdaTriggerConfig, client L
 	}
 
 	if cfg.Payload != "" {
-		input.Payload = []byte(os.Expand(cfg.Payload, safeEnvLookup))
+		input.Payload = []byte(expandRunBody(cfg.Payload, cfg.PayloadGenerated, cfg.Run))
 	}
 
 	out, err := client.Invoke(ctx, input)

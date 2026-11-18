@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	sfntypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -672,13 +674,33 @@ func TestScenarioRetriesExhausted(t *testing.T) {
 // applies job.maxCodeRetries (0) rather than job.maxRetries (1). The function
 // is interlock's own orchestrator, which rejects an unknown mode.
 func TestScenarioLambdaFunctionError(t *testing.T) {
-	const id = "lambda-function-error"
+	rejectedLambdaRun(t, "lambda-function-error", `{"mode":"no-such-mode"}`)
+}
+
+// A lambda job learns the run it serves: the identity variables in its
+// payload expand to the run's date and ID. The orchestrator puts the mode it
+// rejects in the fail row's error, which keeps only the first 200 bytes of
+// the function's error, so the date goes first.
+func TestScenarioLambdaRunIdentity(t *testing.T) {
+	date, row := rejectedLambdaRun(t, "lambda-run-identity", `{"mode":"${INTERLOCK_DATE}/${INTERLOCK_RUN_ID}"}`)
+	const runIDPrefix = 40 // past the pipeline ID, within the 200 bytes kept
+	want := date + "/" + row.RunID[:min(len(row.RunID), runIDPrefix)]
+	if !strings.Contains(row.Error, want) {
+		t.Fatalf("fail row error = %q, want it to contain the run date and ID %q", row.Error, want)
+	}
+}
+
+// rejectedLambdaRun runs pipeline id's lambda job, the orchestrator invoked
+// with payload, on a fresh day, checks that the rejected mode ends the run
+// as a PERMANENT job failure, and returns the date and the run's fail row.
+func rejectedLambdaRun(t *testing.T, id, payload string) (string, jobRow) {
+	t.Helper()
 	_, date := startDay(t)
 	cfg := scenarioConfig(id)
 	noCodeRetries := 0
 	cfg.Job = types.JobConfig{
 		Type:           types.TriggerLambda,
-		Config:         map[string]interface{}{"functionName": orchestratorFn, "payload": `{"mode":"no-such-mode"}`},
+		Config:         map[string]interface{}{"functionName": orchestratorFn, "payload": payload},
 		MaxRetries:     1,
 		MaxCodeRetries: &noCodeRetries,
 	}
@@ -704,6 +726,58 @@ func TestScenarioLambdaFunctionError(t *testing.T) {
 	}
 	waitAlerts(t, id, alert{id, date, jf}, alert{id, date, ex})
 	assertTriggerStatus(t, id, date, types.TriggerStatusFailedFinal)
+	return date, rows[0]
+}
+
+// A step-function job gets the run date as top-level keys of its execution
+// input, next to its configured arguments. The job is a one-state Pass
+// machine, so the run completes as soon as CheckJob polls it.
+func TestScenarioStepFunctionRunDate(t *testing.T) {
+	const id = "sfn-run-date"
+	_, date := startDay(t)
+	ctx, cancel := callCtx()
+	sm, err := sfnAPI.CreateStateMachine(ctx, &sfn.CreateStateMachineInput{
+		Name:       aws.String(prefix + "-" + id),
+		Definition: aws.String(`{"StartAt":"Done","States":{"Done":{"Type":"Pass","End":true}}}`),
+		RoleArn:    aws.String("arn:aws:iam::000000000000:role/" + id),
+	})
+	cancel()
+	if err != nil {
+		t.Fatalf("create the job state machine: %v", err)
+	}
+	// A rerun against a kept stack must not see this run's execution.
+	t.Cleanup(func() {
+		ctx, cancel := callCtx()
+		defer cancel()
+		_, err := sfnAPI.DeleteStateMachine(ctx, &sfn.DeleteStateMachineInput{StateMachineArn: sm.StateMachineArn})
+		var notFound *sfntypes.StateMachineDoesNotExist
+		if err != nil && !errors.As(err, &notFound) {
+			t.Errorf("delete the job state machine: %v", err)
+		}
+	})
+	cfg := scenarioConfig(id)
+	cfg.Job = types.JobConfig{Type: types.TriggerStepFunction, Config: map[string]interface{}{
+		"stateMachineArn": aws.ToString(sm.StateMachineArn), "arguments": map[string]interface{}{"env": "e2e"},
+	}}
+	putConfig(t, cfg)
+
+	writeReady(t, id, date)
+	waitCompleted(t, id, date)
+	ctx, cancel = callCtx()
+	defer cancel()
+	execs, err := sfnAPI.ListExecutions(ctx, &sfn.ListExecutionsInput{StateMachineArn: sm.StateMachineArn})
+	if err != nil || len(execs.Executions) != 1 {
+		t.Fatalf("job executions = %+v (%v), want one", execs, err)
+	}
+	out, err := sfnAPI.DescribeExecution(ctx, &sfn.DescribeExecutionInput{ExecutionArn: execs.Executions[0].ExecutionArn})
+	if err != nil {
+		t.Fatalf("describe the job execution: %v", err)
+	}
+	var input map[string]string
+	want := map[string]string{"env": "e2e", "par_day": strings.ReplaceAll(date, "-", "")}
+	if err := json.Unmarshal([]byte(aws.ToString(out.Input)), &input); err != nil || !maps.Equal(input, want) {
+		t.Fatalf("job input = %s (%v), want %v", aws.ToString(out.Input), err, want)
+	}
 }
 
 // The SLA stays live through a CompleteTrigger retry. Run A fails, A's

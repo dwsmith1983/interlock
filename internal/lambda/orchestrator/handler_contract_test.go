@@ -283,6 +283,8 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 		{name: "http hourly date", job: httpJob, execName: execName, date: "2026-03-01T05", wantHour: "05", wantRunID: execName},
 		{name: "lambda records success under the run ID", execName: execName, wantRunID: execName, wantSuccess: true,
 			job: job(types.TriggerLambda, map[string]interface{}{"functionName": "f"})},
+		{name: "airflow uses the execution name", execName: execName, wantRunID: execName,
+			job: job(types.TriggerAirflow, map[string]interface{}{"url": "https://airflow.example.com", "dagId": "d"})},
 	}
 
 	for _, tt := range tests {
@@ -331,8 +333,18 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 				t.Errorf("job log rows = %v, want none", jobRows)
 			}
 
+			wantRun := types.RunIdentity{PipelineID: "p", ScheduleID: "s", Date: date, RunID: tt.wantRunID}
+			switch tt.job.Type {
+			case types.TriggerLambda:
+				if exec.got.Lambda.Run != wantRun {
+					t.Errorf("Lambda.Run = %+v, want %+v", exec.got.Lambda.Run, wantRun)
+				}
+			case types.TriggerAirflow:
+				if exec.got.Airflow.Run != wantRun {
+					t.Errorf("Airflow.Run = %+v, want %+v", exec.got.Airflow.Run, wantRun)
+				}
+			}
 			if tt.job.Type == types.TriggerHTTP {
-				wantRun := types.RunIdentity{PipelineID: "p", ScheduleID: "s", Date: date, RunID: tt.wantRunID}
 				if exec.got.HTTP.Run != wantRun {
 					t.Errorf("HTTP.Run = %+v, want %+v", exec.got.HTTP.Run, wantRun)
 				}

@@ -27,7 +27,7 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 	payload := map[string]interface{}{}
 	if cfg.Body != "" {
 		var conf interface{}
-		if err := json.Unmarshal([]byte(os.Expand(cfg.Body, safeEnvLookup)), &conf); err != nil {
+		if err := json.Unmarshal([]byte(expandRunBody(cfg.Body, cfg.BodyGenerated, cfg.Run)), &conf); err != nil {
 			return nil, fmt.Errorf("airflow trigger: invalid body JSON: %w", err)
 		}
 		payload["conf"] = conf
@@ -44,6 +44,7 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	// Env only: CheckAirflowStatus re-sends these headers with no run identity.
 	for k, v := range cfg.Headers {
 		req.Header.Set(k, os.Expand(v, safeEnvLookup))
 	}

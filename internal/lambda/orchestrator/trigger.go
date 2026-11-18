@@ -42,10 +42,15 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	if runID == "" {
 		runID = fmt.Sprintf("%s-%s-%s-%d", input.PipelineID, input.ScheduleID, input.Date, d.Now().UnixMilli())
 	}
+	run := types.RunIdentity{PipelineID: input.PipelineID, ScheduleID: input.ScheduleID, Date: input.Date, RunID: runID}
 	if triggerCfg.HTTP != nil {
-		triggerCfg.HTTP.Run = types.RunIdentity{
-			PipelineID: input.PipelineID, ScheduleID: input.ScheduleID, Date: input.Date, RunID: runID,
-		}
+		triggerCfg.HTTP.Run = run
+	}
+	if triggerCfg.Lambda != nil {
+		triggerCfg.Lambda.Run = run
+	}
+	if triggerCfg.Airflow != nil {
+		triggerCfg.Airflow.Run = run
 	}
 	InjectDateArgs(&triggerCfg, input.Date)
 
@@ -143,34 +148,57 @@ func ExtractRunID(metadata map[string]interface{}) string {
 	return lambda.ExtractRunID(metadata)
 }
 
-// InjectDateArgs parses the execution date and injects --par_day (and --par_hour
-// for hourly dates) into Glue trigger arguments. For HTTP triggers with no
-// explicit body, injects a JSON body with par_day, par_hour (hourly dates
-// only) and the run identity.
+// InjectDateArgs gives the job the execution date it runs for. Glue and EMR
+// arguments get --par_day (and --par_hour for hourly dates), a step
+// function's input par_day (and par_hour), overwriting a configured value.
+// An http body, lambda payload or airflow body left empty becomes the
+// generated run object (see runObject), marked generated so it is sent as is.
 func InjectDateArgs(tc *types.TriggerConfig, date string) {
 	datePart, hourPart := lambda.ParseExecutionDate(date)
 	parDay := strings.ReplaceAll(datePart, "-", "")
 
 	if tc.Glue != nil {
-		if tc.Glue.Arguments == nil {
-			tc.Glue.Arguments = make(map[string]string)
-		}
-		tc.Glue.Arguments["--par_day"] = parDay
-		if hourPart != "" {
-			tc.Glue.Arguments["--par_hour"] = hourPart
-		}
+		tc.Glue.Arguments = withDateArgs(tc.Glue.Arguments, "--", parDay, hourPart)
 	}
-
+	if tc.EMR != nil {
+		tc.EMR.Arguments = withDateArgs(tc.EMR.Arguments, "--", parDay, hourPart)
+	}
+	if tc.StepFunction != nil {
+		tc.StepFunction.Arguments = withDateArgs(tc.StepFunction.Arguments, "", parDay, hourPart)
+	}
 	if tc.HTTP != nil && tc.HTTP.Body == "" {
-		run := tc.HTTP.Run
-		payload := map[string]string{
-			"par_day": parDay, "pipelineId": run.PipelineID, "scheduleId": run.ScheduleID, "date": run.Date, "runId": run.RunID,
-		}
-		if hourPart != "" {
-			payload["par_hour"] = hourPart
-		}
-		b, _ := json.Marshal(payload) // json.Marshal is infallible for map[string]string (no channels, funcs, or complex types)
-		tc.HTTP.Body = string(b)
-		tc.HTTP.BodyGenerated = true
+		tc.HTTP.Body, tc.HTTP.BodyGenerated = runObject(tc.HTTP.Run, parDay, hourPart), true
 	}
+	if tc.Lambda != nil && tc.Lambda.Payload == "" {
+		tc.Lambda.Payload, tc.Lambda.PayloadGenerated = runObject(tc.Lambda.Run, parDay, hourPart), true
+	}
+	if tc.Airflow != nil && tc.Airflow.Body == "" {
+		tc.Airflow.Body, tc.Airflow.BodyGenerated = runObject(tc.Airflow.Run, parDay, hourPart), true
+	}
+}
+
+// withDateArgs sets prefix+"par_day" and, for an hourly date, prefix+"par_hour"
+// in args, creating the map when nil.
+func withDateArgs(args map[string]string, prefix, parDay, parHour string) map[string]string {
+	if args == nil {
+		args = make(map[string]string)
+	}
+	args[prefix+"par_day"] = parDay
+	if parHour != "" {
+		args[prefix+"par_hour"] = parHour
+	}
+	return args
+}
+
+// runObject is the JSON object a body or payload job receives when none is
+// configured: par_day, par_hour (hourly dates only) and the run identity.
+func runObject(run types.RunIdentity, parDay, parHour string) string {
+	obj := map[string]string{
+		"par_day": parDay, "pipelineId": run.PipelineID, "scheduleId": run.ScheduleID, "date": run.Date, "runId": run.RunID,
+	}
+	if parHour != "" {
+		obj["par_hour"] = parHour
+	}
+	b, _ := json.Marshal(obj) // json.Marshal is infallible for map[string]string (no channels, funcs, or complex types)
+	return string(b)
 }

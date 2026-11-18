@@ -163,7 +163,15 @@ job:
 | `url` | string | Airflow webserver URL |
 | `dagID` | string | DAG identifier |
 | `headers` | map | Authentication headers |
+| `body` | string | JSON sent as the DAG run's `conf` (optional) |
 | `pollInterval` | string | Status poll interval (e.g. `1m`) |
+
+The DAG run's `conf` carries the run. With no `body` it is the same JSON object
+the `http` default body is (`par_day`, `par_hour` for hourly dates,
+`pipelineId`, `scheduleId`, `date`, `runId`). A configured `body` expands the
+[run identity](#run-identity) variables JSON-escaped, so use them inside JSON
+strings. The headers expand only `INTERLOCK_` environment variables: the status
+poll sends them again without a run identity.
 
 ### `glue`
 
@@ -202,7 +210,7 @@ job:
 | Field | Type | Description |
 |---|---|---|
 | `clusterID` | string | EMR cluster ID |
-| `arguments` | map | Step arguments |
+| `arguments` | map | Step arguments, sent as `key=value` in key order; Interlock adds `--par_day` (`--par_day=20260301`) and, for hourly dates, `--par_hour`, replacing a configured value of the same key |
 
 **Returned metadata**: `clusterID`, `stepId` -- used by the orchestrator to poll `DescribeStep`.
 
@@ -236,13 +244,14 @@ job:
   type: step-function
   config:
     stateMachineARN: arn:aws:states:us-east-1:123456789:stateMachine:my-workflow
-    input: '{"key": "value"}'
+    arguments:
+      env: prod
 ```
 
 | Field | Type | Description |
 |---|---|---|
 | `stateMachineARN` | string | Step Function state machine ARN |
-| `input` | string | JSON input to the execution |
+| `arguments` | map | Top-level string fields of the execution input; Interlock adds `par_day` (`20260301`) and, for hourly dates, `par_hour` (`05`), replacing a configured value of the same key |
 
 **Returned metadata**: `executionArn` -- used by the orchestrator to poll `DescribeExecution`.
 
@@ -285,6 +294,12 @@ job:
 | `functionName` | string | Function name or ARN |
 | `payload` | string | JSON event passed to the function (optional) |
 
+The event carries the run. With no `payload` it is the same JSON object the
+`http` default body is (`par_day`, `par_hour` for hourly dates, `pipelineId`,
+`scheduleId`, `date`, `runId`). A configured `payload` expands the
+[run identity](#run-identity) variables JSON-escaped, so use them inside JSON
+strings.
+
 The call's outcome is the job's result, written to the joblog under the run ID:
 
 - The function returns normally: a `success` row, and the trigger becomes `COMPLETED`.
@@ -304,7 +319,9 @@ an empty string.
 | Variable | Expands in | Value |
 |---|---|---|
 | `${INTERLOCK_<NAME>}` | `http` body and headers, `airflow` body and headers, `databricks` headers, `lambda` payload | the orchestrator Lambda's environment variable `INTERLOCK_<NAME>` |
-| `${INTERLOCK_PIPELINE_ID}`, `${INTERLOCK_SCHEDULE_ID}`, `${INTERLOCK_DATE}`, `${INTERLOCK_RUN_ID}` | `http` body and headers | the [run identity](#run-identity), which takes precedence over an environment variable of the same name |
+| `${INTERLOCK_PIPELINE_ID}`, `${INTERLOCK_SCHEDULE_ID}`, `${INTERLOCK_DATE}`, `${INTERLOCK_RUN_ID}` | `http` body and headers, `lambda` payload, `airflow` body | the [run identity](#run-identity), which takes precedence over an environment variable of the same name |
+
+`emr-serverless` and `databricks` jobs do not receive the run date yet.
 
 ## Status Polling
 

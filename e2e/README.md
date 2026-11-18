@@ -80,9 +80,11 @@ code path first and assert the exact values it produces.
   `DeleteItem` permission fixed in #92 would have passed.
 - The real EventBridge Scheduler. A DynamoDB table stands in for it and only
   records the schedules.
-- Glue, EMR and Databricks request shapes. Only the HTTP and `lambda` triggers
-  run; the `lambda` job is interlock's own orchestrator called with a mode it
-  rejects, so the function error path runs but a successful function does not.
+- Glue, EMR and Databricks request shapes. Only the HTTP, `lambda` and
+  `step-function` triggers run; the `lambda` job is interlock's own
+  orchestrator called with a mode it rejects, so the function error path runs
+  but a successful function does not, and the `step-function` job is a
+  one-state Pass machine the scenario creates.
 - Terraform. `deploy.py` deploys the stack.
 - Terraform's `filter_criteria` drifting from deploy.py's copy. The e2e deploy
   sets the stream mapping filters from that copy, so the filters themselves run.
