@@ -17,18 +17,64 @@ import (
 
 // sensorRecord is the stream record of the "upstream" sensor naming date.
 func sensorRecord(date string) events.DynamoDBEventRecord {
+	return sensorRecordWith("upstream", map[string]events.DynamoDBAttributeValue{"date": events.NewStringAttribute(date)})
+}
+
+// sensorRecordWith is the stream record of pipeline p's sensor key holding data.
+func sensorRecordWith(key string, data map[string]events.DynamoDBAttributeValue) events.DynamoDBEventRecord {
 	return events.DynamoDBEventRecord{
 		EventName: "INSERT",
 		Change: events.DynamoDBStreamRecord{
 			SequenceNumber: "1",
 			Keys: map[string]events.DynamoDBAttributeValue{
 				"PK": events.NewStringAttribute(types.PipelinePK("p")),
-				"SK": events.NewStringAttribute(types.SensorSK("upstream")),
+				"SK": events.NewStringAttribute(types.SensorSK(key)),
 			},
-			NewImage: map[string]events.DynamoDBAttributeValue{
-				"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{"date": events.NewStringAttribute(date)}),
-			},
+			NewImage: map[string]events.DynamoDBAttributeValue{"data": events.NewMapAttribute(data)},
 		},
+	}
+}
+
+// TestSensorEvent_HourlyKeysStartSeparately: per-hour sensor keys match the
+// trigger key by prefix, and each one's date and hour name its own run date,
+// so two hours (across midnight here) start two runs.
+func TestSensorEvent_HourlyKeysStartSeparately(t *testing.T) {
+	d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{
+			Key: "hourly-status", Check: types.CheckEquals, Field: "status", Value: "ready"}},
+		Job: types.JobConfig{Type: types.TriggerHTTP},
+	})
+	hour := func(date, hour string) map[string]events.DynamoDBAttributeValue {
+		return map[string]events.DynamoDBAttributeValue{"status": events.NewStringAttribute("ready"),
+			"date": events.NewStringAttribute(date), "hour": events.NewStringAttribute(hour)}
+	}
+
+	for _, record := range []events.DynamoDBEventRecord{
+		sensorRecordWith("hourly-status#20260307T23", hour("20260307", "23")),
+		sensorRecordWith("hourly-status#20260308T00", hour("20260308", "00")),
+	} {
+		if err := handleRecord(context.Background(), d, record); err != nil {
+			t.Fatalf("handleRecord: %v", err)
+		}
+	}
+
+	var gotEvents []string
+	for _, e := range eb.events {
+		gotEvents = append(gotEvents, e.Type)
+	}
+	triggered := string(types.EventJobTriggered)
+	if want := []string{triggered, triggered}; sfnFake.calls != 2 || !slices.Equal(gotEvents, want) {
+		t.Errorf("StartExecution calls %d, events %v; want 2 and %v", sfnFake.calls, gotEvents, want)
+	}
+	for _, date := range []string{"2026-03-07T23", "2026-03-08T00"} {
+		var status string
+		if row := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("stream", date)); row != nil {
+			status = row["status"].(*ddbtypes.AttributeValueMemberS).Value
+		}
+		if status != types.TriggerStatusRunning {
+			t.Errorf("trigger %s status = %q, want %q", date, status, types.TriggerStatusRunning)
+		}
 	}
 }
 

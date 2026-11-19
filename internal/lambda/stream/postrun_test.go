@@ -35,8 +35,9 @@ func postRunRecord(count string) events.DynamoDBEventRecord {
 
 // TestPostRunSensor_WatchWindow: drift and the post-run verdicts for a
 // COMPLETED date are published only inside its post-run watch window (6h from
-// completedAt here). A RUNNING date's inflight drift is not bounded by it. The
-// baseline count is 100.
+// completedAt here). A RUNNING date's inflight drift is not bounded by it, and
+// a RUNNING date with no drift or no baseline publishes nothing. The baseline
+// count is 100 unless a row has none.
 func TestPostRunSensor_WatchWindow(t *testing.T) {
 	const date = "2026-03-10"
 	drift := []string{string(types.EventPostRunDrift)}
@@ -46,6 +47,7 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 		completedAt string
 		now         string
 		count       string
+		noBaseline  bool
 		wantEvents  []string
 		wantRerun   bool
 	}{
@@ -58,6 +60,8 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 		{name: "no completedAt", now: "2026-03-10T13:00:00Z", count: "120"},
 		{name: "RUNNING row (inflight, guard)", status: types.TriggerStatusRunning, now: "2026-03-10T13:00:00Z", count: "120",
 			wantEvents: []string{string(types.EventPostRunDriftInflight)}},
+		{name: "RUNNING, no drift", status: types.TriggerStatusRunning, now: "2026-03-10T13:00:00Z", count: "100"},
+		{name: "RUNNING, no baseline", status: types.TriggerStatusRunning, now: "2026-03-10T13:00:00Z", count: "500", noBaseline: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,10 +81,12 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 			}
 			mem.Put("control", row)
 			ctx := context.Background()
-			if err := d.Store.WriteSensor(ctx, "p", "postrun-baseline#"+date, map[string]interface{}{
-				"row-count": map[string]interface{}{"count": 100},
-			}); err != nil {
-				t.Fatal(err)
+			if !tt.noBaseline {
+				if err := d.Store.WriteSensor(ctx, "p", "postrun-baseline#"+date, map[string]interface{}{
+					"row-count": map[string]interface{}{"count": 100},
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := d.Store.WriteSensor(ctx, "p", "row-count", map[string]interface{}{"date": date}); err != nil {
 				t.Fatal(err)
