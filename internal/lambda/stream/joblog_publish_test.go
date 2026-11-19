@@ -20,7 +20,8 @@ func TestStreamJobRows_PublishGates(t *testing.T) {
 	failed := map[string]interface{}{"event": types.JobEventFail, "error": "boom", "runId": "run-a", "category": string(types.FailurePermanent)}
 	tests := []struct {
 		name, eventName, date, event, pipeline string
-		noTrigger, dryRun                      bool
+		noTrigger, dryRun, noEvent, wantErr    bool
+		ebFail                                 int
 		wantType                               types.EventDetailType
 		wantDetail                             map[string]interface{}
 	}{
@@ -36,6 +37,10 @@ func TestStreamJobRows_PublishGates(t *testing.T) {
 		{name: "no trigger row", eventName: "INSERT", date: testDate, event: types.JobEventSuccess, noTrigger: true},
 		{name: "fail row without a trigger row", eventName: "INSERT", date: testDate, event: types.JobEventFail, noTrigger: true},
 		{name: "dry run without its marker", eventName: "INSERT", date: testDate, event: types.JobEventFail, dryRun: true},
+		{name: "infra-trigger-exhausted row", eventName: "INSERT", date: testDate, event: types.JobEventInfraTriggerExhausted},
+		{name: "rerun-accepted row", eventName: "INSERT", date: testDate, event: types.JobEventRerunAccepted},
+		{name: "no event attribute", eventName: "INSERT", date: testDate, event: types.JobEventFail, noEvent: true},
+		{name: "publish fails", eventName: "INSERT", date: testDate, event: types.JobEventSuccess, ebFail: 1, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -49,8 +54,13 @@ func TestStreamJobRows_PublishGates(t *testing.T) {
 					"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
 				})
 			}
-			if err := handleRecord(context.Background(), d, jobRecord(tt.eventName, tt.date, tt.event, types.FailurePermanent)); err != nil {
-				t.Fatalf("handleRecord: %v", err)
+			record := jobRecord(tt.eventName, tt.date, tt.event, types.FailurePermanent)
+			if tt.noEvent {
+				delete(record.Change.NewImage, "event")
+			}
+			eb.fail = tt.ebFail
+			if err := handleRecord(context.Background(), d, record); (err != nil) != tt.wantErr {
+				t.Fatalf("handleRecord error = %v, want an error: %v", err, tt.wantErr)
 			}
 			if tt.wantType == "" {
 				if len(eb.events) != 0 {

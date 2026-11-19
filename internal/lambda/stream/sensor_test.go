@@ -3,6 +3,7 @@ package stream
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"maps"
 	"slices"
 	"testing"
@@ -75,6 +76,168 @@ func TestSensorEvent_HourlyKeysStartSeparately(t *testing.T) {
 		if status != types.TriggerStatusRunning {
 			t.Errorf("trigger %s status = %q, want %q", date, status, types.TriggerStatusRunning)
 		}
+	}
+	if got, want := startDates(t, sfnFake), []string{"2026-03-07T23", "2026-03-08T00"}; !slices.Equal(got, want) {
+		t.Errorf("execution input dates = %v, want %v", got, want)
+	}
+}
+
+// startDates lists the date in each started execution's input, in order.
+func startDates(t *testing.T, sfnFake *countingSFN) []string {
+	t.Helper()
+	var dates []string
+	for _, in := range sfnFake.inputs {
+		var input struct {
+			Date string `json:"date"`
+		}
+		if err := json.Unmarshal([]byte(in), &input); err != nil {
+			t.Fatalf("decode execution input %q: %v", in, err)
+		}
+		dates = append(dates, input.Date)
+	}
+	return dates
+}
+
+// TestSensorEvent_Gates: what stops a trigger sensor before it starts a run.
+// The sensor names 2026-03-06 (a Friday) and now is testNow (Saturday
+// 2026-03-07) unless a row says otherwise. Calendar exclusion is checked on the
+// wall-clock date, not the sensor's date, and publishes PIPELINE_EXCLUDED.
+// A completed row inside its watch window would publish a post-run verdict
+// for a sensor that matched a post-run rule.
+func TestSensorEvent_Gates(t *testing.T) {
+	const date = "2026-03-06"
+	triggered, excluded := []string{string(types.EventJobTriggered)}, []string{string(types.EventPipelineExcluded)}
+	exclude := func(e types.ExclusionConfig) func(*types.PipelineConfig) {
+		return func(c *types.PipelineConfig) { c.Schedule.Exclude = &e }
+	}
+	weekends := exclude(types.ExclusionConfig{Weekends: true})
+	tests := []struct {
+		name       string
+		key        string // sensor key; empty means upstream
+		status     string // the sensor's status field, if set
+		now        string // empty means testNow
+		completed  bool   // the date has a COMPLETED trigger row
+		tweak      func(*types.PipelineConfig)
+		wantSFN    int
+		wantEvents []string
+	}{
+		{name: "exact key (guard)", wantSFN: 1, wantEvents: triggered},
+		{name: "no rule", key: "other-sensor"},
+		{name: "post-run rules, no match", key: "other-sensor", completed: true, tweak: func(c *types.PipelineConfig) {
+			c.PostRun = &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}}
+		}},
+		{name: "no config", tweak: func(c *types.PipelineConfig) { c.Pipeline.ID = "other" }},
+		{name: "no trigger condition", tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger = nil }},
+		{name: "check fails", status: "not-ready", tweak: func(c *types.PipelineConfig) {
+			c.Schedule.Trigger = &types.TriggerCondition{Key: "upstream", Check: types.CheckEquals, Field: "status", Value: "ready"}
+		}},
+		{name: "wall clock excluded", tweak: exclude(types.ExclusionConfig{Dates: []string{"2026-03-07"}}), wantEvents: excluded},
+		{name: "Saturday", tweak: weekends, wantEvents: excluded},
+		{name: "Monday (guard)", tweak: weekends, now: "2026-03-09T12:00:00Z", wantSFN: 1, wantEvents: triggered},
+		{name: "sensor date excluded, wall clock not (guard)", tweak: exclude(types.ExclusionConfig{Dates: []string{date}}),
+			wantSFN: 1, wantEvents: triggered},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "p"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Job:      types.JobConfig{Type: types.TriggerHTTP},
+			}
+			if tt.tweak != nil {
+				tt.tweak(&cfg)
+			}
+			d, mem, sfnFake, eb := jobWorld(t, cfg)
+			if tt.completed {
+				mem.Put("control", completedRow(date, "2026-03-07T11:00:00Z"))
+			}
+			if tt.now != "" {
+				now := mustTime(t, tt.now)
+				d.NowFunc = func() time.Time { return now }
+			}
+			data := map[string]events.DynamoDBAttributeValue{"date": events.NewStringAttribute(date)}
+			if tt.status != "" {
+				data["status"] = events.NewStringAttribute(tt.status)
+			}
+
+			if err := handleRecord(context.Background(), d, sensorRecordWith(cmp.Or(tt.key, "upstream"), data)); err != nil {
+				t.Fatalf("handleRecord: %v", err)
+			}
+
+			var gotEvents []string
+			for _, e := range eb.events {
+				gotEvents = append(gotEvents, e.Type)
+			}
+			if sfnFake.calls != tt.wantSFN || !slices.Equal(gotEvents, tt.wantEvents) {
+				t.Errorf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, gotEvents, tt.wantSFN, tt.wantEvents)
+			}
+			if present := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("stream", date)) != nil; present != (tt.wantSFN == 1 || tt.completed) {
+				t.Errorf("trigger row present = %v, want %v", present, tt.wantSFN == 1 || tt.completed)
+			}
+		})
+	}
+}
+
+// TestSensorEvent_FirstArrival: a run started by a sensor records when the
+// date's first sensor arrived (the start of a relative SLA) and keeps an
+// earlier value. A failed start releases the trigger lock, publishes nothing
+// and fails the record.
+func TestSensorEvent_FirstArrival(t *testing.T) {
+	tests := []struct {
+		name, date, now, seeded string
+		sfnFail                 int
+		wantArrival             string // empty means not checked
+	}{
+		{name: "written", date: "2026-03-10", now: "2026-03-10T14:30:00Z", wantArrival: "2026-03-10T14:30:00Z"},
+		{name: "kept", date: "2026-03-10", now: "2026-03-10T15:00:00Z", seeded: "2026-03-10T14:00:00Z", wantArrival: "2026-03-10T14:00:00Z"},
+		{name: "start fails", date: "2026-03-08", now: "2026-03-10T14:30:00Z", sfnFail: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "p"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Job:      types.JobConfig{Type: types.TriggerHTTP},
+			})
+			ctx, arrivalKey := context.Background(), "first-sensor-arrival#"+tt.date
+			if tt.seeded != "" {
+				if err := d.Store.WriteSensor(ctx, "p", arrivalKey, map[string]interface{}{"arrivedAt": tt.seeded}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := mustTime(t, tt.now)
+			d.NowFunc = func() time.Time { return now }
+			sfnFake.fail = tt.sfnFail
+
+			err := handleRecord(ctx, d, sensorRecord(tt.date))
+			if wantErr := tt.sfnFail > 0; (err != nil) != wantErr {
+				t.Fatalf("handleRecord error = %v, want an error: %v", err, wantErr)
+			}
+
+			wantStarts, wantEvents := 1, []string{string(types.EventJobTriggered)}
+			if tt.sfnFail > 0 {
+				wantStarts, wantEvents = 0, nil
+			}
+			var gotEvents []string
+			for _, e := range eb.events {
+				gotEvents = append(gotEvents, e.Type)
+			}
+			if sfnFake.calls != wantStarts || !slices.Equal(gotEvents, wantEvents) {
+				t.Errorf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, gotEvents, wantStarts, wantEvents)
+			}
+			if present := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("stream", tt.date)) != nil; present != (wantStarts == 1) {
+				t.Errorf("trigger row present = %v, want %v", present, wantStarts == 1)
+			}
+			if tt.wantArrival != "" {
+				got, err := d.Store.GetSensorData(ctx, "p", arrivalKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got["arrivedAt"] != tt.wantArrival {
+					t.Errorf("%s arrivedAt = %v, want %s", arrivalKey, got["arrivedAt"], tt.wantArrival)
+				}
+			}
+		})
 	}
 }
 
@@ -238,9 +401,11 @@ func TestLateData_WatchWindow(t *testing.T) {
 		tweaks      []func(*types.PipelineConfig)
 		completedAt string
 		now         string
+		jobEvent    string   // the last job row; empty means success
 		wantEvents  []string // nil means none; a late sensor also writes a request and a job row
 	}{
 		{name: "inside (guard)", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z", wantEvents: late},
+		{name: "inside, job failed", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z", jobEvent: types.JobEventFail},
 		{name: "at the limit", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T18:00:00Z"},
 		{name: "two days later", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-12T09:00:00Z"},
 		{name: "default window, inside (guard)", tweaks: []func(*types.PipelineConfig){func(c *types.PipelineConfig) { c.PostRun = nil }},
@@ -271,7 +436,7 @@ func TestLateData_WatchWindow(t *testing.T) {
 			mem.Put("control", completedRow(date, tt.completedAt))
 			mem.Put("joblog", map[string]ddbtypes.AttributeValue{"PK": &ddbtypes.AttributeValueMemberS{Value: pk},
 				"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
-				"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess}})
+				"event": &ddbtypes.AttributeValueMemberS{Value: cmp.Or(tt.jobEvent, types.JobEventSuccess)}})
 			now := mustTime(t, tt.now)
 			d.NowFunc = func() time.Time { return now }
 
@@ -283,7 +448,7 @@ func TestLateData_WatchWindow(t *testing.T) {
 			for _, e := range eb.events {
 				gotEvents = append(gotEvents, e.Type)
 			}
-			wantJobs, wantRerun := []string{types.JobEventSuccess}, tt.wantEvents != nil
+			wantJobs, wantRerun := []string{cmp.Or(tt.jobEvent, types.JobEventSuccess)}, tt.wantEvents != nil
 			if wantRerun {
 				wantJobs = lateJobs
 			}

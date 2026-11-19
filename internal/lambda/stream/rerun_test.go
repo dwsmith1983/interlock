@@ -232,13 +232,15 @@ func strAttr(v ddbtypes.AttributeValue) string {
 // finished. Unless a row says otherwise the trigger row is COMPLETED at 12:00,
 // now is 13:00 (inside the 6h watch window), the last job row (at 08:00) is a
 // success and the "upstream" sensor was updated after it (09:00). An accepted
-// request starts one run, writes a rerun row and a rerun-accepted job row, and
-// sets the trigger RUNNING; a rejected one writes a rerun-rejected job row and
-// changes nothing else.
+// request starts one run, writes a rerun row and a rerun-accepted job row,
+// deletes the date's post-run baseline and sets the trigger RUNNING; a
+// rejected one writes a rerun-rejected job row and changes nothing else. Calendar exclusion is checked on the request's date,
+// not the wall-clock date.
 func TestRerunRequest_Outcomes(t *testing.T) {
 	const (
 		date      = "2026-03-10"
 		noTrigger = "none" // the date has no trigger row
+		noJob     = "none" // the date has no job row
 		fresh     = "1773133200000"
 		stale     = "1773100800000"
 	)
@@ -254,17 +256,23 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 	tests := []struct {
 		name, reason, trigger, job string
 		updatedAt                  any
+		noSensor                   bool
 		reruns                     []string
 		tweak                      func(*types.PipelineConfig)
+		sfnFail                    int
+		wantErr                    bool
 		wantStarts                 int
 		wantEvents, wantJobs       []string
 		wantReruns                 int
 		wantStatus                 string // trigger row at the end; empty means none
+		wantMsg                    string // the first event's message, if set
+		now                        string // empty means 2026-03-10T13:00:00Z
 	}{
 		{name: "success, fresh sensor", reason: "manual", updatedAt: fresh,
 			wantStarts: 1, wantEvents: accepted, wantJobs: []string{success, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
 		{name: "success, stale sensor", reason: "manual", updatedAt: stale,
-			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantStatus: completed},
+			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantStatus: completed,
+			wantMsg: "rerun rejected for p: previous run succeeded and no sensor data has changed"},
 		{name: "fail, stale sensor", reason: "manual", trigger: types.TriggerStatusFailedFinal, job: fail, updatedAt: stale,
 			wantStarts: 1, wantEvents: accepted, wantJobs: []string{fail, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
 		{name: "first drift", reason: "data-drift", tweak: budgets(1, 1),
@@ -281,6 +289,33 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantReruns: 3, wantStatus: completed},
 		{name: "no trigger row", reason: "manual", trigger: noTrigger, job: fail,
 			wantEvents: []string{string(types.EventInfraFailure)}, wantJobs: []string{fail}},
+		{name: "fail, no sensor", reason: "manual", job: fail, noSensor: true,
+			wantStarts: 1, wantEvents: accepted, wantJobs: []string{fail, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
+		{name: "infra-trigger-exhausted", reason: "manual", job: types.JobEventInfraTriggerExhausted, updatedAt: stale, wantStarts: 1, wantEvents: accepted,
+			wantJobs: []string{types.JobEventInfraTriggerExhausted, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
+		{name: "timeout", reason: "manual", job: types.JobEventTimeout, updatedAt: stale, wantStarts: 1, wantEvents: accepted,
+			wantJobs: []string{types.JobEventTimeout, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
+		{name: "no job row", reason: "manual", job: noJob, updatedAt: stale,
+			wantStarts: 1, wantEvents: accepted, wantJobs: []string{types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
+		{name: "unknown job event", reason: "manual", job: "some-future-event", updatedAt: stale, wantStarts: 1, wantEvents: accepted,
+			wantJobs: []string{"some-future-event", types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
+		{name: "no config", reason: "manual", tweak: func(c *types.PipelineConfig) { c.Pipeline.ID = "other" },
+			wantJobs: []string{success}, wantStatus: completed},
+		{name: "start fails", reason: "manual", job: fail, sfnFail: 1, wantErr: true,
+			wantEvents: accepted, wantJobs: []string{fail, types.JobEventRerunAccepted}, wantReruns: 1},
+		{name: "data-drift vs late-data row", reason: "data-drift", reruns: []string{"late-data"}, tweak: budgets(1, 1),
+			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantReruns: 1, wantStatus: completed,
+			wantMsg: "rerun rejected for p: drift rerun limit exceeded"},
+		{name: "manual spent", reason: "manual", reruns: []string{"manual"}, tweak: budgets(1, 1),
+			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantReruns: 1, wantStatus: completed,
+			wantMsg: "rerun rejected for p: manual rerun limit exceeded"},
+		{name: "excluded date", reason: "manual", tweak: func(c *types.PipelineConfig) { c.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{date}} },
+			wantEvents: []string{string(types.EventPipelineExcluded)}, wantJobs: []string{success, types.JobEventRerunRejected}, wantStatus: completed},
+		{name: "wall clock excluded, request date not (guard)", reason: "manual", now: "2026-03-11T13:00:00Z",
+			tweak: func(c *types.PipelineConfig) {
+				c.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-11"}}
+			},
+			wantStarts: 1, wantEvents: accepted, wantJobs: []string{success, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -300,9 +335,11 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 				row["status"] = &ddbtypes.AttributeValueMemberS{Value: cmp.Or(tt.trigger, completed)}
 				mem.Put("control", row)
 			}
-			mem.Put("joblog", map[string]ddbtypes.AttributeValue{"PK": pk,
-				"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
-				"event": &ddbtypes.AttributeValueMemberS{Value: cmp.Or(tt.job, success)}})
+			if tt.job != noJob {
+				mem.Put("joblog", map[string]ddbtypes.AttributeValue{"PK": pk,
+					"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
+					"event": &ddbtypes.AttributeValueMemberS{Value: cmp.Or(tt.job, success)}})
+			}
 			for i, reason := range tt.reruns {
 				mem.Put("rerun", map[string]ddbtypes.AttributeValue{"PK": pk,
 					"SK":     &ddbtypes.AttributeValueMemberS{Value: types.RerunSK("stream", date, i)},
@@ -313,11 +350,18 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 			if updatedAt == nil {
 				updatedAt = fresh
 			}
-			if err := d.Store.WriteSensor(ctx, "p", "upstream", map[string]interface{}{"status": "ready", "updatedAt": updatedAt}); err != nil {
+			if !tt.noSensor {
+				if err := d.Store.WriteSensor(ctx, "p", "upstream", map[string]interface{}{"status": "ready", "updatedAt": updatedAt}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			baselineKey := "postrun-baseline#" + date
+			if err := d.Store.WriteSensor(ctx, "p", baselineKey, map[string]interface{}{"upstream": map[string]interface{}{"count": 1}}); err != nil {
 				t.Fatal(err)
 			}
 			rerunCountQuery(d.Store.Client.(*storetest.FakeDynamo), mem)
-			now := mustTime(t, "2026-03-10T13:00:00Z")
+			sfnFake.fail = tt.sfnFail
+			now := mustTime(t, cmp.Or(tt.now, "2026-03-10T13:00:00Z"))
 			d.NowFunc = func() time.Time { return now }
 			record := events.DynamoDBEventRecord{EventName: "INSERT", Change: events.DynamoDBStreamRecord{
 				SequenceNumber: "1",
@@ -328,8 +372,8 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 				NewImage: map[string]events.DynamoDBAttributeValue{"reason": events.NewStringAttribute(tt.reason)},
 			}}
 
-			if err := handleRecord(ctx, d, record); err != nil {
-				t.Fatalf("handleRecord: %v", err)
+			if err := handleRecord(ctx, d, record); (err != nil) != tt.wantErr {
+				t.Fatalf("handleRecord error = %v, want an error: %v", err, tt.wantErr)
 			}
 
 			var gotEvents []string
@@ -338,6 +382,16 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 			}
 			if sfnFake.calls != tt.wantStarts || !slices.Equal(gotEvents, tt.wantEvents) {
 				t.Errorf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, gotEvents, tt.wantStarts, tt.wantEvents)
+			}
+			if tt.wantMsg != "" && len(eb.events) > 0 && eb.events[0].Message != tt.wantMsg {
+				t.Errorf("message = %q, want %q", eb.events[0].Message, tt.wantMsg)
+			}
+			baseline, err := d.Store.GetSensorData(ctx, "p", baselineKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gone, want := baseline == nil, slices.Equal(tt.wantEvents, accepted); gone != want {
+				t.Errorf("post-run baseline deleted = %v, want %v", gone, want)
 			}
 			if got := jobEvents(mem); !slices.Equal(got, tt.wantJobs) {
 				t.Errorf("job rows = %v, want %v", got, tt.wantJobs)
@@ -351,6 +405,53 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 			}
 			if status != tt.wantStatus {
 				t.Errorf("trigger status = %q, want %q", status, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// TestCheckSensorFreshness: the rerun circuit breaker lets a rerun through
+// when any sensor was updated after the job row's timestamp (epoch
+// milliseconds, the last SK segment). updatedAt may be a number or a numeric
+// string, in seconds or milliseconds. No sensors, no updatedAt at all, or a
+// job SK it cannot read also let it through.
+func TestCheckSensorFreshness(t *testing.T) {
+	const jobSK = "JOB#stream#2026-03-01#"
+	tests := []struct {
+		name, sk  string
+		updatedAt any // nil means a sensor without updatedAt
+		noSensor  bool
+		want      bool
+	}{
+		{name: "no sensors", sk: jobSK + "1000000", noSensor: true, want: true},
+		{name: "no updatedAt", sk: jobSK + "1000000", want: true},
+		{name: "fresh float", sk: jobSK + "1000000", updatedAt: 2000000.0, want: true},
+		{name: "stale float", sk: jobSK + "2000000000000", updatedAt: 1000000000000.0, want: false},
+		{name: "fresh string", sk: jobSK + "1000000", updatedAt: "2000000", want: true},
+		{name: "epoch seconds", sk: jobSK + "2000000000000", updatedAt: 2000000001.0, want: true},
+		{name: "equal", sk: jobSK + "2000000000000", updatedAt: 2000000000000.0, want: false},
+		{name: "short SK", sk: "JOB#stream#2026-03-01", updatedAt: 1.0, want: true},
+		{name: "short SK ending in a number", sk: "JOB#stream#2000000000000", updatedAt: 1.0, want: true},
+		{name: "non-numeric timestamp", sk: jobSK + "not-a-number", updatedAt: 1.0, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake, _ := storetest.NewMem()
+			d := &lambda.Deps{Store: storetest.NewStore(fake), Logger: discardLogger()}
+			ctx := context.Background()
+			if !tt.noSensor {
+				data := map[string]interface{}{"status": "ready"}
+				if tt.updatedAt != nil {
+					data["updatedAt"] = tt.updatedAt
+				}
+				if err := d.Store.WriteSensor(ctx, "p", "upstream", data); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			got, err := checkSensorFreshness(ctx, d, "p", tt.sk)
+			if err != nil || got != tt.want {
+				t.Errorf("checkSensorFreshness(%q) = %v, %v; want %v, nil", tt.sk, got, err, tt.want)
 			}
 		})
 	}
