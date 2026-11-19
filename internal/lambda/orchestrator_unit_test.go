@@ -6,7 +6,6 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
-	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -34,63 +33,6 @@ func TestParseExecutionDate(t *testing.T) {
 			assert.Equal(t, tt.wantHour, hour)
 		})
 	}
-}
-
-// ---------------------------------------------------------------------------
-// InjectDateArgs — table-driven
-// ---------------------------------------------------------------------------
-
-func TestInjectDateArgs(t *testing.T) {
-	t.Run("glue_daily", func(t *testing.T) {
-		tc := &types.TriggerConfig{Glue: &types.GlueTriggerConfig{}}
-		lambda.InjectDateArgs(tc, "2026-03-03")
-		assert.Equal(t, "20260303", tc.Glue.Arguments["--par_day"])
-		assert.Empty(t, tc.Glue.Arguments["--par_hour"])
-	})
-
-	t.Run("glue_hourly", func(t *testing.T) {
-		tc := &types.TriggerConfig{Glue: &types.GlueTriggerConfig{}}
-		lambda.InjectDateArgs(tc, "2026-03-03T10")
-		assert.Equal(t, "20260303", tc.Glue.Arguments["--par_day"])
-		assert.Equal(t, "10", tc.Glue.Arguments["--par_hour"])
-	})
-
-	t.Run("glue_preserves_existing_args", func(t *testing.T) {
-		tc := &types.TriggerConfig{Glue: &types.GlueTriggerConfig{
-			Arguments: map[string]string{"--extra": "val"},
-		}}
-		lambda.InjectDateArgs(tc, "2026-03-03")
-		assert.Equal(t, "20260303", tc.Glue.Arguments["--par_day"])
-		assert.Equal(t, "val", tc.Glue.Arguments["--extra"])
-	})
-
-	t.Run("http_empty_body_daily", func(t *testing.T) {
-		tc := &types.TriggerConfig{HTTP: &types.HTTPTriggerConfig{URL: "http://example.com"}}
-		lambda.InjectDateArgs(tc, "2026-03-03")
-		assert.Contains(t, tc.HTTP.Body, `"par_day":"20260303"`)
-		assert.NotContains(t, tc.HTTP.Body, "par_hour")
-	})
-
-	t.Run("http_empty_body_hourly", func(t *testing.T) {
-		tc := &types.TriggerConfig{HTTP: &types.HTTPTriggerConfig{URL: "http://example.com"}}
-		lambda.InjectDateArgs(tc, "2026-03-03T10")
-		assert.Contains(t, tc.HTTP.Body, `"par_day":"20260303"`)
-		assert.Contains(t, tc.HTTP.Body, `"par_hour":"10"`)
-	})
-
-	t.Run("http_existing_body_not_overwritten", func(t *testing.T) {
-		tc := &types.TriggerConfig{HTTP: &types.HTTPTriggerConfig{
-			URL:  "http://example.com",
-			Body: `{"custom":"data"}`,
-		}}
-		lambda.InjectDateArgs(tc, "2026-03-03")
-		assert.Equal(t, `{"custom":"data"}`, tc.HTTP.Body, "existing body should not be overwritten")
-	})
-
-	t.Run("nil_glue_no_panic", func(t *testing.T) {
-		tc := &types.TriggerConfig{}
-		assert.NotPanics(t, func() { lambda.InjectDateArgs(tc, "2026-03-03") })
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -124,16 +66,6 @@ func TestRemapPerPeriodSensors_StagedMerge_NoCrossContamination(t *testing.T) {
 	assert.Equal(t, float64(10), sensors["hourly-status"]["count"])
 	// Original suffixed key should still exist
 	assert.NotNil(t, sensors["hourly-status#2026-03-13"])
-}
-
-// ---------------------------------------------------------------------------
-// BUG-10 characterization: baseline flattening collision
-// ---------------------------------------------------------------------------
-
-func TestExtractFloat_ZeroValueIndistinguishableFromMissing(t *testing.T) {
-	// BUG-1 characterization: ExtractFloat returns 0 for both zero and missing.
-	assert.Equal(t, float64(0), lambda.ExtractFloat(map[string]interface{}{"count": float64(0)}, "count"))
-	assert.Equal(t, float64(0), lambda.ExtractFloat(map[string]interface{}{}, "count"))
 }
 
 // ---------------------------------------------------------------------------

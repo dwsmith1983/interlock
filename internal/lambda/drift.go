@@ -7,7 +7,6 @@ import (
 
 // ExtractFloatOk retrieves a numeric value from a sensor data map.
 // Returns (value, true) if the key exists and is numeric, (0, false) otherwise.
-// Unlike ExtractFloat, this distinguishes zero values from missing keys.
 func ExtractFloatOk(data map[string]interface{}, key string) (float64, bool) {
 	if data == nil {
 		return 0, false
