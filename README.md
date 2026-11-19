@@ -379,7 +379,7 @@ interlock/
 │   │   ├── sla/             # SLA deadline calculation + alerts
 │   │   ├── alert/           # Slack notification formatting
 │   │   └── sink/            # EventBridge event persistence
-│   ├── telemetry/           # OpenTelemetry + structured logging with correlation IDs
+│   ├── telemetry/           # OpenTelemetry provider setup
 │   ├── client/              # Circuit breaker for external HTTP calls
 │   ├── resilience/          # Exponential backoff retry with jitter
 │   ├── store/               # DynamoDB storage layer (4 tables)
@@ -411,11 +411,9 @@ See [`deploy/localstack/README.md`](deploy/localstack/README.md) for the full re
 
 ### Observability
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` to enable OpenTelemetry trace and metric export (e.g., to Jaeger or Grafana). When unset, telemetry gracefully degrades to no-op providers with zero overhead.
+With `OTEL_EXPORTER_OTLP_ENDPOINT` set, the orchestrator and stream-router create OTLP trace and metric providers and flush them after each invocation. Without it they use no-op providers.
 
-Application metrics: `interlock.records.processed`, `interlock.stage.duration`, `interlock.rules.evaluated`, `interlock.dlq.routed`, `interlock.worker_pool.active`, `interlock.circuit_breaker.state`.
-
-All structured logs include `correlation_id` for cross-service tracing when the context carries one.
+Interlock records no spans or metrics of its own. Logs are JSON through `slog`.
 
 ### Prerequisites
 
