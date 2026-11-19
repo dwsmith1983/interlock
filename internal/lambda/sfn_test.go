@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -154,6 +156,52 @@ func TestBuildSFNConfig_JobCheckIntervalEnv(t *testing.T) {
 			if got.JobPollWindowSeconds != lambda.DefaultJobPollWindowSec {
 				t.Errorf("JobPollWindowSeconds = %d, want %d", got.JobPollWindowSeconds, lambda.DefaultJobPollWindowSec)
 			}
+		})
+	}
+}
+
+func TestBuildSFNConfig(t *testing.T) {
+	poll := func(sec int) *int { return &sec }
+	tests := []struct {
+		name   string
+		mutate func(*types.PipelineConfig)
+		check  func(*testing.T, lambda.SFNConfig)
+	}{
+		{"CustomTimings", func(c *types.PipelineConfig) {
+			c.Schedule.Evaluation = types.EvaluationWindow{Interval: "2m", Window: "30m"}
+		}, func(t *testing.T, sc lambda.SFNConfig) {
+			assert.Equal(t, 120, sc.EvaluationIntervalSeconds)
+			assert.Equal(t, 1800, sc.EvaluationWindowSeconds)
+		}},
+		{"PollOverride", func(c *types.PipelineConfig) { c.Job.JobPollWindowSeconds = poll(7200) }, func(t *testing.T, sc lambda.SFNConfig) {
+			assert.Equal(t, 7200, sc.JobPollWindowSeconds)
+		}},
+		{"PollZero", func(c *types.PipelineConfig) { c.Job.JobPollWindowSeconds = poll(0) }, func(t *testing.T, sc lambda.SFNConfig) {
+			assert.Equal(t, 3600, sc.JobPollWindowSeconds)
+		}},
+		{"WithSLA", func(c *types.PipelineConfig) {
+			c.SLA = &types.SLAConfig{Deadline: "08:00", ExpectedDuration: "30m", Critical: true}
+		}, func(t *testing.T, sc lambda.SFNConfig) {
+			assert.Equal(t, &lambda.SFNSLA{Deadline: "08:00", ExpectedDuration: "30m", MaxDuration: "", Timezone: "UTC", Critical: true}, sc.SLA)
+		}},
+		{"BadInterval", func(c *types.PipelineConfig) { c.Schedule.Evaluation.Interval = "bogus" }, func(t *testing.T, sc lambda.SFNConfig) {
+			assert.Equal(t, 300, sc.EvaluationIntervalSeconds)
+		}},
+		// "120" has no unit, so it does not parse: the default applies, not 120s.
+		// The window still parses, so the fallback is per field.
+		{"UnitlessInterval", func(c *types.PipelineConfig) {
+			c.Schedule.Evaluation = types.EvaluationWindow{Interval: "120", Window: "2m"}
+		}, func(t *testing.T, sc lambda.SFNConfig) {
+			assert.Equal(t, 300, sc.EvaluationIntervalSeconds)
+			assert.Equal(t, 120, sc.EvaluationWindowSeconds)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(lambda.JobCheckIntervalEnv, "")
+			cfg := baseConfig()
+			tt.mutate(cfg)
+			tt.check(t, lambda.BuildSFNConfig(cfg))
 		})
 	}
 }

@@ -140,3 +140,9 @@ func TestCutoffPassed(t *testing.T) {
 	assert.True(t, CutoffPassed(cfg, "2026-03-10", at(14, 1)))
 	assert.False(t, CutoffPassed(cutoffConfig("", 0, "UTC"), "2026-03-10", at(14, 1)))
 }
+
+func TestResolveScheduleID(t *testing.T) {
+	stream := &types.PipelineConfig{Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream"}}}
+	assert.Equal(t, "stream", ResolveScheduleID(stream))
+	assert.Equal(t, "cron", ResolveScheduleID(&types.PipelineConfig{Schedule: types.ScheduleConfig{Cron: "0 8 * * *"}}))
+}
