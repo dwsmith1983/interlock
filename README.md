@@ -379,13 +379,10 @@ interlock/
 │   │   ├── sla/             # SLA deadline calculation + alerts
 │   │   ├── alert/           # Slack notification formatting
 │   │   └── sink/            # EventBridge event persistence
-│   ├── aws/lambda/          # Lambda context middleware (timeout derivation)
-│   ├── handler/             # Stream batch processing (ReportBatchItemFailures)
 │   ├── dlq/                 # Dead-letter queue routing, error classification
 │   ├── telemetry/           # OpenTelemetry + structured logging with correlation IDs
 │   ├── client/              # Circuit breaker for external HTTP calls
 │   ├── resilience/          # Exponential backoff retry with jitter
-│   ├── concurrency/         # Bounded worker pool (errgroup + semaphore)
 │   ├── store/               # DynamoDB storage layer (4 tables)
 │   ├── config/              # Pipeline YAML config loading
 │   ├── trigger/             # Trigger execution (8 types)
