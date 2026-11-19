@@ -18,7 +18,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.3
 	github.com/aws/aws-sdk-go-v2/service/sfn v1.40.6
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.25
-	github.com/oklog/ulid/v2 v2.1.1
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/sony/gobreaker v1.0.0
 	github.com/stretchr/testify v1.12.1
