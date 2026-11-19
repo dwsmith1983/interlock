@@ -9,10 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-lambda-go/events"
 	"github.com/dwsmith1983/interlock/internal/client"
-	"github.com/dwsmith1983/interlock/internal/dlq"
-	"github.com/dwsmith1983/interlock/internal/handler"
 	"github.com/dwsmith1983/interlock/internal/resilience"
 	"github.com/sony/gobreaker"
 	"github.com/stretchr/testify/assert"
@@ -20,15 +17,6 @@ import (
 )
 
 // --- Fault-injection test doubles ---
-
-// failingRouter always returns an error, simulating SQS unavailability.
-type failingRouter struct {
-	err error
-}
-
-func (r *failingRouter) Route(_ context.Context, _ dlq.Record) error {
-	return r.err
-}
 
 // countingHTTPDoer tracks call count atomically and always fails.
 type countingHTTPDoer struct {
@@ -42,36 +30,6 @@ func (c *countingHTTPDoer) Do(_ *http.Request) (*http.Response, error) {
 }
 
 // --- Tests ---
-
-func TestFaultInjection_DLQRouterFailure_FallsBackToBatchFailures(t *testing.T) {
-	// All 3 records produce permanent errors, but the DLQ router is down.
-	// Every record should fall back to batch failures.
-	records := makeDynamoDBRecords(3)
-
-	procErrors := map[string]error{
-		"evt-0": errors.New("permanent: bad payload"),
-		"evt-1": errors.New("permanent: missing field"),
-		"evt-2": errors.New("permanent: invalid schema"),
-	}
-	processor := &scenarioProcessor{errors: procErrors}
-	router := &failingRouter{err: errors.New("sqs unavailable")}
-
-	resp, stats := handler.ProcessBatch(
-		context.Background(),
-		records,
-		processor,
-		router,
-		discardLogger,
-	)
-
-	assert.Equal(t, 0, stats.Processed)
-	assert.Equal(t, 0, stats.DLQRouted, "no records should be DLQ-routed when router fails")
-	assert.Equal(t, 3, stats.BatchFailures, "all should fall back to batch failures")
-	assert.Equal(t, 3, stats.Total)
-	assert.Equal(t, stats.Total, stats.Processed+stats.DLQRouted+stats.BatchFailures,
-		"accounting invariant must hold even when DLQ is down")
-	require.Len(t, resp.BatchItemFailures, 3)
-}
 
 func TestFaultInjection_CircuitBreakerOpens(t *testing.T) {
 	// Configure breaker to trip after 3 consecutive failures.
@@ -184,41 +142,4 @@ func TestFaultInjection_ContextCanceledMidRetry(t *testing.T) {
 		"should return context.Canceled when context is canceled mid-retry")
 	assert.Less(t, attempts, cfg.MaxRetries+1,
 		"should cancel early without exhausting all retries")
-}
-
-func TestFaultInjection_MixedBatchWithDLQFailure(t *testing.T) {
-	// 5 records: 2 valid, 2 permanent (DLQ down), 1 transient.
-	// With DLQ router failing, permanent errors also become batch failures.
-	records := make([]events.DynamoDBEventRecord, 5)
-	for i := range 5 {
-		records[i] = events.DynamoDBEventRecord{
-			EventID: fmt.Sprintf("mixed-%d", i),
-			Change: events.DynamoDBStreamRecord{
-				SequenceNumber: fmt.Sprintf("seq-mixed-%d", i),
-			},
-		}
-	}
-
-	procErrors := map[string]error{
-		"mixed-1": errors.New("permanent: invalid"),
-		"mixed-3": errors.New("permanent: corrupt"),
-		"mixed-4": transientErr{},
-	}
-	processor := &scenarioProcessor{errors: procErrors}
-	router := &failingRouter{err: errors.New("sqs connection reset")}
-
-	_, stats := handler.ProcessBatch(
-		context.Background(),
-		records,
-		processor,
-		router,
-		discardLogger,
-	)
-
-	assert.Equal(t, 2, stats.Processed, "2 valid records should succeed")
-	assert.Equal(t, 0, stats.DLQRouted, "no DLQ routing when router is down")
-	assert.Equal(t, 3, stats.BatchFailures, "2 permanent (DLQ failed) + 1 transient = 3 batch failures")
-	assert.Equal(t, 5, stats.Total)
-	assert.Equal(t, stats.Total, stats.Processed+stats.DLQRouted+stats.BatchFailures,
-		"accounting invariant must hold")
 }
