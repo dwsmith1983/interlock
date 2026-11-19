@@ -37,6 +37,13 @@ func TestFormatAlertText_MessageAndEscaping(t *testing.T) {
 			reject: []string{"<8>", "a&b", "<src>", "0 > 1"},
 		},
 		{
+			name: "deadline without breachAt",
+			detail: types.InterlockEvent{PipelineID: "bronze-cdr", Date: "2026-03-06", Message: "test",
+				Detail: map[string]interface{}{"deadline": ":30"}},
+			want:   []string{"\nDeadline :30"},
+			reject: []string{"("},
+		},
+		{
 			name:   "no detail is escaped too",
 			detail: types.InterlockEvent{PipelineID: "p", Message: "x<y"},
 			want:   []string{"\nx&lt;y"},
@@ -117,5 +124,26 @@ func TestFormatAlertText_CutoffPassed(t *testing.T) {
 	want := "\xf0\x9f\x94\xb4 *SENSOR_DEADLINE_EXPIRED* | p | 2026-03-10\nm\nSource: watchdog · Cutoff: 14:00 · Cutoff at: 2026-03-10T14:00:00Z\n→ rerun"
 	if text != want {
 		t.Fatalf("text = %q, want %q", text, want)
+	}
+}
+
+// TestAlertEmoji: failures are red, a warning yellow, a met SLA a check mark
+// and everything else info, and the emoji leads the header.
+func TestAlertEmoji(t *testing.T) {
+	for emoji, detailTypes := range map[string][]string{
+		"\xf0\x9f\x94\xb4": {"SLA_BREACH", "JOB_FAILED", "VALIDATION_EXHAUSTED", "RETRY_EXHAUSTED", "INFRA_FAILURE",
+			"SFN_TIMEOUT", "SCHEDULE_MISSED", "DATA_DRIFT", "CONFIG_INVALID", "SENSOR_DEADLINE_EXPIRED"},
+		"\xf0\x9f\x9f\xa1":         {"SLA_WARNING"},
+		"\xe2\x9c\x85":             {"SLA_MET"},
+		"\xe2\x84\xb9\xef\xb8\x8f": {"UNKNOWN_TYPE", "JOB_TRIGGERED", "JOB_COMPLETED", "TRIGGER_RECOVERED"},
+	} {
+		for _, detailType := range detailTypes {
+			t.Run(detailType, func(t *testing.T) {
+				text := alert.FormatAlertText(detailType, types.InterlockEvent{PipelineID: "p", Date: "2026-03-04", Message: "m"})
+				if want := emoji + " *" + detailType + "*"; !strings.HasPrefix(text, want) {
+					t.Errorf("text %q, want prefix %q", text, want)
+				}
+			})
+		}
 	}
 }
