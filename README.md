@@ -379,7 +379,6 @@ interlock/
 │   │   ├── sla/             # SLA deadline calculation + alerts
 │   │   ├── alert/           # Slack notification formatting
 │   │   └── sink/            # EventBridge event persistence
-│   ├── dlq/                 # Dead-letter queue routing, error classification
 │   ├── telemetry/           # OpenTelemetry + structured logging with correlation IDs
 │   ├── client/              # Circuit breaker for external HTTP calls
 │   ├── resilience/          # Exponential backoff retry with jitter
