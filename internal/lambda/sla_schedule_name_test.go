@@ -2,6 +2,7 @@ package lambda_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -32,15 +33,20 @@ func assertValidSchedulerName(t *testing.T, name string) {
 	assert.Regexp(t, schedulerNameRe, name)
 }
 
-// recordingScheduler records every schedule it creates and the name of every
-// one it deletes.
+// recordingScheduler records every schedule it is asked to create (then
+// fails the create with createErr, if set) and the name of every one it
+// deletes.
 type recordingScheduler struct {
-	created []*scheduler.CreateScheduleInput
-	deleted []string
+	created   []*scheduler.CreateScheduleInput
+	deleted   []string
+	createErr error
 }
 
 func (r *recordingScheduler) CreateSchedule(_ context.Context, in *scheduler.CreateScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error) {
 	r.created = append(r.created, in)
+	if r.createErr != nil {
+		return nil, r.createErr
+	}
 	return &scheduler.CreateScheduleOutput{}, nil
 }
 
@@ -117,6 +123,30 @@ func TestCreateSLASchedules_Payload(t *testing.T) {
 		assert.Equal(t, "arn:aws:iam::123:role/scheduler-role", *in.Target.RoleArn)
 		assert.Equal(t, want.input, *in.Target.Input)
 	}
+}
+
+// TestCreateSLASchedules_ErrorsAndSkip pins that the first failed create
+// stops the run with the schedule's name in the error, and that
+// SKIP_SCHEDULER=true creates nothing.
+func TestCreateSLASchedules_ErrorsAndSkip(t *testing.T) {
+	t.Run("create error", func(t *testing.T) {
+		t.Setenv("SKIP_SCHEDULER", "")
+		s := &recordingScheduler{createErr: errors.New("throttling exception")}
+
+		err := lambda.CreateSLASchedules(context.Background(), newSchedulerDeps(s), "orders", "stream", "2026-03-03T10", testSLACalc, false)
+
+		require.EqualError(t, err, `create warning schedule: create one-time schedule "orders-stream-2026-03-03T10-sla-warning": throttling exception`)
+		assert.Len(t, s.created, 1, "no breach create after the warning fails")
+	})
+	t.Run("skip scheduler", func(t *testing.T) {
+		t.Setenv("SKIP_SCHEDULER", "true")
+		s := &recordingScheduler{}
+
+		err := lambda.CreateSLASchedules(context.Background(), newSchedulerDeps(s), "orders", "stream", "2026-03-03T10", testSLACalc, false)
+
+		require.NoError(t, err)
+		assert.Empty(t, s.created)
+	})
 }
 
 func TestSLACancel_DeletesTheCreatedScheduleNames(t *testing.T) {

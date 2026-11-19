@@ -22,21 +22,37 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// countingEventBridge is a lambda.EventBridgeAPI double that records how many
-// times PutEvents was called, so a test can prove no verdict was published.
+// countingEventBridge is a lambda.EventBridgeAPI double that records every
+// PutEvents call (its detail type and decoded detail), so a test can prove
+// what was published, or that nothing was. A set err fails every call.
 type countingEventBridge struct {
-	calls int
+	calls       int
+	detailTypes []string
+	details     []types.InterlockEvent
+	err         error
 }
 
-func (c *countingEventBridge) PutEvents(context.Context, *eventbridge.PutEventsInput, ...func(*eventbridge.Options)) (*eventbridge.PutEventsOutput, error) {
+func (c *countingEventBridge) PutEvents(_ context.Context, in *eventbridge.PutEventsInput, _ ...func(*eventbridge.Options)) (*eventbridge.PutEventsOutput, error) {
 	c.calls++
+	if c.err != nil {
+		return nil, c.err
+	}
+	for _, e := range in.Entries {
+		c.detailTypes = append(c.detailTypes, aws.ToString(e.DetailType))
+		var evt types.InterlockEvent
+		if err := json.Unmarshal([]byte(aws.ToString(e.Detail)), &evt); err != nil {
+			return nil, err
+		}
+		c.details = append(c.details, evt)
+	}
 	return &eventbridge.PutEventsOutput{}, nil
 }
 
 // deletingScheduler is a lambda.SchedulerAPI double that records the names
-// of the schedules DeleteSchedule was called for.
+// of the schedules DeleteSchedule was called for, then returns deleteErr.
 type deletingScheduler struct {
-	deleted []string
+	deleted   []string
+	deleteErr error
 }
 
 func (s *deletingScheduler) CreateSchedule(context.Context, *scheduler.CreateScheduleInput, ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error) {
@@ -45,6 +61,9 @@ func (s *deletingScheduler) CreateSchedule(context.Context, *scheduler.CreateSch
 
 func (s *deletingScheduler) DeleteSchedule(_ context.Context, in *scheduler.DeleteScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.DeleteScheduleOutput, error) {
 	s.deleted = append(s.deleted, aws.ToString(in.Name))
+	if s.deleteErr != nil {
+		return nil, s.deleteErr
+	}
 	return &scheduler.DeleteScheduleOutput{}, nil
 }
 
@@ -135,6 +154,7 @@ func TestSLACancel_AppliesDeadlineDayOffset(t *testing.T) {
 		wantErr       bool
 		wantAlertType string
 		wantBreachAt  string
+		wantPublished bool
 	}{
 		{
 			name:          "sensor offset 0 breached after same-day deadline",
@@ -143,6 +163,7 @@ func TestSLACancel_AppliesDeadlineDayOffset(t *testing.T) {
 			now:           time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
 			wantAlertType: string(types.EventSLABreach),
 			wantBreachAt:  "2026-03-10T10:00:00Z",
+			wantPublished: true,
 		},
 		{
 			name:          "sensor offset 1 met before next-day deadline",
@@ -151,6 +172,7 @@ func TestSLACancel_AppliesDeadlineDayOffset(t *testing.T) {
 			now:           time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
 			wantAlertType: string(types.EventSLAMet),
 			wantBreachAt:  "2026-03-11T10:00:00Z",
+			wantPublished: true,
 		},
 		{
 			name:          "cron pipeline breached, no roll-forward",
@@ -159,6 +181,7 @@ func TestSLACancel_AppliesDeadlineDayOffset(t *testing.T) {
 			now:           time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
 			wantAlertType: string(types.EventSLABreach),
 			wantBreachAt:  "2026-03-10T10:00:00Z",
+			wantPublished: true,
 		},
 		{
 			name:          "cron pipeline met, no roll-forward",
@@ -167,6 +190,7 @@ func TestSLACancel_AppliesDeadlineDayOffset(t *testing.T) {
 			now:           time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC),
 			wantAlertType: string(types.EventSLAMet),
 			wantBreachAt:  "2026-03-10T10:00:00Z",
+			wantPublished: true,
 		},
 		{
 			name:          "missing config uses the execution date",
@@ -174,6 +198,7 @@ func TestSLACancel_AppliesDeadlineDayOffset(t *testing.T) {
 			now:           time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
 			wantAlertType: string(types.EventSLABreach),
 			wantBreachAt:  "2026-03-10T10:00:00Z",
+			wantPublished: true,
 		},
 		{
 			name:       "config lookup failure returns an error so the step retries",
@@ -191,6 +216,8 @@ func TestSLACancel_AppliesDeadlineDayOffset(t *testing.T) {
 			d := testDeps(fake, tt.now)
 			sched := &deletingScheduler{}
 			d.Scheduler = sched
+			eb := &countingEventBridge{}
+			d.EventBridge, d.EventBusName = eb, "test-bus"
 
 			out, err := sla.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 				Mode:             "cancel",
@@ -206,6 +233,13 @@ func TestSLACancel_AppliesDeadlineDayOffset(t *testing.T) {
 			}
 			if !slices.Equal(sched.deleted, wantDeleted) {
 				t.Errorf("deleted schedules = %v, want %v", sched.deleted, wantDeleted)
+			}
+			var wantTypes []string
+			if tt.wantPublished {
+				wantTypes = []string{tt.wantAlertType}
+			}
+			if !slices.Equal(eb.detailTypes, wantTypes) {
+				t.Errorf("published %v, want %v", eb.detailTypes, wantTypes)
 			}
 			if tt.wantErr {
 				if err == nil {
@@ -256,5 +290,112 @@ func TestSLACancel_NoDeadlineSkipsVerdict(t *testing.T) {
 	}
 	if eb.calls != 0 {
 		t.Errorf("PutEvents called %d times, want 0 — no verdict should be published without a deadline", eb.calls)
+	}
+}
+
+// TestSLACancel_Verdict pins the verdict cancel publishes when a run ends:
+// SLA_MET before the breach time, SLA_BREACH at or after it, from the times
+// given or recalculated from the deadline, and none for a run that never
+// triggered. Both schedules are deleted first, whatever the deletes return.
+func TestSLACancel_Verdict(t *testing.T) {
+	t.Setenv("SKIP_SCHEDULER", "")
+	now := time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC)
+	met, breach := string(types.EventSLAMet), string(types.EventSLABreach)
+	type in = lambda.SLAMonitorInput
+	// verdict is the output for a run that ends at now.
+	verdict := func(alertType, warningAt, breachAt string) lambda.SLAMonitorOutput {
+		return lambda.SLAMonitorOutput{AlertType: alertType, WarningAt: warningAt, BreachAt: breachAt, FiredAt: "2026-03-10T11:00:00Z"}
+	}
+	metIn := in{WarningAt: "2026-03-10T11:45:00Z", BreachAt: "2026-03-10T11:59:00Z"}
+	metOut := verdict(met, "2026-03-10T11:45:00Z", "2026-03-10T11:59:00Z")
+
+	tests := []struct {
+		name        string
+		in          lambda.SLAMonitorInput
+		noScheduler bool
+		deleteErr   error
+		ebErr       error
+		neverRan    bool // an empty store with no trigger row
+		wantErr     string
+		want        lambda.SLAMonitorOutput
+		wantTypes   []string
+	}{
+		{name: "met", in: metIn, want: metOut, wantTypes: []string{met}},
+		{name: "past breach", in: in{BreachAt: "2026-03-10T10:00:00Z"}, want: verdict(breach, "", "2026-03-10T10:00:00Z"), wantTypes: []string{breach}},
+		{name: "at breach", in: in{BreachAt: "2026-03-10T11:00:00Z"}, want: verdict(breach, "", "2026-03-10T11:00:00Z"), wantTypes: []string{breach}},
+		{
+			name: "past warning, future breach", in: in{WarningAt: "2020-01-01T00:50:00Z", BreachAt: "2099-12-31T23:59:00Z"},
+			want: verdict(met, "2020-01-01T00:50:00Z", "2099-12-31T23:59:00Z"), wantTypes: []string{met},
+		},
+		{
+			name: "echoes the given times", in: in{WarningAt: "2099-01-01T00:00:00Z", BreachAt: "2099-01-01T01:00:00Z"},
+			want: verdict(met, "2099-01-01T00:00:00Z", "2099-01-01T01:00:00Z"), wantTypes: []string{met},
+		},
+		{name: "no scheduler", in: metIn, noScheduler: true, want: metOut, wantTypes: []string{met}},
+		{name: "delete error still publishes", in: metIn, deleteErr: errors.New("internal service error"), want: metOut, wantTypes: []string{met}},
+		{
+			name: "publish error", in: metIn, ebErr: errors.New("EventBridge unavailable"),
+			wantErr: "publish SLA cancel verdict: publish SLA_MET event: EventBridge unavailable",
+		},
+		{name: "recalculate error", in: in{Deadline: "not-a-time", ExpectedDuration: "30m"}, wantErr: "cancel recalculate: parse deadline"},
+		{
+			name: "relative recalculate", in: in{MaxDuration: "2h", SensorArrivalAt: "2026-03-10T08:00:00Z"},
+			want: verdict(breach, "2026-03-10T09:30:00Z", "2026-03-10T10:00:00Z"), wantTypes: []string{breach},
+		},
+		{name: "relative recalculate error", in: in{MaxDuration: "bogus", SensorArrivalAt: "2026-03-10T08:00:00Z"}, wantErr: "cancel recalculate (relative)"},
+		{
+			name: "never triggered", neverRan: true,
+			in:   in{PipelineID: "never-ran", Date: "2026-03-13", WarningAt: "2099-12-31T23:45:00Z", BreachAt: "2099-12-31T23:59:00Z"},
+			want: verdict(met, "2099-12-31T23:45:00Z", "2099-12-31T23:59:00Z"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newFakeDynamo(t, types.PipelineConfig{}, nil)
+			if tt.neverRan {
+				fake, _ = storetest.NewMem()
+			}
+			d := testDeps(fake, now)
+			sched := &deletingScheduler{deleteErr: tt.deleteErr}
+			if !tt.noScheduler {
+				d.Scheduler = sched
+			}
+			eb := &countingEventBridge{err: tt.ebErr}
+			d.EventBridge, d.EventBusName = eb, "test-bus"
+			input := tt.in
+			input.Mode, input.ScheduleID = "cancel", "stream"
+			if input.PipelineID == "" {
+				input.PipelineID, input.Date = "p", "2026-03-10"
+			}
+
+			out, err := sla.HandleSLAMonitor(context.Background(), d, input)
+
+			var wantDeleted []string
+			if !tt.noScheduler {
+				wantDeleted = []string{
+					lambda.SLAScheduleName(input.PipelineID, "stream", input.Date, "warning"),
+					lambda.SLAScheduleName(input.PipelineID, "stream", input.Date, "breach"),
+				}
+			}
+			if !slices.Equal(sched.deleted, wantDeleted) {
+				t.Errorf("deleted schedules = %v, want %v", sched.deleted, wantDeleted)
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("HandleSLAMonitor returned error: %v", err)
+			}
+			if out != tt.want {
+				t.Errorf("output = %+v, want %+v", out, tt.want)
+			}
+			if !slices.Equal(eb.detailTypes, tt.wantTypes) {
+				t.Errorf("published %v, want %v", eb.detailTypes, tt.wantTypes)
+			}
+		})
 	}
 }

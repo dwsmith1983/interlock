@@ -20,6 +20,7 @@ func TestCalculateAbsoluteDeadline(t *testing.T) {
 		wantBreach       time.Time
 		wantWarning      time.Time
 		wantErr          bool
+		errContains      string
 	}{
 		{
 			name:             "daily pipeline UTC",
@@ -150,6 +151,55 @@ func TestCalculateAbsoluteDeadline(t *testing.T) {
 				return time.Date(2026, 3, 8, 7, 30, 0, 0, loc)
 			}(),
 		},
+		{
+			name:             "midnight deadline puts the warning on the previous day",
+			date:             "2030-03-01",
+			deadline:         "00:30",
+			expectedDuration: "1h",
+			timezone:         "UTC",
+			now:              time.Date(2030, 3, 1, 6, 0, 0, 0, time.UTC),
+			wantBreach:       time.Date(2030, 3, 1, 0, 30, 0, 0, time.UTC),
+			wantWarning:      time.Date(2030, 2, 28, 23, 30, 0, 0, time.UTC),
+		},
+		{
+			name:             "hour 23 minute deadline rolls into the next day",
+			date:             "2026-03-03T23",
+			deadline:         ":30",
+			expectedDuration: "10m",
+			timezone:         "UTC",
+			now:              time.Date(2026, 3, 3, 23, 5, 0, 0, time.UTC),
+			wantBreach:       time.Date(2026, 3, 4, 0, 30, 0, 0, time.UTC),
+			wantWarning:      time.Date(2026, 3, 4, 0, 20, 0, 0, time.UTC),
+		},
+		{
+			name:             "time of day deadline on an hourly date",
+			date:             "2026-03-03T10",
+			deadline:         "11:00",
+			expectedDuration: "15m",
+			timezone:         "UTC",
+			now:              time.Date(2026, 3, 3, 10, 0, 0, 0, time.UTC),
+			wantBreach:       time.Date(2026, 3, 3, 11, 0, 0, 0, time.UTC),
+			wantWarning:      time.Date(2026, 3, 3, 10, 45, 0, 0, time.UTC),
+		},
+		{
+			name:             "minute deadline on a daily date takes the current hour",
+			date:             "2026-03-02",
+			deadline:         ":30",
+			expectedDuration: "10m",
+			timezone:         "UTC",
+			now:              time.Date(2026, 3, 2, 6, 0, 0, 0, time.UTC),
+			wantBreach:       time.Date(2026, 3, 2, 6, 30, 0, 0, time.UTC),
+			wantWarning:      time.Date(2026, 3, 2, 6, 20, 0, 0, time.UTC),
+		},
+		{
+			name:             "invalid minute deadline",
+			date:             "2030-01-01",
+			deadline:         ":XX",
+			expectedDuration: "30m",
+			timezone:         "UTC",
+			wantErr:          true,
+			errContains:      `parse deadline ":XX"`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -159,6 +209,9 @@ func TestCalculateAbsoluteDeadline(t *testing.T) {
 			)
 			if tt.wantErr {
 				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.ErrorContains(t, err, tt.errContains)
+				}
 				return
 			}
 			require.NoError(t, err)
