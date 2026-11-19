@@ -56,7 +56,7 @@ func handleCheckJob(ctx context.Context, d *lambda.Deps, input lambda.Orchestrat
 			d.Logger.Warn("failed to write polled job success joblog", "error", err, "pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date)
 		}
 		// JOB_COMPLETED is published by the stream-router when the JOB#
-		// record arrives via DynamoDB stream (handleJobSuccess). Publishing
+		// record arrives via DynamoDB stream (handleJobLogEvent). Publishing
 		// here as well would cause duplicate alerts for polled jobs.
 		return lambda.OrchestratorOutput{Mode: "check-job", Event: "success"}, nil
 	case "failed":

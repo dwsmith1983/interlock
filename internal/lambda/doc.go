@@ -1,5 +1,9 @@
-// Package lambda implements the core business logic for the six AWS Lambda
-// handlers that power the Interlock pipeline safety framework:
+// Package lambda holds the dependencies and helpers shared by the six AWS
+// Lambda handlers that power the Interlock pipeline safety framework. The
+// handlers live in the sub-packages stream, orchestrator, sla, watchdog, sink
+// and alert.
+//
+// The handlers:
 //
 //   - stream-router: processes DynamoDB stream events, evaluates trigger
 //     conditions, manages reruns, and detects post-run data drift
