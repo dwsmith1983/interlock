@@ -115,19 +115,6 @@ func BuildSFNInput(cfg *types.PipelineConfig, pipelineID, scheduleID, date, sens
 	}
 }
 
-// TruncateExecName ensures an SFN execution name does not exceed the 80-character
-// AWS limit. When truncation is needed the suffix (date + timestamp) is preserved
-// by trimming characters from the beginning of the name.
-//
-// Only the deprecated root handler copies call it. Live names need no
-// truncation: validation.MaxPipelineIDLen makes every one fit.
-func TruncateExecName(name string) string {
-	if len(name) <= SFNExecNameMaxLen {
-		return name
-	}
-	return name[len(name)-SFNExecNameMaxLen:]
-}
-
 // retrySuffixRE matches the -r<N> suffix of a failure retry's execution name.
 // First runs, reconciler runs and requested reruns end in -<unix seconds> or
 // -rerun<attempt>-<unix seconds>, so they never match.
