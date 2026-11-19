@@ -18,16 +18,6 @@ import (
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
-// Application metric names.
-const (
-	MetricRecordsProcessed    = "interlock.records.processed"
-	MetricStageDuration       = "interlock.stage.duration"
-	MetricRulesEvaluated      = "interlock.rules.evaluated"
-	MetricDLQRouted           = "interlock.dlq.routed"
-	MetricWorkerPoolActive    = "interlock.worker_pool.active"
-	MetricCircuitBreakerState = "interlock.circuit_breaker.state"
-)
-
 // Telemetry holds configured OpenTelemetry providers.
 type Telemetry struct {
 	tp trace.TracerProvider
@@ -102,14 +92,4 @@ func (t *Telemetry) Flush(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// Tracer returns a named tracer from the provider.
-func (t *Telemetry) Tracer(name string) trace.Tracer {
-	return t.tp.Tracer(name)
-}
-
-// Meter returns a named meter from the provider.
-func (t *Telemetry) Meter(name string) metric.Meter {
-	return t.mp.Meter(name)
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
-	"github.com/dwsmith1983/interlock/internal/telemetry"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -39,8 +38,7 @@ func isTTLExpiry(record events.DynamoDBEventRecord) bool {
 func HandleStreamEvent(ctx context.Context, d *lambda.Deps, event lambda.StreamEvent) (events.DynamoDBEventResponse, error) {
 	var resp events.DynamoDBEventResponse
 	for i := range event.Records {
-		recCtx := telemetry.WithCorrelationID(ctx, event.Records[i].EventID)
-		if err := handleRecord(recCtx, d, event.Records[i]); err != nil {
+		if err := handleRecord(ctx, d, event.Records[i]); err != nil {
 			d.Logger.Error("stream record error",
 				"error", err,
 				"eventID", event.Records[i].EventID,
