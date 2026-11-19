@@ -149,10 +149,3 @@ func (tc *TriggerConfig) TriggerHeaders() map[string]string {
 	}
 	return nil
 }
-
-// Calendar defines a named set of exclusion days and dates.
-type Calendar struct {
-	Name  string   `yaml:"name" json:"name"`
-	Days  []string `yaml:"days,omitempty" json:"days,omitempty"`   // "saturday", "sunday"
-	Dates []string `yaml:"dates,omitempty" json:"dates,omitempty"` // "2025-12-25"
-}

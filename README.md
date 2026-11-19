@@ -383,16 +383,11 @@ interlock/
 │   ├── client/              # Circuit breaker for external HTTP calls
 │   ├── resilience/          # Exponential backoff retry with jitter
 │   ├── store/               # DynamoDB storage layer (4 tables)
-│   ├── config/              # Pipeline YAML config loading
-│   ├── trigger/             # Trigger execution (8 types)
-│   └── calendar/            # Calendar exclusion registry
-├── deploy/
-│   ├── terraform/           # Reusable Terraform module
-│   ├── build.sh             # Lambda build script (linux/arm64)
-│   └── statemachine.asl.json # Step Functions ASL definition
-└── testdata/
-    ├── pipelines/           # Sample pipeline configs
-    └── calendars/           # Sample calendar exclusion files
+│   └── trigger/             # Trigger execution (8 types)
+└── deploy/
+    ├── terraform/           # Reusable Terraform module
+    ├── build.sh             # Lambda build script (linux/arm64)
+    └── statemachine.asl.json # Step Functions ASL definition
 ```
 
 ## Development

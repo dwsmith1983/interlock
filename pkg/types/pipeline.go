@@ -32,7 +32,6 @@ type ScheduleConfig struct {
 	Trigger    *TriggerCondition `yaml:"trigger,omitempty" json:"trigger,omitempty"`
 	Exclude    *ExclusionConfig  `yaml:"exclude,omitempty" json:"exclude,omitempty"`
 	Include    *InclusionConfig  `yaml:"include,omitempty" json:"include,omitempty"`
-	Calendar   string            `yaml:"calendar,omitempty" json:"calendar,omitempty"`
 	Time       string            `yaml:"time,omitempty" json:"time,omitempty"`
 	Evaluation EvaluationWindow  `yaml:"evaluation" json:"evaluation"`
 }

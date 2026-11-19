@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The sla-monitor Lambda no longer accepts the `schedule`, `reconcile` and `calculate` modes**, and rejects them as unknown. Nothing in the deployment sent them: the watchdog creates the SLA schedules and Scheduler invokes `fire-alert`.
 - **The worker pool, stage decorators, Lambda context middleware, health-check, profiler and stream batch handler packages added in 0.10.0 are gone.** They were never wired into a Lambda.
 - **The dead-letter queue and audit tracker packages added in 0.10.0 are gone.** Nothing imported them once the stream batch handler went, and `github.com/oklog/ulid/v2` left the dependencies with them.
+- **`schedule.calendar` is gone.** It was never read; list the dates in `exclude.dates`. A config that still sets it loads, and the key is ignored.
+- **The orchestrator no longer reads `STAGE_TIMEOUT`, `SHUTDOWN_BUFFER`, `WORKERS_PER_STAGE`, `DLQ_QUEUE_URL`, `DLQ_MAX_RETRIES`, `CB_TRIP_AFTER` or `CB_TIMEOUT`.** Nothing used them, and an invalid value no longer stops it at cold start.
 
 ### Fixed
 
