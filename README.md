@@ -384,15 +384,13 @@ interlock/
 │   ├── resilience/          # Exponential backoff retry with jitter
 │   ├── store/               # DynamoDB storage layer (4 tables)
 │   ├── config/              # Pipeline YAML config loading
-│   ├── trigger/             # Trigger execution (8 types)
-│   └── calendar/            # Calendar exclusion registry
+│   └── trigger/             # Trigger execution (8 types)
 ├── deploy/
 │   ├── terraform/           # Reusable Terraform module
 │   ├── build.sh             # Lambda build script (linux/arm64)
 │   └── statemachine.asl.json # Step Functions ASL definition
 └── testdata/
-    ├── pipelines/           # Sample pipeline configs
-    └── calendars/           # Sample calendar exclusion files
+    └── pipelines/           # Sample pipeline configs
 ```
 
 ## Development

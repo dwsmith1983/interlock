@@ -164,7 +164,6 @@ func TestPipelineConfig_Minimal(t *testing.T) {
 	assert.Empty(t, cfg.Schedule.Timezone)
 	assert.Nil(t, cfg.Schedule.Trigger)
 	assert.Nil(t, cfg.Schedule.Exclude)
-	assert.Empty(t, cfg.Schedule.Calendar)
 
 	assert.Equal(t, "15m", cfg.Schedule.Evaluation.Window)
 	assert.Equal(t, "1m", cfg.Schedule.Evaluation.Interval)
@@ -184,7 +183,6 @@ pipeline:
   id: monthly-report
   owner: finance
 schedule:
-  calendar: us-business-days
   time: "06:00"
   timezone: America/Chicago
   exclude:
@@ -221,14 +219,13 @@ job:
   maxRetries: 3
 `
 
-func TestPipelineConfig_CalendarSchedule(t *testing.T) {
+func TestPipelineConfig_ExclusionSchedule(t *testing.T) {
 	var cfg types.PipelineConfig
 	require.NoError(t, yaml.Unmarshal([]byte(calendarScheduleYAML), &cfg))
 
 	assert.Equal(t, "monthly-report", cfg.Pipeline.ID)
 	assert.Equal(t, "finance", cfg.Pipeline.Owner)
 
-	assert.Equal(t, "us-business-days", cfg.Schedule.Calendar)
 	assert.Equal(t, "06:00", cfg.Schedule.Time)
 	assert.Equal(t, "America/Chicago", cfg.Schedule.Timezone)
 	assert.Empty(t, cfg.Schedule.Cron)
@@ -274,7 +271,6 @@ func TestPipelineConfig_DeepCopy(t *testing.T) {
 		assert.Equal(t, cfg.Pipeline, cp.Pipeline)
 		assert.Equal(t, cfg.Schedule.Cron, cp.Schedule.Cron)
 		assert.Equal(t, cfg.Schedule.Timezone, cp.Schedule.Timezone)
-		assert.Equal(t, cfg.Schedule.Calendar, cp.Schedule.Calendar)
 		assert.Equal(t, cfg.Schedule.Time, cp.Schedule.Time)
 		assert.Equal(t, cfg.Schedule.Evaluation, cp.Schedule.Evaluation)
 
