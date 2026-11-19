@@ -25,9 +25,12 @@ jobs:
 
       # code is an exclude list on purpose: Go tests read non-Go files (the
       # ASL, Terraform and LocalStack deploy files), so anything that is not
-      # docs counts as code. With 'every', a file counts only when it matches
-      # '**' and none of the negated docs patterns. The quantifier applies to
-      # every filter; docs and deploy_scripts each have a single pattern, so
+      # docs counts as code. The GitHub config files below are left out too,
+      # since nothing in the Go build or tests reads them; ci.yml and
+      # e2e-nightly.yml stay as code, so a change to how CI runs the suite
+      # still runs it. With 'every', a file counts only when it matches '**'
+      # and none of the negated patterns. The quantifier applies to every
+      # filter; docs and deploy_scripts each have a single pattern, so
       # 'every' means any file under that directory.
       - uses: dorny/paths-filter@v3
         id: filter
@@ -39,6 +42,11 @@ jobs:
               - '!docs/**'
               - '!**/*.md'
               - '!LICENSE'
+              - '!.github/labeler.yml'
+              - '!.github/labels.json'
+              - '!.github/CODEOWNERS'
+              - '!.github/workflows/labeler.yml'
+              - '!.github/workflows/docs.yml'
             docs:
               - 'docs/**'
             deploy_scripts:
