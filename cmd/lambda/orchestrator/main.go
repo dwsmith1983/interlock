@@ -15,7 +15,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
-	"github.com/dwsmith1983/interlock/internal/config"
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/orchestrator"
 	"github.com/dwsmith1983/interlock/internal/store"
@@ -64,12 +63,6 @@ func main() {
 	}
 	cache := store.NewConfigCache(s, 5*time.Minute)
 	cache.Logger = logger
-
-	// Validate hardening config at cold start (result unused; circuit breaker lives in trigger).
-	if _, err = config.LoadHardening(); err != nil {
-		logger.Error("failed to load hardening config", "error", err)
-		os.Exit(1)
-	}
 
 	tel, telShutdown, err := telemetry.NewTelemetry(context.Background(), "interlock-orchestrator")
 	if err != nil {
