@@ -146,3 +146,33 @@ func TestResolveScheduleID(t *testing.T) {
 	assert.Equal(t, "stream", ResolveScheduleID(stream))
 	assert.Equal(t, "cron", ResolveScheduleID(&types.PipelineConfig{Schedule: types.ScheduleConfig{Cron: "0 8 * * *"}}))
 }
+
+func TestResolveTriggerLockTTL_Default(t *testing.T) {
+	t.Setenv("SFN_TIMEOUT_SECONDS", "")
+	got := ResolveTriggerLockTTL()
+	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
+}
+
+func TestResolveTriggerLockTTL_FromEnv(t *testing.T) {
+	t.Setenv("SFN_TIMEOUT_SECONDS", "14400")
+	got := ResolveTriggerLockTTL()
+	assert.Equal(t, 14400*time.Second+30*time.Minute, got)
+}
+
+func TestResolveTriggerLockTTL_InvalidEnv(t *testing.T) {
+	t.Setenv("SFN_TIMEOUT_SECONDS", "not-a-number")
+	got := ResolveTriggerLockTTL()
+	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
+}
+
+func TestResolveTriggerLockTTL_ZeroFallsBackToDefault(t *testing.T) {
+	t.Setenv("SFN_TIMEOUT_SECONDS", "0")
+	got := ResolveTriggerLockTTL()
+	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
+}
+
+func TestResolveTriggerLockTTL_NegativeFallsBackToDefault(t *testing.T) {
+	t.Setenv("SFN_TIMEOUT_SECONDS", "-100")
+	got := ResolveTriggerLockTTL()
+	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
+}

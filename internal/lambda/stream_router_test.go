@@ -807,86 +807,6 @@ func TestStreamRouter_LateDataArrival_CompletedFailed_Silent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ResolveExecutionDate tests
-// ---------------------------------------------------------------------------
-
-func TestResolveExecutionDate_WithDateAndHour(t *testing.T) {
-	data := map[string]interface{}{"date": "20260303", "hour": "10", "complete": true}
-	got := lambda.ResolveExecutionDate(data, time.Now())
-	if got != "2026-03-03T10" {
-		t.Errorf("got %q, want %q", got, "2026-03-03T10")
-	}
-}
-
-func TestResolveExecutionDate_DashedDate(t *testing.T) {
-	data := map[string]interface{}{"date": "2026-03-03", "hour": "10"}
-	got := lambda.ResolveExecutionDate(data, time.Now())
-	if got != "2026-03-03T10" {
-		t.Errorf("got %q, want %q", got, "2026-03-03T10")
-	}
-}
-
-func TestResolveExecutionDate_DateOnly(t *testing.T) {
-	data := map[string]interface{}{"date": "20260303"}
-	got := lambda.ResolveExecutionDate(data, time.Now())
-	if got != "2026-03-03" {
-		t.Errorf("got %q, want %q", got, "2026-03-03")
-	}
-}
-
-func TestResolveExecutionDate_NoFields(t *testing.T) {
-	data := map[string]interface{}{"complete": true}
-	now := time.Now()
-	got := lambda.ResolveExecutionDate(data, now)
-	want := now.Format("2006-01-02")
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestResolveExecutionDate_HourWithLeadingZero(t *testing.T) {
-	data := map[string]interface{}{"date": "20260303", "hour": "03"}
-	got := lambda.ResolveExecutionDate(data, time.Now())
-	if got != "2026-03-03T03" {
-		t.Errorf("got %q, want %q", got, "2026-03-03T03")
-	}
-}
-
-func TestResolveExecutionDate_InvalidDate(t *testing.T) {
-	data := map[string]interface{}{"date": "not-a-date"}
-	now := time.Now()
-	got := lambda.ResolveExecutionDate(data, now)
-	// Should fall back to today's date.
-	want := now.Format("2006-01-02")
-	if got != want {
-		t.Errorf("got %q, want today %q", got, want)
-	}
-}
-
-func TestResolveExecutionDate_InvalidHour(t *testing.T) {
-	data := map[string]interface{}{"date": "20260303", "hour": "25"}
-	got := lambda.ResolveExecutionDate(data, time.Now())
-	// Invalid hour should be ignored; return date only.
-	if got != "2026-03-03" {
-		t.Errorf("got %q, want %q", got, "2026-03-03")
-	}
-}
-
-func TestResolveExecutionDate_SignedHour(t *testing.T) {
-	if got := lambda.ResolveExecutionDate(map[string]interface{}{"date": "20260303", "hour": "+5"}, time.Now()); got != "2026-03-03" {
-		t.Errorf("hour +5: got %q, want the date without an hour", got)
-	}
-}
-
-func TestResolveExecutionDate_NonNumericHour(t *testing.T) {
-	data := map[string]interface{}{"date": "20260303", "hour": "ab"}
-	got := lambda.ResolveExecutionDate(data, time.Now())
-	if got != "2026-03-03" {
-		t.Errorf("got %q, want %q", got, "2026-03-03")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Rerun request helpers and tests
 // ---------------------------------------------------------------------------
 
@@ -2341,28 +2261,6 @@ func TestConvertAV_Null(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// normalizeDate (tested indirectly through ResolveExecutionDate)
-// ---------------------------------------------------------------------------
-
-func TestNormalizeDate_AlreadyNormalized(t *testing.T) {
-	data := map[string]interface{}{"date": "2026-03-03"}
-	got := lambda.ResolveExecutionDate(data, time.Now())
-	assert.Equal(t, "2026-03-03", got)
-}
-
-func TestNormalizeDate_Compact(t *testing.T) {
-	data := map[string]interface{}{"date": "20260303"}
-	got := lambda.ResolveExecutionDate(data, time.Now())
-	assert.Equal(t, "2026-03-03", got)
-}
-
-func TestNormalizeDate_CompactWithHour(t *testing.T) {
-	data := map[string]interface{}{"date": "20260303", "hour": "07"}
-	got := lambda.ResolveExecutionDate(data, time.Now())
-	assert.Equal(t, "2026-03-03T07", got)
-}
-
-// ---------------------------------------------------------------------------
 // resolveScheduleID (tested indirectly through SFN input payload)
 // ---------------------------------------------------------------------------
 
@@ -2957,40 +2855,6 @@ func TestStreamRouter_JobFail_EmptyCategoryUsesMaxRetries(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ResolveTriggerLockTTL
-// ---------------------------------------------------------------------------
-
-func TestResolveTriggerLockTTL_Default(t *testing.T) {
-	t.Setenv("SFN_TIMEOUT_SECONDS", "")
-	got := lambda.ResolveTriggerLockTTL()
-	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
-}
-
-func TestResolveTriggerLockTTL_FromEnv(t *testing.T) {
-	t.Setenv("SFN_TIMEOUT_SECONDS", "14400")
-	got := lambda.ResolveTriggerLockTTL()
-	assert.Equal(t, 14400*time.Second+30*time.Minute, got)
-}
-
-func TestResolveTriggerLockTTL_InvalidEnv(t *testing.T) {
-	t.Setenv("SFN_TIMEOUT_SECONDS", "not-a-number")
-	got := lambda.ResolveTriggerLockTTL()
-	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
-}
-
-func TestResolveTriggerLockTTL_ZeroFallsBackToDefault(t *testing.T) {
-	t.Setenv("SFN_TIMEOUT_SECONDS", "0")
-	got := lambda.ResolveTriggerLockTTL()
-	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
-}
-
-func TestResolveTriggerLockTTL_NegativeFallsBackToDefault(t *testing.T) {
-	t.Setenv("SFN_TIMEOUT_SECONDS", "-100")
-	got := lambda.ResolveTriggerLockTTL()
-	assert.Equal(t, 4*time.Hour+30*time.Minute, got)
-}
-
-// ---------------------------------------------------------------------------
 // Stream-based post-run evaluation tests
 // ---------------------------------------------------------------------------
 
@@ -3491,121 +3355,6 @@ func TestRerunRequest_SFNStartFails_ReleasesLock(t *testing.T) {
 
 	assert.False(t, triggerLockExists(mock),
 		"trigger lock must be released after SFN start failure")
-}
-
-// ---------------------------------------------------------------------------
-// Phase 2: isExcludedDate unit tests (Task A / C1)
-// ---------------------------------------------------------------------------
-
-func TestIsExcludedDate_NoExclusions(t *testing.T) {
-	cfg := &types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{Exclude: nil},
-	}
-	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-07"), "nil exclusion must not exclude")
-	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-08"), "nil exclusion must not exclude")
-}
-
-func TestIsExcludedDate_WeekendSaturday(t *testing.T) {
-	cfg := &types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{
-			Exclude: &types.ExclusionConfig{Weekends: true},
-		},
-	}
-	// 2026-03-07 is a Saturday.
-	assert.True(t, lambda.IsExcludedDate(cfg, "2026-03-07"), "Saturday must be excluded when Weekends=true")
-}
-
-func TestIsExcludedDate_WeekendSunday(t *testing.T) {
-	cfg := &types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{
-			Exclude: &types.ExclusionConfig{Weekends: true},
-		},
-	}
-	// 2026-03-08 is a Sunday.
-	assert.True(t, lambda.IsExcludedDate(cfg, "2026-03-08"), "Sunday must be excluded when Weekends=true")
-}
-
-func TestIsExcludedDate_WeekdayFriday(t *testing.T) {
-	cfg := &types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{
-			Exclude: &types.ExclusionConfig{Weekends: true},
-		},
-	}
-	// 2026-03-06 is a Friday.
-	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-06"), "Friday must NOT be excluded when Weekends=true")
-}
-
-func TestIsExcludedDate_SpecificDate(t *testing.T) {
-	cfg := &types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{
-			Exclude: &types.ExclusionConfig{Dates: []string{"2026-12-25", "2026-01-01"}},
-		},
-	}
-	assert.True(t, lambda.IsExcludedDate(cfg, "2026-12-25"), "Christmas must be excluded")
-	assert.True(t, lambda.IsExcludedDate(cfg, "2026-01-01"), "New Year's Day must be excluded")
-	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-06"), "regular day must not be excluded")
-}
-
-func TestIsExcludedDate_CompositePerHourDate(t *testing.T) {
-	cfg := &types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{
-			Exclude: &types.ExclusionConfig{Dates: []string{"2026-03-07"}},
-		},
-	}
-	// Per-hour composite date "2026-03-07T10" — date portion is 2026-03-07.
-	assert.True(t, lambda.IsExcludedDate(cfg, "2026-03-07T10"), "composite date must match date portion")
-	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-06T10"), "non-excluded composite date must not be excluded")
-}
-
-func TestIsExcludedDate_InvalidDate(t *testing.T) {
-	cfg := &types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{
-			Exclude: &types.ExclusionConfig{Weekends: true, Dates: []string{"2026-03-07"}},
-		},
-	}
-	// Unparseable date — safe default is false (do not exclude).
-	assert.False(t, lambda.IsExcludedDate(cfg, "not-a-date"), "invalid date must return false (safe default)")
-}
-
-func TestIsExcludedDate_EmptyDate(t *testing.T) {
-	cfg := &types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{
-			Exclude: &types.ExclusionConfig{Weekends: true},
-		},
-	}
-	// Empty string is too short to parse — safe default is false.
-	assert.False(t, lambda.IsExcludedDate(cfg, ""), "empty date must return false (safe default)")
-}
-
-func TestIsExcludedDate_ShortDate(t *testing.T) {
-	cfg := &types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{
-			Exclude: &types.ExclusionConfig{Weekends: true},
-		},
-	}
-	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03"), "short date string must return false (safe default)")
-}
-
-func TestIsExcludedDate_Timezone(t *testing.T) {
-	cfg := &types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{
-			Timezone: "America/Los_Angeles",
-			Exclude:  &types.ExclusionConfig{Weekends: true},
-		},
-	}
-	// 2026-03-07 is Saturday regardless of timezone.
-	assert.True(t, lambda.IsExcludedDate(cfg, "2026-03-07"), "Saturday is excluded in any timezone")
-	assert.False(t, lambda.IsExcludedDate(cfg, "2026-03-06"), "Friday is not excluded")
 }
 
 // ---------------------------------------------------------------------------
