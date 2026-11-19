@@ -1,6 +1,7 @@
 package orchestrator_test
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -43,6 +44,30 @@ func cutoffDeps(t *testing.T, cfg types.PipelineConfig, now *time.Time) (*lambda
 	return d, mem, rec
 }
 
+// failTablePut makes every PutItem on table fail with err.
+func failTablePut(d *lambda.Deps, table string, err error) {
+	fake := d.Store.Client.(*storetest.FakeDynamo)
+	put := fake.PutItemFn
+	fake.PutItemFn = func(ctx context.Context, in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+		if *in.TableName == table {
+			return nil, err
+		}
+		return put(ctx, in)
+	}
+}
+
+// failTableQuery makes every Query on table fail with err.
+func failTableQuery(d *lambda.Deps, table string, err error) {
+	fake := d.Store.Client.(*storetest.FakeDynamo)
+	query := fake.QueryFn
+	fake.QueryFn = func(ctx context.Context, in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if *in.TableName == table {
+			return nil, err
+		}
+		return query(ctx, in)
+	}
+}
+
 // failRerunQuery makes every Query on the rerun table fail.
 func failRerunQuery(d *lambda.Deps) {
 	fake := d.Store.Client.(*storetest.FakeDynamo)
@@ -76,11 +101,18 @@ func TestEvaluate_Cutoff(t *testing.T) {
 		name      string
 		tweak     func(*types.PipelineConfig)
 		noSensor  bool
+		sensorKey string // "" for upstream
+		date      string // "" for cutoffDate
 		rerun     bool
 		failQuery bool
 		calls     []call
 	}{
 		{name: "OneMinuteBeforeReady", calls: []call{{at(0, 13, 59), "passed", passed}}},
+		{name: "BeforeCutoffNotReady", noSensor: true, calls: []call{{at(0, 13, 59), "not_ready", nil}}},
+		{name: "PerPeriodHourlyKey", date: "2026-03-10T07", sensorKey: "upstream#20260310T07",
+			calls: []call{{at(0, 13, 59), "passed", passed}}},
+		{name: "PerPeriodDailyKey", date: "2026-03-10", sensorKey: "upstream#20260310",
+			calls: []call{{at(0, 13, 59), "passed", passed}}},
 		{name: "AtCutoffReady", calls: []call{{at(0, 14, 0), "cutoff", nil}}},
 		{name: "AfterCutoffNotReady", noSensor: true, calls: []call{{at(0, 14, 30), "cutoff", nil}}},
 		{name: "AfterCutoffRerun", rerun: true, calls: []call{{at(0, 14, 30), "passed", passed}}},
@@ -102,7 +134,7 @@ func TestEvaluate_Cutoff(t *testing.T) {
 			now := tt.calls[0].now
 			d, mem, rec := cutoffDeps(t, cfg, &now)
 			if !tt.noSensor {
-				if err := d.Store.WriteSensor(ctx, "p", "upstream", map[string]interface{}{"status": "ok"}); err != nil {
+				if err := d.Store.WriteSensor(ctx, "p", cmp.Or(tt.sensorKey, "upstream"), map[string]interface{}{"status": "ok"}); err != nil {
 					t.Fatalf("write sensor: %v", err)
 				}
 			}
@@ -119,7 +151,7 @@ func TestEvaluate_Cutoff(t *testing.T) {
 			for i, c := range tt.calls {
 				now = c.now
 				out, err := orchestrator.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
-					Mode: "evaluate", PipelineID: "p", ScheduleID: "s", Date: cutoffDate,
+					Mode: "evaluate", PipelineID: "p", ScheduleID: "s", Date: cmp.Or(tt.date, cutoffDate),
 				})
 				if err != nil {
 					t.Fatalf("call %d: evaluate must not return a Lambda error, got %v", i, err)

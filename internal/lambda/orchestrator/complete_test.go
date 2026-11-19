@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -247,6 +248,13 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 			wantOps: []string{toFinal}, wantTrigger: final,
 		},
 		{
+			// The pipeline ID in the stored config does not match, so the
+			// cache finds no valid config for p.
+			name: "InvalidConfigIsFinal", maxRetries: 2, tweak: func(c *types.PipelineConfig) { c.Pipeline.ID = "other" },
+			calls:   []ctCall{failCall(ctExec, final, "")},
+			wantOps: []string{toFinal}, wantTrigger: final,
+		},
+		{
 			name: "LockRowGoneIsRecreated", maxRetries: 1, row: "none",
 			calls:   []ctCall{failCall(ctExec, retrying, r1)},
 			wantOps: []string{"rerun " + r1, "start " + r1, "status " + running}, wantTrigger: running, wantTTL: true, wantReruns: []string{r1},
@@ -375,5 +383,99 @@ func TestCompleteTrigger_SuccessStampsCompletedAt(t *testing.T) {
 	}
 	if !slices.Contains(rec.ops, "status "+types.TriggerStatusCompleted) {
 		t.Errorf("ops %q, want them to hold %q", rec.ops, "status "+types.TriggerStatusCompleted)
+	}
+}
+
+// TestCompleteTrigger_SuccessStatusWriteFails: without COMPLETED the run is
+// not done, so the failed write is a Lambda error and nothing is published.
+func TestCompleteTrigger_SuccessStatusWriteFails(t *testing.T) {
+	d, mem, rec := memDeps(t, failCfg(0))
+	mem.Put("control", strItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("s", ctDate), "status", types.TriggerStatusRunning))
+	d.Store.Client.(*storetest.FakeDynamo).UpdateItemFn = func(context.Context, *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+		return nil, errors.New("dynamodb: throttled")
+	}
+	_, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode: "complete-trigger", PipelineID: "p", ScheduleID: "s", Date: ctDate, Event: types.JobEventSuccess,
+	})
+	if err == nil || !strings.Contains(err.Error(), "set trigger status") {
+		t.Errorf("err = %v, want the status write error", err)
+	}
+	if len(rec.events) != 0 || len(rec.ops) != 0 {
+		t.Errorf("events %v ops %v, want none", rec.events, rec.ops)
+	}
+}
+
+// TestCompleteTrigger_PostRunBaseline: a success with post-run rules stores
+// the rule sensors' data (per-period keys under their base key) as the
+// date's baseline. A failure, or a pipeline without post-run rules, stores
+// none; a failed capture is published but does not fail the run.
+func TestCompleteTrigger_PostRunBaseline(t *testing.T) {
+	const date = "2026-03-08T06"
+	captured := map[string]interface{}{"audit-result": map[string]interface{}{"sensor_count": 150.0}}
+	sensors := map[string]map[string]interface{}{"audit-result": {"sensor_count": 150}, "other": {"x": 1}}
+	tests := []struct {
+		name         string
+		sensors      map[string]map[string]interface{}
+		event        string
+		noPostRun    bool
+		failSensors  bool
+		wantStatus   string
+		wantBaseline map[string]interface{}
+		wantEvents   []string
+		wantOps      []string
+	}{
+		{name: "captures", sensors: sensors, wantStatus: types.TriggerStatusCompleted, wantBaseline: captured,
+			wantEvents: []string{string(types.EventPostRunBaselineCaptured)},
+			wantOps:    []string{"status " + types.TriggerStatusCompleted, "event " + string(types.EventPostRunBaselineCaptured)}},
+		{name: "perPeriodRemap", sensors: map[string]map[string]interface{}{"audit-result#20260308T06": {"sensor_count": 42}},
+			wantStatus: types.TriggerStatusCompleted, wantBaseline: map[string]interface{}{"audit-result": map[string]interface{}{"sensor_count": 42.0}},
+			wantEvents: []string{string(types.EventPostRunBaselineCaptured)}},
+		{name: "failNoBaseline", sensors: sensors, event: types.JobEventFail, wantStatus: types.TriggerStatusFailedFinal,
+			wantEvents: []string{string(types.EventRetryExhausted)}},
+		// Failing sensor reads prove none is made without post-run rules.
+		{name: "noPostRun", sensors: sensors, noPostRun: true, failSensors: true, wantStatus: types.TriggerStatusCompleted},
+		{name: "sensorReadFails", failSensors: true, wantStatus: types.TriggerStatusCompleted,
+			wantEvents: []string{string(types.EventBaselineCaptureFailed)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			cfg := failCfg(0)
+			if !tt.noPostRun {
+				cfg.PostRun = &types.PostRunConfig{Rules: []types.ValidationRule{
+					{Key: "audit-result", Check: types.CheckGTE, Field: "sensor_count", Value: 100}}}
+			}
+			d, mem, rec := memDeps(t, cfg)
+			mem.Put("control", strItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("s", date), "status", types.TriggerStatusRunning))
+			for key, data := range tt.sensors {
+				if err := d.Store.WriteSensor(ctx, "p", key, data); err != nil {
+					t.Fatalf("write sensor %s: %v", key, err)
+				}
+			}
+			if tt.failSensors {
+				failTableQuery(d, "control", errors.New("dynamodb: throttled"))
+			}
+			rec.ops = nil
+
+			out, err := orchestrator.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
+				Mode: "complete-trigger", PipelineID: "p", ScheduleID: "s", Date: date, Event: cmp.Or(tt.event, types.JobEventSuccess),
+			})
+			if err != nil || out.Status != tt.wantStatus {
+				t.Fatalf("complete-trigger = %+v, %v, want status %q", out, err, tt.wantStatus)
+			}
+			baseline, err := d.Store.GetSensorData(ctx, "p", "postrun-baseline#"+date)
+			if err != nil {
+				t.Fatalf("read baseline: %v", err)
+			}
+			if !reflect.DeepEqual(baseline, tt.wantBaseline) {
+				t.Errorf("baseline = %v, want %v", baseline, tt.wantBaseline)
+			}
+			if got := eventList(rec); !slices.Equal(got, tt.wantEvents) {
+				t.Errorf("events = %v, want %v", got, tt.wantEvents)
+			}
+			if tt.wantOps != nil && !slices.Equal(rec.ops, tt.wantOps) {
+				t.Errorf("ops = %v, want %v", rec.ops, tt.wantOps)
+			}
+		})
 	}
 }

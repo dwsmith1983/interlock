@@ -141,9 +141,8 @@ func BuildTriggerConfig(job types.JobConfig) (types.TriggerConfig, error) {
 }
 
 // ExtractRunID searches trigger metadata for a recognisable run identifier.
-// The key list lives in the parent lambda package and is shared with the
-// deprecated root orchestrator, but the rest of that root copy is not kept in
-// step with this package.
+// It wraps lambda.ExtractRunID, whose runIDMetadataKeys is the single list of
+// run ID keys.
 func ExtractRunID(metadata map[string]interface{}) string {
 	return lambda.ExtractRunID(metadata)
 }

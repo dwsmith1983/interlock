@@ -312,6 +312,9 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 			if out.RunID != tt.wantRunID {
 				t.Errorf("runID = %q, want %q", out.RunID, tt.wantRunID)
 			}
+			if out.JobType != string(tt.job.Type) {
+				t.Errorf("jobType = %q, want %q", out.JobType, tt.job.Type)
+			}
 			data, err := json.Marshal(out)
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
@@ -342,6 +345,10 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 			case types.TriggerAirflow:
 				if exec.got.Airflow.Run != wantRun {
 					t.Errorf("Airflow.Run = %+v, want %+v", exec.got.Airflow.Run, wantRun)
+				}
+			case types.TriggerGlue:
+				if exec.got.Glue == nil || exec.got.Glue.JobName != "my-etl" {
+					t.Errorf("Glue = %+v, want job name my-etl", exec.got.Glue)
 				}
 			}
 			if tt.job.Type == types.TriggerHTTP {
@@ -390,6 +397,35 @@ func TestTrigger_InfraFailureRowCarriesRunID(t *testing.T) {
 	if len(jobRows) != 1 || strAttr(t, jobRows[0], "event") != types.JobEventInfraTriggerFailure ||
 		strAttr(t, jobRows[0], "runId") != "exec-1" {
 		t.Errorf("job log rows = %v, want one infra-trigger-failure row with runId exec-1", jobRows)
+	}
+}
+
+// TestTrigger_InfraFailureRowWriteFails: a failed audit row write does not
+// hide the launch failure, which is still the Lambda error.
+func TestTrigger_InfraFailureRowWriteFails(t *testing.T) {
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Job:      types.JobConfig{Type: types.TriggerGlue, Config: map[string]interface{}{"jobName": "gold-etl"}},
+	}
+	fake := &storetest.FakeDynamo{
+		GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(t, cfg)}, nil
+		},
+		PutItemFn: func(context.Context, *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+			return nil, errors.New("dynamodb: provisioned throughput exceeded")
+		},
+	}
+	d := testDeps(fake)
+	d.TriggerRunner = &fakeExecutor{err: errors.New("glue trigger: ConcurrentRunsExceededException")}
+
+	out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01", ExecutionName: "exec-1",
+	})
+	if err == nil || err.Error() != "trigger execute: glue trigger: ConcurrentRunsExceededException" {
+		t.Errorf("err = %v, want the launch error", err)
+	}
+	if out.Mode != "" || out.RunID != "" || out.JobType != "" || out.Metadata != nil {
+		t.Errorf("output = %+v, want the zero value", out)
 	}
 }
 

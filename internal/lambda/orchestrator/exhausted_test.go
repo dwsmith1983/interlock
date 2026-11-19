@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,10 +25,14 @@ import (
 // publishes JOB_FAILED from the row, so this handler publishes nothing.
 func TestJobPollExhausted_TimeoutRowCarriesRunID(t *testing.T) {
 	d, mem, rec := memDeps(t, failCfg(1))
-	if _, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+	out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
 		Mode: "job-poll-exhausted", PipelineID: "p", ScheduleID: "s", Date: ctDate, RunID: "run-1",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("job-poll-exhausted: %v", err)
+	}
+	if out.Mode != "job-poll-exhausted" || out.Status != "exhausted" {
+		t.Errorf("output = %+v, want mode job-poll-exhausted and status exhausted", out)
 	}
 	rows := mem.Items("joblog")
 	if len(rows) != 1 {
@@ -38,6 +43,117 @@ func TestJobPollExhausted_TimeoutRowCarriesRunID(t *testing.T) {
 	}
 	if len(rec.events) != 0 {
 		t.Errorf("events = %+v, want none", rec.events)
+	}
+}
+
+// TestJobPollExhausted_WriteErrorIsLambdaError: without the timeout row the
+// stream-router cannot alert, so the failed write fails the state.
+func TestJobPollExhausted_WriteErrorIsLambdaError(t *testing.T) {
+	d, _, rec := memDeps(t, failCfg(1))
+	failTablePut(d, "joblog", errors.New("dynamodb: throttled"))
+	_, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode: "job-poll-exhausted", PipelineID: "p", ScheduleID: "s", Date: ctDate, RunID: "jr_xyz",
+	})
+	if err == nil || !strings.Contains(err.Error(), "write job poll timeout joblog") {
+		t.Errorf("err = %v, want the joblog write error", err)
+	}
+	if len(rec.events) != 0 {
+		t.Errorf("events = %+v, want none", rec.events)
+	}
+}
+
+// TestTriggerExhausted: spent trigger retries leave an infra-trigger-exhausted
+// joblog row carrying the last error, then RETRY_EXHAUSTED, then the trigger
+// row is deleted so the date can start again. A failed row write fails the
+// state before anything else happens.
+func TestTriggerExhausted(t *testing.T) {
+	cause := "ConcurrentRunsExceededException: Concurrent runs exceeded."
+	wantOps := []string{"event " + string(types.EventRetryExhausted), "release"}
+	exhaustedRow := [2]string{types.JobEventInfraTriggerExhausted, ""}
+	tests := []struct {
+		name         string
+		errorInfo    map[string]interface{}
+		putErr       error
+		triggerFirst bool // a trigger call fails to launch first; its error is the Cause
+		wantErrSub   string
+		wantJoblog   [][2]string // event, runId
+		wantError    string      // the exhausted row's error; "" for no attribute
+		wantOps      []string
+		wantRow      string
+	}{
+		{name: "withCause", errorInfo: map[string]interface{}{"Error": "States.TaskFailed", "Cause": cause},
+			wantJoblog: [][2]string{exhaustedRow}, wantError: cause, wantOps: wantOps},
+		{name: "noErrorInfo", wantJoblog: [][2]string{exhaustedRow}, wantOps: wantOps},
+		{name: "joblogWriteFails", errorInfo: map[string]interface{}{"Cause": cause},
+			putErr: errors.New("dynamodb: write capacity exceeded"), wantErrSub: "write trigger-exhausted joblog",
+			wantRow: types.TriggerStatusRunning},
+		{name: "afterTriggerInfraFailure", triggerFirst: true,
+			wantJoblog: [][2]string{{types.JobEventInfraTriggerFailure, ctExec}, exhaustedRow},
+			wantError:  "trigger execute: connection refused", wantOps: wantOps},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, mem, rec := memDeps(t, failCfg(1))
+			now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+			d.NowFunc = func() time.Time { return now }
+			d.Store.Now = d.NowFunc // joblog rows written at different times get different keys
+			if ok, err := d.Store.AcquireTriggerLock(ctx, "p", "s", ctDate, time.Hour); err != nil || !ok {
+				t.Fatalf("acquire trigger lock = %v, %v", ok, err)
+			}
+			rec.ops = nil
+			if tt.putErr != nil {
+				failTablePut(d, "joblog", tt.putErr)
+			}
+			errorInfo := tt.errorInfo
+			if tt.triggerFirst {
+				d.TriggerRunner = &fakeExecutor{err: errors.New("connection refused")}
+				_, err := orchestrator.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
+					Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: ctDate, ExecutionName: ctExec,
+				})
+				if err == nil || err.Error() != "trigger execute: connection refused" {
+					t.Fatalf("trigger err = %v, want the launch error", err)
+				}
+				errorInfo = map[string]interface{}{"Error": "States.TaskFailed", "Cause": err.Error()}
+				now = now.Add(time.Minute)
+			}
+
+			out, err := orchestrator.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
+				Mode: "trigger-exhausted", PipelineID: "p", ScheduleID: "s", Date: ctDate, ErrorInfo: errorInfo,
+			})
+			if tt.wantErrSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrSub) {
+					t.Errorf("err = %v, want it to contain %q", err, tt.wantErrSub)
+				}
+			} else if err != nil || out.Mode != "trigger-exhausted" || out.Status != "exhausted" {
+				t.Errorf("trigger-exhausted = %+v, %v, want mode trigger-exhausted and status exhausted", out, err)
+			}
+
+			rows := mem.Items("joblog")
+			var joblog [][2]string
+			for _, row := range rows {
+				joblog = append(joblog, [2]string{strAttr(t, row, "event"), strAttr(t, row, "runId")})
+			}
+			if !reflect.DeepEqual(joblog, tt.wantJoblog) {
+				t.Errorf("joblog event/runId = %q, want %q", joblog, tt.wantJoblog)
+			}
+			if len(rows) > 0 {
+				last := rows[len(rows)-1]
+				if _, has := last["runId"]; has {
+					t.Errorf("exhausted row %v, want no runId", last)
+				}
+				if _, has := last["error"]; has != (tt.wantError != "") || strAttr(t, last, "error") != tt.wantError {
+					t.Errorf("exhausted row %v, want error %q", last, tt.wantError)
+				}
+			}
+			if !slices.Equal(rec.ops, tt.wantOps) {
+				t.Errorf("ops = %v, want %v", rec.ops, tt.wantOps)
+			}
+			row := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", ctDate))
+			if got := strAttr(t, row, "status"); got != tt.wantRow {
+				t.Errorf("trigger row status = %q, want %q", got, tt.wantRow)
+			}
+		})
 	}
 }
 
@@ -62,6 +178,7 @@ func TestValidationExhausted(t *testing.T) {
 		now        time.Time
 		putErr     error
 		wantErr    bool
+		wantErrSub string
 		wantStatus string
 		wantRow    string // trigger row status after the call, "" for none; a RUNNING row keeps its ttl, a FAILED_FINAL one has none
 	}
@@ -81,6 +198,7 @@ func TestValidationExhausted(t *testing.T) {
 		failConfig   bool
 		failRerun    bool
 		deleteFails  int // DeleteItem fails this many times first
+		joblogFails  bool
 		noRerunQuery bool
 		calls        []call
 		wantJoblog   []string
@@ -139,6 +257,10 @@ func TestValidationExhausted(t *testing.T) {
 		{name: "NoTriggerRow", noRow: true, calls: []call{{now: at(0, 14, 30), wantStatus: "cutoff"}}},
 		{name: "RerunLookupFails", failRerun: true, calls: []call{{now: at(0, 14, 30), wantErr: true, wantRow: running}}},
 		{name: "ConfigReadFails", failConfig: true, calls: []call{{now: at(0, 14, 30), wantErr: true, wantRow: running}}},
+		{name: "ExhaustedJoblogWriteFails", tweak: noCutoff, joblogFails: true, calls: []call{
+			{now: at(0, 14, 30), wantErr: true, wantErrSub: "write validation-exhausted joblog", wantRow: running}}},
+		{name: "ReleaseJoblogWriteFails", joblogFails: true, calls: []call{
+			{now: at(0, 13, 59), wantErr: true, wantErrSub: "write evaluation-released joblog", wantRow: running}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -196,6 +318,9 @@ func TestValidationExhausted(t *testing.T) {
 				}
 				return del(ctx, in)
 			}
+			if tt.joblogFails {
+				failTablePut(d, "joblog", errors.New("dynamodb: throttled"))
+			}
 			rec.ops = nil
 
 			for i, c := range tt.calls {
@@ -205,6 +330,9 @@ func TestValidationExhausted(t *testing.T) {
 				})
 				if (err != nil) != c.wantErr {
 					t.Fatalf("call %d: err = %v, wantErr %v", i, err, c.wantErr)
+				}
+				if c.wantErrSub != "" && !strings.Contains(err.Error(), c.wantErrSub) {
+					t.Errorf("call %d: err = %v, want it to contain %q", i, err, c.wantErrSub)
 				}
 				if !c.wantErr && (out.Mode != "validation-exhausted" || out.Status != c.wantStatus) {
 					t.Errorf("call %d: output = %+v, want status %q", i, out, c.wantStatus)
