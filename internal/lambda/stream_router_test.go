@@ -56,10 +56,10 @@ func seedConfig(mock *mockDDB, cfg types.PipelineConfig) {
 	})
 }
 
-// seedTriggerLock pre-inserts a trigger lock row to simulate a held lock.
-func seedTriggerLock(mock *mockDDB, pipelineID, date string) {
+// seedTriggerLock pre-inserts a gold-revenue trigger lock to simulate a held lock.
+func seedTriggerLock(mock *mockDDB, date string) {
 	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
 		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
 		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
 	})
@@ -224,7 +224,7 @@ func TestStreamRouter_SensorMatch_LockHeld_NoSFN(t *testing.T) {
 
 	// Pre-insert a trigger lock.
 	date := time.Now().Format("2006-01-02")
-	seedTriggerLock(mock, "gold-revenue", date)
+	seedTriggerLock(mock, date)
 
 	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
 		"status": events.NewStringAttribute("ready"),
@@ -395,7 +395,7 @@ func TestStreamRouter_JobFail_UnderRetryLimit_Reruns(t *testing.T) {
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
 	// Seed trigger lock — required for ResetTriggerLock to succeed.
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// No existing reruns — first failure should trigger a rerun.
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
@@ -478,7 +478,7 @@ func TestStreamRouter_JobTimeout_TreatedAsFailure(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Timeout event should be treated like a failure — triggers rerun.
 	record := makeJobRecord("gold-revenue", types.JobEventTimeout)
@@ -499,7 +499,7 @@ func TestStreamRouter_JobFail_DriftRerunsIgnored(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a drift rerun (should NOT count toward failure budget).
 	mock.putRaw("rerun", map[string]ddbtypes.AttributeValue{
@@ -615,7 +615,7 @@ func TestStreamRouter_SensorMatch_FirstArrivalIdempotent(t *testing.T) {
 
 	// Pre-seed a first-sensor-arrival record (as if lock was acquired earlier).
 	date := firstArrival.Format("2006-01-02")
-	seedSensor(mock, "gold-revenue", "first-sensor-arrival#"+date, map[string]interface{}{
+	seedSensor(mock, "first-sensor-arrival#"+date, map[string]interface{}{
 		"arrivedAt": firstArrival.Format(time.RFC3339),
 	})
 
@@ -749,7 +749,7 @@ func TestStreamRouter_LateDataArrival_StillRunning_Silent(t *testing.T) {
 	date := time.Now().Format("2006-01-02")
 
 	// Seed a RUNNING trigger (normal in-flight execution).
-	seedTriggerLock(mock, "gold-revenue", date)
+	seedTriggerLock(mock, date)
 
 	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
 		"status": events.NewStringAttribute("ready"),
@@ -849,9 +849,9 @@ func toAttributeValue(v interface{}) ddbtypes.AttributeValue {
 	}
 }
 
-func seedSensor(mock *mockDDB, pipelineID, sensorKey string, data map[string]interface{}) {
+func seedSensor(mock *mockDDB, sensorKey string, data map[string]interface{}) {
 	item := map[string]ddbtypes.AttributeValue{
-		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
 		"SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK(sensorKey)},
 	}
 	if data != nil {
@@ -870,7 +870,7 @@ func TestStreamRouter_RerunRequest_FailedJob_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a failed job event.
 	seedJobEvent(mock, "1709280000000", types.JobEventFail)
@@ -894,13 +894,13 @@ func TestStreamRouter_RerunRequest_SuccessDataChanged_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a successful job event with timestamp 1000000.
 	seedJobEvent(mock, "1000000", types.JobEventSuccess)
 
 	// Seed a sensor with updatedAt AFTER the job timestamp.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"updatedAt": float64(2000000), // newer than job timestamp
 		"status":    "ready",
 	})
@@ -924,14 +924,14 @@ func TestStreamRouter_RerunRequest_SuccessDataUnchanged_Rejected(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Use millis-range timestamps so epoch normalization (ts < 1e12 → ts*1000)
 	// does not distort the comparison.
 	seedJobEvent(mock, "2000000000000", types.JobEventSuccess)
 
 	// Seed a sensor with updatedAt BEFORE the job timestamp (both in millis).
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"updatedAt": float64(1000000000000), // older than job timestamp
 		"status":    "ready",
 	})
@@ -960,7 +960,7 @@ func TestStreamRouter_RerunRequest_InfraExhausted_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed an infra-trigger-exhausted job event.
 	seedJobEvent(mock, "1709280000000", types.JobEventInfraTriggerExhausted)
@@ -984,7 +984,7 @@ func TestStreamRouter_RerunRequest_SensorEpochSeconds_Normalized(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a successful job with timestamp in millis: 2000000000000 (year ~2033).
 	seedJobEvent(mock, "2000000000000", types.JobEventSuccess)
@@ -992,7 +992,7 @@ func TestStreamRouter_RerunRequest_SensorEpochSeconds_Normalized(t *testing.T) {
 	// Seed sensor with updatedAt in SECONDS: 2000000001 (1 second after job).
 	// Without normalization, 2000000001 < 2000000000000 → rejected.
 	// With normalization, 2000000001000 > 2000000000000 → allowed.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"updatedAt": float64(2000000001), // seconds epoch
 		"status":    "ready",
 	})
@@ -1074,7 +1074,7 @@ func TestLateData_TriggerNil(t *testing.T) {
 
 	// No trigger record exists — GetTrigger returns nil.
 	// Seed only the lock so AcquireTriggerLock fails (lock held), triggering checkLateDataArrival.
-	seedTriggerLock(mock, "gold-revenue", date)
+	seedTriggerLock(mock, date)
 
 	record := makeSensorRecord("gold-revenue", "upstream-complete", map[string]events.DynamoDBAttributeValue{
 		"status": events.NewStringAttribute("ready"),
@@ -1262,7 +1262,7 @@ func TestRerun_NoJobRecord_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// No job events seeded — GetLatestJobEvent returns nil → allow (never ran).
 	record := makeDefaultRerunRequestRecord()
@@ -1327,7 +1327,7 @@ func TestRerun_TimeoutJob_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a timeout job event.
 	seedJobEvent(mock, "1709280000000", types.JobEventTimeout)
@@ -1350,7 +1350,7 @@ func TestRerun_UnknownJobEvent_Allowed(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a job event with an unknown event type.
 	seedJobEvent(mock, "1709280000000", "some-future-event")
@@ -1401,7 +1401,7 @@ func TestSensorFreshness_NoSensors(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a successful job event — no sensors exist.
 	seedJobEvent(mock, "1000000", types.JobEventSuccess)
@@ -1424,13 +1424,13 @@ func TestSensorFreshness_NoUpdatedAtField(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a successful job event.
 	seedJobEvent(mock, "1000000", types.JobEventSuccess)
 
 	// Seed sensor WITHOUT updatedAt field.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"status": "ready",
 	})
 
@@ -1452,13 +1452,13 @@ func TestSensorFreshness_FreshSensor_Float(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a successful job event with timestamp 1000000.
 	seedJobEvent(mock, "1000000", types.JobEventSuccess)
 
 	// Seed a sensor with updatedAt as float64 > jobTimestamp.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"updatedAt": float64(2000000),
 	})
 
@@ -1479,14 +1479,14 @@ func TestSensorFreshness_StaleSensor_Float(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Use millis-range timestamps so epoch normalization (ts < 1e12 → ts*1000)
 	// does not distort the comparison.
 	seedJobEvent(mock, "2000000000000", types.JobEventSuccess)
 
 	// Seed a sensor with updatedAt as float64 < jobTimestamp (both in millis).
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"updatedAt": float64(1000000000000),
 	})
 
@@ -1512,13 +1512,13 @@ func TestSensorFreshness_FreshSensor_String(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a successful job event with timestamp 1000000.
 	seedJobEvent(mock, "1000000", types.JobEventSuccess)
 
 	// Seed a sensor with updatedAt as string > jobTimestamp.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"updatedAt": "2000000",
 	})
 
@@ -1539,7 +1539,7 @@ func TestSensorFreshness_InvalidJobSK(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a successful job event with a short SK that has < 4 parts.
 	// The SK format should be JOB#schedule#date#timestamp, but we create a malformed one.
@@ -1550,7 +1550,7 @@ func TestSensorFreshness_InvalidJobSK(t *testing.T) {
 	})
 
 	// Seed a sensor with stale updatedAt.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"updatedAt": float64(1),
 	})
 
@@ -1572,7 +1572,7 @@ func TestSensorFreshness_InvalidTimestamp(t *testing.T) {
 
 	cfg := testJobConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a successful job event with non-numeric timestamp.
 	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
@@ -1582,7 +1582,7 @@ func TestSensorFreshness_InvalidTimestamp(t *testing.T) {
 	})
 
 	// Seed a sensor with stale updatedAt.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"updatedAt": float64(1),
 	})
 
@@ -2634,7 +2634,7 @@ func TestRerun_DriftUnderLimit(t *testing.T) {
 
 	cfg := testRerunLimitConfig(2, 1)
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// No existing drift reruns — under limit.
 	// Seed a failed job so circuit breaker allows the rerun.
@@ -2687,7 +2687,7 @@ func TestRerun_WritesRerunBeforeLockRelease(t *testing.T) {
 
 	cfg := testRerunLimitConfig(3, 3)
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a failed job so circuit breaker allows the rerun.
 	seedJobEvent(mock, "1709280000000", types.JobEventFail)
@@ -2727,13 +2727,13 @@ func TestRerun_DeletesPostrunBaseline(t *testing.T) {
 		},
 	}
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a failed job so circuit breaker allows the rerun.
 	seedJobEvent(mock, "1709280000000", types.JobEventFail)
 
 	// Seed a date-scoped postrun-baseline sensor that should be deleted on rerun acceptance.
-	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+	seedSensor(mock, "postrun-baseline#2026-03-01", map[string]interface{}{
 		"status": "captured",
 	})
 
@@ -2803,7 +2803,7 @@ func TestStreamRouter_JobFail_TransientUsesMaxRetries(t *testing.T) {
 	cfg.Job.MaxRetries = 3
 	cfg.Job.MaxCodeRetries = intPtr(0) // would block if category was checked wrong
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a joblog entry with TRANSIENT category.
 	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
@@ -2833,7 +2833,7 @@ func TestStreamRouter_JobFail_EmptyCategoryUsesMaxRetries(t *testing.T) {
 	cfg.Job.MaxRetries = 3
 	cfg.Job.MaxCodeRetries = intPtr(0)
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a joblog entry WITHOUT category (backward compat).
 	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
@@ -2858,12 +2858,12 @@ func TestStreamRouter_JobFail_EmptyCategoryUsesMaxRetries(t *testing.T) {
 // Stream-based post-run evaluation tests
 // ---------------------------------------------------------------------------
 
-// seedTriggerWithStatus inserts a gold-revenue trigger row with a specific
-// status.
-func seedTriggerWithStatus(mock *mockDDB, date, status string) {
+// seedTriggerWithStatus inserts a gold-revenue trigger row for 2026-03-01
+// with a specific status.
+func seedTriggerWithStatus(mock *mockDDB, status string) {
 	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
 		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-01")},
 		"status": &ddbtypes.AttributeValueMemberS{Value: status},
 	})
 }
@@ -2906,10 +2906,10 @@ func TestPostRunSensor_Completed_DriftDetected(t *testing.T) {
 
 	cfg := postRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, types.TriggerStatusCompleted)
 
 	// Seed baseline captured at completion time (namespaced by rule key).
-	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+	seedSensor(mock, "postrun-baseline#2026-03-01", map[string]interface{}{
 		"audit-result": map[string]interface{}{"sensor_count": float64(100)},
 	})
 
@@ -2950,14 +2950,14 @@ func TestPostRunSensor_Completed_NoDrift_RulesPass(t *testing.T) {
 
 	cfg := postRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, types.TriggerStatusCompleted)
 
 	// Baseline with same count as incoming sensor (namespaced by rule key).
-	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+	seedSensor(mock, "postrun-baseline#2026-03-01", map[string]interface{}{
 		"audit-result": map[string]interface{}{"sensor_count": float64(150)},
 	})
 	// Seed the actual sensor so EvaluateRules can find it.
-	seedSensor(mock, "gold-revenue", "audit-result", map[string]interface{}{
+	seedSensor(mock, "audit-result", map[string]interface{}{
 		"sensor_count": float64(150),
 	})
 
@@ -2990,10 +2990,10 @@ func TestPostRunSensor_Running_InflightDrift(t *testing.T) {
 
 	cfg := postRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusRunning)
+	seedTriggerWithStatus(mock, types.TriggerStatusRunning)
 
 	// Baseline from a previous run (namespaced by rule key).
-	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+	seedSensor(mock, "postrun-baseline#2026-03-01", map[string]interface{}{
 		"audit-result": map[string]interface{}{"sensor_count": float64(100)},
 	})
 
@@ -3033,7 +3033,7 @@ func TestPostRunSensor_FailedFinal_Skipped(t *testing.T) {
 
 	cfg := postRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusFailedFinal)
+	seedTriggerWithStatus(mock, types.TriggerStatusFailedFinal)
 
 	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
 		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
@@ -3509,9 +3509,9 @@ func TestPostRunDrift_CalendarExclusion(t *testing.T) {
 	cfg := postRunConfig()
 	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-01"}}
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, types.TriggerStatusCompleted)
 
-	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+	seedSensor(mock, "postrun-baseline#2026-03-01", map[string]interface{}{
 		"audit-result": map[string]interface{}{"sensor_count": float64(100)},
 	})
 
@@ -3559,9 +3559,9 @@ func TestPostRunDrift_NotExcluded_WritesRerun(t *testing.T) {
 
 	cfg := postRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, types.TriggerStatusCompleted)
 
-	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
+	seedSensor(mock, "postrun-baseline#2026-03-01", map[string]interface{}{
 		"audit-result": map[string]interface{}{"sensor_count": float64(100)},
 	})
 
@@ -3661,7 +3661,7 @@ func TestHandleSensorEvent_DryRun_WouldTrigger(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Seed the trigger sensor so validation rules pass.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"status": "ready",
 	})
 
@@ -3739,7 +3739,7 @@ func TestHandleSensorEvent_DryRun_SLAProjection_Met(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Seed validation sensor so rules pass.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"status": "ready",
 	})
 
@@ -3794,7 +3794,7 @@ func TestHandleSensorEvent_DryRun_SLAProjection_Breach(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Seed validation sensor so rules pass.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"status": "ready",
 	})
 
@@ -3848,7 +3848,7 @@ func TestHandleSensorEvent_DryRun_ValidationNotReady(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Seed only the trigger sensor — "other-required-sensor" is absent.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"status": "ready",
 	})
 
@@ -3895,11 +3895,11 @@ func TestHandleSensorEvent_DryRun_CapturesBaseline(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Seed the trigger sensor (for validation rules).
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"status": "ready",
 	})
 	// Seed the post-run sensor that the baseline will capture.
-	seedSensor(mock, "gold-revenue", "audit-result", map[string]interface{}{
+	seedSensor(mock, "audit-result", map[string]interface{}{
 		"sensor_count": float64(500),
 	})
 
@@ -3941,7 +3941,7 @@ func TestHandleSensorEvent_DryRun_Completed_NoSLA(t *testing.T) {
 	cfg.SLA = nil
 	seedConfig(mock, cfg)
 
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"status": "ready",
 	})
 
@@ -3994,7 +3994,7 @@ func TestHandleSensorEvent_DryRun_Completed_WithSLA(t *testing.T) {
 	}
 	seedConfig(mock, cfg)
 
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"status": "ready",
 	})
 
@@ -4059,7 +4059,7 @@ func TestDryRunPostRunSensor_DriftDetected(t *testing.T) {
 	seedDryRunMarker(mock, "gold-revenue", "stream", fixedTestDate, "2026-03-11T01:15:00Z")
 
 	// Pre-seed baseline with sensor_count=500 (namespaced by rule key).
-	seedSensor(mock, "gold-revenue", "postrun-baseline#"+fixedTestDate, map[string]interface{}{
+	seedSensor(mock, "postrun-baseline#"+fixedTestDate, map[string]interface{}{
 		"audit-result": map[string]interface{}{"sensor_count": float64(500)},
 	})
 
@@ -4113,7 +4113,7 @@ func TestDryRunPostRunSensor_NoDrift(t *testing.T) {
 	seedDryRunMarker(mock, "gold-revenue", "stream", fixedTestDate, "2026-03-11T01:15:00Z")
 
 	// Baseline with sensor_count=500 (namespaced by rule key).
-	seedSensor(mock, "gold-revenue", "postrun-baseline#"+fixedTestDate, map[string]interface{}{
+	seedSensor(mock, "postrun-baseline#"+fixedTestDate, map[string]interface{}{
 		"audit-result": map[string]interface{}{"sensor_count": float64(500)},
 	})
 
@@ -4178,7 +4178,7 @@ func TestRerun_DryRun_SkipsExecution(t *testing.T) {
 
 	cfg := testDryRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Seed a failed job event so the rerun request would normally be accepted.
 	seedJobEvent(mock, "1709280000000", types.JobEventFail)
@@ -4296,7 +4296,7 @@ func TestRerun_DryRun_CircuitBreakerReject(t *testing.T) {
 	seedJobEvent(mock, "2000000000000", types.JobEventSuccess)
 
 	// Seed sensors with timestamps OLDER than the job — data unchanged.
-	seedSensor(mock, "gold-revenue", "upstream-complete", map[string]interface{}{
+	seedSensor(mock, "upstream-complete", map[string]interface{}{
 		"status":    "ready",
 		"updatedAt": float64(1000000000000),
 	})
@@ -4369,7 +4369,7 @@ func TestJobFailure_DryRun_SkipsRerun(t *testing.T) {
 	cfg := testDryRunConfig()
 	cfg.Job.MaxRetries = 2
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	// Send a JOB# failure event — normally triggers a rerun under retry limit.
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
@@ -4413,7 +4413,7 @@ func TestJobFailure_DryRun_RetryExhausted(t *testing.T) {
 	cfg := testDryRunConfig()
 	cfg.Job.MaxRetries = 0
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
@@ -4437,7 +4437,7 @@ func TestJobFailure_DryRun_CalendarExcluded(t *testing.T) {
 	cfg.Job.MaxRetries = 2
 	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-01"}}
 	seedConfig(mock, cfg)
-	seedTriggerLock(mock, "gold-revenue", "2026-03-01")
+	seedTriggerLock(mock, "2026-03-01")
 
 	record := makeJobRecord("gold-revenue", types.JobEventFail)
 	event := lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}}
