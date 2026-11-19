@@ -11,7 +11,9 @@ import (
 )
 
 // HandleOrchestrator is the entry point for the orchestrator Lambda.
-// It dispatches to one of five modes: evaluate, trigger, check-job, post-run, validation-exhausted.
+// It dispatches to one of seven modes: evaluate, trigger, check-job,
+// validation-exhausted, trigger-exhausted, complete-trigger and
+// job-poll-exhausted.
 func HandleOrchestrator(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
 	switch input.Mode {
 	case "evaluate":

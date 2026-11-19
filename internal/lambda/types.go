@@ -15,7 +15,9 @@ import (
 // StreamEvent is the DynamoDB stream event input.
 type StreamEvent = events.DynamoDBEvent
 
-// SFNAPI is the subset of the Step Functions client used by stream-router.
+// SFNAPI is the subset of the Step Functions client that StartSFN and
+// StartSFNWithName use to start pipeline executions (from the stream-router,
+// orchestrator and watchdog).
 type SFNAPI interface {
 	StartExecution(ctx context.Context, input *sfn.StartExecutionInput, opts ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error)
 }
@@ -55,7 +57,7 @@ type StatusResult struct {
 
 // OrchestratorInput is the input to the orchestrator Lambda from Step Functions.
 type OrchestratorInput struct {
-	Mode          string                 `json:"mode"` // evaluate, trigger, check-job, post-run, validation-exhausted, complete-trigger
+	Mode          string                 `json:"mode"` // evaluate, trigger, check-job, validation-exhausted, trigger-exhausted, complete-trigger, job-poll-exhausted
 	PipelineID    string                 `json:"pipelineId"`
 	ScheduleID    string                 `json:"scheduleId"`
 	Date          string                 `json:"date"`
