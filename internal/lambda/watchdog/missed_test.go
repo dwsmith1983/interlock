@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -121,4 +122,106 @@ func TestDetectMissedSchedules_PublishFailureRetries(t *testing.T) {
 			t.Fatalf("pass %d: events %v, marker %v; want %d events and marker %v", pass, rec.events, marked, want, want == 1)
 		}
 	}
+}
+
+// TestDetectMissedInclusionSchedules: one IRREGULAR_SCHEDULE_MISSED per past
+// inclusion date (the newest three) with no trigger row and no marker, newest
+// first, each followed by its marker. The clock is 09:00 on slaTestDate
+// unless a case says otherwise. ScheduleTime holds schedule.time back on the
+// date itself until that time in schedule.timezone.
+func TestDetectMissedInclusionSchedules(t *testing.T) {
+	type row struct {
+		name    string
+		dates   []string // schedule.include.dates; nil means no include
+		trigger string   // date of a COMPLETED trigger row
+		marked  string   // date whose marker is already there
+		dryRun  bool
+		tm, tz  string // schedule.time and schedule.timezone
+		now     time.Time
+		want    []string // dates alerted, in order
+	}
+	run := func(t *testing.T, tt row) {
+		d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+			c.SLA, c.Schedule.Time, c.Schedule.Timezone = nil, tt.tm, tt.tz
+			if tt.dates != nil {
+				c.Schedule.Include = &types.InclusionConfig{Dates: tt.dates}
+			}
+			if tt.dryRun {
+				c.DryRun, c.Job.Type = true, types.TriggerHTTP
+			}
+		})
+		ctx := context.Background()
+		if !tt.now.IsZero() {
+			d.NowFunc = func() time.Time { return tt.now }
+		}
+		if tt.trigger != "" {
+			mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("stream", tt.trigger), "status", types.TriggerStatusCompleted))
+		}
+		if tt.marked != "" {
+			if err := d.Store.WriteSensor(ctx, "p", "irregular-missed-check#"+tt.marked, map[string]interface{}{"alerted": "true"}); err != nil {
+				t.Fatalf("write marker: %v", err)
+			}
+		}
+
+		if err := detectMissedInclusionSchedules(ctx, d); err != nil {
+			t.Fatalf("detectMissedInclusionSchedules: %v", err)
+		}
+
+		var got []string
+		for i, evt := range rec.details {
+			got = append(got, evt.Date)
+			want := map[string]interface{}{"source": "watchdog",
+				"actionHint": "inclusion date " + evt.Date + " expected to have a trigger \u2014 none found"}
+			if rec.events[i] != string(types.EventIrregularScheduleMissed) || evt.PipelineID != "p" ||
+				evt.Message != "missed inclusion schedule for p on "+evt.Date || !maps.Equal(evt.Detail, want) {
+				t.Errorf("event %d = %s for %q, %q with %v; want IRREGULAR_SCHEDULE_MISSED for p with %v", i, rec.events[i], evt.PipelineID, evt.Message, evt.Detail, want)
+			}
+		}
+		if !slices.Equal(got, tt.want) {
+			t.Fatalf("alerted dates = %v, want %v", got, tt.want)
+		}
+		for _, date := range tt.dates {
+			marker, err := d.Store.GetSensorData(ctx, "p", "irregular-missed-check#"+date)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantMarker := date == tt.marked || slices.Contains(tt.want, date)
+			if (marker != nil) != wantMarker || (marker != nil && marker["alerted"] != "true") {
+				t.Errorf("marker for %s = %v, want present %v with alerted true", date, marker, wantMarker)
+			}
+		}
+	}
+
+	tests := []row{
+		{name: "no include"},
+		{name: "trigger exists", dates: []string{"2026-03-05", "2026-03-15"}, trigger: "2026-03-05"},
+		{name: "trigger missing", dates: []string{"2026-03-05", "2026-03-15"}, want: []string{"2026-03-05"}},
+		{name: "already alerted", dates: []string{"2026-03-05", "2026-03-15"}, marked: "2026-03-05"},
+		{name: "all future", dates: []string{"2026-03-15", "2026-06-15", "2026-09-15"}},
+		{name: "two missed", dates: []string{"2026-03-05", "2026-03-08", "2026-03-15"}, want: []string{"2026-03-08", "2026-03-05"}},
+		{name: "newest three only", dates: []string{"2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"},
+			want: []string{"2026-03-06", "2026-03-05", "2026-03-04"}},
+		{name: "dry run", dates: []string{"2026-03-05", "2026-03-15"}, dryRun: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) { run(t, tt) })
+	}
+
+	t.Run("ScheduleTime", func(t *testing.T) {
+		at := func(hour, minute int) time.Time { return time.Date(2026, 3, 31, hour, minute, 0, 0, time.UTC) }
+		end := []string{"2026-03-31"}
+		tests := []row{
+			{name: "before the time", tm: "10:00", now: at(8, 0)},
+			{name: "past the time", tm: "10:00", now: at(11, 0), want: end},
+			{name: "Tokyo, past the time", tm: "10:00", tz: "Asia/Tokyo", now: at(1, 30), want: end},
+			{name: "New York, before the time", tm: "10:00", tz: "America/New_York", now: at(13, 30)},
+			// 22:00 on the date in New York is already the next day in UTC.
+			{name: "New York evening, before the time", tm: "23:30", tz: "America/New_York", now: time.Date(2026, 4, 1, 2, 0, 0, 0, time.UTC)},
+			{name: "no time", now: at(0, 5), want: end},
+		}
+		for _, tt := range tests {
+			tt.dates = end
+			t.Run(tt.name, func(t *testing.T) { run(t, tt) })
+		}
+	})
 }

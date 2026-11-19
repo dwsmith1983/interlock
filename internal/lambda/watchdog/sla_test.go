@@ -2,6 +2,7 @@ package watchdog
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,7 +31,8 @@ const slaTestDate = "2026-03-10"
 // slaRecorder records the schedules created (names and, in step, their
 // expressions) and the event types published, and both in call order. While
 // failEvents > 0, PutEvents fails and counts it down. With exists set,
-// CreateSchedule records the name and answers as for an existing schedule.
+// CreateSchedule records the name and answers as for an existing schedule;
+// with createErr set, it records the name and returns createErr.
 type slaRecorder struct {
 	schedules  []string
 	exprs      []string
@@ -39,6 +41,7 @@ type slaRecorder struct {
 	order      []string
 	failEvents int
 	exists     bool
+	createErr  error
 }
 
 func (r *slaRecorder) CreateSchedule(_ context.Context, in *scheduler.CreateScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error) {
@@ -47,6 +50,9 @@ func (r *slaRecorder) CreateSchedule(_ context.Context, in *scheduler.CreateSche
 	r.order = append(r.order, aws.ToString(in.Name))
 	if r.exists {
 		return nil, &schedulerTypes.ConflictException{Message: aws.String("schedule exists")}
+	}
+	if r.createErr != nil {
+		return nil, r.createErr
 	}
 	return &scheduler.CreateScheduleOutput{}, nil
 }
@@ -297,6 +303,7 @@ func TestScheduleSLAAlerts_RunRows(t *testing.T) {
 		want      []string
 		wantExprs []string
 		wantLog   string
+		wantLevel string // level of the wantLog line; "" means WARN
 	}{
 		{name: "RowForDate", keys: []string{slaTestDate}, want: names(slaTestDate),
 			wantExprs: []string{"at(2026-03-10T09:30:00)", "at(2026-03-10T10:00:00)"}},
@@ -315,6 +322,10 @@ func TestScheduleSLAAlerts_RunRows(t *testing.T) {
 		{name: "DeadlineDayOffset", keys: []string{"2026-03-09"}, want: names("2026-03-09"),
 			wantExprs: []string{"at(2026-03-10T09:30:00)", "at(2026-03-10T10:00:00)"},
 			tweak:     func(c *types.PipelineConfig) { c.SLA.DeadlineDayOffset = 1 }},
+		{name: "NoSLA", keys: []string{slaTestDate}, tweak: func(c *types.PipelineConfig) { c.SLA = nil }},
+		{name: "InvalidDeadline", keys: []string{slaTestDate}, wantLog: "SLA calculate failed", wantLevel: "ERROR",
+			tweak: func(c *types.PipelineConfig) { c.SLA.Deadline = "INVALID" }},
+		{name: "DryRun", keys: []string{slaTestDate}, tweak: func(c *types.PipelineConfig) { c.DryRun, c.Job.Type = true, types.TriggerHTTP }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -351,11 +362,52 @@ func TestScheduleSLAAlerts_RunRows(t *testing.T) {
 				t.Fatalf("schedule expressions = %v, want %v", rec.exprs, tt.wantExprs)
 			}
 			if tt.wantLog != "" && !slices.ContainsFunc(strings.Split(logs.String(), "\n"), func(line string) bool {
-				return strings.Contains(line, "level=WARN") && strings.Contains(line, tt.wantLog)
+				return strings.Contains(line, "level="+cmp.Or(tt.wantLevel, "WARN")) && strings.Contains(line, tt.wantLog)
 			}) {
-				t.Fatalf("logs = %q, want a warning with %q", logs.String(), tt.wantLog)
+				t.Fatalf("logs = %q, want a %s line with %q", logs.String(), cmp.Or(tt.wantLevel, "WARN"), tt.wantLog)
 			}
 		})
+	}
+}
+
+// TestScheduleSLAAlerts_CreateErrorContinues: a failed CreateSchedule is
+// logged as an error, ends that date's schedules at the warning, and the
+// pass moves on to the next date.
+func TestScheduleSLAAlerts_CreateErrorContinues(t *testing.T) {
+	d, mem, rec := slaDeps(t, "", "")
+	mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.RunSK("2026-03-11")))
+	now := time.Date(2026, 3, 10, 8, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return now }
+	rec.createErr = errors.New("service unavailable")
+	var logs bytes.Buffer
+	d.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	if err := scheduleSLAAlerts(context.Background(), d); err != nil {
+		t.Fatalf("scheduleSLAAlerts: %v", err)
+	}
+
+	want := []string{
+		lambda.SLAScheduleName("p", "stream", slaTestDate, "warning"),
+		lambda.SLAScheduleName("p", "stream", "2026-03-11", "warning"),
+	}
+	if !slices.Equal(rec.schedules, want) {
+		t.Fatalf("schedules attempted = %v, want %v", rec.schedules, want)
+	}
+	if !slices.ContainsFunc(strings.Split(logs.String(), "\n"), func(line string) bool {
+		return strings.Contains(line, "level=ERROR") && strings.Contains(line, "create SLA schedule failed")
+	}) {
+		t.Fatalf("logs = %q, want an error with %q", logs.String(), "create SLA schedule failed")
+	}
+}
+
+// TestScheduleSLAAlerts_NilScheduler: without a Scheduler client the pass
+// does nothing and returns nil.
+func TestScheduleSLAAlerts_NilScheduler(t *testing.T) {
+	d, _, _ := slaDeps(t, "", "")
+	d.Scheduler = nil
+
+	if err := scheduleSLAAlerts(context.Background(), d); err != nil {
+		t.Fatalf("scheduleSLAAlerts: %v", err)
 	}
 }
 

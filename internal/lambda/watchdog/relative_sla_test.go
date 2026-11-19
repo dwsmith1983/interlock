@@ -14,6 +14,7 @@ import (
 // TestRelativeSLA: with the first sensor at 10:00, maxDuration 2h and
 // expectedDuration 30m, the watchdog publishes RELATIVE_SLA_WARNING once from
 // 11:30 while the run is unfinished and RELATIVE_SLA_BREACH once from 12:00.
+// An arrival late on slaTestDate is still checked on the next day.
 func TestRelativeSLA(t *testing.T) {
 	const (
 		warnKey   = "relative-sla-warning-check#" + slaTestDate
@@ -27,6 +28,8 @@ func TestRelativeSLA(t *testing.T) {
 		expected    string // sla.expectedDuration
 		trigger     string
 		noArrival   bool
+		arrivedAt   string // "" means 2026-03-10T10:00:00Z
+		dryRun      bool
 		failPublish bool
 		markers     []string // present before the pass
 		now         time.Time
@@ -52,18 +55,26 @@ func TestRelativeSLA(t *testing.T) {
 		{name: "breach publish fails", expected: "30m", markers: []string{warnKey}, failPublish: true, now: at(12, 0, 0),
 			wantMarkers: []string{warnKey}},
 		{name: "no first-sensor-arrival", expected: "30m", noArrival: true, now: at(11, 30, 0)},
+		{name: "arrival the day before, breached", expected: "30m", arrivedAt: "2026-03-10T23:00:00Z",
+			now: time.Date(2026, 3, 11, 3, 0, 0, 0, time.UTC), wantEvents: []string{string(types.EventRelativeSLABreach)}, wantMarkers: []string{breachKey}},
+		{name: "arrival the day before, not yet warned", expected: "30m", arrivedAt: "2026-03-10T23:00:00Z",
+			now: time.Date(2026, 3, 11, 0, 29, 59, 0, time.UTC)},
+		{name: "dry run", expected: "30m", dryRun: true, now: at(12, 10, 0)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d, mem, rec := slaDeps(t, tt.trigger, "", func(c *types.PipelineConfig) {
 				c.SLA = &types.SLAConfig{MaxDuration: "2h", ExpectedDuration: tt.expected}
+				if tt.dryRun {
+					c.DryRun, c.Job.Type = true, types.TriggerHTTP
+				}
 			})
 			now := tt.now
 			d.NowFunc = func() time.Time { return now }
 			ctx := context.Background()
 			if !tt.noArrival {
 				if err := d.Store.WriteSensor(ctx, "p", "first-sensor-arrival#"+slaTestDate,
-					map[string]interface{}{"arrivedAt": "2026-03-10T10:00:00Z"}); err != nil {
+					map[string]interface{}{"arrivedAt": cmp.Or(tt.arrivedAt, "2026-03-10T10:00:00Z")}); err != nil {
 					t.Fatalf("write arrival: %v", err)
 				}
 			}
@@ -84,6 +95,9 @@ func TestRelativeSLA(t *testing.T) {
 				t.Fatalf("events = %v, want %v", rec.events, tt.wantEvents)
 			}
 			for i, evt := range rec.details {
+				if evt.Date != slaTestDate {
+					t.Errorf("%s on %q, want %q", rec.events[i], evt.Date, slaTestDate)
+				}
 				if rec.events[i] != string(types.EventRelativeSLAWarning) {
 					continue
 				}

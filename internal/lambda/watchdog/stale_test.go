@@ -1,25 +1,133 @@
 package watchdog
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"maps"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// countingSFN is a lambda.SFNAPI double that counts StartExecution calls.
-type countingSFN struct{ calls int }
+// countingSFN is a lambda.SFNAPI double that counts StartExecution calls
+// and answers each with err.
+type countingSFN struct {
+	calls int
+	err   error
+}
 
 func (c *countingSFN) StartExecution(context.Context, *sfn.StartExecutionInput, ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
 	c.calls++
+	if c.err != nil {
+		return nil, c.err
+	}
 	return &sfn.StartExecutionOutput{}, nil
+}
+
+// runningTriggerScan serves the Scan of store.ScanRunningTriggers from mem:
+// the control rows whose SK begins with the :prefix value and whose status
+// is the :running value. Any other Scan goes to fake's Scan as before.
+func runningTriggerScan(fake *storetest.FakeDynamo, mem *storetest.Mem) {
+	next := fake.ScanFn
+	fake.ScanFn = func(ctx context.Context, in *dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {
+		if aws.ToString(in.FilterExpression) != "begins_with(SK, :prefix) AND #status = :running" {
+			return next(ctx, in)
+		}
+		value := func(v ddbtypes.AttributeValue) string {
+			s, _ := v.(*ddbtypes.AttributeValueMemberS)
+			if s == nil {
+				return ""
+			}
+			return s.Value
+		}
+		prefix, running := value(in.ExpressionAttributeValues[":prefix"]), value(in.ExpressionAttributeValues[":running"])
+		out := &dynamodb.ScanOutput{}
+		for _, item := range mem.Items(aws.ToString(in.TableName)) {
+			if strings.HasPrefix(value(item["SK"]), prefix) && value(item[in.ExpressionAttributeNames["#status"]]) == running {
+				out.Items = append(out.Items, item)
+			}
+		}
+		out.Count = int32(len(out.Items))
+		return out, nil
+	}
+}
+
+// TestDetectStaleTriggers: a RUNNING trigger row whose ttl is before now gets
+// one SFN_TIMEOUT and turns FAILED_FINAL without its ttl. The clock is 09:00
+// on slaTestDate (1773133200) and each row is on TriggerSK("stream",
+// slaTestDate) of pipeline p unless a case says otherwise.
+func TestDetectStaleTriggers(t *testing.T) {
+	const now = 1773133200
+	ttl := func(epoch int64) string { return strconv.FormatInt(epoch, 10) }
+	tests := []struct {
+		name   string
+		pk, sk string // "" means PipelinePK("p") and TriggerSK("stream", slaTestDate)
+		status string // "" means RUNNING
+		ttl    string // raw N value; "" means no ttl attribute
+		tweak  func(*types.PipelineConfig)
+		stale  bool
+	}{
+		{name: "expired", ttl: ttl(1773129600), stale: true},
+		{name: "future", ttl: ttl(now + 12*3600)},
+		{name: "no ttl"},
+		{name: "ttl equals now", ttl: ttl(now)},
+		{name: "bad PK", pk: "BADPREFIX#p", ttl: ttl(1773129600)},
+		{name: "bad SK", sk: "TRIGGER#nodatepart", ttl: ttl(1773129600)},
+		{name: "non-trigger SK", sk: types.SensorSK("upstream"), ttl: ttl(1773129600)},
+		{name: "dry run", ttl: ttl(1773129600), tweak: func(c *types.PipelineConfig) { c.DryRun, c.Job.Type = true, types.TriggerHTTP }},
+		{name: "expired COMPLETED", status: types.TriggerStatusCompleted, ttl: ttl(1773129600)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var tweaks []func(*types.PipelineConfig)
+			if tt.tweak != nil {
+				tweaks = append(tweaks, tt.tweak)
+			}
+			d, mem, rec := slaDeps(t, "", "", tweaks...)
+			runningTriggerScan(d.Store.Client.(*storetest.FakeDynamo), mem)
+			d.NowFunc = func() time.Time { return time.Unix(now, 0).UTC() }
+			pk, sk, status := cmp.Or(tt.pk, types.PipelinePK("p")), cmp.Or(tt.sk, types.TriggerSK("stream", slaTestDate)), cmp.Or(tt.status, types.TriggerStatusRunning)
+			row := sItem("PK", pk, "SK", sk, "status", status)
+			if tt.ttl != "" {
+				row["ttl"] = &ddbtypes.AttributeValueMemberN{Value: tt.ttl}
+			}
+			mem.Put("control", row)
+
+			if err := detectStaleTriggers(context.Background(), d); err != nil {
+				t.Fatalf("detectStaleTriggers: %v", err)
+			}
+
+			got := mem.Get("control", pk, sk)
+			if !tt.stale {
+				if len(rec.events) != 0 || !maps.Equal(got, row) {
+					t.Fatalf("events %v, row %v; want none and the row unchanged", rec.events, got)
+				}
+				return
+			}
+			want := map[string]interface{}{"source": "watchdog", "actionHint": "step function exceeded TTL \u2014 check SFN execution history",
+				"ttlExpired": "2026-03-10T08:00:00Z"}
+			wantMsg := "step function timed out for p/stream/" + slaTestDate
+			if len(rec.events) != 1 || rec.events[0] != string(types.EventSFNTimeout) || rec.details[0].Date != slaTestDate ||
+				rec.details[0].Message != wantMsg || !maps.Equal(rec.details[0].Detail, want) {
+				t.Fatalf("events %v with %+v, want one SFN_TIMEOUT for %s, %q with %v", rec.events, rec.details, slaTestDate, wantMsg, want)
+			}
+			if _, hasTTL := got["ttl"]; got["status"].(*ddbtypes.AttributeValueMemberS).Value != types.TriggerStatusFailedFinal || hasTTL {
+				t.Errorf("trigger row = %v, want FAILED_FINAL without ttl", got)
+			}
+		})
+	}
 }
 
 // TestReconcile_Cutoff: the reconciler starts nothing for a ready sensor
@@ -40,6 +148,10 @@ func TestReconcile_Cutoff(t *testing.T) {
 		{name: "before the cutoff", date: slaTestDate, now: at(10, 13, 0), wantSFN: 1,
 			wantStatus: types.TriggerStatusRunning, wantEvent: types.EventTriggerRecovered},
 		{name: "before the cutoff, job ran", date: slaTestDate, now: at(10, 13, 0), jobRow: types.JobEventSuccess},
+		{name: "before the cutoff, job failed", date: slaTestDate, now: at(10, 13, 0), jobRow: types.JobEventFail},
+		{name: "before the cutoff, job timed out", date: slaTestDate, now: at(10, 13, 0), jobRow: types.JobEventTimeout},
+		{name: "before the cutoff, launch failed", date: slaTestDate, now: at(10, 13, 0), jobRow: types.JobEventInfraTriggerFailure, wantSFN: 1,
+			wantStatus: types.TriggerStatusRunning, wantEvent: types.EventTriggerRecovered},
 		{name: "past the cutoff", date: slaTestDate, now: at(10, 14, 30),
 			wantStatus: types.TriggerStatusFailedFinal, wantEvent: types.EventSensorDeadlineExpired},
 		{name: "past the cutoff, excluded date", date: "2026-03-09", now: at(10, 14, 30), exclude: true},
@@ -157,6 +269,89 @@ func TestReconcile_RestartsAfterRelease(t *testing.T) {
 			}
 			if row := mem.Get("control", pk, types.TriggerSK(schedule, slaTestDate)); row == nil || row["status"].(*ddbtypes.AttributeValueMemberS).Value != tt.wantStatus {
 				t.Errorf("trigger row = %v, want status %q", row, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// TestReconcile_Gating: what keeps the reconciler from starting a run for a
+// sensor, and the per-hour dates it starts. No SLA and no cutoff; the
+// trigger is upstream exists unless a case says otherwise.
+func TestReconcile_Gating(t *testing.T) {
+	daily := map[string]map[string]interface{}{"upstream": {"date": slaTestDate}}
+	hourly := map[string]map[string]interface{}{
+		"upstream#2026-03-10T10": {"date": slaTestDate, "hour": "10"},
+		"upstream#2026-03-10T11": {"date": slaTestDate, "hour": "11"},
+	}
+	tests := []struct {
+		name      string
+		sensors   map[string]map[string]interface{}
+		running   string // date of a RUNNING trigger row present before the pass
+		tweak     func(*types.PipelineConfig)
+		sfnErr    error
+		wantSFN   int
+		wantDates []string // dates with a TRIGGER_RECOVERED and a trigger row
+	}{
+		{name: "condition not met", sensors: map[string]map[string]interface{}{"upstream": {"status": "pending", "date": slaTestDate}},
+			tweak: func(c *types.PipelineConfig) {
+				c.Schedule.Trigger = &types.TriggerCondition{Key: "upstream", Check: types.CheckEquals, Field: "status", Value: "ready"}
+			}},
+		{name: "today excluded", sensors: map[string]map[string]interface{}{"upstream": {"date": "2026-03-09"}},
+			tweak: func(c *types.PipelineConfig) {
+				c.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{slaTestDate}}
+			}},
+		{name: "per-hour both", sensors: hourly, wantSFN: 2, wantDates: []string{"2026-03-10T10", "2026-03-10T11"}},
+		{name: "per-hour partial", sensors: hourly, running: "2026-03-10T10", wantSFN: 1, wantDates: []string{"2026-03-10T11"}},
+		{name: "nil trigger", sensors: daily, tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger = nil }},
+		{name: "SFN error", sensors: daily, sfnErr: errors.New("execution limit exceeded"), wantSFN: 1},
+		{name: "dry run", sensors: daily, tweak: func(c *types.PipelineConfig) { c.DryRun, c.Job.Type = true, types.TriggerHTTP }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+				c.SLA = nil
+				if tt.tweak != nil {
+					tt.tweak(c)
+				}
+			})
+			sfnFake := &countingSFN{err: tt.sfnErr}
+			d.SFNClient = sfnFake
+			ctx, pk := context.Background(), types.PipelinePK("p")
+			for key, data := range tt.sensors {
+				if err := d.Store.WriteSensor(ctx, "p", key, data); err != nil {
+					t.Fatalf("write sensor %s: %v", key, err)
+				}
+			}
+			wantRows := slices.Clone(tt.wantDates)
+			if tt.running != "" {
+				mem.Put("control", sItem("PK", pk, "SK", types.TriggerSK("stream", tt.running), "status", types.TriggerStatusRunning))
+				wantRows = append(wantRows, tt.running)
+			}
+
+			if err := reconcileSensorTriggers(ctx, d); err != nil {
+				t.Fatalf("reconcileSensorTriggers: %v", err)
+			}
+
+			var gotDates []string
+			for i, evt := range rec.details {
+				if rec.events[i] != string(types.EventTriggerRecovered) {
+					t.Errorf("event %d = %s, want TRIGGER_RECOVERED", i, rec.events[i])
+				}
+				gotDates = append(gotDates, evt.Date)
+			}
+			slices.Sort(gotDates)
+			if sfnFake.calls != tt.wantSFN || !slices.Equal(gotDates, tt.wantDates) {
+				t.Fatalf("StartExecution calls %d, recovered dates %v; want %d and %v", sfnFake.calls, gotDates, tt.wantSFN, tt.wantDates)
+			}
+			var gotRows []string
+			for _, item := range mem.Items("control") {
+				if sk := item["SK"].(*ddbtypes.AttributeValueMemberS).Value; strings.HasPrefix(sk, "TRIGGER#") {
+					gotRows = append(gotRows, strings.TrimPrefix(sk, "TRIGGER#stream#"))
+				}
+			}
+			slices.Sort(wantRows)
+			if !slices.Equal(gotRows, wantRows) {
+				t.Errorf("trigger rows for %v, want %v", gotRows, wantRows)
 			}
 		})
 	}
