@@ -144,7 +144,6 @@ func publishDryRunSLAProjection(ctx context.Context, d *lambda.Deps, cfg *types.
 
 	if cfg.SLA.Deadline != "" {
 		slaInput := lambda.SLAMonitorInput{
-			Mode:             "calculate",
 			PipelineID:       pipelineID,
 			ScheduleID:       scheduleID,
 			Date:             lambda.ResolveSLADate(cfg, date),

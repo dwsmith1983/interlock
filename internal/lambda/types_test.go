@@ -42,7 +42,7 @@ func TestOrchestratorOutput_JSON(t *testing.T) {
 
 func TestSLAMonitorInput_JSON(t *testing.T) {
 	input := lambda.SLAMonitorInput{
-		Mode:             "calculate",
+		Mode:             "cancel",
 		PipelineID:       "gold-revenue",
 		Deadline:         "08:00",
 		ExpectedDuration: "30m",

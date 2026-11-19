@@ -73,7 +73,7 @@ This provisions:
 |---|---|
 | stream-router | Processes DynamoDB Stream events, starts Step Function executions |
 | orchestrator | Evaluates validation rules, triggers jobs, checks job status |
-| sla-monitor | Calculates SLA deadlines, fires SLA_WARNING and SLA_BREACH alerts |
+| sla-monitor | Fires SLA_WARNING and SLA_BREACH alerts, and cancels SLA schedules when a run ends, recording SLA_MET or SLA_BREACH |
 | watchdog | Runs the safety checks on an EventBridge timer: stale triggers, start-by times, cutoffs, SLA schedules, post-run sensors, invalid configs |
 | event-sink | Writes every event to the events table |
 | alert-dispatcher | Sends alert events to Slack, or logs them when Slack is not configured |

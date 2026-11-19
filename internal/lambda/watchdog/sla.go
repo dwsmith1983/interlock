@@ -73,7 +73,6 @@ func scheduleSLAAlerts(ctx context.Context, d *lambda.Deps) error {
 func scheduleSLAForDate(ctx context.Context, d *lambda.Deps, id string, cfg *types.PipelineConfig, date string, now time.Time) {
 	scheduleID := lambda.ResolveScheduleID(cfg)
 	calc, err := lambda.HandleSLACalculate(lambda.SLAMonitorInput{
-		Mode:             "calculate",
 		PipelineID:       id,
 		ScheduleID:       scheduleID,
 		Date:             lambda.ResolveSLADate(cfg, date),
