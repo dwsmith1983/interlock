@@ -2994,10 +2994,11 @@ func TestResolveTriggerLockTTL_NegativeFallsBackToDefault(t *testing.T) {
 // Stream-based post-run evaluation tests
 // ---------------------------------------------------------------------------
 
-// seedTriggerWithStatus inserts a trigger row with a specific status.
-func seedTriggerWithStatus(mock *mockDDB, pipelineID, date, status string) {
+// seedTriggerWithStatus inserts a gold-revenue trigger row with a specific
+// status.
+func seedTriggerWithStatus(mock *mockDDB, date, status string) {
 	mock.putRaw(testControlTable, map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("gold-revenue")},
 		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
 		"status": &ddbtypes.AttributeValueMemberS{Value: status},
 	})
@@ -3041,7 +3042,7 @@ func TestPostRunSensor_Completed_DriftDetected(t *testing.T) {
 
 	cfg := postRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusCompleted)
 
 	// Seed baseline captured at completion time (namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
@@ -3085,7 +3086,7 @@ func TestPostRunSensor_Completed_NoDrift_RulesPass(t *testing.T) {
 
 	cfg := postRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusCompleted)
 
 	// Baseline with same count as incoming sensor (namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
@@ -3125,7 +3126,7 @@ func TestPostRunSensor_Running_InflightDrift(t *testing.T) {
 
 	cfg := postRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusRunning)
+	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusRunning)
 
 	// Baseline from a previous run (namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
@@ -3168,7 +3169,7 @@ func TestPostRunSensor_FailedFinal_Skipped(t *testing.T) {
 
 	cfg := postRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusFailedFinal)
+	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusFailedFinal)
 
 	record := makeSensorRecord("gold-revenue", "audit-result", map[string]events.DynamoDBAttributeValue{
 		"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
@@ -3759,7 +3760,7 @@ func TestPostRunDrift_CalendarExclusion(t *testing.T) {
 	cfg := postRunConfig()
 	cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-01"}}
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusCompleted)
 
 	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
 		"audit-result": map[string]interface{}{"sensor_count": float64(100)},
@@ -3809,7 +3810,7 @@ func TestPostRunDrift_NotExcluded_WritesRerun(t *testing.T) {
 
 	cfg := postRunConfig()
 	seedConfig(mock, cfg)
-	seedTriggerWithStatus(mock, "gold-revenue", "2026-03-01", types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, "2026-03-01", types.TriggerStatusCompleted)
 
 	seedSensor(mock, "gold-revenue", "postrun-baseline#2026-03-01", map[string]interface{}{
 		"audit-result": map[string]interface{}{"sensor_count": float64(100)},

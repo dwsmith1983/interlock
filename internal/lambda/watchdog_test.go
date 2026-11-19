@@ -1892,7 +1892,7 @@ func TestWatchdog_PostRunSensorMissing(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Seed COMPLETED trigger for today.
-	seedTriggerWithStatus(mock, "gold-revenue", today, types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, today, types.TriggerStatusCompleted)
 
 	// Seed baseline (written at completion time, namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#"+today, map[string]interface{}{
@@ -1942,7 +1942,7 @@ func TestWatchdog_PostRunSensorPresent(t *testing.T) {
 	seedConfig(mock, cfg)
 
 	// Seed COMPLETED trigger for today.
-	seedTriggerWithStatus(mock, "gold-revenue", today, types.TriggerStatusCompleted)
+	seedTriggerWithStatus(mock, today, types.TriggerStatusCompleted)
 
 	// Seed baseline (namespaced by rule key).
 	seedSensor(mock, "gold-revenue", "postrun-baseline#"+today, map[string]interface{}{
