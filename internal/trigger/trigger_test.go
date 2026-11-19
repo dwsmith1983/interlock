@@ -30,35 +30,8 @@ func TestExecuteHTTP_Success(t *testing.T) {
 		Type: types.TriggerHTTP,
 		HTTP: &types.HTTPTriggerConfig{Method: "POST", URL: srv.URL},
 	}
-	_, err := Execute(context.Background(), cfg)
+	_, err := NewRunner().Execute(context.Background(), cfg)
 	require.NoError(t, err)
-}
-
-func TestClassifyFailure_Timeout(t *testing.T) {
-	err := fmt.Errorf("context deadline exceeded")
-	assert.Equal(t, types.FailureTimeout, ClassifyFailure(err))
-}
-
-func TestClassifyFailure_HTTP4xx(t *testing.T) {
-	err := fmt.Errorf("trigger returned status 400: bad request")
-	assert.Equal(t, types.FailurePermanent, ClassifyFailure(err))
-
-	err = fmt.Errorf("trigger returned status 404: not found")
-	assert.Equal(t, types.FailurePermanent, ClassifyFailure(err))
-}
-
-func TestClassifyFailure_HTTP5xx(t *testing.T) {
-	err := fmt.Errorf("trigger returned status 500: internal error")
-	assert.Equal(t, types.FailureTransient, ClassifyFailure(err))
-}
-
-func TestClassifyFailure_NetworkError(t *testing.T) {
-	err := fmt.Errorf("connection refused")
-	assert.Equal(t, types.FailureTransient, ClassifyFailure(err))
-}
-
-func TestClassifyFailure_Nil(t *testing.T) {
-	assert.Equal(t, types.FailureCategory(""), ClassifyFailure(nil))
 }
 
 func TestExecuteHTTP_ErrorBodyTruncated(t *testing.T) {
@@ -78,7 +51,7 @@ func TestExecuteHTTP_ErrorBodyTruncated(t *testing.T) {
 		Type: types.TriggerHTTP,
 		HTTP: &types.HTTPTriggerConfig{Method: "GET", URL: srv.URL},
 	}
-	_, err := Execute(context.Background(), cfg)
+	_, err := NewRunner().Execute(context.Background(), cfg)
 	require.Error(t, err)
 
 	// Error message must contain the truncated body (512 bytes), not the full 1024.
@@ -110,7 +83,7 @@ func TestExecuteHTTP_ErrorBodySanitized(t *testing.T) {
 		Type: types.TriggerHTTP,
 		HTTP: &types.HTTPTriggerConfig{Method: "GET", URL: srv.URL},
 	}
-	_, err := Execute(context.Background(), cfg)
+	_, err := NewRunner().Execute(context.Background(), cfg)
 	require.Error(t, err)
 
 	msg := err.Error()
@@ -163,7 +136,7 @@ func TestExecuteHTTP_EnvExpansionRestricted(t *testing.T) {
 			Body:    `{"secret":"${AWS_SECRET_ACCESS_KEY}","token":"${INTERLOCK_TOKEN}"}`,
 		},
 	}
-	_, err := Execute(context.Background(), cfg)
+	_, err := NewRunner().Execute(context.Background(), cfg)
 	require.NoError(t, err)
 
 	// INTERLOCK_ prefixed vars should resolve.
@@ -311,24 +284,6 @@ func TestTriggerError_ErrorsAs(t *testing.T) {
 	assert.Equal(t, "status 404", target.Message)
 }
 
-func TestClassifyFailure_TriggerError(t *testing.T) {
-	t.Run("direct TriggerError", func(t *testing.T) {
-		te := NewTriggerError(types.FailurePermanent, "status 400", nil)
-		assert.Equal(t, types.FailurePermanent, ClassifyFailure(te))
-	})
-
-	t.Run("wrapped TriggerError", func(t *testing.T) {
-		te := NewTriggerError(types.FailureTimeout, "timed out", nil)
-		wrapped := fmt.Errorf("execute: %w", te)
-		assert.Equal(t, types.FailureTimeout, ClassifyFailure(wrapped))
-	})
-
-	t.Run("transient TriggerError", func(t *testing.T) {
-		te := NewTriggerError(types.FailureTransient, "status 500", nil)
-		assert.Equal(t, types.FailureTransient, ClassifyFailure(te))
-	})
-}
-
 func TestExecuteHTTP_Returns_TriggerError_On4xx(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -344,7 +299,7 @@ func TestExecuteHTTP_Returns_TriggerError_On4xx(t *testing.T) {
 		Type: types.TriggerHTTP,
 		HTTP: &types.HTTPTriggerConfig{Method: "GET", URL: srv.URL},
 	}
-	_, err := Execute(context.Background(), cfg)
+	_, err := NewRunner().Execute(context.Background(), cfg)
 	require.Error(t, err)
 
 	var te *TriggerError
@@ -368,7 +323,7 @@ func TestExecuteHTTP_Returns_TriggerError_On5xx(t *testing.T) {
 		Type: types.TriggerHTTP,
 		HTTP: &types.HTTPTriggerConfig{Method: "GET", URL: srv.URL},
 	}
-	_, err := Execute(context.Background(), cfg)
+	_, err := NewRunner().Execute(context.Background(), cfg)
 	require.Error(t, err)
 
 	var te *TriggerError

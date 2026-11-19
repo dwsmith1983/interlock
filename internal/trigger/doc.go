@@ -16,7 +16,6 @@
 // provider-specific states into [RunCheckRunning], [RunCheckSucceeded],
 // or [RunCheckFailed].
 //
-// Errors from trigger execution are wrapped in [TriggerError] with a
-// [types.FailureCategory] for retry decisions. [ClassifyFailure] inspects
-// any error and returns the appropriate category.
+// Errors from trigger execution are wrapped in [TriggerError], which carries
+// a [types.FailureCategory] for retry decisions.
 package trigger

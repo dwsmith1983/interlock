@@ -355,8 +355,8 @@ func putItem(t *testing.T, item map[string]ddbtypes.AttributeValue) {
 	}
 }
 
-// putConfig writes the CONFIG row the way store.PutConfig does: the config
-// as a JSON string attribute.
+// putConfig writes the CONFIG row the way Terraform's config loader does:
+// the config as a JSON string attribute.
 func putConfig(t *testing.T, cfg types.PipelineConfig) {
 	t.Helper()
 	data, err := json.Marshal(cfg)

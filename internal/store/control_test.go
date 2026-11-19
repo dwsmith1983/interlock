@@ -62,65 +62,6 @@ func TestGetConfig_NotFound(t *testing.T) {
 	}
 }
 
-func TestPutConfig_RoundTrip(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "bronze-ingest", Owner: "platform"},
-		Schedule: types.ScheduleConfig{
-			Cron:     "0 */2 * * *",
-			Timezone: "America/New_York",
-			Evaluation: types.EvaluationWindow{
-				Window:   "1h",
-				Interval: "5m",
-			},
-		},
-		Validation: types.ValidationConfig{
-			Trigger: "ALL",
-			Rules: []types.ValidationRule{
-				{Key: "SENSOR#upstream-complete", Check: types.CheckExists},
-			},
-		},
-		Job: types.JobConfig{
-			Type:       "glue",
-			Config:     map[string]interface{}{"jobName": "bronze-etl"},
-			MaxRetries: 3,
-		},
-	}
-
-	if err := s.PutConfig(context.Background(), cfg); err != nil {
-		t.Fatalf("PutConfig: %v", err)
-	}
-
-	got, err := s.GetConfig(context.Background(), "bronze-ingest")
-	if err != nil {
-		t.Fatalf("GetConfig: %v", err)
-	}
-	if got == nil {
-		t.Fatal("expected non-nil config after put")
-		return
-	}
-	if got.Pipeline.ID != "bronze-ingest" {
-		t.Errorf("Pipeline.ID = %q, want %q", got.Pipeline.ID, "bronze-ingest")
-	}
-	if got.Pipeline.Owner != "platform" {
-		t.Errorf("Pipeline.Owner = %q, want %q", got.Pipeline.Owner, "platform")
-	}
-	if got.Schedule.Cron != "0 */2 * * *" {
-		t.Errorf("Schedule.Cron = %q, want %q", got.Schedule.Cron, "0 */2 * * *")
-	}
-	if got.Validation.Trigger != "ALL" {
-		t.Errorf("Validation.Trigger = %q, want %q", got.Validation.Trigger, "ALL")
-	}
-	if len(got.Validation.Rules) != 1 {
-		t.Fatalf("len(Rules) = %d, want 1", len(got.Validation.Rules))
-	}
-	if got.Job.MaxRetries != 3 {
-		t.Errorf("Job.MaxRetries = %d, want 3", got.Job.MaxRetries)
-	}
-}
-
 func TestGetSensorData_Found(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
@@ -506,30 +447,6 @@ func TestGetConfig_NonStringConfigAttribute(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "config attribute is not a string") {
 		t.Errorf("expected 'config attribute is not a string' in error, got: %v", err)
-	}
-}
-
-// --- PutConfig error-path tests ---
-
-func TestPutConfig_DynamoError(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	injected := errors.New("throttled")
-	mock.errFn = errOnOp("PutItem", injected)
-
-	cfg := types.PipelineConfig{
-		Pipeline: types.PipelineIdentity{ID: "test-pipe"},
-	}
-	err := s.PutConfig(context.Background(), cfg)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !errors.Is(err, injected) {
-		t.Errorf("expected wrapped injected error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "put config") {
-		t.Errorf("expected 'put config' in error, got: %v", err)
 	}
 }
 
@@ -1019,108 +936,6 @@ func TestWriteRerunRequest_DynamoError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "write rerun request") {
 		t.Errorf("expected 'write rerun request' in error, got: %v", err)
-	}
-}
-
-// --- HasTriggerForDates tests ---
-
-func TestHasTriggerForDates_AllFound(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	pk := types.PipelinePK("pipe-1")
-
-	// Seed triggers for two dates.
-	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-01")},
-		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
-	})
-	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-05")},
-		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
-	})
-
-	result, err := s.HasTriggerForDates(context.Background(), "pipe-1", "stream", []string{"2026-03-01", "2026-03-05"})
-	if err != nil {
-		t.Fatalf("HasTriggerForDates: %v", err)
-	}
-	if !result["2026-03-01"] {
-		t.Error("expected 2026-03-01 to be found")
-	}
-	if !result["2026-03-05"] {
-		t.Error("expected 2026-03-05 to be found")
-	}
-}
-
-func TestHasTriggerForDates_SomeFound(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	pk := types.PipelinePK("pipe-1")
-
-	// Seed a trigger for only one date.
-	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-01")},
-		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
-	})
-
-	result, err := s.HasTriggerForDates(context.Background(), "pipe-1", "stream", []string{"2026-03-01", "2026-03-05"})
-	if err != nil {
-		t.Fatalf("HasTriggerForDates: %v", err)
-	}
-	if !result["2026-03-01"] {
-		t.Error("expected 2026-03-01 to be found")
-	}
-	if result["2026-03-05"] {
-		t.Error("expected 2026-03-05 to NOT be found")
-	}
-}
-
-func TestHasTriggerForDates_NoneFound(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	result, err := s.HasTriggerForDates(context.Background(), "pipe-1", "stream", []string{"2026-03-01", "2026-03-05"})
-	if err != nil {
-		t.Fatalf("HasTriggerForDates: %v", err)
-	}
-	if result["2026-03-01"] {
-		t.Error("expected 2026-03-01 to NOT be found")
-	}
-	if result["2026-03-05"] {
-		t.Error("expected 2026-03-05 to NOT be found")
-	}
-}
-
-func TestHasTriggerForDates_EmptyDates(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	result, err := s.HasTriggerForDates(context.Background(), "pipe-1", "stream", nil)
-	if err != nil {
-		t.Fatalf("HasTriggerForDates: %v", err)
-	}
-	if len(result) != 0 {
-		t.Errorf("expected empty map, got %v", result)
-	}
-}
-
-func TestHasTriggerForDates_DynamoError(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	injected := errors.New("throttled")
-	mock.errFn = errOnOp("Query", injected)
-
-	_, err := s.HasTriggerForDates(context.Background(), "pipe-1", "stream", []string{"2026-03-01"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !errors.Is(err, injected) {
-		t.Errorf("expected wrapped injected error, got: %v", err)
 	}
 }
 

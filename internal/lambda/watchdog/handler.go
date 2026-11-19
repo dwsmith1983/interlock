@@ -1,6 +1,8 @@
 // Package watchdog implements the periodic health-check Lambda handler.
-// It detects stale triggers, missed schedules, missing post-run sensors,
-// and SLA breaches, and reports rejected pipeline configs.
+// It detects stale triggers, missed cron and inclusion schedules, missed
+// sensor-triggered runs, missing post-run sensors and relative SLA breaches,
+// schedules SLA alerts, closes runs past their trigger cutoff, and reports
+// rejected pipeline configs.
 package watchdog
 
 import (

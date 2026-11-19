@@ -107,17 +107,6 @@ func TestRunner_CheckStatus_SFNDispatch(t *testing.T) {
 	assert.Equal(t, RunCheckRunning, result.State)
 }
 
-func TestPackageLevelExecute_NilConfig(t *testing.T) {
-	_, err := Execute(context.Background(), nil)
-	assert.Error(t, err)
-}
-
-func TestPackageLevelCheckStatus_NonPolling(t *testing.T) {
-	result, err := CheckStatus(context.Background(), types.TriggerHTTP, nil, nil)
-	require.NoError(t, err)
-	assert.Equal(t, RunCheckRunning, result.State)
-}
-
 // --- Runner.Execute dispatch tests ---
 
 func TestRunner_Execute_HTTPType(t *testing.T) {

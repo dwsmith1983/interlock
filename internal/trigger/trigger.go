@@ -3,7 +3,6 @@ package trigger
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,19 +66,6 @@ func resolveHTTPClient(timeoutSec int) *http.Client {
 		}
 	}
 	return defaultHTTPClient
-}
-
-// defaultRunner provides backward-compatible package-level functions.
-var defaultRunner = NewRunner()
-
-// Execute runs the appropriate trigger via the default Runner.
-func Execute(ctx context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error) {
-	return defaultRunner.Execute(ctx, cfg)
-}
-
-// CheckStatus checks the status of an active run via the default Runner.
-func CheckStatus(ctx context.Context, triggerType types.TriggerType, metadata map[string]interface{}, headers map[string]string) (StatusResult, error) {
-	return defaultRunner.CheckStatus(ctx, triggerType, metadata, headers)
 }
 
 // runField is one part of the run identity: the header that carries it on
@@ -213,33 +199,6 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 	}
 
 	return nil
-}
-
-// ClassifyFailure categorizes a trigger execution error. If the error is a
-// TriggerError (inspectable via errors.As), the embedded Category is returned
-// directly. Otherwise, string-based heuristics are applied.
-func ClassifyFailure(err error) types.FailureCategory {
-	if err == nil {
-		return ""
-	}
-
-	// Prefer typed TriggerError when available.
-	var te *TriggerError
-	if errors.As(err, &te) {
-		return te.Category
-	}
-
-	if os.IsTimeout(err) || strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "context deadline") {
-		return types.FailureTimeout
-	}
-
-	// HTTP 4xx errors are permanent (client errors)
-	if strings.Contains(err.Error(), "status 4") {
-		return types.FailurePermanent
-	}
-
-	// HTTP 5xx and network errors are transient
-	return types.FailureTransient
 }
 
 // safeEnvLookup only resolves environment variables with the INTERLOCK_ prefix.

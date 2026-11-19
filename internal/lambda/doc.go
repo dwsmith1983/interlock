@@ -1,22 +1,23 @@
-// Package lambda holds the dependencies and helpers shared by the six AWS
-// Lambda handlers that power the Interlock pipeline safety framework. The
-// handlers live in the sub-packages stream, orchestrator, sla, watchdog, sink
-// and alert.
+// Package lambda holds the shared types, interfaces and helpers used by the
+// six handler sub-packages: stream, orchestrator, sla, watchdog, sink and
+// alert. Each sub-package implements one deployed Lambda:
 //
-// The handlers:
+//   - stream-router (stream): routes DynamoDB stream records by sort key:
+//     sensor updates, job log entries, rerun requests and config changes
+//   - orchestrator (orchestrator): runs the Step Functions task modes:
+//     evaluates validation rules, executes triggers, polls job status, and
+//     manages the trigger lifecycle
+//   - sla-monitor (sla): fires SLA warning and breach alerts and cancels SLA
+//     schedules when a run ends
+//   - watchdog (watchdog): runs periodic checks for stale triggers, missed
+//     cron and inclusion schedules, missed sensor-triggered runs, SLA
+//     scheduling, trigger cutoffs, missing post-run sensors, relative SLA
+//     breaches, and rejected pipeline configs
+//   - event-sink (sink): writes EventBridge events to the events table for
+//     the audit trail
+//   - alert-dispatcher (alert): sends alert events from SQS to Slack
 //
-//   - stream-router: processes DynamoDB stream events, evaluates trigger
-//     conditions, manages reruns, and detects post-run data drift
-//   - orchestrator: evaluates validation rules, executes triggers, polls
-//     job status, and manages trigger lifecycle
-//   - sla-monitor: calculates SLA deadlines, schedules/cancels EventBridge
-//     Scheduler entries, and fires warning/breach alerts
-//   - watchdog: detects silently missed pipeline schedules by scanning for
-//     pipelines that should have run but have no trigger record
-//   - event-sink: persists EventBridge events to DynamoDB for audit trail
-//   - alert-dispatcher: routes SQS alert messages to Slack
-//
-// All handlers share a common [Deps] struct for dependency injection,
-// making the package fully testable with mock implementations of AWS SDK
-// interfaces ([SFNAPI], [EventBridgeAPI], [SchedulerAPI], etc.).
+// The handlers take their dependencies through [Deps], with the AWS clients
+// behind small interfaces ([SFNAPI], [EventBridgeAPI], [SchedulerAPI], etc.)
+// so tests can substitute fakes.
 package lambda

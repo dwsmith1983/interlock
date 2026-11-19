@@ -6,7 +6,6 @@ localstack-up:
 	  --network interlock-net \
 	  -p 4566:4566 \
 	  -e SERVICES=lambda,dynamodb,dynamodbstreams,events,sqs,stepfunctions,iam,logs \
-	  -e LAMBDA_EXECUTOR=docker \
 	  -e LAMBDA_DOCKER_NETWORK=interlock-net \
 	  -e DEBUG=0 \
 	  localstack/localstack:3.7.2
