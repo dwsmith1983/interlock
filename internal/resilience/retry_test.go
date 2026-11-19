@@ -13,7 +13,8 @@ import (
 )
 
 func TestRetry_SucceedsFirstTry(t *testing.T) {
-	err := resilience.Retry(context.Background(), resilience.DefaultRetryConfig(), func() error {
+	cfg := resilience.RetryConfig{MaxRetries: 3, BaseDelay: 100 * time.Millisecond, MaxDelay: 5 * time.Second, JitterFactor: 0.5}
+	err := resilience.Retry(context.Background(), cfg, func() error {
 		return nil
 	})
 	assert.NoError(t, err)

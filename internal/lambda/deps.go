@@ -25,7 +25,6 @@ type Deps struct {
 	SlackBotToken      string
 	SlackChannelID     string
 	EventsTTLDays      int
-	StartedAt          time.Time        // set at Lambda cold start; watchdog skips pre-start schedules
 	NowFunc            func() time.Time // returns current time; defaults to time.Now when nil
 	Logger             *slog.Logger
 }

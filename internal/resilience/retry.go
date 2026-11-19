@@ -15,16 +15,6 @@ type RetryConfig struct {
 	JitterFactor float64 // 0.0 = no jitter, 0.5 = ±50% jitter
 }
 
-// DefaultRetryConfig returns sensible defaults for retrying throttled writes.
-func DefaultRetryConfig() RetryConfig {
-	return RetryConfig{
-		MaxRetries:   3,
-		BaseDelay:    100 * time.Millisecond,
-		MaxDelay:     5 * time.Second,
-		JitterFactor: 0.5,
-	}
-}
-
 // Retry calls fn up to cfg.MaxRetries+1 times with exponential backoff and jitter.
 // It respects context cancellation between attempts.
 func Retry(ctx context.Context, cfg RetryConfig, fn func() error) error {

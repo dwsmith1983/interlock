@@ -190,27 +190,6 @@ func (s *Store) GetConfig(ctx context.Context, pipelineID string) (*types.Pipeli
 	return &cfg, nil
 }
 
-// PutConfig writes a pipeline configuration to the control table.
-func (s *Store) PutConfig(ctx context.Context, cfg types.PipelineConfig) error {
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal config for %q: %w", cfg.Pipeline.ID, err)
-	}
-
-	_, err = s.Client.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &s.ControlTable,
-		Item: map[string]ddbtypes.AttributeValue{
-			"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(cfg.Pipeline.ID)},
-			"SK":     &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
-			"config": &ddbtypes.AttributeValueMemberS{Value: string(data)},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("put config for %q: %w", cfg.Pipeline.ID, err)
-	}
-	return nil
-}
-
 // GetSensorData retrieves sensor data for a given pipeline and sensor key.
 // Returns nil, nil if the item does not exist.
 func (s *Store) GetSensorData(ctx context.Context, pipelineID, sensorKey string) (map[string]interface{}, error) {
@@ -737,20 +716,6 @@ func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date
 		return fmt.Errorf("set trigger status %q/%s/%s: %w", pipelineID, schedule, date, err)
 	}
 	return nil
-}
-
-// HasTriggerForDates checks multiple dates for existing triggers and returns a
-// map of date to existence. Internally calls HasTriggerForDate for each date.
-func (s *Store) HasTriggerForDates(ctx context.Context, pipelineID, schedule string, dates []string) (map[string]bool, error) {
-	result := make(map[string]bool, len(dates))
-	for _, date := range dates {
-		found, err := s.HasTriggerForDate(ctx, pipelineID, schedule, date)
-		if err != nil {
-			return nil, fmt.Errorf("check trigger for date %s: %w", date, err)
-		}
-		result[date] = found
-	}
-	return result, nil
 }
 
 // CreateTriggerIfAbsent writes a trigger row with the given status only if no

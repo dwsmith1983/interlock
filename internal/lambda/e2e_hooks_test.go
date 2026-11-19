@@ -43,28 +43,24 @@ func TestApplyE2EHooks_SetsClockAndScheduler(t *testing.T) {
 	t.Setenv("E2E_SCHEDULE_TABLE", "e2e-schedules")
 
 	tests := []struct {
-		name          string
-		deps          func() *lambda.Deps
-		wantStartedAt time.Time
-		wantTable     bool
+		name      string
+		deps      func() *lambda.Deps
+		wantTable bool
 	}{
 		{
-			name: "store, started-at and scheduler all rewired",
+			name: "store and scheduler rewired",
 			deps: func() *lambda.Deps {
 				return &lambda.Deps{
 					Store:     &store.Store{},
-					StartedAt: time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC),
 					Scheduler: scheduler.New(scheduler.Options{Region: "us-east-1"}),
 				}
 			},
-			wantStartedAt: servedTime,
-			wantTable:     true,
+			wantTable: true,
 		},
 		{
-			name:          "nil store, zero started-at and nil scheduler stay unset",
-			deps:          func() *lambda.Deps { return &lambda.Deps{} },
-			wantStartedAt: time.Time{},
-			wantTable:     false,
+			name:      "nil store and nil scheduler stay unset",
+			deps:      func() *lambda.Deps { return &lambda.Deps{} },
+			wantTable: false,
 		},
 	}
 	for _, tt := range tests {
@@ -83,9 +79,6 @@ func TestApplyE2EHooks_SetsClockAndScheduler(t *testing.T) {
 				if got := d.Store.Now(); !got.Equal(servedTime) {
 					t.Errorf("d.Store.Now() = %v, want %v", got, servedTime)
 				}
-			}
-			if !d.StartedAt.Equal(tt.wantStartedAt) {
-				t.Errorf("d.StartedAt = %v, want %v", d.StartedAt, tt.wantStartedAt)
 			}
 			_, isTable := d.Scheduler.(*e2ehooks.TableScheduler)
 			if isTable != tt.wantTable {
