@@ -82,7 +82,7 @@ type OrchestratorOutput struct {
 
 // SLAMonitorInput is the input to the SLA monitor Lambda.
 type SLAMonitorInput struct {
-	Mode             string `json:"mode"` // calculate, fire-alert, schedule, cancel, reconcile
+	Mode             string `json:"mode"` // fire-alert, cancel
 	PipelineID       string `json:"pipelineId"`
 	ScheduleID       string `json:"scheduleId"`
 	Date             string `json:"date"`
