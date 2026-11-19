@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -86,12 +87,22 @@ func testNow() time.Time {
 	return time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
 }
 
-// countingSFN is a lambda.SFNAPI double that records StartExecution calls, so
-// a test can prove no run was started.
-type countingSFN struct{ calls int }
+// countingSFN is a lambda.SFNAPI double that counts started executions and
+// keeps each one's input. While fail > 0, StartExecution fails without
+// counting and counts fail down, so calls always means "started".
+type countingSFN struct {
+	calls  int
+	fail   int
+	inputs []string
+}
 
-func (c *countingSFN) StartExecution(context.Context, *sfn.StartExecutionInput, ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
+func (c *countingSFN) StartExecution(_ context.Context, in *sfn.StartExecutionInput, _ ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
+	if c.fail > 0 {
+		c.fail--
+		return nil, errors.New("start execution failed")
+	}
 	c.calls++
+	c.inputs = append(c.inputs, *in.Input)
 	return &sfn.StartExecutionOutput{}, nil
 }
 
@@ -426,6 +437,45 @@ func TestHandleRecord_SensorBesideBadConfig(t *testing.T) {
 			}
 			if sfnFake.calls != 1 {
 				t.Fatalf("StartExecution calls = %d, want 1", sfnFake.calls)
+			}
+		})
+	}
+}
+
+// TestHandleRecord_MalformedKeys: a PK without the PIPELINE# prefix, or a JOB#
+// SK without a date, is an error for every routed SK prefix. Each one fails
+// before the config is read, so the Deps hold only a logger. A JOB# row with
+// no event attribute is dropped before its SK is read, since a retry cannot
+// fix it.
+func TestHandleRecord_MalformedKeys(t *testing.T) {
+	tests := []struct {
+		name, pk, sk, wantErr string // wantErr empty means no error
+		noEvent               bool
+	}{
+		{name: "sensor bad PK", pk: "BADFORMAT#p", sk: types.SensorSK("upstream"), wantErr: "unexpected PK format"},
+		{name: "job bad PK", pk: "BADFORMAT#p", sk: types.JobSK("stream", testDate, "1772000000000"), wantErr: "unexpected PK format"},
+		{name: "rerun bad PK", pk: "BADFORMAT#p", sk: types.RerunRequestSK("stream", testDate), wantErr: "unexpected PK format"},
+		{name: "job SK without date", pk: types.PipelinePK("p"), sk: "JOB#malformed", wantErr: "invalid JOB SK format"},
+		{name: "job SK without date, no event attribute", pk: types.PipelinePK("p"), sk: "JOB#malformed", noEvent: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &lambda.Deps{Logger: discardLogger()}
+			record := events.DynamoDBEventRecord{EventName: "INSERT", Change: events.DynamoDBStreamRecord{
+				SequenceNumber: "1",
+				Keys: map[string]events.DynamoDBAttributeValue{
+					"PK": events.NewStringAttribute(tt.pk),
+					"SK": events.NewStringAttribute(tt.sk),
+				},
+				NewImage: map[string]events.DynamoDBAttributeValue{"event": events.NewStringAttribute(types.JobEventFail)},
+			}}
+			if tt.noEvent {
+				delete(record.Change.NewImage, "event")
+			}
+
+			err := handleRecord(context.Background(), d, record)
+			if (err != nil) != (tt.wantErr != "") || err != nil && !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("handleRecord error = %v, want one containing %q", err, tt.wantErr)
 			}
 		})
 	}
