@@ -67,3 +67,12 @@ func TestResolveDriftField(t *testing.T) {
 	assert.Equal(t, "sensor_count", ResolveDriftField(&types.PostRunConfig{}))
 	assert.Equal(t, "count", ResolveDriftField(&types.PostRunConfig{DriftField: "count"}))
 }
+
+func TestMatchesPostRunRule(t *testing.T) {
+	rules := []types.ValidationRule{{Key: "audit"}, {Key: "orders"}}
+	assert.True(t, MatchesPostRunRule("orders", rules))
+	assert.True(t, MatchesPostRunRule("orders#2026-03-03T10", rules), "per-period key")
+	assert.False(t, MatchesPostRunRule("upstream", rules))
+	assert.False(t, MatchesPostRunRule("ord", rules), "a key shorter than the rule")
+	assert.False(t, MatchesPostRunRule("orders", nil))
+}

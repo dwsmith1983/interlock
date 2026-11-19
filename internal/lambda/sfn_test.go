@@ -1,10 +1,15 @@
 package lambda_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
@@ -203,5 +208,21 @@ func TestBuildSFNConfig(t *testing.T) {
 			tt.mutate(cfg)
 			tt.check(t, lambda.BuildSFNConfig(cfg))
 		})
+	}
+}
+
+// failingSFN refuses every StartExecution with err.
+type failingSFN struct{ err error }
+
+func (f failingSFN) StartExecution(context.Context, *sfn.StartExecutionInput, ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
+	return nil, f.err
+}
+
+func TestStartSFNWithName_WrapsStartError(t *testing.T) {
+	limit := errors.New("execution limit exceeded")
+	d := &lambda.Deps{SFNClient: failingSFN{err: limit}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	err := lambda.StartSFNWithName(context.Background(), d, baseConfig(), "gold-orders", "stream", "2026-03-03", "gold-orders-stream-2026-03-03-1")
+	if !errors.Is(err, limit) {
+		t.Errorf("err = %v, want it to wrap %v", err, limit)
 	}
 }
