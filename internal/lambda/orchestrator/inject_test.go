@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"reflect"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -73,6 +74,7 @@ func TestInjectDateArgs(t *testing.T) {
 	// body returns the payload or body and whether it is marked generated.
 	lambdaBody := func(tc types.TriggerConfig) (string, bool) { return tc.Lambda.Payload, tc.Lambda.PayloadGenerated }
 	airflowBody := func(tc types.TriggerConfig) (string, bool) { return tc.Airflow.Body, tc.Airflow.BodyGenerated }
+	httpBody := func(tc types.TriggerConfig) (string, bool) { return tc.HTTP.Body, tc.HTTP.BodyGenerated }
 	bodyTests := []struct {
 		name       string
 		tc         types.TriggerConfig
@@ -97,6 +99,10 @@ func TestInjectDateArgs(t *testing.T) {
 			wantConfig: `{"r":"${INTERLOCK_RUN_ID}"}`,
 			tc: types.TriggerConfig{Airflow: &types.AirflowTriggerConfig{DagID: "d", Run: run(hourly),
 				Body: `{"r":"${INTERLOCK_RUN_ID}"}`}}},
+		{name: "http configured body unchanged", date: daily, body: httpBody,
+			wantConfig: `{"custom": "payload"}`,
+			tc: types.TriggerConfig{HTTP: &types.HTTPTriggerConfig{Method: "POST", URL: "https://example.com/custom",
+				Body: `{"custom": "payload"}`}}},
 	}
 	for _, tt := range bodyTests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -116,6 +122,16 @@ func TestInjectDateArgs(t *testing.T) {
 				t.Error("generated body not marked generated: it would go through variable expansion")
 			}
 		})
+	}
+}
+
+// TestInjectDateArgs_NoSubConfig: a config with no sub-config for its type is
+// left as it is.
+func TestInjectDateArgs_NoSubConfig(t *testing.T) {
+	tc := types.TriggerConfig{Type: types.TriggerLambda}
+	orchestrator.InjectDateArgs(&tc, "2026-03-05")
+	if !reflect.DeepEqual(tc, types.TriggerConfig{Type: types.TriggerLambda}) {
+		t.Errorf("config = %+v, want it unchanged", tc)
 	}
 }
 

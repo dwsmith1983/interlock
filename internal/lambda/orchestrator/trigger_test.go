@@ -1,12 +1,15 @@
 package orchestrator_test
 
 import (
+	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/orchestrator"
+	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -19,6 +22,30 @@ func TestBuildTriggerConfig_UnknownTypeWithoutConfig(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "unsupported trigger type: command") {
 			t.Errorf("config %v: err = %v, want unsupported trigger type", cfg, err)
 		}
+	}
+}
+
+// TestBuildTriggerConfig_KnownTypeWithoutConfig: a known type with no config
+// map gives just the type, with no sub-config and no error.
+func TestBuildTriggerConfig_KnownTypeWithoutConfig(t *testing.T) {
+	for _, cfg := range []map[string]interface{}{nil, {}} {
+		tc, err := orchestrator.BuildTriggerConfig(types.JobConfig{Type: types.TriggerGlue, Config: cfg})
+		if err != nil || !reflect.DeepEqual(tc, types.TriggerConfig{Type: types.TriggerGlue}) {
+			t.Errorf("config %v: got %+v, %v, want only the glue type and no error", cfg, tc, err)
+		}
+	}
+}
+
+// TestHandleOrchestrator_UnknownMode: a mode no state sends is an error.
+func TestHandleOrchestrator_UnknownMode(t *testing.T) {
+	out, err := orchestrator.HandleOrchestrator(context.Background(), testDeps(&storetest.FakeDynamo{}), lambda.OrchestratorInput{
+		Mode: "explode", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01",
+	})
+	if err == nil || err.Error() != `unknown orchestrator mode: "explode"` {
+		t.Errorf("err = %v, want the unknown mode error", err)
+	}
+	if out.Mode != "" || out.Status != "" {
+		t.Errorf("output = %+v, want the zero value", out)
 	}
 }
 
@@ -85,6 +112,11 @@ func TestExtractRunID(t *testing.T) {
 			name:     "legacy generic runId key",
 			metadata: map[string]interface{}{"runId": "abc-123"},
 			want:     "abc-123",
+		},
+		{
+			name:     "legacy generic executionArn key",
+			metadata: map[string]interface{}{"executionArn": "arn:aws:states:us-east-1:123456:execution:my-sfn:run-1"},
+			want:     "arn:aws:states:us-east-1:123456:execution:my-sfn:run-1",
 		},
 		{
 			name:     "empty value falls through to the next key",
