@@ -39,7 +39,7 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 
 	if input.WarningAt == "" && input.BreachAt == "" {
 		if input.MaxDuration != "" && input.SensorArrivalAt != "" {
-			calc, err := handleRelativeSLACalculate(input)
+			calc, err := lambda.HandleSLACalculate(input, d.Now())
 			if err != nil {
 				return lambda.SLAMonitorOutput{}, fmt.Errorf("cancel recalculate (relative): %w", err)
 			}
@@ -58,7 +58,7 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 				}
 				calcInput.Date = lambda.ResolveSLADate(cfg, input.Date)
 			}
-			calc, err := handleSLACalculate(calcInput, d.Now())
+			calc, err := lambda.HandleSLACalculate(calcInput, d.Now())
 			if err != nil {
 				return lambda.SLAMonitorOutput{}, fmt.Errorf("cancel recalculate: %w", err)
 			}
