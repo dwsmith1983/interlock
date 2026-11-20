@@ -161,13 +161,18 @@ variable "emr_cluster_arns" {
 }
 
 variable "emr_serverless_app_arns" {
-  description = "ARNs of EMR Serverless applications. Required when enable_emr_serverless_trigger is true."
+  description = "ARNs of EMR Serverless applications the orchestrator can start job runs on; it can poll their job runs. Required when enable_emr_serverless_trigger is true."
   type        = list(string)
   default     = []
 }
 
 variable "sfn_trigger_arns" {
-  description = "ARNs of Step Functions the orchestrator can start. Required when enable_sfn_trigger is true."
+  description = "ARNs of state machines the orchestrator can start; alias and version ARNs are accepted, and it can poll their executions. Required when enable_sfn_trigger is true."
   type        = list(string)
   default     = []
+
+  validation {
+    condition     = alltrue([for a in var.sfn_trigger_arns : can(regex("^arn:[^:]+:states:[^:]+:[^:]+:stateMachine:[^:]+(:[^:]+)?$", a))])
+    error_message = "sfn_trigger_arns must be state machine ARNs (arn:<partition>:states:<region>:<account>:stateMachine:<name>, optionally followed by :<alias or version>), not execution ARNs."
+  }
 }

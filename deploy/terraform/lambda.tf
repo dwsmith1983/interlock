@@ -704,11 +704,19 @@ resource "aws_iam_role_policy" "emr_serverless_trigger" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["emr-serverless:StartJobRun", "emr-serverless:GetJobRun"]
-      Resource = var.emr_serverless_app_arns
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "emr-serverless:StartJobRun"
+        Resource = var.emr_serverless_app_arns
+      },
+      {
+        # GetJobRun is authorized on the job run, not the application.
+        Effect   = "Allow"
+        Action   = "emr-serverless:GetJobRun"
+        Resource = [for a in var.emr_serverless_app_arns : "${a}/jobruns/*"]
+      },
+    ]
   })
 }
 
@@ -728,11 +736,23 @@ resource "aws_iam_role_policy" "sfn_trigger" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["states:StartExecution", "states:DescribeExecution"]
-      Resource = var.sfn_trigger_arns
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "states:StartExecution"
+        Resource = var.sfn_trigger_arns
+      },
+      {
+        # DescribeExecution is authorized on the execution ARN, which carries
+        # the state machine name but not an alias or version suffix.
+        Effect = "Allow"
+        Action = "states:DescribeExecution"
+        Resource = [
+          for a in var.sfn_trigger_arns :
+          "${join(":", slice(split(":", a), 0, 5))}:execution:${split(":", a)[6]}:*"
+        ]
+      },
+    ]
   })
 }
 
