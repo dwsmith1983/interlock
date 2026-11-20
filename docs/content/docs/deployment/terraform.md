@@ -126,6 +126,7 @@ terraform apply
 | `events_table_ttl_days` | number | `90` | TTL in days for events table records |
 | `lambda_concurrency` | object | See below | Reserved concurrent executions per Lambda function |
 | `sns_alarm_topic_arn` | string | `""` | SNS topic ARN for CloudWatch alarm notifications. When set, all alarms send to this topic |
+| `kms_key_arn` | string | `""` | Customer managed KMS key for the DynamoDB tables and SQS queues. Empty = AWS managed keys for the tables and stream-router DLQs, SQS-managed encryption for the alert queues. When set, the key policy must let EventBridge use the key; see [Encryption](#encryption) |
 
 #### Lambda Concurrency Defaults
 
@@ -143,6 +144,27 @@ lambda_concurrency = {
 ```
 
 Set any key to `-1` to use unreserved concurrency (Lambda default).
+
+## Encryption
+
+With `kms_key_arn` empty, the tables use the AWS managed DynamoDB key, the stream-router DLQs the AWS managed SQS key, and the alert queues SQS-managed encryption (SSE-SQS). The alert queues cannot use the AWS managed SQS key (`alias/aws/sqs`): EventBridge delivers to them as `events.amazonaws.com`, and that key's policy cannot be changed to allow it.
+
+When you set `kms_key_arn`, every table and queue uses your key, and its key policy must let EventBridge use it, or alerts never reach the queue. The condition limits the grant to EventBridge rules in your own account; the alert queue's policy already accepts messages only from the module's two alert rules:
+
+```json
+{
+  "Sid": "Allow EventBridge to use the key",
+  "Effect": "Allow",
+  "Principal": { "Service": "events.amazonaws.com" },
+  "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": { "aws:SourceAccount": "<account-id>" }
+  }
+}
+```
+
+The module grants the stream-router and alert-dispatcher roles `kms:Decrypt` and `kms:GenerateDataKey` on the key, for the queues they write and read.
 
 ## Secrets Manager
 

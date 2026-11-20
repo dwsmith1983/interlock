@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Every job learns the date it runs for, so a rerun or retry processes its own date.** A `step-function` job gets `par_day` (`YYYYMMDD`) and, for an hourly date, `par_hour` (`HH`) as top-level keys of its execution input, and an `emr` step gets `--par_day=YYYYMMDD` and `--par_hour=HH`, like `glue`. A `lambda` payload and an `airflow` body expand the run identity variables; with none configured, the function's event or the DAG run's `conf` is the object the `http` default body is (`par_day`, `par_hour` for hourly dates, `pipelineId`, `scheduleId`, `date`, `runId`). `emr-serverless` and `databricks` jobs do not receive the date yet.
+- **Alerts never reached Slack on a default deploy.** The alert queues were encrypted with the AWS managed SQS key, which EventBridge cannot use, so it could not deliver alert events to them. They now use SQS-managed encryption (SSE-SQS) unless `kms_key_arn` is set; a customer key needs the EventBridge key policy statement shown in the Terraform deployment docs.
 - **The `step-function` docs showed an `input` field that was never read.** The config field is `arguments`, a map whose entries become top-level keys of the execution input; the docs now say so. Nothing was removed.
 
 ## [0.11.0] - 2026-11-18

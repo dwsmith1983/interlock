@@ -101,7 +101,7 @@ variable "lambda_concurrency" {
 }
 
 variable "kms_key_arn" {
-  description = "ARN of a KMS key for encrypting DynamoDB tables and SQS queues at rest. Empty = AWS-managed encryption."
+  description = "ARN of a customer managed KMS key for the DynamoDB tables and SQS queues. Empty = AWS managed keys, and SQS-managed encryption for the alert queues."
   type        = string
   default     = ""
 }

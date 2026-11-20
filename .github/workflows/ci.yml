@@ -119,6 +119,32 @@ jobs:
       - name: Check e2e hook wiring and linking
         run: make guards
 
+  # Plans the Terraform module against a mocked AWS provider. The provider is
+  # several hundred MB, so the plugin cache is kept between runs.
+  terraform-test:
+    name: Terraform test
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tf-plugin-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('deploy/terraform/main.tf') }}
+
+      - name: Run terraform test
+        run: make tf-test
+
   # The LocalStack stack and the harness run in containers, so the job needs
   # only the checkout. make e2e streams the compose logs and tears down.
   e2e:
@@ -187,7 +213,7 @@ jobs:
   # did not change.
   quality-gate:
     name: Quality Gate
-    needs: [changes, lint, test, e2e-hooks, build-guards, e2e, docs-build, deploy-scripts]
+    needs: [changes, lint, test, e2e-hooks, build-guards, terraform-test, e2e, docs-build, deploy-scripts]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -201,6 +227,7 @@ jobs:
           TEST: ${{ needs.test.result }}
           E2E_HOOKS: ${{ needs.e2e-hooks.result }}
           BUILD_GUARDS: ${{ needs.build-guards.result }}
+          TERRAFORM_TEST: ${{ needs.terraform-test.result }}
           E2E: ${{ needs.e2e.result }}
           DOCS_BUILD: ${{ needs.docs-build.result }}
           DEPLOY_SCRIPTS_TESTS: ${{ needs.deploy-scripts.result }}
@@ -241,6 +268,7 @@ jobs:
           check test "$TEST" "$CODE"
           check e2e-hooks "$E2E_HOOKS" "$CODE"
           check build-guards "$BUILD_GUARDS" "$CODE"
+          check terraform-test "$TERRAFORM_TEST" "$CODE"
           check e2e "$E2E" "$CODE"
           check docs-build "$DOCS_BUILD" "$DOCS"
           check deploy-scripts "$DEPLOY_SCRIPTS_TESTS" "$DEPLOY_SCRIPTS"
