@@ -13,6 +13,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
@@ -70,6 +71,16 @@ func main() {
 		os.Exit(1)
 	}
 	_ = telShutdown // shutdown reserved for Lambda container termination, not per-invocation
+
+	// Trigger auth tokens can come from Secrets Manager instead of plain
+	// Lambda environment variables.
+	if secretARN := os.Getenv("TRIGGER_SECRETS_ARN"); secretARN != "" {
+		smClient := secretsmanager.NewFromConfig(cfg)
+		if err := trigger.LoadSecretEnv(context.Background(), smClient, secretARN); err != nil {
+			logger.Error("failed to load trigger secrets", "arn", secretARN, "error", err)
+			os.Exit(1)
+		}
+	}
 
 	runner := trigger.NewRunner()
 	deps := &ilambda.Deps{
