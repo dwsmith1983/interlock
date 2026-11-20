@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,27 +43,84 @@ func NewTriggerError(category types.FailureCategory, message string, err error) 
 
 const maxErrorBodyBytes = 512
 
+// maxResponseBytes bounds every response body read: a Databricks runs/get for
+// a multi-task job can run to hundreds of KiB.
+const maxResponseBytes = 1 << 20
+
+// errResponseTooLarge is fixed text, since the response may quote the request.
+var errResponseTooLarge = errors.New("response exceeds 1 MiB")
+
+// readBounded reads a response body of up to maxResponseBytes. A larger one is
+// an error, not a truncated body that would fail to parse.
+func readBounded(r io.Reader) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxResponseBytes {
+		return nil, errResponseTooLarge
+	}
+	return b, nil
+}
+
 const defaultTriggerTimeout = 30 * time.Second
+
+// maxRedirects matches the http.Client default policy that sameOriginRedirect
+// replaces.
+const maxRedirects = 10
 
 // defaultHTTPClient is shared across HTTP and Airflow triggers to reuse connections.
 // It uses an SSRF-safe transport that rejects private, loopback, and link-local addresses.
 var defaultHTTPClient = &http.Client{
-	Timeout:   defaultTriggerTimeout,
-	Transport: newSSRFSafeTransport(),
+	Timeout:       defaultTriggerTimeout,
+	Transport:     newSSRFSafeTransport(),
+	CheckRedirect: sameOriginRedirect,
+}
+
+// sameOriginRedirect follows a redirect only on the original request's Host
+// (with port), keeping the previous hop's scheme or going from http to https,
+// and keeping the method, so configured headers such as a token never go to
+// another host or over plain http, and a POST is never turned into a GET
+// without its body. A refused redirect returns the 3xx as the response.
+func sameOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	orig, prev := via[0], via[len(via)-1]
+	upgrade := prev.URL.Scheme == "http" && req.URL.Scheme == "https"
+	if req.URL.Host != orig.URL.Host || (req.URL.Scheme != prev.URL.Scheme && !upgrade) || req.Method != orig.Method {
+		return http.ErrUseLastResponse
+	}
+	return nil
+}
+
+// failedStatus describes a response with status 300 or more, sanitized and
+// redacted with values: a redirect sameOriginRedirect refused names its target
+// (without userinfo or query) and how to fix it, any other status its code and
+// body.
+func failedStatus(resp *http.Response, body []byte, values []string) string {
+	loc, err := resp.Location() // resolved against the request URL
+	if resp.StatusCode >= 400 || err != nil {
+		return fmt.Sprintf("returned status %d: %s", resp.StatusCode, sanitizeBody(body, values, maxErrorBodyBytes))
+	}
+	text := fmt.Sprintf("redirect to %s://%s%s refused (a redirect must keep the host, port and method and must not go "+
+		"from https to http); point the trigger URL at the final endpoint", loc.Scheme, loc.Host, loc.Path)
+	return sanitizeBody([]byte(text), values, maxErrorBodyBytes)
 }
 
 // resolveHTTPClient returns a client with the given timeout in seconds. If
 // timeoutSec is zero or matches the default, the shared defaultHTTPClient is
 // returned to reuse connections. When a custom timeout is required, the returned
-// client inherits the transport from defaultHTTPClient so that transport-level
-// settings (including SSRF protection and test overrides) are preserved.
+// client inherits the transport and redirect policy from defaultHTTPClient so
+// that SSRF protection, same-origin redirects and test overrides are preserved.
 func resolveHTTPClient(timeoutSec int) *http.Client {
 	if timeoutSec > 0 {
 		timeout := time.Duration(timeoutSec) * time.Second
 		if timeout != defaultTriggerTimeout {
 			return &http.Client{
-				Timeout:   timeout,
-				Transport: defaultHTTPClient.Transport,
+				Timeout:       timeout,
+				Transport:     defaultHTTPClient.Transport,
+				CheckRedirect: defaultHTTPClient.CheckRedirect,
 			}
 		}
 	}
@@ -177,11 +235,14 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 
 		if resp.StatusCode >= 500 {
 			lastStatusCode = resp.StatusCode
-			lastBody, _ = io.ReadAll(resp.Body)
+			var readErr error
+			if lastBody, readErr = readBounded(resp.Body); readErr != nil {
+				lastBody = []byte(readErr.Error())
+			}
 			_ = resp.Body.Close()
 			return fmt.Errorf("server error %d", resp.StatusCode) // transient, retry
 		}
-		return nil // success or 4xx — stop retrying
+		return nil // success, a refused redirect or 4xx: stop retrying
 	})
 
 	if err != nil {
@@ -193,9 +254,21 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		respBody, _ := io.ReadAll(resp.Body)
-		msg := fmt.Sprintf("trigger returned status %d: %s", resp.StatusCode, sanitizeBody(respBody, secretValues(cfg.Headers, cfg.Body), maxErrorBodyBytes))
+	// A 303 See Other to a POST (or other non-GET request) answers a processed
+	// request: the job reports its own result, as after a 2xx, and the redirect
+	// is not followed. A GET or HEAD follows a 303 like any other redirect, so
+	// one that reaches here was refused.
+	if resp.StatusCode == http.StatusSeeOther && method != http.MethodGet && method != http.MethodHead {
+		return nil
+	}
+	// Any other 3xx here is a redirect sameOriginRedirect refused, so the
+	// request was not handled.
+	if resp.StatusCode >= 300 && resp.StatusCode < 500 {
+		respBody, readErr := readBounded(resp.Body)
+		if readErr != nil {
+			respBody = []byte(readErr.Error())
+		}
+		msg := "trigger " + failedStatus(resp, respBody, secretValues(cfg.Headers, cfg.Body))
 		return NewTriggerError(types.FailurePermanent, msg, nil)
 	}
 

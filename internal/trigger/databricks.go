@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -52,13 +51,13 @@ func ExecuteDatabricks(ctx context.Context, cfg *types.DatabricksTriggerConfig, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readBounded(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("databricks trigger: reading response: %w", err)
 	}
 
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("databricks trigger: returned status %d: %s", resp.StatusCode, sanitizeBody(respBody, secretValues(cfg.Headers), maxErrorBodyBytes))
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("databricks trigger: %s", failedStatus(resp, respBody, secretValues(cfg.Headers)))
 	}
 
 	var result map[string]interface{}
@@ -104,13 +103,13 @@ func (r *Runner) checkDatabricksStatus(ctx context.Context, metadata map[string]
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readBounded(resp.Body)
 	if err != nil {
 		return StatusResult{}, fmt.Errorf("databricks status: reading response: %w", err)
 	}
 
-	if resp.StatusCode >= 400 {
-		return StatusResult{}, fmt.Errorf("databricks status: returned status %d: %s", resp.StatusCode, sanitizeBody(respBody, secretValues(headers), maxErrorBodyBytes))
+	if resp.StatusCode >= 300 {
+		return StatusResult{}, fmt.Errorf("databricks status: %s", failedStatus(resp, respBody, secretValues(headers)))
 	}
 
 	var result map[string]interface{}

@@ -66,7 +66,9 @@ func WithLambdaClient(c LambdaAPI) RunnerOption {
 	return func(r *Runner) { r.lambdaClient = c }
 }
 
-// WithHTTPClient sets a custom HTTP client for HTTP-based triggers.
+// WithHTTPClient sets the HTTP client the databricks trigger and status check
+// use. It replaces the default client's redirect rule and SSRF-safe transport,
+// so the caller's client must provide both.
 func WithHTTPClient(c *http.Client) RunnerOption {
 	return func(r *Runner) { r.httpClient = c }
 }

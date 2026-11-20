@@ -402,6 +402,26 @@ holds the token), or other secrets an endpoint or function holds, so keep
 trigger endpoints from echoing credentials and functions from putting their
 event in error messages.
 
+Trigger calls follow a redirect only to the same host as written in the URL,
+including any explicit port, keeping the scheme or going from `http` to `https`,
+and keeping the method. An `http` to `https` upgrade is followed when the URL
+has no port (`http://a.example` to `https://a.example`); with an explicit port
+the port changes too, and the redirect is refused. A redirect to another host or
+port, from `https` to `http`, or one that changes the method (a 301 or 302 turns
+a POST into a GET and drops its body) is not followed, so configured headers
+never travel elsewhere and a request is never sent without its body. The call
+fails with an error naming the redirect target (without userinfo or query);
+point the trigger URL at the final endpoint.
+
+An `http` job whose POST (or other non-GET request) is answered with 303 See
+Other counts as triggered, as for a 2xx: the endpoint processed the request, and
+the job reports its own result. The redirect is not followed. A GET follows a
+same-origin 303 like any other redirect. `airflow` and `databricks` calls fail
+on any 3xx, since they need the run ID from a 2xx body.
+
+`http`, `airflow` and `databricks` responses are read up to 1 MiB. A larger one
+fails with `response exceeds 1 MiB`.
+
 Anyone with write access to the control table, where pipeline configs live, can
 send any `INTERLOCK_` value to a URL of their choice, for example through an
 `http` trigger's headers or body. Write access to the control table therefore

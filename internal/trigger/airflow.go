@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -58,13 +57,13 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readBounded(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("airflow trigger: reading response: %w", err)
 	}
 
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("airflow trigger: returned status %d: %s", resp.StatusCode, sanitizeBody(respBody, secretValues(cfg.Headers, cfg.Body), maxErrorBodyBytes))
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("airflow trigger: %s", failedStatus(resp, respBody, secretValues(cfg.Headers, cfg.Body)))
 	}
 
 	var result map[string]interface{}
@@ -106,13 +105,13 @@ func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string,
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readBounded(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("airflow status: reading response: %w", err)
 	}
 
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("airflow status: returned status %d: %s", resp.StatusCode, sanitizeBody(respBody, secretValues(headers), maxErrorBodyBytes))
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("airflow status: %s", failedStatus(resp, respBody, secretValues(headers)))
 	}
 
 	var result map[string]interface{}
