@@ -1,4 +1,4 @@
-.PHONY: test build-lambda lint fmt vet clean audit e2e-check guards e2e
+.PHONY: test build-lambda lint fmt vet clean audit e2e-check guards e2e tf-test
 
 # Only e2e builds may link this package; audit checks both directions.
 E2EHOOKS_PKG := github.com/dwsmith1983/interlock/internal/e2ehooks
@@ -41,6 +41,19 @@ guards:
 	echo 'audit: ok: -tags e2e Lambda build links $(E2EHOOKS_PKG)'
 
 audit: lint test e2e-check guards
+
+# Plans the Terraform module against a mocked AWS provider; no credentials or
+# account needed. Needs Terraform 1.7 or later, the first with mock providers.
+# Set TF_PLUGIN_CACHE_DIR to reuse the downloaded provider.
+# The module keeps no lock file, and without one init skips the cache unless
+# TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE is set.
+TF_DIR := deploy/terraform
+
+tf-test:
+	@if [ -n "$$TF_PLUGIN_CACHE_DIR" ]; then mkdir -p "$$TF_PLUGIN_CACHE_DIR"; fi
+	TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE=true \
+		terraform -chdir=$(TF_DIR) init -backend=false -input=false
+	terraform -chdir=$(TF_DIR) test
 
 # LocalStack end-to-end run (needs Docker). Always tears the stack down, also
 # on Ctrl-C or a CI cancel, and keeps the harness exit code. Not part of audit.

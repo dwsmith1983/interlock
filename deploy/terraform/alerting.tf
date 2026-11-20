@@ -1,12 +1,19 @@
 # -----------------------------------------------------------------------------
 # SQS alert queue — receives alert-worthy EventBridge events for Slack delivery
+#
+# EventBridge writes to these queues as events.amazonaws.com, which the AWS
+# managed SQS key (alias/aws/sqs) does not allow, and its key policy cannot be
+# changed. So the queues use SQS-managed encryption (SSE-SQS) by default. With
+# kms_key_arn set they use that key, whose policy must let events.amazonaws.com
+# call kms:Decrypt and kms:GenerateDataKey.
 # -----------------------------------------------------------------------------
 
 resource "aws_sqs_queue" "alert_dlq" {
   name                              = "${var.environment}-interlock-alert-dlq"
   message_retention_seconds         = 1209600 # 14 days
-  kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : "alias/aws/sqs"
-  kms_data_key_reuse_period_seconds = 300
+  kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : null
+  kms_data_key_reuse_period_seconds = var.kms_key_arn != "" ? 300 : null
+  sqs_managed_sse_enabled           = var.kms_key_arn == "" ? true : null
   tags                              = var.tags
 }
 
@@ -14,8 +21,9 @@ resource "aws_sqs_queue" "alert" {
   name                              = "${var.environment}-interlock-alerts"
   message_retention_seconds         = 86400 # 1 day
   visibility_timeout_seconds        = 60
-  kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : "alias/aws/sqs"
-  kms_data_key_reuse_period_seconds = 300
+  kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : null
+  kms_data_key_reuse_period_seconds = var.kms_key_arn != "" ? 300 : null
+  sqs_managed_sse_enabled           = var.kms_key_arn == "" ? true : null
   tags                              = var.tags
 
   redrive_policy = jsonencode({

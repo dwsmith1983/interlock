@@ -352,8 +352,8 @@ The Terraform module provides opt-in variables to grant the orchestrator Lambda 
 |---|---|---|
 | `enable_glue_trigger` | `false` | `glue:StartJobRun`, `glue:GetJobRun`, `logs:FilterLogEvents` (scoped to `/aws-glue/jobs/logs-v2`) |
 | `enable_emr_trigger` | `false` | `elasticmapreduce:AddJobFlowSteps`, `elasticmapreduce:DescribeStep` |
-| `enable_emr_serverless_trigger` | `false` | `emr-serverless:StartJobRun`, `emr-serverless:GetJobRun` |
-| `enable_sfn_trigger` | `false` | `states:StartExecution`, `states:DescribeExecution` |
+| `enable_emr_serverless_trigger` | `false` | `emr-serverless:StartJobRun` on `emr_serverless_app_arns`, `emr-serverless:GetJobRun` on their job runs |
+| `enable_sfn_trigger` | `false` | `states:StartExecution` on `sfn_trigger_arns`, `states:DescribeExecution` on their executions |
 | `enable_lambda_trigger` | `false` | `lambda:InvokeFunction` on `lambda_trigger_arns` (required when enabled) |
 
 Enable only the trigger types your pipelines use to maintain least-privilege IAM policies.

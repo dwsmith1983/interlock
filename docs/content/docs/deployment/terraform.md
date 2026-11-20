@@ -126,6 +126,7 @@ terraform apply
 | `events_table_ttl_days` | number | `90` | TTL in days for events table records |
 | `lambda_concurrency` | object | See below | Reserved concurrent executions per Lambda function |
 | `sns_alarm_topic_arn` | string | `""` | SNS topic ARN for CloudWatch alarm notifications. When set, all alarms send to this topic |
+| `kms_key_arn` | string | `""` | Customer managed KMS key for the DynamoDB tables and SQS queues. Empty = AWS managed keys for the tables and stream-router DLQs, SQS-managed encryption for the alert queues. When set, the key policy must let EventBridge use the key; see [Encryption](#encryption) |
 
 #### Lambda Concurrency Defaults
 
@@ -143,6 +144,29 @@ lambda_concurrency = {
 ```
 
 Set any key to `-1` to use unreserved concurrency (Lambda default).
+
+## Encryption
+
+With `kms_key_arn` empty, the tables use the AWS managed DynamoDB key, the stream-router DLQs the AWS managed SQS key, and the alert queues SQS-managed encryption (SSE-SQS). The alert queues cannot use the AWS managed SQS key (`alias/aws/sqs`): EventBridge delivers to them as `events.amazonaws.com`, and that key's policy cannot be changed to allow it.
+
+When you set `kms_key_arn`, every table and queue uses your key, and its key policy must let EventBridge use it, or alerts never reach the queue. The condition limits the grant to EventBridge rules in the account the module is deployed in, so `<account-id>` is that account, which need not be the one that owns the key; the alert queue's policy already accepts messages only from the module's two alert rules:
+
+```json
+{
+  "Sid": "Allow EventBridge to use the key",
+  "Effect": "Allow",
+  "Principal": { "Service": "events.amazonaws.com" },
+  "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+  "Resource": "*",
+  "Condition": {
+    "StringEquals": { "aws:SourceAccount": "<account-id>" }
+  }
+}
+```
+
+If the key policy does not let EventBridge use the key, the deploy still succeeds and alerts are dropped without an error: the `FailedInvocations` metric of the alert rules rises, and CloudTrail shows a KMS `AccessDenied` for `events.amazonaws.com`. When that happens, check this statement and its `aws:SourceAccount` condition.
+
+The module grants every Lambda role `kms:Decrypt` and `kms:GenerateDataKey` on the key: all six read or write the encrypted tables, the stream-router also reads the table streams and sends to its DLQs, and the alert-dispatcher receives from the alert queue. With a key in the same account, its key policy must let IAM policies grant it (the default key policy does, through the account root statement) or name the six roles. With a key in another account, the key policy must also allow this account or those roles, and the role grants are still needed. Use a key dedicated to this deployment: the Lambda roles can decrypt anything else the key protects.
 
 ## Secrets Manager
 

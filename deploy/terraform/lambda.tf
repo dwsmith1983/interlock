@@ -502,27 +502,17 @@ resource "aws_iam_role_policy" "sqs_dlq" {
 }
 
 # -----------------------------------------------------------------------------
-# KMS — grant Lambda roles decrypt/encrypt access when a custom CMK is provided
+# KMS: with a customer managed key, every Lambda role can use it. DynamoDB
+# decrypts the table key as the caller on every table or stream read and write;
+# SQS needs Decrypt to receive and Decrypt plus GenerateDataKey to send. One
+# action list for all roles is deliberate: only stream-router sends to an
+# encrypted queue and needs GenerateDataKey, the rest need only Decrypt.
 # -----------------------------------------------------------------------------
 
-resource "aws_iam_role_policy" "kms_sqs_stream_router" {
-  count = var.kms_key_arn != "" ? 1 : 0
-  name  = "kms-sqs"
-  role  = aws_iam_role.lambda["stream-router"].id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
-      Resource = [var.kms_key_arn]
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "kms_sqs_alert_dispatcher" {
-  count = var.kms_key_arn != "" ? 1 : 0
-  name  = "kms-sqs"
-  role  = aws_iam_role.lambda["alert-dispatcher"].id
+resource "aws_iam_role_policy" "kms" {
+  for_each = var.kms_key_arn != "" ? local.lambda_names : toset([])
+  name     = "kms"
+  role     = aws_iam_role.lambda[each.key].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -704,11 +694,19 @@ resource "aws_iam_role_policy" "emr_serverless_trigger" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["emr-serverless:StartJobRun", "emr-serverless:GetJobRun"]
-      Resource = var.emr_serverless_app_arns
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "emr-serverless:StartJobRun"
+        Resource = var.emr_serverless_app_arns
+      },
+      {
+        # GetJobRun is authorized on the job run, not the application.
+        Effect   = "Allow"
+        Action   = "emr-serverless:GetJobRun"
+        Resource = [for a in var.emr_serverless_app_arns : "${a}/jobruns/*"]
+      },
+    ]
   })
 }
 
@@ -728,11 +726,23 @@ resource "aws_iam_role_policy" "sfn_trigger" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["states:StartExecution", "states:DescribeExecution"]
-      Resource = var.sfn_trigger_arns
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "states:StartExecution"
+        Resource = var.sfn_trigger_arns
+      },
+      {
+        # DescribeExecution is authorized on the execution ARN, which carries
+        # the state machine name but not an alias or version suffix.
+        Effect = "Allow"
+        Action = "states:DescribeExecution"
+        Resource = [
+          for a in var.sfn_trigger_arns :
+          "${join(":", slice(split(":", a), 0, 5))}:execution:${split(":", a)[6]}:*"
+        ]
+      },
+    ]
   })
 }
 
