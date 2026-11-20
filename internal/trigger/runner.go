@@ -224,7 +224,12 @@ func (r *Runner) checkAirflowStatus(ctx context.Context, metadata map[string]int
 		return StatusResult{State: RunCheckRunning, Message: "missing airflow metadata"}, nil
 	}
 
-	state, err := CheckAirflowStatus(ctx, airflowURL, dagID, dagRunID, headers, r.httpClient)
+	apiVersion, err := airflowAPIVersion(metadata)
+	if err != nil {
+		return StatusResult{}, err
+	}
+
+	state, err := CheckAirflowStatus(ctx, airflowURL, dagID, dagRunID, apiVersion, headers, r.httpClient)
 	if err != nil {
 		return StatusResult{}, err
 	}
@@ -237,6 +242,26 @@ func (r *Runner) checkAirflowStatus(ctx context.Context, metadata map[string]int
 	default:
 		return StatusResult{State: RunCheckRunning, Message: state}, nil
 	}
+}
+
+// airflowAPIVersion reads the airflow_api_version ExecuteAirflow records. The
+// metadata round-trips through JSON, so the number can come back as a float64.
+// A run started before the key was recorded has none and used the v1 API.
+// CheckAirflowStatus rejects a version it does not support.
+func airflowAPIVersion(metadata map[string]interface{}) (int, error) {
+	v, ok := metadata["airflow_api_version"]
+	if !ok {
+		return 2, nil
+	}
+	switch n := v.(type) {
+	case int:
+		return n, nil
+	case float64:
+		if float64(int(n)) == n {
+			return int(n), nil
+		}
+	}
+	return 0, fmt.Errorf("airflow status: airflow_api_version %#v is not a whole number", v)
 }
 
 // getAWSConfig returns the shared AWS config, loading it lazily on first call.

@@ -48,6 +48,9 @@ type AirflowTriggerConfig struct {
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	Body    string            `yaml:"body,omitempty" json:"body,omitempty"`
 	Timeout int               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	// APIVersion is the Airflow major version whose REST API is called: 2
+	// (the default when unset) or 3.
+	APIVersion int `yaml:"api_version,omitempty" json:"apiVersion,omitempty"`
 	// Run identifies the launch. The orchestrator sets it; it is never
 	// configured. Its fields expand as ${INTERLOCK_*} variables in Body.
 	Run RunIdentity `yaml:"-" json:"-"`

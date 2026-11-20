@@ -562,3 +562,30 @@ func TestValidate_Timezone(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_AirflowAPIVersion(t *testing.T) {
+	withVersion := func(jobType types.TriggerType, version interface{}) *types.PipelineConfig {
+		return &types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "orders"},
+			Job:      types.JobConfig{Type: jobType, Config: map[string]interface{}{"dagId": "etl", "apiVersion": version}},
+		}
+	}
+	// YAML decodes the number as an int, JSON as a float64.
+	for _, v := range []interface{}{0, 2, 3, float64(2), float64(3), nil} {
+		assert.Empty(t, ValidatePipelineConfig(withVersion(types.TriggerAirflow, v)), "apiVersion %#v should be accepted", v)
+	}
+	assert.Empty(t, ValidatePipelineConfig(&types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "orders"},
+		Job:      types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{"dagId": "etl"}},
+	}), "an unset apiVersion should be accepted")
+	for v, shown := range map[interface{}]string{1: "1", 4: "4", float64(4): "4", 2.5: "2.5", "3": `"3"`} {
+		assert.Equal(t, []string{"job.config.apiVersion " + shown + " must be 2 or 3"},
+			ValidatePipelineConfig(withVersion(types.TriggerAirflow, v)), "apiVersion %#v should be rejected", v)
+	}
+	// The trigger config decoder matches keys without regard to case.
+	assert.Equal(t, []string{"job.config.apiVersion 4 must be 2 or 3"}, ValidatePipelineConfig(&types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "orders"},
+		Job:      types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{"dagId": "etl", "apiversion": 4}},
+	}))
+	assert.Empty(t, ValidatePipelineConfig(withVersion(types.TriggerHTTP, 4)), "apiVersion is an airflow setting")
+}
