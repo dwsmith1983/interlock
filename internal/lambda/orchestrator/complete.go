@@ -19,7 +19,8 @@ const StatusRetrying = "retrying"
 // only place that retries a failed job. Success sets COMPLETED, records the
 // completion time (which starts the post-run watch window) and captures the
 // post-run baseline. A fail or timeout starts the next attempt, or sets
-// FAILED_FINAL when the date is excluded or the retry budget is spent.
+// FAILED_FINAL when the date is excluded, the job's outcome is unknown or the
+// retry budget is spent.
 func handleCompleteTrigger(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
 	if input.Event != types.JobEventSuccess {
 		return handleRunFailure(ctx, d, input)
@@ -58,9 +59,17 @@ func handleRunFailure(ctx context.Context, d *lambda.Deps, input lambda.Orchestr
 			fmt.Sprintf("job failure retry skipped for %s: execution date %s excluded by calendar", pipelineID, date), nil)
 	}
 
+	category, err := failureCategory(ctx, d, input)
+	if err != nil {
+		return lambda.OrchestratorOutput{}, err
+	}
 	maxRetries := cfg.Job.MaxRetries
-	if failureCategory(ctx, d, input) == types.FailurePermanent {
+	switch category {
+	case types.FailurePermanent:
 		maxRetries = types.IntOrDefault(cfg.Job.MaxCodeRetries, 1)
+	case types.FailureOutcomeUnknown:
+		d.Logger.WarnContext(ctx, "job outcome unknown, not retrying", "pipeline", pipelineID, "runId", input.RunID)
+		return failFinal(ctx, d, input, "", "", nil)
 	}
 	retries := lambda.RetriesSoFar(input.ExecutionName)
 	if retries >= maxRetries {
@@ -143,19 +152,17 @@ func holdLock(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInpu
 	return nil
 }
 
-// failureCategory reads the run's own terminal row. No row, or a failed
-// lookup, counts as transient.
-func failureCategory(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) types.FailureCategory {
+// failureCategory reads the run's own terminal row; no row counts as
+// transient. A failed lookup is an error, which the Task's retry reads again.
+func failureCategory(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (types.FailureCategory, error) {
 	rec, err := d.Store.GetJobResult(ctx, input.PipelineID, input.ScheduleID, input.Date, input.RunID)
 	if err != nil {
-		d.Logger.WarnContext(ctx, "job result lookup failed, treating failure as transient",
-			"pipeline", input.PipelineID, "runId", input.RunID, "error", err)
-		return types.FailureTransient
+		return "", fmt.Errorf("read failure category: %w", err)
 	}
 	if rec == nil {
-		return types.FailureTransient
+		return types.FailureTransient, nil
 	}
-	return types.FailureCategory(rec.Category)
+	return types.FailureCategory(rec.Category), nil
 }
 
 // failFinal sets FAILED_FINAL and then publishes eventType, if any. Writing

@@ -206,6 +206,13 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 			wantOps: []string{"rerun " + r2, "start " + r2}, wantTrigger: running, wantTTL: true, wantReruns: []string{r2},
 		},
 		{
+			// The job may still be running, so neither budget applies.
+			name: "OutcomeUnknownIsFinal", maxRetries: 2, tweak: func(c *types.PipelineConfig) { c.Job.MaxCodeRetries = &one },
+			rows:    []map[string]ddbtypes.AttributeValue{categorizedRow("200", ctExec, types.FailureOutcomeUnknown)},
+			calls:   []ctCall{failCall(ctExec, final, "")},
+			wantOps: []string{toFinal}, wantTrigger: final,
+		},
+		{
 			name: "RetriedLambdaDoesNotDoubleStart", maxRetries: 2,
 			calls:   []ctCall{failCall(ctExec, retrying, r1), failCall(ctExec, retrying, r1)},
 			wantOps: []string{"rerun " + r1, "start " + r1, "start " + r1}, wantTrigger: running, wantTTL: true, wantReruns: []string{r1},
@@ -218,9 +225,10 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 			wantOps: []string{"rerun " + r1, "start " + r1}, wantTrigger: running, wantTTL: true, wantReruns: []string{r1},
 		},
 		{
-			name: "TimeoutWithoutRowRetries_LookupError", maxRetries: 1, tweak: func(c *types.PipelineConfig) { c.Job.MaxCodeRetries = &zero },
-			calls:   []ctCall{{types.JobEventTimeout, ctExec, "", retrying, r1, ""}},
-			wantOps: []string{"rerun " + r1, "start " + r1}, wantTrigger: running, wantTTL: true, wantReruns: []string{r1},
+			// The Task's retry reads the row again; nothing starts on a guess.
+			name: "LookupErrorIsAnError", maxRetries: 1,
+			calls:       []ctCall{{types.JobEventTimeout, ctExec, "", "", "", "runID is required"}},
+			wantTrigger: running,
 		},
 		{
 			name: "ExcludedDateIsFinal", maxRetries: 2,
@@ -291,7 +299,7 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 		},
 		{
 			name: "EmptyExecutionNameIsAnError", maxRetries: 1,
-			calls:       []ctCall{{types.JobEventFail, "", "", "", "", "executionName is required"}},
+			calls:       []ctCall{{types.JobEventFail, "", ctExec, "", "", "executionName is required"}},
 			wantTrigger: running,
 		},
 	}
@@ -458,7 +466,7 @@ func TestCompleteTrigger_PostRunBaseline(t *testing.T) {
 			rec.ops = nil
 
 			out, err := orchestrator.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
-				Mode: "complete-trigger", PipelineID: "p", ScheduleID: "s", Date: date, Event: cmp.Or(tt.event, types.JobEventSuccess),
+				Mode: "complete-trigger", PipelineID: "p", ScheduleID: "s", Date: date, Event: cmp.Or(tt.event, types.JobEventSuccess), RunID: "run-1",
 			})
 			if err != nil || out.Status != tt.wantStatus {
 				t.Fatalf("complete-trigger = %+v, %v, want status %q", out, err, tt.wantStatus)

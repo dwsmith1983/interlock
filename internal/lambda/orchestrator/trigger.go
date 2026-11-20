@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,7 +87,7 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 		var opts []store.JobEventOption
 		if err != nil {
 			event, msg = types.JobEventFail, err.Error()
-			opts = append(opts, store.WithFailureCategory(types.FailurePermanent))
+			opts = append(opts, store.WithFailureCategory(cmp.Or(jobErr.Category, types.FailurePermanent)))
 		}
 		if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date, event, runID, 0, msg, opts...); err != nil {
 			// This log is then the only record of the job's result.
