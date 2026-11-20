@@ -89,7 +89,7 @@ func redactError(err error, values []string) error {
 	}
 	var jobErr *JobFailedError
 	if errors.As(err, &jobErr) {
-		return &JobFailedError{Message: redact(jobErr.Message, values)}
+		return &JobFailedError{Message: redact(jobErr.Message, values), Category: jobErr.Category}
 	}
 	var trigErr *TriggerError
 	if errors.As(err, &trigErr) {

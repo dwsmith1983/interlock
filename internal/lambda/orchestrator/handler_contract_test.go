@@ -438,6 +438,7 @@ func TestTrigger_LambdaResult(t *testing.T) {
 		Job:      types.JobConfig{Type: types.TriggerLambda, Config: map[string]interface{}{"functionName": "f"}},
 	}
 	jobErr := &trigger.JobFailedError{Message: "lambda trigger: function error: Unhandled: boom"}
+	timeoutErr := &trigger.JobFailedError{Message: "lambda trigger: function did not finish within 105s", Category: types.FailureOutcomeUnknown}
 
 	tests := []struct {
 		name         string
@@ -449,6 +450,8 @@ func TestTrigger_LambdaResult(t *testing.T) {
 	}{
 		{name: "function error is a permanent job failure", execErr: fmt.Errorf("wrapped: %w", jobErr),
 			wantEvent: types.JobEventFail, wantMsg: "wrapped: " + jobErr.Message, wantCategory: string(types.FailurePermanent)},
+		{name: "lambda timeout is one failure", execErr: timeoutErr,
+			wantEvent: types.JobEventFail, wantMsg: timeoutErr.Message, wantCategory: string(types.FailureOutcomeUnknown)},
 		{name: "invoke error is an infra failure", execErr: errors.New("lambda trigger: Invoke failed: throttled"),
 			wantErr: true, wantEvent: types.JobEventInfraTriggerFailure, wantMsg: "trigger execute: lambda trigger: Invoke failed: throttled"},
 		{name: "normal return is success", wantEvent: types.JobEventSuccess, wantMsg: "lambda trigger completed synchronously"},

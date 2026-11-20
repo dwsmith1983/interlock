@@ -312,6 +312,16 @@ The call's outcome is the job's result, written to the joblog under the run ID:
 - The function could not be invoked (throttling, a missing function, no permission): the function never
   ran, so the orchestrator writes `infra-trigger-failure` and the Trigger state's own retry calls it again
   (see [Error Handling](../../architecture/aws/#error-handling)).
+- The function is still running when the orchestrator's wait runs out: the orchestrator writes a `fail`
+  row with category `OUTCOME_UNKNOWN`, and CompleteTrigger sets `FAILED_FINAL` without a retry under
+  either budget, since a second call could run the job twice. The row's `JOB_FAILED` alert carries the
+  message; no `RETRY_EXHAUSTED` is published.
+
+A `lambda` job must finish within the orchestrator's wait: the orchestrator Lambda's remaining time less
+15 seconds, about 100 seconds with the module's 120-second timeout. Longer work belongs in a
+[`step-function`](#step-function) job, which the orchestrator polls instead of waiting on. When the wait
+runs out, the orchestrator stops waiting but the function keeps running to its own timeout, and its result
+is not recorded.
 
 ## Template Variables
 
@@ -439,6 +449,8 @@ After a job executes, the orchestrator Lambda polls for completion using the ret
 | `step-function` | `DescribeExecution` | RUNNING -> running, SUCCEEDED -> succeeded, FAILED/TIMED_OUT/ABORTED -> failed |
 | `databricks` | `GET /runs/get` | RUNNING/PENDING -> running, TERMINATED(SUCCESS) -> succeeded, others -> failed |
 | `airflow` | `GET /dags/{id}/dagRuns` | running -> running, success -> succeeded, failed -> failed |
+
+The `airflow` and `databricks` polls send the trigger's configured headers, expanded like the trigger's own. A poll runs only when the run's URL, kept from the trigger call, has the scheme and host of the trigger config, so the headers never go elsewhere: changing a trigger's URL while a run is polling stops the polls for that run until the state machine times out.
 
 The `http` and `lambda` types have no status API. An `http` job reports its own result (see [`http`](#http)); a `lambda` job's result is the call's outcome (see [`lambda`](#lambda)).
 

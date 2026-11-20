@@ -23,4 +23,7 @@ const (
 	FailureTransient FailureCategory = "TRANSIENT"
 	FailurePermanent FailureCategory = "PERMANENT"
 	FailureTimeout   FailureCategory = "TIMEOUT"
+	// FailureOutcomeUnknown: the job may still be running and its result is
+	// lost, so running it again could run it twice. It is never retried.
+	FailureOutcomeUnknown FailureCategory = "OUTCOME_UNKNOWN"
 )

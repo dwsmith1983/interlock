@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
@@ -172,4 +174,67 @@ func TestExecuteLambda_GeneratedAndEmptyPayload(t *testing.T) {
 		FunctionName: "f", Payload: body, PayloadGenerated: true,
 	})))
 	assert.Nil(t, invokedPayload(t, &types.LambdaTriggerConfig{FunctionName: "f"}))
+}
+
+// blockingLambdaClient blocks Invoke until its context ends, or a safety timer
+// fires so a missing deadline fails the test instead of hanging it.
+type blockingLambdaClient struct{ calls atomic.Int32 }
+
+func (c *blockingLambdaClient) Invoke(ctx context.Context, _ *lambda.InvokeInput, _ ...func(*lambda.Options)) (*lambda.InvokeOutput, error) {
+	c.calls.Add(1)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(3 * time.Second):
+		return nil, errors.New("test safety timer: Invoke was never cancelled")
+	}
+}
+
+// The wait ends lambdaWaitMargin before the caller's deadline, or after
+// lambdaDefaultWait without one, as one failure whose outcome is unknown. The
+// caller's own deadline, or no time left to wait, is a plain error. Calls go
+// through the Runner, so redaction must keep the category.
+func TestExecuteLambda_Wait(t *testing.T) {
+	const unknown = "lambda trigger: function did not finish within %ds, the orchestrator's wait; use the step-function trigger for long jobs"
+	tests := []struct {
+		name                         string
+		callerDeadline, margin, dflt time.Duration // callerDeadline 0: none
+		wantErr                      string
+		wantUnknown                  bool
+		wantCalls                    int32
+	}{
+		{name: "stops before the caller deadline", callerDeadline: 2 * time.Second, margin: 1500 * time.Millisecond,
+			wantErr: fmt.Sprintf(unknown, 0), wantUnknown: true, wantCalls: 1},
+		{name: "default wait without a caller deadline", dflt: 1100 * time.Millisecond,
+			wantErr: fmt.Sprintf(unknown, 1), wantUnknown: true, wantCalls: 1},
+		// A margin past the caller's deadline leaves that deadline in charge.
+		{name: "caller deadline is a plain error", callerDeadline: 20 * time.Millisecond, margin: -time.Second,
+			wantErr: "lambda trigger: Invoke failed: context deadline exceeded", wantCalls: 1},
+		{name: "no time left is a plain error", callerDeadline: 2 * time.Second, margin: 2 * time.Second,
+			wantErr: "lambda trigger: no time left to wait for the function"},
+	}
+	defer func(m, w time.Duration) { lambdaWaitMargin, lambdaDefaultWait = m, w }(lambdaWaitMargin, lambdaDefaultWait)
+	cfg := &types.TriggerConfig{Type: types.TriggerLambda, Lambda: &types.LambdaTriggerConfig{FunctionName: "f"}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lambdaWaitMargin, lambdaDefaultWait = tt.margin, tt.dflt
+			ctx, cancel := context.Background(), context.CancelFunc(func() {})
+			if tt.callerDeadline > 0 {
+				ctx, cancel = context.WithTimeout(ctx, tt.callerDeadline)
+			}
+			defer cancel()
+			client := &blockingLambdaClient{}
+
+			_, err := NewRunner(WithLambdaClient(client)).Execute(ctx, cfg)
+
+			require.EqualError(t, err, tt.wantErr)
+			var jobErr *JobFailedError
+			require.Equal(t, tt.wantUnknown, errors.As(err, &jobErr), "err = %v, a *JobFailedError?", err)
+			if tt.wantUnknown {
+				assert.Equal(t, types.FailureOutcomeUnknown, jobErr.Category)
+				assert.NoError(t, ctx.Err(), "returned after the caller's deadline")
+			}
+			assert.Equal(t, tt.wantCalls, client.calls.Load())
+		})
+	}
 }

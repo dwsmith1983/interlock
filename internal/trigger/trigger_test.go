@@ -541,7 +541,7 @@ func TestHTTPClientRedirectRule(t *testing.T) {
 		a, _ := redirectServer(t, false, map[string]string{"/api/v1/dags/d/dagRuns/r": "/api/v1/dags/d/dagRuns/r"})
 		useProductionClient(t, a.Client().Transport)
 
-		_, err := CheckAirflowStatus(context.Background(), a.URL, "d", "r", nil)
+		_, err := CheckAirflowStatus(context.Background(), a.URL, "d", "r", nil, defaultHTTPClient)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "stopped after 10 redirects")
@@ -556,7 +556,7 @@ var airflowAndDatabricksCalls = map[string]func(url string) error{
 		return err
 	},
 	"airflow status": func(url string) error {
-		_, err := CheckAirflowStatus(context.Background(), url, "d", "r", nil)
+		_, err := CheckAirflowStatus(context.Background(), url, "d", "r", nil, defaultHTTPClient)
 		return err
 	},
 	"databricks trigger": func(url string) error {

@@ -66,9 +66,9 @@ func WithLambdaClient(c LambdaAPI) RunnerOption {
 	return func(r *Runner) { r.lambdaClient = c }
 }
 
-// WithHTTPClient sets the HTTP client the databricks trigger and status check
-// use. It replaces the default client's redirect rule and SSRF-safe transport,
-// so the caller's client must provide both.
+// WithHTTPClient sets the HTTP client the databricks trigger and the airflow
+// and databricks status checks use. It replaces the default client's redirect
+// rule and SSRF-safe transport, so the caller's client must provide both.
 func WithHTTPClient(c *http.Client) RunnerOption {
 	return func(r *Runner) { r.httpClient = c }
 }
@@ -224,7 +224,7 @@ func (r *Runner) checkAirflowStatus(ctx context.Context, metadata map[string]int
 		return StatusResult{State: RunCheckRunning, Message: "missing airflow metadata"}, nil
 	}
 
-	state, err := CheckAirflowStatus(ctx, airflowURL, dagID, dagRunID, headers)
+	state, err := CheckAirflowStatus(ctx, airflowURL, dagID, dagRunID, headers, r.httpClient)
 	if err != nil {
 		return StatusResult{}, err
 	}
