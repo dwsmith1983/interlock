@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -330,4 +332,330 @@ func TestExecuteHTTP_Returns_TriggerError_On5xx(t *testing.T) {
 	require.True(t, errors.As(err, &te), "expected TriggerError, got %T", err)
 	assert.Equal(t, types.FailureTransient, te.Category)
 	assert.Contains(t, te.Message, "status 503")
+}
+
+// useProductionClient makes defaultHTTPClient the production client with rt,
+// which may dial loopback, so the production timeout and redirect rule stay in
+// effect.
+func useProductionClient(t *testing.T, rt http.RoundTripper) {
+	t.Helper()
+	origClient := defaultHTTPClient
+	c := *defaultHTTPClient
+	c.Transport = rt
+	defaultHTTPClient = &c
+	t.Cleanup(func() { defaultHTTPClient = origClient })
+}
+
+// useExampleHost serves http://example.com from plain and https://example.com
+// from secure (whose certificate covers example.com), so a redirect can change
+// the scheme and keep the Host.
+func useExampleHost(t *testing.T, plain, secure *httptest.Server) {
+	t.Helper()
+	tr := secure.Client().Transport.(*http.Transport).Clone()
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		target := plain.Listener.Addr().String()
+		if strings.HasSuffix(addr, ":443") {
+			target = secure.Listener.Addr().String()
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, target)
+	}
+	useProductionClient(t, tr)
+}
+
+// redirectServer answers each path in routes with a 307 to its target and
+// counts the requests to any other path.
+func redirectServer(t *testing.T, tls bool, routes map[string]string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if target, ok := routes[r.URL.Path]; ok {
+			http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+			return
+		}
+		hits.Add(1)
+	})
+	srv := httptest.NewUnstartedServer(h)
+	if tls {
+		srv.StartTLS()
+	} else {
+		srv.Start()
+	}
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
+const refusedHint = " refused (a redirect must keep the host, port and method and must not go from https to http); point the trigger URL at the final endpoint"
+
+// A redirect is followed only on the same Host, keeping the scheme or going
+// from http to https, and keeping the method; anything else is reported.
+func TestHTTPClientRedirectRule(t *testing.T) {
+	b, bHits := redirectServer(t, false, nil)
+	for _, timeout := range []int{0, 5} {
+		t.Run(fmt.Sprintf("other port, timeout %d", timeout), func(t *testing.T) {
+			a, _ := redirectServer(t, false, map[string]string{"/": b.URL + "/b"})
+			useProductionClient(t, a.Client().Transport)
+
+			err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: a.URL, Timeout: timeout})
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "trigger redirect to "+b.URL+"/b"+refusedHint)
+			assert.Zero(t, bHits.Load(), "the redirect target must not be called")
+		})
+	}
+
+	t.Run("other host, same port", func(t *testing.T) {
+		var aHits atomic.Int32
+		a := httptest.NewUnstartedServer(nil)
+		_, port, _ := net.SplitHostPort(a.Listener.Addr().String())
+		other := "http://localhost:" + port + "/b"
+		a.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/" {
+				http.Redirect(w, r, other, http.StatusTemporaryRedirect)
+				return
+			}
+			aHits.Add(1)
+		})
+		a.Start()
+		t.Cleanup(a.Close)
+		useProductionClient(t, a.Client().Transport)
+
+		err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: a.URL})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "redirect to "+other+refusedHint)
+		assert.Zero(t, aHits.Load())
+	})
+
+	schemeRows := []struct {
+		name, url  string
+		plain, tls map[string]string
+		ok         bool
+		refusedTo  string
+	}{
+		{"http to https is followed", "http://example.com/start",
+			map[string]string{"/start": "https://example.com/done"}, nil, true, ""},
+		{"https to http is refused", "https://example.com/start",
+			nil, map[string]string{"/start": "http://example.com/b"}, false, "http://example.com/b"},
+		{"back to http after an upgrade is refused", "http://example.com/start",
+			map[string]string{"/start": "https://example.com/mid"}, map[string]string{"/mid": "http://example.com/b"}, false, "http://example.com/b"},
+	}
+	for _, row := range schemeRows {
+		t.Run(row.name, func(t *testing.T) {
+			plain, plainHits := redirectServer(t, false, row.plain)
+			secure, secureHits := redirectServer(t, true, row.tls)
+			useExampleHost(t, plain, secure)
+
+			err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: row.url})
+
+			if row.ok {
+				require.NoError(t, err)
+				assert.Equal(t, int32(1), secureHits.Load())
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "redirect to "+row.refusedTo+refusedHint)
+			assert.Zero(t, plainHits.Load(), "the downgraded request must not be sent")
+		})
+	}
+
+	t.Run("same origin is followed", func(t *testing.T) {
+		a, aHits := redirectServer(t, false, map[string]string{"/start": "/done"})
+		useProductionClient(t, a.Client().Transport)
+
+		require.NoError(t, ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: a.URL + "/start"}))
+		assert.Equal(t, int32(1), aHits.Load())
+	})
+
+	// A 302 turns the POST into a GET without its body, so the job would
+	// never be triggered.
+	t.Run("method change is refused", func(t *testing.T) {
+		var doneHits atomic.Int32
+		a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/start" {
+				http.Redirect(w, r, "/done", http.StatusFound)
+				return
+			}
+			doneHits.Add(1)
+		}))
+		t.Cleanup(a.Close)
+		useProductionClient(t, a.Client().Transport)
+
+		err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: a.URL + "/start"})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "trigger redirect to "+a.URL+"/done"+refusedHint)
+		assert.Zero(t, doneHits.Load())
+	})
+
+	// A 303 answers a processed POST: the job started and reports its own
+	// result, so the http trigger succeeds without following it.
+	t.Run("303 on the http trigger is accepted", func(t *testing.T) {
+		var doneHits atomic.Int32
+		a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/start" {
+				http.Redirect(w, r, "/done", http.StatusSeeOther)
+				return
+			}
+			doneHits.Add(1)
+		}))
+		t.Cleanup(a.Close)
+		useProductionClient(t, a.Client().Transport)
+
+		require.NoError(t, ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: a.URL + "/start"}))
+		assert.Zero(t, doneHits.Load())
+	})
+
+	// A GET follows a 303 like any other redirect, so a 303 that reaches the
+	// trigger was refused and is not a started job.
+	t.Run("303 on a GET to another port is refused", func(t *testing.T) {
+		a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, b.URL+"/login", http.StatusSeeOther)
+		}))
+		t.Cleanup(a.Close)
+		useProductionClient(t, a.Client().Transport)
+
+		err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{Method: http.MethodGet, URL: a.URL})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "trigger redirect to "+b.URL+"/login"+refusedHint)
+		assert.Zero(t, bHits.Load())
+	})
+
+	t.Run("same-origin 303 on a GET is followed", func(t *testing.T) {
+		var doneHits atomic.Int32
+		a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/start" {
+				http.Redirect(w, r, "/done", http.StatusSeeOther)
+				return
+			}
+			doneHits.Add(1)
+		}))
+		t.Cleanup(a.Close)
+		useProductionClient(t, a.Client().Transport)
+
+		require.NoError(t, ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{Method: http.MethodGet, URL: a.URL + "/start"}))
+		assert.Equal(t, int32(1), doneHits.Load())
+	})
+
+	t.Run("redirect loop stops", func(t *testing.T) {
+		a, _ := redirectServer(t, false, map[string]string{"/api/v1/dags/d/dagRuns/r": "/api/v1/dags/d/dagRuns/r"})
+		useProductionClient(t, a.Client().Transport)
+
+		_, err := CheckAirflowStatus(context.Background(), a.URL, "d", "r", nil)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "stopped after 10 redirects")
+	})
+}
+
+// airflowAndDatabricksCalls runs each airflow and databricks call against url
+// with the production client.
+var airflowAndDatabricksCalls = map[string]func(url string) error{
+	"airflow trigger": func(url string) error {
+		_, err := ExecuteAirflow(context.Background(), &types.AirflowTriggerConfig{URL: url, DagID: "d"})
+		return err
+	},
+	"airflow status": func(url string) error {
+		_, err := CheckAirflowStatus(context.Background(), url, "d", "r", nil)
+		return err
+	},
+	"databricks trigger": func(url string) error {
+		_, err := ExecuteDatabricks(context.Background(), &types.DatabricksTriggerConfig{WorkspaceURL: url, JobID: "j"}, defaultHTTPClient)
+		return err
+	},
+	"databricks status": func(url string) error {
+		meta := map[string]interface{}{"databricks_workspace_url": url, "databricks_run_id": "1"}
+		_, err := NewRunner().checkDatabricksStatus(context.Background(), meta, nil)
+		return err
+	},
+}
+
+// A refused redirect names its target without userinfo or query; a 3xx with
+// no Location reports its status.
+func TestRefusedRedirectReportsTarget(t *testing.T) {
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(b.Close)
+	target := "http://user:pw@" + b.Listener.Addr().String() + "/final?token=q1"
+	for name, call := range airflowAndDatabricksCalls {
+		t.Run(name, func(t *testing.T) {
+			a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(a.Close)
+			useProductionClient(t, a.Client().Transport)
+
+			err := call(a.URL)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "redirect to "+b.URL+"/final"+refusedHint)
+			assert.NotContains(t, err.Error(), "pw")
+			assert.NotContains(t, err.Error(), "q1")
+		})
+		t.Run(name+" without Location", func(t *testing.T) {
+			a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(a.Close)
+			useProductionClient(t, a.Client().Transport)
+
+			err := call(a.URL)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "returned status 307")
+		})
+	}
+}
+
+// A response is read up to 1 MiB; a larger one fails with fixed text instead
+// of a truncated body that would fail to parse.
+func TestResponseBodyReadIsBounded(t *testing.T) {
+	const limit = 1 << 20
+	const prefix = `{"dag_run_id":"r","run_id":1,"state":"running","pad":"`
+	body := func(size int) string { return prefix + strings.Repeat("x", size-len(prefix)-2) + `"}` }
+	for name, call := range airflowAndDatabricksCalls {
+		for _, size := range []int{limit, limit + 1} {
+			t.Run(fmt.Sprintf("%s %d bytes", name, size), func(t *testing.T) {
+				a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = w.Write([]byte(body(size)))
+				}))
+				t.Cleanup(a.Close)
+				useProductionClient(t, a.Client().Transport)
+
+				err := call(a.URL)
+
+				if size == limit {
+					require.NoError(t, err)
+					return
+				}
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "reading response: response exceeds 1 MiB")
+			})
+		}
+	}
+
+	t.Run("http error body", func(t *testing.T) {
+		a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(body(limit + 1)))
+		}))
+		t.Cleanup(a.Close)
+		useProductionClient(t, a.Client().Transport)
+
+		err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: a.URL})
+
+		require.EqualError(t, err, "trigger returned status 400: response exceeds 1 MiB")
+	})
+
+	t.Run("http 5xx body", func(t *testing.T) {
+		a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(body(limit + 1)))
+		}))
+		t.Cleanup(a.Close)
+		useProductionClient(t, a.Client().Transport)
+
+		err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: a.URL})
+
+		require.EqualError(t, err, "trigger returned status 503: response exceeds 1 MiB")
+	})
 }
