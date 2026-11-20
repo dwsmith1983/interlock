@@ -149,7 +149,7 @@ Set any key to `-1` to use unreserved concurrency (Lambda default).
 
 With `kms_key_arn` empty, the tables use the AWS managed DynamoDB key, the stream-router DLQs the AWS managed SQS key, and the alert queues SQS-managed encryption (SSE-SQS). The alert queues cannot use the AWS managed SQS key (`alias/aws/sqs`): EventBridge delivers to them as `events.amazonaws.com`, and that key's policy cannot be changed to allow it.
 
-When you set `kms_key_arn`, every table and queue uses your key, and its key policy must let EventBridge use it, or alerts never reach the queue. The condition limits the grant to EventBridge rules in your own account; the alert queue's policy already accepts messages only from the module's two alert rules:
+When you set `kms_key_arn`, every table and queue uses your key, and its key policy must let EventBridge use it, or alerts never reach the queue. The condition limits the grant to EventBridge rules in the account the module is deployed in, so `<account-id>` is that account, which need not be the one that owns the key; the alert queue's policy already accepts messages only from the module's two alert rules:
 
 ```json
 {
