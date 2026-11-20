@@ -82,8 +82,34 @@ func NewRunner(opts ...RunnerOption) *Runner {
 	return r
 }
 
-// Execute dispatches trigger execution based on the trigger type.
+// Execute dispatches trigger execution based on the trigger type. The values
+// that ${...} expansion put into the request are redacted from its error, as
+// an endpoint or function may echo the request back.
 func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error) {
+	meta, err := r.execute(ctx, cfg)
+	if err != nil {
+		return meta, redactError(err, secretValues(cfg.TriggerHeaders(), requestBodies(cfg)...))
+	}
+	return meta, nil
+}
+
+// requestBodies returns the body or payload of tc's active variant: with its
+// headers, what expands INTERLOCK_ variables into the request.
+func requestBodies(tc *types.TriggerConfig) []string {
+	switch {
+	case tc == nil:
+		return nil
+	case tc.Type == types.TriggerHTTP && tc.HTTP != nil:
+		return []string{tc.HTTP.Body}
+	case tc.Type == types.TriggerAirflow && tc.Airflow != nil:
+		return []string{tc.Airflow.Body}
+	case tc.Type == types.TriggerLambda && tc.Lambda != nil:
+		return []string{tc.Lambda.Payload}
+	}
+	return nil
+}
+
+func (r *Runner) execute(ctx context.Context, cfg *types.TriggerConfig) (map[string]interface{}, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("no trigger configured")
 	}
@@ -155,8 +181,17 @@ func (r *Runner) Execute(ctx context.Context, cfg *types.TriggerConfig) (map[str
 }
 
 // CheckStatus checks the status of an active run for the given trigger type.
-// It uses run metadata to identify the remote job and returns a normalized StatusResult.
+// It uses run metadata to identify the remote job and returns a normalized
+// StatusResult. The values the headers expand to are redacted from the
+// result's message and the error.
 func (r *Runner) CheckStatus(ctx context.Context, triggerType types.TriggerType, metadata map[string]interface{}, headers map[string]string) (StatusResult, error) {
+	res, err := r.checkStatus(ctx, triggerType, metadata, headers)
+	values := secretValues(headers)
+	res.Message = redact(res.Message, values)
+	return res, redactError(err, values)
+}
+
+func (r *Runner) checkStatus(ctx context.Context, triggerType types.TriggerType, metadata map[string]interface{}, headers map[string]string) (StatusResult, error) {
 	switch triggerType {
 	case types.TriggerAirflow:
 		return r.checkAirflowStatus(ctx, metadata, headers)

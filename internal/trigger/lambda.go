@@ -2,6 +2,8 @@ package trigger
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -24,6 +26,9 @@ type JobFailedError struct {
 
 func (e *JobFailedError) Error() string { return e.Message }
 
+// maxLambdaErrorBytes bounds the function error payload kept in the error.
+const maxLambdaErrorBytes = 200
+
 // ExecuteLambda invokes an AWS Lambda function synchronously. A function
 // error is the job's own result and comes back as a *JobFailedError; an
 // Invoke failure means the function never ran.
@@ -39,6 +44,10 @@ func ExecuteLambda(ctx context.Context, cfg *types.LambdaTriggerConfig, client L
 
 	if cfg.Payload != "" {
 		input.Payload = []byte(expandRunBody(cfg.Payload, cfg.PayloadGenerated, cfg.Run))
+		// Fixed text: the payload holds expanded values, such as a token.
+		if !json.Valid(input.Payload) {
+			return errors.New("lambda trigger: payload is not valid JSON after variable expansion")
+		}
 	}
 
 	out, err := client.Invoke(ctx, input)
@@ -47,10 +56,7 @@ func ExecuteLambda(ctx context.Context, cfg *types.LambdaTriggerConfig, client L
 	}
 
 	if out.FunctionError != nil {
-		errMsg := string(out.Payload)
-		if len(errMsg) > 200 {
-			errMsg = errMsg[:200]
-		}
+		errMsg := sanitizeBody(out.Payload, secretValues(nil, cfg.Payload), maxLambdaErrorBytes)
 		return &JobFailedError{Message: fmt.Sprintf("lambda trigger: function error: %s: %s", aws.ToString(out.FunctionError), errMsg)}
 	}
 

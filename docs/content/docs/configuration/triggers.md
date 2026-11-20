@@ -298,7 +298,9 @@ The event carries the run. With no `payload` it is the same JSON object the
 `http` default body is (`par_day`, `par_hour` for hourly dates, `pipelineId`,
 `scheduleId`, `date`, `runId`). A configured `payload` expands the
 [run identity](#run-identity) variables JSON-escaped, so use them inside JSON
-strings.
+strings. `INTERLOCK_<NAME>` values are inserted as they are, and the expanded
+`payload` must be valid JSON: otherwise the job fails before the function is
+invoked, with an error that does not quote the payload.
 
 The call's outcome is the job's result, written to the joblog under the run ID:
 
@@ -379,12 +381,26 @@ a rotation. A code or configuration update to the function (a new build, or a
 changed `orchestrator_env` value) starts new containers. After a leak, revoke
 the old token at its issuer rather than relying on rotation.
 
-The error of a failed `http`, `airflow` or `databricks` call includes the
-response body, and a `lambda` job's error keeps up to 200 bytes of the
-function's error payload. Both can reach the job log, the orchestrator's
-CloudWatch logs, the Step Functions execution history, events and alerts, so
-keep trigger endpoints from echoing credentials and functions from putting
-their event in error messages.
+The error of a failed `http`, `airflow` or `databricks` call includes up to 512
+bytes of the response body, and a `lambda` job's error keeps up to 200 bytes of
+the function's error payload. Both can reach the job log, the orchestrator's
+CloudWatch logs, the Step Functions execution history, events and alerts. So
+that an endpoint or function echoing the request does not leak a token, every
+`INTERLOCK_<NAME>` value `${...}` put into that request is replaced with
+`[REDACTED]` in the request's error text before it is cut to those limits. The
+forms matched are the value as is, JSON-escaped (with or without `<`, `>` and
+`&` as `\u003c`, `\u003e` and `\u0026`, and with or without `/` as `\/`), and
+URL-encoded for a query or a path (percent-encoding with uppercase hex, as Go's
+query and path escaping writes it). An echo that escapes the value twice is not
+matched. Values shorter than 4 characters are not replaced, since that would
+garble unrelated text. A status poll redacts the values its headers expand to
+the same way.
+
+This guards against an endpoint or function that echoes the request by
+accident. It does not cover one that rewrites the token on purpose (it already
+holds the token), or other secrets an endpoint or function holds, so keep
+trigger endpoints from echoing credentials and functions from putting their
+event in error messages.
 
 Anyone with write access to the control table, where pipeline configs live, can
 send any `INTERLOCK_` value to a URL of their choice, for example through an
