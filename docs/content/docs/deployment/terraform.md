@@ -164,6 +164,8 @@ When you set `kms_key_arn`, every table and queue uses your key, and its key pol
 }
 ```
 
+If the key policy does not let EventBridge use the key, the deploy still succeeds and alerts are dropped without an error: the `FailedInvocations` metric of the alert rules rises, and CloudTrail shows a KMS `AccessDenied` for `events.amazonaws.com`. When that happens, check this statement and its `aws:SourceAccount` condition.
+
 The module grants every Lambda role `kms:Decrypt` and `kms:GenerateDataKey` on the key: all six read or write the encrypted tables, the stream-router also reads the table streams and sends to its DLQs, and the alert-dispatcher receives from the alert queue. With a key in the same account, its key policy must let IAM policies grant it (the default key policy does, through the account root statement) or name the six roles. With a key in another account, the key policy must also allow this account or those roles, and the role grants are still needed. Use a key dedicated to this deployment: the Lambda roles can decrypt anything else the key protects.
 
 ## Secrets Manager
