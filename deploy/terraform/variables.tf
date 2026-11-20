@@ -104,6 +104,11 @@ variable "kms_key_arn" {
   description = "ARN of a customer managed KMS key for the DynamoDB tables and SQS queues. Empty = AWS managed keys, and SQS-managed encryption for the alert queues."
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.kms_key_arn == "" || can(regex("^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", var.kms_key_arn))
+    error_message = "kms_key_arn must be a KMS key ARN (not an alias, key ID or wildcard), or empty."
+  }
 }
 
 variable "sns_alarm_topic_arn" {
