@@ -84,9 +84,9 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 	return meta, nil
 }
 
-// CheckAirflowStatus polls the status of an Airflow DAG run.
+// CheckAirflowStatus polls the status of an Airflow DAG run with client.
 // Returns the state string: "queued", "running", "success", "failed".
-func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string, headers map[string]string) (string, error) {
+func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string, headers map[string]string, client *http.Client) (string, error) {
 	url := strings.TrimRight(airflowURL, "/") + "/api/v1/dags/" + dagID + "/dagRuns/" + dagRunID
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
@@ -99,7 +99,7 @@ func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string,
 		req.Header.Set(k, os.Expand(v, safeEnvLookup))
 	}
 
-	resp, err := defaultHTTPClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("airflow status: request failed: %w", err)
 	}

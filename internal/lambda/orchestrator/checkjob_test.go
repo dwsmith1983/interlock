@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -112,14 +113,149 @@ func TestCheckJob_EmptyRunIDIsAnError(t *testing.T) {
 	}
 }
 
-// fakeStatusChecker is a lambda.StatusChecker double.
+// fakeStatusChecker is a lambda.StatusChecker double that counts its calls
+// and keeps the headers it was given.
 type fakeStatusChecker struct {
-	result lambda.StatusResult
-	err    error
+	result  lambda.StatusResult
+	err     error
+	calls   int
+	headers map[string]string
 }
 
-func (f *fakeStatusChecker) CheckStatus(context.Context, types.TriggerType, map[string]interface{}, map[string]string) (lambda.StatusResult, error) {
+func (f *fakeStatusChecker) CheckStatus(_ context.Context, _ types.TriggerType, _ map[string]interface{}, headers map[string]string) (lambda.StatusResult, error) {
+	f.calls++
+	f.headers = headers
 	return f.result, f.err
+}
+
+// checkJobPoll runs check-job for a pipeline whose job is job, with run
+// metadata meta and no job log row, so the handler reaches the status poll.
+func checkJobPoll(t *testing.T, job types.JobConfig, meta map[string]interface{}) (lambda.OrchestratorOutput, *fakeStatusChecker) {
+	t.Helper()
+	cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: job}
+	fake := &storetest.FakeDynamo{
+		GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(t, cfg)}, nil
+		},
+	}
+	d := testDeps(fake)
+	checker := &fakeStatusChecker{result: lambda.StatusResult{State: "running"}}
+	d.StatusChecker = checker
+
+	out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode: "check-job", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01", RunID: "r1", Metadata: meta,
+	})
+	if err != nil {
+		t.Fatalf("check-job must not return a Lambda error, got %v", err)
+	}
+	return out, checker
+}
+
+// TestCheckJob_PassesTriggerHeaders: an airflow or databricks poll sends the
+// trigger's configured headers, unexpanded, so an API that needs a token
+// accepts the status request.
+func TestCheckJob_PassesTriggerHeaders(t *testing.T) {
+	headers := map[string]interface{}{"Authorization": "Bearer ${INTERLOCK_TOKEN}"}
+	tests := []struct {
+		name string
+		job  types.JobConfig
+		meta map[string]interface{}
+	}{
+		{
+			name: "airflow",
+			job: types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{
+				"url": "https://airflow.example.com", "dagId": "etl", "headers": headers,
+			}},
+			meta: map[string]interface{}{"airflow_url": "https://airflow.example.com", "airflow_dag_id": "etl", "airflow_dag_run_id": "r1"},
+		},
+		{
+			name: "databricks",
+			job: types.JobConfig{Type: types.TriggerDatabricks, Config: map[string]interface{}{
+				"workspaceUrl": "https://dbc.example.com", "jobId": "42", "headers": headers,
+			}},
+			meta: map[string]interface{}{"databricks_workspace_url": "https://dbc.example.com", "databricks_run_id": "7"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, checker := checkJobPoll(t, tt.job, tt.meta)
+
+			want := map[string]string{"Authorization": "Bearer ${INTERLOCK_TOKEN}"}
+			if !reflect.DeepEqual(checker.headers, want) {
+				t.Errorf("headers = %v, want %v", checker.headers, want)
+			}
+		})
+	}
+}
+
+// TestCheckJob_PollsOnlyTheConfiguredOrigin: the poll URL comes from run
+// metadata and the token from the config, so a metadata URL on another
+// scheme or host is not polled, which keeps the token off that host.
+func TestCheckJob_PollsOnlyTheConfiguredOrigin(t *testing.T) {
+	headers := map[string]interface{}{"Authorization": "Bearer ${INTERLOCK_TOKEN}"}
+	airflow := types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{
+		"url": "https://airflow.example.com/", "dagId": "etl", "headers": headers,
+	}}
+	databricks := types.JobConfig{Type: types.TriggerDatabricks, Config: map[string]interface{}{
+		"workspaceUrl": "https://dbc.example.com", "jobId": "42", "headers": headers,
+	}}
+	airflowMeta := func(u string) map[string]interface{} {
+		return map[string]interface{}{"airflow_url": u, "airflow_dag_id": "etl", "airflow_dag_run_id": "r1"}
+	}
+	tests := []struct {
+		name     string
+		job      types.JobConfig
+		meta     map[string]interface{}
+		wantPoll bool
+	}{
+		{name: "airflow metadata on another host", job: airflow, meta: airflowMeta("https://attacker.example.net")},
+		{
+			name: "databricks metadata on another host",
+			job:  databricks,
+			meta: map[string]interface{}{"databricks_workspace_url": "https://attacker.example.net", "databricks_run_id": "7"},
+		},
+		{name: "airflow metadata over http", job: airflow, meta: airflowMeta("http://airflow.example.com")},
+		{name: "airflow metadata on another port", job: airflow, meta: airflowMeta("https://airflow.example.com:8443")},
+		{name: "airflow host as a prefix", job: airflow, meta: airflowMeta("https://airflow.example.com.evil.net")},
+		{name: "airflow host as userinfo", job: airflow, meta: airflowMeta("https://airflow.example.com@evil.net")},
+		{
+			name: "airflow job without a config",
+			job:  types.JobConfig{Type: types.TriggerAirflow},
+			meta: airflowMeta("https://airflow.example.com"),
+		},
+		{name: "airflow metadata without the trailing slash", job: airflow, meta: airflowMeta("https://airflow.example.com"), wantPoll: true},
+		{name: "airflow host in upper case", job: airflow, meta: airflowMeta("https://AIRFLOW.example.com"), wantPoll: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, checker := checkJobPoll(t, tt.job, tt.meta)
+
+			if got := checker.calls == 1; got != tt.wantPoll {
+				t.Errorf("status checker calls = %d, want poll %v", checker.calls, tt.wantPoll)
+			}
+			if out.Mode != "check-job" || out.Event != "" || out.Error != "" {
+				t.Errorf("output = %+v, want mode check-job with no event or error", out)
+			}
+		})
+	}
+}
+
+// TestCheckJob_BadTriggerConfigSkipsPoll: a job config that does not build
+// into a trigger config is not polled, and the run keeps waiting.
+func TestCheckJob_BadTriggerConfigSkipsPoll(t *testing.T) {
+	job := types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{
+		"url": "https://airflow.example.com", "dagId": "etl", "headers": "x",
+	}}
+	out, checker := checkJobPoll(t, job, map[string]interface{}{
+		"airflow_url": "https://airflow.example.com", "airflow_dag_id": "etl", "airflow_dag_run_id": "r1",
+	})
+
+	if checker.calls != 0 {
+		t.Errorf("status checker calls = %d, want none", checker.calls)
+	}
+	if out.Event != "" || out.Error != "" {
+		t.Errorf("output = %+v, want no event or error", out)
+	}
 }
 
 // TestCheckJob_PolledRowsCarryRunID: when CheckJob polls the job API and

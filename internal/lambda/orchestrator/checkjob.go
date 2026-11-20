@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"net/url"
+	"strings"
 
 	"github.com/dwsmith1983/interlock/internal/store"
 
@@ -44,7 +46,16 @@ func handleCheckJob(ctx context.Context, d *lambda.Deps, input lambda.Orchestrat
 		return lambda.OrchestratorOutput{Mode: "check-job"}, nil
 	}
 
-	result, err := d.StatusChecker.CheckStatus(ctx, cfg.Job.Type, input.Metadata, nil)
+	tc, err := BuildTriggerConfig(cfg.Job)
+	if err != nil {
+		d.Logger.WarnContext(ctx, "status poll skipped: trigger config does not build", "error", err, "pipeline", input.PipelineID)
+		return lambda.OrchestratorOutput{Mode: "check-job"}, nil
+	}
+	if !pollsConfiguredOrigin(tc, input.Metadata) {
+		d.Logger.WarnContext(ctx, "status poll skipped: run metadata URL does not match the trigger config", "pipeline", input.PipelineID)
+		return lambda.OrchestratorOutput{Mode: "check-job"}, nil
+	}
+	result, err := d.StatusChecker.CheckStatus(ctx, cfg.Job.Type, input.Metadata, tc.TriggerHeaders())
 	if err != nil {
 		d.Logger.WarnContext(ctx, "status check failed", "error", err, "pipeline", input.PipelineID)
 		return lambda.OrchestratorOutput{Mode: "check-job"}, nil
@@ -73,4 +84,38 @@ func handleCheckJob(ctx context.Context, d *lambda.Deps, input lambda.Orchestrat
 		// Still running — return no event so SFN loops back to WaitForJob.
 		return lambda.OrchestratorOutput{Mode: "check-job"}, nil
 	}
+}
+
+// pollsConfiguredOrigin reports whether an airflow or databricks status poll
+// goes to the scheme and host (with port) of the configured trigger URL. The
+// poll URL comes from run metadata and the headers from the config, so a
+// metadata URL elsewhere would carry the config's token to another host.
+// With no configured URL there is nothing to match, so there is no poll.
+// Other trigger types do not poll a URL from metadata.
+func pollsConfiguredOrigin(tc types.TriggerConfig, metadata map[string]interface{}) bool {
+	var key, configured string
+	switch tc.Type {
+	case types.TriggerAirflow:
+		if tc.Airflow == nil {
+			return false
+		}
+		key, configured = "airflow_url", tc.Airflow.URL
+	case types.TriggerDatabricks:
+		if tc.Databricks == nil {
+			return false
+		}
+		key, configured = "databricks_workspace_url", tc.Databricks.WorkspaceURL
+	default:
+		return true
+	}
+	polled, _ := metadata[key].(string)
+	got, err := url.Parse(polled)
+	if err != nil {
+		return false
+	}
+	want, err := url.Parse(configured)
+	if err != nil {
+		return false
+	}
+	return want.Host != "" && got.Scheme == want.Scheme && strings.EqualFold(got.Host, want.Host)
 }

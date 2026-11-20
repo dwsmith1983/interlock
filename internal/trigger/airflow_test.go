@@ -107,7 +107,7 @@ func TestCheckAirflowStatus_Success(t *testing.T) {
 	defaultHTTPClient = srv.Client()
 	defer func() { defaultHTTPClient = origClient }()
 
-	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-123", nil)
+	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-123", nil, defaultHTTPClient)
 	require.NoError(t, err)
 	assert.Equal(t, "success", state)
 }
@@ -125,7 +125,7 @@ func TestCheckAirflowStatus_Running(t *testing.T) {
 	defaultHTTPClient = srv.Client()
 	defer func() { defaultHTTPClient = origClient }()
 
-	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-123", nil)
+	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-123", nil, defaultHTTPClient)
 	require.NoError(t, err)
 	assert.Equal(t, "running", state)
 }
@@ -143,7 +143,7 @@ func TestCheckAirflowStatus_Failed(t *testing.T) {
 	defaultHTTPClient = srv.Client()
 	defer func() { defaultHTTPClient = origClient }()
 
-	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-123", nil)
+	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-123", nil, defaultHTTPClient)
 	require.NoError(t, err)
 	assert.Equal(t, "failed", state)
 }
@@ -260,7 +260,7 @@ func TestCheckAirflowStatus_ServerError(t *testing.T) {
 	defaultHTTPClient = srv.Client()
 	defer func() { defaultHTTPClient = origClient }()
 
-	_, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", nil)
+	_, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", nil, defaultHTTPClient)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "status 500")
 }
@@ -278,7 +278,7 @@ func TestCheckAirflowStatus_MissingStateField(t *testing.T) {
 	defaultHTTPClient = srv.Client()
 	defer func() { defaultHTTPClient = origClient }()
 
-	_, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", nil)
+	_, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", nil, defaultHTTPClient)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "response missing state field")
 }
@@ -342,7 +342,7 @@ func TestCheckAirflowStatus_EnvExpansionRestricted(t *testing.T) {
 	defer func() { defaultHTTPClient = origClient }()
 
 	headers := map[string]string{"Authorization": "Bearer ${INTERLOCK_TEST_VAR}/${SECRET_VAR}"}
-	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", headers)
+	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", headers, defaultHTTPClient)
 	require.NoError(t, err)
 	assert.Equal(t, "running", state)
 	assert.Equal(t, "Bearer safe/", receivedAuth)
@@ -366,7 +366,7 @@ func TestCheckAirflowStatus_WithHeaders(t *testing.T) {
 
 	state, err := CheckAirflowStatus(context.Background(), srv.URL, "my_dag", "run-1", map[string]string{
 		"Authorization": "Bearer test-token",
-	})
+	}, defaultHTTPClient)
 	require.NoError(t, err)
 	assert.Equal(t, "running", state)
 	assert.Equal(t, "Bearer test-token", receivedAuth)
