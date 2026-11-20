@@ -192,14 +192,16 @@ func TestExecuteAirflow_WithBody(t *testing.T) {
 }
 
 func TestExecuteAirflow_InvalidBodyJSON(t *testing.T) {
+	// The decoder would quote the 'z' that follows the injected quote.
+	t.Setenv("INTERLOCK_X", `"zq9`)
 	cfg := &types.AirflowTriggerConfig{
 		URL:   "http://example.com",
 		DagID: "my_dag",
-		Body:  `{invalid json`,
+		Body:  `{"t":"${INTERLOCK_X}"}`,
 	}
 	_, err := ExecuteAirflow(context.Background(), cfg)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid body JSON")
+	require.EqualError(t, err, "airflow trigger: body is not valid JSON after variable expansion")
+	assert.NotContains(t, err.Error(), "z")
 }
 
 func TestExecuteAirflow_MissingDagRunIDInResponse(t *testing.T) {
