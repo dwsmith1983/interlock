@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,8 +28,10 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 	payload := map[string]interface{}{}
 	if cfg.Body != "" {
 		var conf interface{}
-		if err := json.Unmarshal([]byte(expandRunBody(cfg.Body, cfg.BodyGenerated, cfg.Run)), &conf); err != nil {
-			return nil, fmt.Errorf("airflow trigger: invalid body JSON: %w", err)
+		// The decoder error is not wrapped: it can quote a character of an
+		// expanded INTERLOCK_ value, such as a token.
+		if json.Unmarshal([]byte(expandRunBody(cfg.Body, cfg.BodyGenerated, cfg.Run)), &conf) != nil {
+			return nil, errors.New("airflow trigger: body is not valid JSON after variable expansion")
 		}
 		payload["conf"] = conf
 	}

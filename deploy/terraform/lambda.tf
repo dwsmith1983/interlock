@@ -178,7 +178,7 @@ resource "aws_lambda_function" "orchestrator" {
   reserved_concurrent_executions = var.lambda_concurrency.orchestrator
 
   environment {
-    variables = {
+    variables = merge(var.orchestrator_env, {
       CONTROL_TABLE  = aws_dynamodb_table.control.name
       JOBLOG_TABLE   = aws_dynamodb_table.joblog.name
       RERUN_TABLE    = aws_dynamodb_table.rerun.name
@@ -187,7 +187,7 @@ resource "aws_lambda_function" "orchestrator" {
       # references this function, so its ARN attribute would be a cycle.
       STATE_MACHINE_ARN   = "arn:${data.aws_partition.current.partition}:states:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:stateMachine:${var.environment}-interlock-pipeline"
       SFN_TIMEOUT_SECONDS = tostring(var.sfn_timeout_seconds)
-    }
+    }, var.trigger_secrets_arn != "" ? { TRIGGER_SECRETS_ARN = var.trigger_secrets_arn } : {})
   }
 
   depends_on = [aws_cloudwatch_log_group.lambda["orchestrator"]]
@@ -433,6 +433,26 @@ resource "aws_iam_role_policy" "secrets_alert_dispatcher" {
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
       Resource = var.slack_secret_arn
+    }]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Secrets Manager read: orchestrator (trigger auth tokens, opt-in)
+# -----------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "orchestrator_trigger_secrets" {
+  count = var.trigger_secrets_arn != "" ? 1 : 0
+  name  = "trigger-secrets-read"
+  role  = aws_iam_role.lambda["orchestrator"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "ReadTriggerSecrets"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = var.trigger_secrets_arn
     }]
   })
 }

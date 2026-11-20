@@ -80,6 +80,28 @@ variable "slack_channel_id" {
   default     = ""
 }
 
+variable "trigger_secrets_arn" {
+  description = "Full ARN (with its random 6-character suffix, no wildcards) of a Secrets Manager secret in the deployment's region holding a JSON object of INTERLOCK_ env vars for trigger auth, loaded by the orchestrator at cold start (empty = none)"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.trigger_secrets_arn == "" || can(regex("^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", var.trigger_secrets_arn))
+    error_message = "trigger_secrets_arn must be the full Secrets Manager secret ARN, including its random 6-character suffix, in the deployment's region and without wildcards, or empty."
+  }
+}
+
+variable "orchestrator_env" {
+  description = "Extra INTERLOCK_ env vars for the orchestrator. Values are stored in Terraform state and shown in plans and the Lambda console, so not for secrets: use trigger_secrets_arn for tokens."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for k in keys(var.orchestrator_env) : can(regex("^INTERLOCK_[A-Z0-9_]+$", k))])
+    error_message = "Every orchestrator_env key must match ^INTERLOCK_[A-Z0-9_]+$."
+  }
+}
+
 variable "lambda_concurrency" {
   description = "Reserved concurrent executions per Lambda function"
   type = object({
