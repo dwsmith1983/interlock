@@ -560,7 +560,7 @@ var airflowAndDatabricksCalls = map[string]func(url string) error{
 		return err
 	},
 	"databricks trigger": func(url string) error {
-		_, err := ExecuteDatabricks(context.Background(), &types.DatabricksTriggerConfig{WorkspaceURL: url, JobID: "j"}, defaultHTTPClient)
+		_, err := ExecuteDatabricks(context.Background(), &types.DatabricksTriggerConfig{WorkspaceURL: url, JobID: "1"}, defaultHTTPClient)
 		return err
 	},
 	"databricks status": func(url string) error {

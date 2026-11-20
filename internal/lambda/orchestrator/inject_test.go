@@ -3,7 +3,10 @@ package orchestrator_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
@@ -61,6 +64,15 @@ func TestInjectDateArgs(t *testing.T) {
 				Arguments: map[string]string{"--par_hour": "99", "--input": "s3://in"}}},
 			args: func(tc types.TriggerConfig) map[string]string { return tc.EMR.Arguments },
 			want: map[string]string{"--par_day": "20260303", "--par_hour": "07", "--input": "s3://in"}},
+		{name: "databricks daily creates the map", date: daily,
+			tc:   types.TriggerConfig{Databricks: &types.DatabricksTriggerConfig{WorkspaceURL: "https://dbc", JobID: "1"}},
+			args: func(tc types.TriggerConfig) map[string]string { return tc.Databricks.Arguments },
+			want: map[string]string{"par_day": "20260303"}},
+		{name: "databricks hourly overwrites a configured key", date: hourly,
+			tc: types.TriggerConfig{Databricks: &types.DatabricksTriggerConfig{
+				Arguments: map[string]string{"par_hour": "99", "env": "prod"}}},
+			args: func(tc types.TriggerConfig) map[string]string { return tc.Databricks.Arguments },
+			want: map[string]string{"par_day": "20260303", "par_hour": "07", "env": "prod"}},
 	}
 	for _, tt := range argTests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -159,5 +171,27 @@ func TestInjectDateArgs_StepFunctionInput(t *testing.T) {
 	if client.in.Input == nil || json.Unmarshal([]byte(*client.in.Input), &input) != nil ||
 		!maps.Equal(input, map[string]string{"par_day": "20260303", "par_hour": "07"}) {
 		t.Errorf("execution input = %v, want par_day 20260303 and par_hour 07", aws.ToString(client.in.Input))
+	}
+}
+
+// The date keys reach a databricks job as job parameters of its run-now call.
+func TestInjectDateArgs_Databricks(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		_, _ = w.Write([]byte(`{"run_id": 77}`))
+	}))
+	defer srv.Close()
+	tc := types.TriggerConfig{Type: types.TriggerDatabricks, Databricks: &types.DatabricksTriggerConfig{
+		WorkspaceURL: srv.URL, JobID: "12345", Arguments: map[string]string{"env": "prod"}}}
+
+	orchestrator.InjectDateArgs(&tc, "2026-03-11T05")
+	if _, err := trigger.ExecuteDatabricks(context.Background(), tc.Databricks, srv.Client()); err != nil {
+		t.Fatalf("ExecuteDatabricks: %v", err)
+	}
+
+	if want := `{"job_id":12345,"job_parameters":{"env":"prod","par_day":"20260311","par_hour":"05"}}`; body != want {
+		t.Errorf("run-now body = %s, want %s", body, want)
 	}
 }

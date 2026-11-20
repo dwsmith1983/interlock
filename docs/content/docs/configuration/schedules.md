@@ -130,7 +130,7 @@ This pattern is useful for event-driven pipelines that should evaluate immediate
 
 Pipelines run at daily granularity by default. For sub-daily (hourly) execution, sensor data must include both `date` and `hour` fields. The framework builds a composite execution date (e.g., `2026-03-03T10`) that scopes the entire execution — trigger lock, joblog entries, SLA, and retries — to that specific hour.
 
-Every job except `emr-serverless` and `databricks` learns the date, derived from the composite date: `glue` and `emr` jobs receive `--par_day` (YYYYMMDD) and `--par_hour` (HH) arguments, a `step-function` job gets `par_day` and `par_hour` in its execution input, and `http`, `lambda` and `airflow` jobs get the run identity, including `par_day` and `par_hour` when no body or payload is configured (see [Triggers](../triggers/)). `par_hour` is set for hourly dates only.
+Every job except `emr-serverless` learns the date, derived from the composite date: `glue` and `emr` jobs receive `--par_day` (YYYYMMDD) and `--par_hour` (HH) arguments, a `step-function` job gets `par_day` and `par_hour` in its execution input, a `databricks` job gets them as job parameters, and `http`, `lambda` and `airflow` jobs get the run identity, including `par_day` and `par_hour` when no body or payload is configured (see [Triggers](../triggers/)). `par_hour` is set for hourly dates only.
 
 The granularity is determined by the sensor data, not the pipeline config. A single pipeline can process both daily and hourly executions depending on what its sensors provide.
 

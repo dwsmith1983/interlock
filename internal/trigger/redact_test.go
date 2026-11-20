@@ -133,7 +133,7 @@ func TestExecuteRedactsEchoedToken(t *testing.T) {
 		},
 		"databricks": func(url string) *types.TriggerConfig {
 			return &types.TriggerConfig{Type: types.TriggerDatabricks, Databricks: &types.DatabricksTriggerConfig{
-				WorkspaceURL: url, JobID: "j", Headers: auth,
+				WorkspaceURL: url, JobID: "1", Headers: auth,
 			}}
 		},
 	}
@@ -237,7 +237,7 @@ func TestRedactsTokenAtTheCut(t *testing.T) {
 			return execute(r, &types.TriggerConfig{Type: types.TriggerAirflow, Airflow: &types.AirflowTriggerConfig{URL: url, DagID: "d", Headers: auth}})
 		}},
 		{"databricks", http.StatusBadRequest, func(r *Runner, url string) error {
-			return execute(r, &types.TriggerConfig{Type: types.TriggerDatabricks, Databricks: &types.DatabricksTriggerConfig{WorkspaceURL: url, JobID: "j", Headers: auth}})
+			return execute(r, &types.TriggerConfig{Type: types.TriggerDatabricks, Databricks: &types.DatabricksTriggerConfig{WorkspaceURL: url, JobID: "1", Headers: auth}})
 		}},
 		{"airflow status", http.StatusUnauthorized, func(r *Runner, url string) error {
 			return status(r, types.TriggerAirflow, map[string]interface{}{"airflow_url": url, "airflow_dag_id": "d", "airflow_dag_run_id": "r"})

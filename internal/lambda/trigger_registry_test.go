@@ -12,8 +12,10 @@ import (
 // TestTriggerRegistryTypesPassValidation: a config may name any registered
 // trigger type, so adding one to the registry alone cannot reject its configs.
 func TestTriggerRegistryTypesPassValidation(t *testing.T) {
+	// The fields a type's own checks require.
+	required := map[types.TriggerType]map[string]interface{}{types.TriggerDatabricks: {"jobId": "1"}}
 	for typ := range lambda.TriggerUnmarshalers {
-		cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: types.JobConfig{Type: typ}}
+		cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: types.JobConfig{Type: typ, Config: required[typ]}}
 		if errs := validation.ValidatePipelineConfig(&cfg); len(errs) > 0 {
 			t.Errorf("job.type %q: %v", typ, errs)
 		}
