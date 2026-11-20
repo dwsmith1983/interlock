@@ -64,7 +64,7 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("airflow trigger: returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("airflow trigger: returned status %d: %s", resp.StatusCode, sanitizeBody(respBody, secretValues(cfg.Headers, cfg.Body), maxErrorBodyBytes))
 	}
 
 	var result map[string]interface{}
@@ -112,7 +112,7 @@ func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string,
 	}
 
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("airflow status: returned status %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("airflow status: returned status %d: %s", resp.StatusCode, sanitizeBody(respBody, secretValues(headers), maxErrorBodyBytes))
 	}
 
 	var result map[string]interface{}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/dwsmith1983/interlock/internal/resilience"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -185,7 +186,7 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 
 	if err != nil {
 		if lastStatusCode >= 500 {
-			msg := fmt.Sprintf("trigger returned status %d: %s", lastStatusCode, sanitizeBody(lastBody))
+			msg := fmt.Sprintf("trigger returned status %d: %s", lastStatusCode, sanitizeBody(lastBody, secretValues(cfg.Headers, cfg.Body), maxErrorBodyBytes))
 			return NewTriggerError(types.FailureTransient, msg, nil)
 		}
 		return fmt.Errorf("trigger request failed: %w", err)
@@ -194,7 +195,7 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 		respBody, _ := io.ReadAll(resp.Body)
-		msg := fmt.Sprintf("trigger returned status %d: %s", resp.StatusCode, sanitizeBody(respBody))
+		msg := fmt.Sprintf("trigger returned status %d: %s", resp.StatusCode, sanitizeBody(respBody, secretValues(cfg.Headers, cfg.Body), maxErrorBodyBytes))
 		return NewTriggerError(types.FailurePermanent, msg, nil)
 	}
 
@@ -211,16 +212,26 @@ func safeEnvLookup(key string) string {
 	return ""
 }
 
-// sanitizeBody truncates a response body to maxErrorBodyBytes and strips
-// control characters to prevent log injection.
-func sanitizeBody(body []byte) string {
-	if len(body) > maxErrorBodyBytes {
-		body = body[:maxErrorBodyBytes]
-	}
-	return strings.Map(func(r rune) rune {
+// sanitizeBody strips control characters from a response body to prevent log
+// injection, redacts values, and truncates the result to limit bytes.
+// Redacting before the cut leaves no prefix of a value that crosses it.
+func sanitizeBody(body []byte, values []string, limit int) string {
+	s := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) && r != '\n' && r != '\t' {
 			return -1
 		}
 		return r
 	}, string(body))
+	return truncateUTF8(redact(s, values), limit)
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a rune.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

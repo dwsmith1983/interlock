@@ -58,7 +58,7 @@ func ExecuteDatabricks(ctx context.Context, cfg *types.DatabricksTriggerConfig, 
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("databricks trigger: returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("databricks trigger: returned status %d: %s", resp.StatusCode, sanitizeBody(respBody, secretValues(cfg.Headers), maxErrorBodyBytes))
 	}
 
 	var result map[string]interface{}
@@ -110,7 +110,7 @@ func (r *Runner) checkDatabricksStatus(ctx context.Context, metadata map[string]
 	}
 
 	if resp.StatusCode >= 400 {
-		return StatusResult{}, fmt.Errorf("databricks status: returned status %d: %s", resp.StatusCode, string(respBody))
+		return StatusResult{}, fmt.Errorf("databricks status: returned status %d: %s", resp.StatusCode, sanitizeBody(respBody, secretValues(headers), maxErrorBodyBytes))
 	}
 
 	var result map[string]interface{}
