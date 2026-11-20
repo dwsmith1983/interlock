@@ -164,6 +164,7 @@ job:
 | `dagID` | string | DAG identifier |
 | `headers` | map | Authentication headers |
 | `body` | string | JSON sent as the DAG run's `conf` (optional) |
+| `apiVersion` | int | Airflow major version: `2` (default) or `3` |
 | `pollInterval` | string | Status poll interval (e.g. `1m`) |
 
 The DAG run's `conf` carries the run. With no `body` it is the same JSON object
@@ -172,6 +173,20 @@ the `http` default body is (`par_day`, `par_hour` for hourly dates,
 [run identity](#run-identity) variables JSON-escaped, so use them inside JSON
 strings. The headers expand only `INTERLOCK_` environment variables: the status
 poll sends them again without a run identity.
+
+`apiVersion: 3` targets the Airflow 3 REST API: the run starts with
+`POST /api/v2/dags/{dagID}/dagRuns` and is polled at
+`/api/v2/dags/{dagID}/dagRuns/{runID}`. The request body carries
+`"logical_date": null`, which Airflow 3 requires, so Airflow picks the run's
+date as Airflow 2 does; the run date still reaches the DAG through `conf`.
+Airflow 2 (`apiVersion` unset or `2`) uses `/api/v1` and sends only `conf`.
+Airflow 3 authenticates with a JWT bearer token: keep it in the
+[trigger secret](#setting-interlock_-values) like any other token and send it as
+`Authorization: "Bearer ${INTERLOCK_AIRFLOW_TOKEN}"` in `headers`. Airflow 3
+access tokens expire after the lifetime set by Airflow's
+`[api_auth] jwt_expiration_time`, and trigger values load at cold start, so a
+renewed token reaches the orchestrator only once the secret is updated and new
+containers start (see [Setting `INTERLOCK_` values](#setting-interlock_-values)).
 
 ### `glue`
 
@@ -448,7 +463,7 @@ After a job executes, the orchestrator Lambda polls for completion using the ret
 | `emr-serverless` | `GetJobRun` | RUNNING/SUBMITTED -> running, SUCCESS -> succeeded, FAILED/CANCELLED -> failed |
 | `step-function` | `DescribeExecution` | RUNNING -> running, SUCCEEDED -> succeeded, FAILED/TIMED_OUT/ABORTED -> failed |
 | `databricks` | `GET /runs/get` | RUNNING/PENDING -> running, TERMINATED(SUCCESS) -> succeeded, others -> failed |
-| `airflow` | `GET /dags/{id}/dagRuns` | running -> running, success -> succeeded, failed -> failed |
+| `airflow` | `GET /api/v1/dags/{dag_id}/dagRuns/{dag_run_id}` (`/api/v2/...` with `apiVersion: 3`) | running -> running, success -> succeeded, failed -> failed |
 
 The `airflow` and `databricks` polls send the trigger's configured headers, expanded like the trigger's own. A poll runs only when the run's URL, kept from the trigger call, has the scheme and host of the trigger config, so the headers never go elsewhere: changing a trigger's URL while a run is polling stops the polls for that run until the state machine times out.
 

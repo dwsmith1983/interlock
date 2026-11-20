@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -86,6 +87,12 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 
 	if t := cfg.Job.Type; t != "" && !triggerTypes[t] {
 		errs = append(errs, fmt.Sprintf("job.type %q is not a supported trigger type", t))
+	}
+
+	if cfg.Job.Type == types.TriggerAirflow {
+		if v, ok := airflowAPIVersion(cfg.Job.Config); !ok {
+			errs = append(errs, fmt.Sprintf("job.config.apiVersion %s must be 2 or 3", v))
+		}
 	}
 
 	if cfg.Job.MaxRetries < 0 || cfg.Job.MaxRetries > 10 {
@@ -205,6 +212,26 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	}
 
 	return errs
+}
+
+// airflowAPIVersion decodes the apiVersion of an airflow job.config through
+// JSON, as the orchestrator decodes the trigger config, and reports whether it
+// is unset, 2 or 3. It returns the value as JSON for the error.
+func airflowAPIVersion(conf map[string]interface{}) (string, bool) {
+	var c struct {
+		APIVersion json.RawMessage `json:"apiVersion"`
+	}
+	// A job.config loaded from YAML or JSON always marshals and decodes into
+	// c, so only a missing apiVersion leaves it nil: unset.
+	data, err := json.Marshal(conf)
+	if err != nil || json.Unmarshal(data, &c) != nil || c.APIVersion == nil {
+		return "", true
+	}
+	var n int
+	if json.Unmarshal(c.APIVersion, &n) != nil {
+		return string(c.APIVersion), false
+	}
+	return string(c.APIVersion), n == 0 || n == 2 || n == 3
 }
 
 // isZoneName reports whether tz is empty (UTC) or a zone time.LoadLocation

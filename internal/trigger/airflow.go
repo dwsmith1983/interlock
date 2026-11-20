@@ -22,9 +22,21 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 		return nil, fmt.Errorf("airflow trigger: dagID is required")
 	}
 
-	url := strings.TrimRight(cfg.URL, "/") + "/api/v1/dags/" + cfg.DagID + "/dagRuns"
+	apiVersion := cfg.APIVersion
+	if apiVersion == 0 {
+		apiVersion = 2
+	}
+	url, err := dagRunsURL(cfg.URL, cfg.DagID, apiVersion)
+	if err != nil {
+		return nil, fmt.Errorf("airflow trigger: %w", err)
+	}
 
 	payload := map[string]interface{}{}
+	if apiVersion == 3 {
+		// Airflow 3 requires the key. Null lets Airflow pick the date, as the
+		// v1 call does with no execution_date.
+		payload["logical_date"] = nil
+	}
 	if cfg.Body != "" {
 		var conf interface{}
 		// The decoder error is not wrapped: it can quote a character of an
@@ -77,17 +89,38 @@ func ExecuteAirflow(ctx context.Context, cfg *types.AirflowTriggerConfig) (map[s
 	}
 
 	meta := map[string]interface{}{
-		"airflow_dag_run_id": dagRunID,
-		"airflow_dag_id":     cfg.DagID,
-		"airflow_url":        cfg.URL,
+		"airflow_dag_run_id":  dagRunID,
+		"airflow_dag_id":      cfg.DagID,
+		"airflow_url":         cfg.URL,
+		"airflow_api_version": apiVersion,
 	}
 	return meta, nil
 }
 
-// CheckAirflowStatus polls the status of an Airflow DAG run with client.
+// dagRunsURL is the DAG runs collection of dagID on the REST API of Airflow
+// apiVersion: /api/v1 for Airflow 2, /api/v2 for Airflow 3.
+func dagRunsURL(baseURL, dagID string, apiVersion int) (string, error) {
+	var api string
+	switch apiVersion {
+	case 2:
+		api = "/api/v1"
+	case 3:
+		api = "/api/v2"
+	default:
+		return "", fmt.Errorf("unsupported apiVersion %d", apiVersion)
+	}
+	return strings.TrimRight(baseURL, "/") + api + "/dags/" + dagID + "/dagRuns", nil
+}
+
+// CheckAirflowStatus polls the status of an Airflow DAG run with client, on
+// the REST API of Airflow apiVersion (2 or 3).
 // Returns the state string: "queued", "running", "success", "failed".
-func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string, headers map[string]string, client *http.Client) (string, error) {
-	url := strings.TrimRight(airflowURL, "/") + "/api/v1/dags/" + dagID + "/dagRuns/" + dagRunID
+func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string, apiVersion int, headers map[string]string, client *http.Client) (string, error) {
+	runsURL, err := dagRunsURL(airflowURL, dagID, apiVersion)
+	if err != nil {
+		return "", fmt.Errorf("airflow status: %w", err)
+	}
+	url := runsURL + "/" + dagRunID
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {

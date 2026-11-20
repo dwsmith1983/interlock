@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Trigger auth tokens from Secrets Manager.** The Terraform module's `trigger_secrets_arn` names a secret holding a JSON object of `INTERLOCK_` variables; the orchestrator reads it at cold start (env `TRIGGER_SECRETS_ARN`) and sets each pair in its environment, and a secret it cannot use stops the cold start. Its role gets `secretsmanager:GetSecretValue` on that secret only. `orchestrator_env` sets plain `INTERLOCK_` variables for non-secret values; the secret wins on a shared name.
+- **The `airflow` trigger supports Airflow 3.** `apiVersion: 3` starts and polls DAG runs on the `/api/v2` REST API, sending `"logical_date": null` with the `conf`. Unset or `2` keeps the `/api/v1` calls. Validation rejects any other value. Runs started before this change keep polling `/api/v1`.
 
 ### Changed (BREAKING)
 
