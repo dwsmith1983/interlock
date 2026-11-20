@@ -115,6 +115,8 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 
 Supported trigger types: `http`, `airflow`, `glue`, `emr`, `emr-serverless`, `step-function`, `databricks`, `lambda`.
 
+**Secrets Manager**: when `TRIGGER_SECRETS_ARN` is set, the orchestrator reads that secret's `INTERLOCK_` variables into its environment at cold start (see [Setting `INTERLOCK_` values](../../configuration/triggers/#setting-interlock_-values)). The module conditionally grants `secretsmanager:GetSecretValue` on that secret to the orchestrator role.
+
 ### sla-monitor
 
 Publishes the SLA alerts. The watchdog creates the one-time EventBridge Scheduler entries (warning and breach) for each `RUN#` date; sla-monitor is invoked:

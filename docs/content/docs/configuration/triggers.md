@@ -323,6 +323,74 @@ an empty string.
 
 `emr-serverless` and `databricks` jobs do not receive the run date yet.
 
+### Setting `INTERLOCK_` values
+
+The Terraform module sets the orchestrator's `INTERLOCK_` variables in two ways:
+
+- `orchestrator_env`, a map of plain Lambda environment variables. Its values
+  are stored in Terraform state and shown in plans and the Lambda console, so
+  keep it for non-secret values.
+- `trigger_secrets_arn`, the full ARN of a Secrets Manager secret, including
+  its random 6-character suffix, in the same region as the deployment. Its
+  value is a JSON object of strings, for tokens:
+
+  ```json
+  {"INTERLOCK_API_TOKEN": "...", "INTERLOCK_AIRFLOW_TOKEN": "..."}
+  ```
+
+  The module grants the orchestrator `secretsmanager:GetSecretValue` on that
+  secret only. A secret under the default `aws/secretsmanager` key needs
+  nothing more. A secret under a customer managed key needs
+  `kms:Decrypt` on that key for the orchestrator role
+  (`<environment>-interlock-orchestrator`), and the key policy must allow it.
+  `kms_key_arn` covers this only when it is the same key; a key dedicated to
+  the secret keeps the other Lambda roles, which hold `kms:Decrypt` on
+  `kms_key_arn`, out of it.
+
+For example, create the secret and look up its full ARN, suffix included:
+
+```sh
+aws secretsmanager create-secret --name <env>-interlock-triggers \
+  --secret-string '{"INTERLOCK_AIRFLOW_TOKEN":"..."}'
+aws secretsmanager describe-secret --secret-id <env>-interlock-triggers \
+  --query ARN --output text
+```
+
+then set that ARN in your tfvars:
+
+```hcl
+trigger_secrets_arn = "<that ARN>"
+```
+
+The secret must exist before `terraform apply`, or the orchestrator's cold
+start fails.
+
+Both take keys matching `^INTERLOCK_[A-Z0-9_]+$`. A key named like a run
+identity variable (`INTERLOCK_PIPELINE_ID`, `INTERLOCK_SCHEDULE_ID`,
+`INTERLOCK_DATE`, `INTERLOCK_RUN_ID`) is accepted, but the run identity wins
+where the table above says so. The orchestrator reads the secret at cold start
+and sets each pair in its environment, so a secret key wins over an
+`orchestrator_env` entry of the same name. A secret that cannot be read, is not
+a JSON object of strings, has another key, or has a value containing a control
+character (a trailing newline, for one) stops the cold start.
+
+Because values load at cold start, running containers keep the old value after
+a rotation. A code or configuration update to the function (a new build, or a
+changed `orchestrator_env` value) starts new containers. After a leak, revoke
+the old token at its issuer rather than relying on rotation.
+
+The error of a failed `http`, `airflow` or `databricks` call includes the
+response body, and a `lambda` job's error keeps up to 200 bytes of the
+function's error payload. Both can reach the job log, the orchestrator's
+CloudWatch logs, the Step Functions execution history, events and alerts, so
+keep trigger endpoints from echoing credentials and functions from putting
+their event in error messages.
+
+Anyone with write access to the control table, where pipeline configs live, can
+send any `INTERLOCK_` value to a URL of their choice, for example through an
+`http` trigger's headers or body. Write access to the control table therefore
+amounts to read access on these tokens.
+
 ## Status Polling
 
 After a job executes, the orchestrator Lambda polls for completion using the returned metadata. Each job type implements `CheckStatus()`:

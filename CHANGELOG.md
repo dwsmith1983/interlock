@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Trigger auth tokens from Secrets Manager.** The Terraform module's `trigger_secrets_arn` names a secret holding a JSON object of `INTERLOCK_` variables; the orchestrator reads it at cold start (env `TRIGGER_SECRETS_ARN`) and sets each pair in its environment, and a secret it cannot use stops the cold start. Its role gets `secretsmanager:GetSecretValue` on that secret only. `orchestrator_env` sets plain `INTERLOCK_` variables for non-secret values; the secret wins on a shared name.
+
 ### Changed (BREAKING)
 
 - **A `lambda` job with no `payload` now receives a JSON event** (the run object below) instead of an empty one, and an `airflow` job with no `body` a DAG run `conf`.
