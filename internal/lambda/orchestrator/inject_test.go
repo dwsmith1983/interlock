@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -132,6 +133,40 @@ func TestInjectDateArgs(t *testing.T) {
 			}
 			if !generated {
 				t.Error("generated body not marked generated: it would go through variable expansion")
+			}
+		})
+	}
+}
+
+// TestInjectDateArgs_EMRServerless: the date reaches an emr-serverless job as
+// --par_day and --par_hour entry point arguments, each flag followed by its
+// value; a configured flag keeps its place and takes the run's value.
+func TestInjectDateArgs_EMRServerless(t *testing.T) {
+	tests := []struct {
+		name string
+		date string
+		args []string
+		want []string
+	}{
+		{name: "daily without arguments", date: "2026-03-03",
+			want: []string{"--par_day", "20260303"}},
+		{name: "hourly appends after configured arguments", date: "2026-03-03T07",
+			args: []string{"--input", "s3://in"},
+			want: []string{"--input", "s3://in", "--par_day", "20260303", "--par_hour", "07"}},
+		{name: "configured flag takes the run's value", date: "2026-03-03T07",
+			args: []string{"--par_hour", "99", "--input", "s3://in"},
+			want: []string{"--par_hour", "07", "--input", "s3://in", "--par_day", "20260303"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configured := slices.Clone(tt.args)
+			tc := types.TriggerConfig{EMRServerless: &types.EMRServerlessTriggerConfig{EntryPointArguments: tt.args}}
+			orchestrator.InjectDateArgs(&tc, tt.date)
+			if got := tc.EMRServerless.EntryPointArguments; !slices.Equal(got, tt.want) {
+				t.Errorf("entry point arguments = %q, want %q", got, tt.want)
+			}
+			if !slices.Equal(tt.args, configured) {
+				t.Errorf("configured arguments changed to %q, want %q", tt.args, configured)
 			}
 		})
 	}

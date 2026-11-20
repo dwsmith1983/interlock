@@ -96,7 +96,7 @@ A job started by an `http` trigger also reports its result to the joblog table, 
 
 ## Keeping Teams Apart with IAM
 
-IAM keeps one team's rows apart from another's. It does not limit what a config makes the shared orchestrator do: a `CONFIG` row can name any job ARN the deployment allows (another team's job included, with its own arguments), and a `type: http` job calls any public URL. Review configs like code. The central `pipelines_path` route gets that review in the central repository; route a team's own Terraform through the same review.
+IAM keeps one team's rows apart from another's. It does not limit what a config makes the shared orchestrator do: a `CONFIG` row can name any job ARN the deployment allows (another team's job included, with its own arguments), and a `type: http` job calls any public URL. An `emr-serverless` config can run any code under any role in `emr_serverless_execution_role_arns`: the role list is deployment-wide, and the config writer chooses both the role and the entry point, so list only roles every config writer may use, or deploy separately. Review configs like code. The central `pipelines_path` route gets that review in the central repository; route a team's own Terraform through the same review.
 
 Without a guard, two teams that pick the same ID share one `CONFIG` row and can change each other's pipeline. Give each team's roles access only to keys that start with its prefix, one statement for its jobs and one for its Terraform:
 
@@ -148,5 +148,5 @@ Attach the first statement to the job role and the second to the Terraform role.
 ## Limits
 
 - **Alerts:** all pipelines alert to the one Slack channel and event bus. Pipeline events carry `detail.pipelineId`, so a team can add its own rule on the bus (the `event_bus_name` output, re-exported like `control_table_name`) with the pattern `{"source": ["interlock"], "detail": {"pipelineId": [{"prefix": "sales-"}]}}`. That rule misses deployment-level failures: `WATCHDOG_DEGRADED` has an empty `pipelineId`, and CloudWatch alarms go to the default bus.
-- **Job permissions:** the orchestrator role is shared, so a team's job ARNs go in the core deployment's `glue_job_arns`, `emr_cluster_arns`, `emr_serverless_app_arns`, `lambda_trigger_arns` or `sfn_trigger_arns`, with the matching `enable_*_trigger` flag.
+- **Job permissions:** the orchestrator role is shared, so a team's job ARNs go in the core deployment's `glue_job_arns`, `emr_cluster_arns`, `emr_serverless_app_arns` (with the job runtime roles in `emr_serverless_execution_role_arns`), `lambda_trigger_arns` or `sfn_trigger_arns`, with the matching `enable_*_trigger` flag. Any `emr-serverless` config can use any of those runtime roles, so list only roles every config writer may use. `emr-serverless` client tokens come from the execution name, so two deployments that share one EMR Serverless application can collide only if the same pipeline, schedule and date start in the same second; give each deployment its own application.
 - **Deployment settings:** `sfn_timeout_seconds`, `trigger_max_attempts` and `watchdog_schedule` apply to every pipeline.

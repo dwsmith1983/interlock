@@ -285,6 +285,9 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 			job: job(types.TriggerLambda, map[string]interface{}{"functionName": "f"})},
 		{name: "airflow uses the execution name", execName: execName, wantRunID: execName,
 			job: job(types.TriggerAirflow, map[string]interface{}{"url": "https://airflow.example.com", "dagId": "d"})},
+		{name: "emr-serverless gets the execution name", execName: execName, wantRunID: execName,
+			job: job(types.TriggerEMRServerless, map[string]interface{}{"applicationId": "app-1", "jobName": "etl",
+				"executionRoleArn": "arn:aws:iam::123456789012:role/emr-job", "entryPoint": "s3://bucket/etl.py"})},
 	}
 
 	for _, tt := range tests {
@@ -345,6 +348,10 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 			case types.TriggerAirflow:
 				if exec.got.Airflow.Run != wantRun {
 					t.Errorf("Airflow.Run = %+v, want %+v", exec.got.Airflow.Run, wantRun)
+				}
+			case types.TriggerEMRServerless:
+				if exec.got.EMRServerless.Run != wantRun {
+					t.Errorf("EMRServerless.Run = %+v, want %+v", exec.got.EMRServerless.Run, wantRun)
 				}
 			case types.TriggerGlue:
 				if exec.got.Glue == nil || exec.got.Glue.JobName != "my-etl" {

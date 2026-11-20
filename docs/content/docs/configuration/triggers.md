@@ -231,22 +231,37 @@ job:
 
 ### `emr-serverless`
 
-Starts a job run on EMR Serverless.
+Starts a Spark job run on an EMR Serverless application.
 
 ```yaml
 job:
   type: emr-serverless
   config:
-    applicationID: "00f00abcde12345"
-    arguments:
-      "--class": com.example.ETLJob
-      "--s3-input": s3://bucket/input/
+    applicationId: "00f00abcde12345"
+    jobName: daily-etl
+    executionRoleArn: arn:aws:iam::123456789012:role/emr-serverless-job
+    entryPoint: s3://bucket/jobs/etl.py
+    entryPointArguments: ["--input", "s3://bucket/input/"]
+    sparkSubmitParameters: "--conf spark.executor.cores=2"
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `applicationID` | string | EMR Serverless application ID |
-| `arguments` | map | Job run arguments |
+| `applicationId` | string | EMR Serverless application ID |
+| `jobName` | string | Job run name |
+| `executionRoleArn` | string | IAM runtime role the job run executes under; it must be in the Terraform module's `emr_serverless_execution_role_arns` |
+| `entryPoint` | string | Script or JAR that `spark-submit` runs, such as an S3 URI |
+| `entryPointArguments` | list | Arguments passed to the entry point (optional); Interlock adds `--par_day` `20260301` and, for hourly dates, `--par_hour` `05`, each flag followed by its value. A flag already in the list keeps its place and takes the run's value. Only the two-argument form (`--par_day`, `20260301`) is recognised: a `--par_day=20260301` element is left as is and the run's flag is appended |
+| `sparkSubmitParameters` | string | Extra `spark-submit` parameters (optional) |
+
+The job run's client token is derived from the run ID, so when the Trigger
+state retries a start whose response was lost, the retry reuses the token and
+EMR Serverless does not start a second job run. A failure retry or a rerun has
+a new run ID and starts a new job run.
+
+Config values are stored in plaintext and are visible in `GetJobRun`, so a job
+that needs a credential should read its own secret under its runtime role
+rather than take it as an argument.
 
 **Returned metadata**: `applicationId`, `jobRunId` -- used by the orchestrator to poll `GetJobRun`.
 
@@ -357,8 +372,6 @@ an empty string.
 |---|---|---|
 | `${INTERLOCK_<NAME>}` | `http` body and headers, `airflow` body and headers, `databricks` headers, `lambda` payload | the orchestrator Lambda's environment variable `INTERLOCK_<NAME>` |
 | `${INTERLOCK_PIPELINE_ID}`, `${INTERLOCK_SCHEDULE_ID}`, `${INTERLOCK_DATE}`, `${INTERLOCK_RUN_ID}` | `http` body and headers, `lambda` payload, `airflow` body | the [run identity](#run-identity), which takes precedence over an environment variable of the same name |
-
-`emr-serverless` jobs do not receive the run date yet.
 
 ### Setting `INTERLOCK_` values
 
@@ -493,7 +506,7 @@ The Terraform module provides opt-in variables to grant the orchestrator Lambda 
 |---|---|---|
 | `enable_glue_trigger` | `false` | `glue:StartJobRun`, `glue:GetJobRun`, `logs:FilterLogEvents` (scoped to `/aws-glue/jobs/logs-v2`) |
 | `enable_emr_trigger` | `false` | `elasticmapreduce:AddJobFlowSteps`, `elasticmapreduce:DescribeStep` |
-| `enable_emr_serverless_trigger` | `false` | `emr-serverless:StartJobRun` on `emr_serverless_app_arns`, `emr-serverless:GetJobRun` on their job runs |
+| `enable_emr_serverless_trigger` | `false` | `emr-serverless:StartJobRun` on `emr_serverless_app_arns`, `emr-serverless:GetJobRun` on their job runs, `iam:PassRole` on `emr_serverless_execution_role_arns` (passed to `emr-serverless.amazonaws.com` only) |
 | `enable_sfn_trigger` | `false` | `states:StartExecution` on `sfn_trigger_arns`, `states:DescribeExecution` on their executions |
 | `enable_lambda_trigger` | `false` | `lambda:InvokeFunction` on `lambda_trigger_arns` (required when enabled) |
 

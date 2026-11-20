@@ -58,8 +58,9 @@ run "emr_serverless_get_job_run_on_job_run_arns" {
   command = plan
 
   variables {
-    enable_emr_serverless_trigger = true
-    emr_serverless_app_arns       = ["arn:aws:emr-serverless:eu-west-1:123456789012:/applications/00abc"]
+    enable_emr_serverless_trigger      = true
+    emr_serverless_app_arns            = ["arn:aws:emr-serverless:eu-west-1:123456789012:/applications/00abc"]
+    emr_serverless_execution_role_arns = ["arn:aws:iam::123456789012:role/emr-job"]
   }
 
   assert {
@@ -77,6 +78,92 @@ run "emr_serverless_get_job_run_on_job_run_arns" {
     ])) == toset(["arn:aws:emr-serverless:eu-west-1:123456789012:/applications/00abc/jobruns/*"])
     error_message = "GetJobRun must be granted on the job runs of each application."
   }
+}
+
+# StartJobRun hands the job its runtime role, so the orchestrator must be
+# allowed to pass exactly those roles, and only to EMR Serverless.
+run "emr_serverless_pass_role_on_execution_roles" {
+  command = plan
+
+  variables {
+    enable_emr_serverless_trigger = true
+    emr_serverless_app_arns       = ["arn:aws:emr-serverless:eu-west-1:123456789012:/applications/00abc"]
+    emr_serverless_execution_role_arns = [
+      "arn:aws:iam::123456789012:role/emr-job",
+      "arn:aws:iam::123456789012:role/team/emr-report",
+    ]
+  }
+
+  assert {
+    condition = [
+      for s in jsondecode(aws_iam_role_policy.emr_serverless_trigger[0].policy).Statement : {
+        effect    = s.Effect
+        actions   = flatten([s.Action])
+        resources = toset(flatten([s.Resource]))
+        condition = try(s.Condition, null)
+      } if contains(flatten([s.Action]), "iam:PassRole")
+      ] == [{
+        effect  = "Allow"
+        actions = ["iam:PassRole"]
+        resources = toset([
+          "arn:aws:iam::123456789012:role/emr-job",
+          "arn:aws:iam::123456789012:role/team/emr-report",
+        ])
+        condition = { StringEquals = { "iam:PassedToService" = "emr-serverless.amazonaws.com" } }
+    }]
+    error_message = "One statement must allow iam:PassRole alone on the execution roles, only when passed to emr-serverless.amazonaws.com."
+  }
+}
+
+run "emr_serverless_execution_roles_must_be_role_arns" {
+  command = plan
+
+  variables {
+    emr_serverless_execution_role_arns = ["arn:aws:iam::123456789012:user/emr-job"]
+  }
+
+  expect_failures = [var.emr_serverless_execution_role_arns]
+}
+
+run "emr_serverless_execution_roles_reject_wildcard" {
+  command = plan
+
+  variables {
+    emr_serverless_execution_role_arns = ["arn:aws:iam::123456789012:role/*"]
+  }
+
+  expect_failures = [var.emr_serverless_execution_role_arns]
+}
+
+run "emr_serverless_execution_roles_reject_path_wildcard" {
+  command = plan
+
+  variables {
+    emr_serverless_execution_role_arns = ["arn:aws:iam::123456789012:role/team/*"]
+  }
+
+  expect_failures = [var.emr_serverless_execution_role_arns]
+}
+
+run "emr_serverless_execution_roles_reject_trailing_text" {
+  command = plan
+
+  variables {
+    emr_serverless_execution_role_arns = ["arn:aws:iam::123456789012:role/emr-job extra"]
+  }
+
+  expect_failures = [var.emr_serverless_execution_role_arns]
+}
+
+run "emr_serverless_trigger_needs_execution_roles" {
+  command = plan
+
+  variables {
+    enable_emr_serverless_trigger = true
+    emr_serverless_app_arns       = ["arn:aws:emr-serverless:eu-west-1:123456789012:/applications/00abc"]
+  }
+
+  expect_failures = [aws_iam_role_policy.emr_serverless_trigger]
 }
 
 run "sfn_trigger_arns_must_be_state_machines" {

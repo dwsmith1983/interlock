@@ -117,6 +117,8 @@ terraform apply
 | `enable_glue_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Glue jobs |
 | `enable_emr_trigger` | bool | `false` | Grant orchestrator Lambda permission to submit EMR steps |
 | `enable_emr_serverless_trigger` | bool | `false` | Grant orchestrator Lambda permission to start EMR Serverless jobs |
+| `emr_serverless_app_arns` | list(string) | `[]` | EMR Serverless application ARNs the orchestrator may start job runs on and poll. Required, non-empty, when `enable_emr_serverless_trigger` is `true` |
+| `emr_serverless_execution_role_arns` | list(string) | `[]` | IAM role ARNs EMR Serverless job runs execute under; the orchestrator gets `iam:PassRole` on them, only for `emr-serverless.amazonaws.com`. Required, non-empty, when `enable_emr_serverless_trigger` is `true` |
 | `enable_sfn_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Step Functions executions |
 | `enable_lambda_trigger` | bool | `false` | Grant orchestrator Lambda permission to invoke Lambda functions |
 | `lambda_trigger_arns` | list(string) | `[]` | Lambda function ARNs the orchestrator may invoke (scoped IAM). Required, non-empty, when `enable_lambda_trigger` is `true` |

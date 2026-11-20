@@ -230,8 +230,11 @@ func TestRunner_Execute_EMRServerlessType(t *testing.T) {
 	meta, err := r.Execute(context.Background(), &types.TriggerConfig{
 		Type: types.TriggerEMRServerless,
 		EMRServerless: &types.EMRServerlessTriggerConfig{
-			ApplicationID: "app-1",
-			JobName:       "spark-job",
+			ApplicationID:    "app-1",
+			JobName:          "spark-job",
+			ExecutionRoleARN: "arn:aws:iam::123456789012:role/emr-job",
+			EntryPoint:       "s3://bucket/etl.py",
+			Run:              types.RunIdentity{RunID: "exec-1"},
 		},
 	})
 	require.NoError(t, err)
