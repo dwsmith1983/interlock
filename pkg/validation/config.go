@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	// Validation and the Lambdas must load the same zones whatever the runtime image has.
@@ -92,6 +93,12 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	if cfg.Job.Type == types.TriggerAirflow {
 		if v, ok := airflowAPIVersion(cfg.Job.Config); !ok {
 			errs = append(errs, fmt.Sprintf("job.config.apiVersion %s must be 2 or 3", v))
+		}
+	}
+
+	if cfg.Job.Type == types.TriggerDatabricks {
+		if msg := databricksJobIDError(cfg.Job.Config); msg != "" {
+			errs = append(errs, "job.config.jobId "+msg)
 		}
 	}
 
@@ -232,6 +239,31 @@ func airflowAPIVersion(conf map[string]interface{}) (string, bool) {
 		return string(c.APIVersion), false
 	}
 	return string(c.APIVersion), n == 0 || n == 2 || n == 3
+}
+
+// databricksJobIDError decodes the jobId of a databricks job.config through
+// JSON, as the orchestrator decodes the trigger config, and says what is wrong
+// with it, or returns "" for a string holding a positive base-10 integer. A
+// number is refused, as the orchestrator's decode into a string fails on it.
+func databricksJobIDError(conf map[string]interface{}) string {
+	var c struct {
+		JobID json.RawMessage `json:"jobId"`
+	}
+	data, err := json.Marshal(conf)
+	if err != nil || json.Unmarshal(data, &c) != nil || c.JobID == nil || string(c.JobID) == "null" {
+		return "is required"
+	}
+	var id string
+	if json.Unmarshal(c.JobID, &id) != nil {
+		return string(c.JobID) + " must be a string: quote the job ID, as a number loses precision above 2^53"
+	}
+	if id == "" {
+		return "is required"
+	}
+	if n, err := strconv.ParseInt(id, 10, 64); err != nil || n <= 0 {
+		return fmt.Sprintf("%q must be a positive base-10 integer job ID", id)
+	}
+	return ""
 }
 
 // isZoneName reports whether tz is empty (UTC) or a zone time.LoadLocation

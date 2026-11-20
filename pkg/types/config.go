@@ -85,7 +85,9 @@ type StepFunctionTriggerConfig struct {
 	Arguments       map[string]string `yaml:"arguments,omitempty" json:"arguments,omitempty"`
 }
 
-// DatabricksTriggerConfig holds configuration for Databricks triggers.
+// DatabricksTriggerConfig holds configuration for Databricks triggers. JobID
+// is the numeric ID of the job run-now starts, kept as a string so an ID above
+// 2^53 stays exact.
 type DatabricksTriggerConfig struct {
 	WorkspaceURL string            `yaml:"workspace_url" json:"workspaceUrl"`
 	JobID        string            `yaml:"job_id,omitempty" json:"jobId,omitempty"`

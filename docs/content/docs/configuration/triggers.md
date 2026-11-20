@@ -272,25 +272,35 @@ job:
 
 ### `databricks`
 
-Submits a job run to Databricks via REST API 2.1.
+Starts a run of an existing Databricks job with `POST /api/2.1/jobs/run-now`
+and polls it to completion.
 
 ```yaml
 job:
   type: databricks
   config:
-    workspaceURL: https://my-workspace.cloud.databricks.com
+    workspaceUrl: https://my-workspace.cloud.databricks.com
+    jobId: "123456789012345"
     headers:
       Authorization: "Bearer ${INTERLOCK_DATABRICKS_TOKEN}"
-    body: '{"job_id": 12345}'
+    arguments:
+      env: prod
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `workspaceURL` | string | Databricks workspace URL |
+| `workspaceUrl` | string | Databricks workspace URL |
+| `jobId` | string | Numeric ID of the job to start, quoted so an ID of any size stays exact |
 | `headers` | map | Authentication headers |
-| `body` | string | JSON request body (Jobs API 2.1 format) |
+| `arguments` | map | Job parameters of the run; Interlock adds `par_day` (`20260301`) and, for hourly dates, `par_hour` (`05`), replacing a configured value of the same key |
 
-**Returned metadata**: `runId` -- used by the orchestrator to poll via `GET /api/2.1/jobs/runs/get`.
+The request body is `{"job_id": <jobId>, "job_parameters": <arguments>}`, so
+the job must define job-level parameters named `par_day` and `par_hour` (and
+any other key in `arguments`) for the run to accept them. Validation rejects a
+`jobId` that is missing, unquoted (a number loses precision above 2^53) or not
+a positive base-10 integer, and the trigger checks it again before any request.
+
+**Returned metadata**: `databricks_workspace_url`, `databricks_run_id` -- used by the orchestrator to poll `GET /api/2.1/jobs/runs/get`.
 
 ### `lambda`
 
@@ -348,7 +358,7 @@ an empty string.
 | `${INTERLOCK_<NAME>}` | `http` body and headers, `airflow` body and headers, `databricks` headers, `lambda` payload | the orchestrator Lambda's environment variable `INTERLOCK_<NAME>` |
 | `${INTERLOCK_PIPELINE_ID}`, `${INTERLOCK_SCHEDULE_ID}`, `${INTERLOCK_DATE}`, `${INTERLOCK_RUN_ID}` | `http` body and headers, `lambda` payload, `airflow` body | the [run identity](#run-identity), which takes precedence over an environment variable of the same name |
 
-`emr-serverless` and `databricks` jobs do not receive the run date yet.
+`emr-serverless` jobs do not receive the run date yet.
 
 ### Setting `INTERLOCK_` values
 

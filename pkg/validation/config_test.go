@@ -589,3 +589,40 @@ func TestValidate_AirflowAPIVersion(t *testing.T) {
 	}))
 	assert.Empty(t, ValidatePipelineConfig(withVersion(types.TriggerHTTP, 4)), "apiVersion is an airflow setting")
 }
+
+// The databricks jobId is checked as the orchestrator decodes it: a string
+// holding a positive integer. A JSON or YAML number fails the decode and would
+// lose precision above 2^53, so it is refused with a hint to quote it.
+func TestValidate_DatabricksJobID(t *testing.T) {
+	withConfig := func(jobType types.TriggerType, conf map[string]interface{}) *types.PipelineConfig {
+		return &types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "orders"},
+			Job:      types.JobConfig{Type: jobType, Config: conf},
+		}
+	}
+	const quote = "job.config.jobId %s must be a string: quote the job ID, as a number loses precision above 2^53"
+	tests := []struct {
+		name string
+		conf map[string]interface{}
+		want []string
+	}{
+		{"valid", map[string]interface{}{"jobId": "12345"}, nil},
+		{"above 2^53", map[string]interface{}{"jobId": "9007199254740993"}, nil},
+		{"case-folded key", map[string]interface{}{"jobid": "abc"}, []string{`job.config.jobId "abc" must be a positive base-10 integer job ID`}},
+		{"not an integer", map[string]interface{}{"jobId": "abc"}, []string{`job.config.jobId "abc" must be a positive base-10 integer job ID`}},
+		{"zero", map[string]interface{}{"jobId": "0"}, []string{`job.config.jobId "0" must be a positive base-10 integer job ID`}},
+		{"empty", map[string]interface{}{"jobId": ""}, []string{"job.config.jobId is required"}},
+		{"null", map[string]interface{}{"jobId": nil}, []string{"job.config.jobId is required"}},
+		{"missing", map[string]interface{}{"workspaceUrl": "https://dbc"}, []string{"job.config.jobId is required"}},
+		{"no config", nil, []string{"job.config.jobId is required"}},
+		// YAML decodes the number as an int, JSON as a float64.
+		{"yaml number", map[string]interface{}{"jobId": 12345}, []string{fmt.Sprintf(quote, "12345")}},
+		{"json number", map[string]interface{}{"jobId": float64(12345)}, []string{fmt.Sprintf(quote, "12345")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ValidatePipelineConfig(withConfig(types.TriggerDatabricks, tt.conf)))
+		})
+	}
+	assert.Empty(t, ValidatePipelineConfig(withConfig(types.TriggerHTTP, map[string]interface{}{"jobId": 1})), "jobId is a databricks setting")
+}

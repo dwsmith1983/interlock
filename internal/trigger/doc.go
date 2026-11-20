@@ -7,7 +7,7 @@
 //   - emr: Amazon EMR step submission via SDK
 //   - emr-serverless: Amazon EMR Serverless job run via SDK
 //   - step-function: AWS Step Functions execution via SDK
-//   - databricks: Databricks job run via REST API
+//   - databricks: run of an existing Databricks job via the run-now REST API
 //   - lambda: AWS Lambda direct invocation via SDK
 //
 // The [Runner] struct provides dependency injection for AWS SDK clients

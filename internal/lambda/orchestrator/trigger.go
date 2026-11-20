@@ -150,7 +150,8 @@ func ExtractRunID(metadata map[string]interface{}) string {
 
 // InjectDateArgs gives the job the execution date it runs for. Glue and EMR
 // arguments get --par_day (and --par_hour for hourly dates), a step
-// function's input par_day (and par_hour), overwriting a configured value.
+// function's input and a databricks job's parameters par_day (and par_hour),
+// overwriting a configured value.
 // An http body, lambda payload or airflow body left empty becomes the
 // generated run object (see runObject), marked generated so it is sent as is.
 func InjectDateArgs(tc *types.TriggerConfig, date string) {
@@ -165,6 +166,9 @@ func InjectDateArgs(tc *types.TriggerConfig, date string) {
 	}
 	if tc.StepFunction != nil {
 		tc.StepFunction.Arguments = withDateArgs(tc.StepFunction.Arguments, "", parDay, hourPart)
+	}
+	if tc.Databricks != nil {
+		tc.Databricks.Arguments = withDateArgs(tc.Databricks.Arguments, "", parDay, hourPart)
 	}
 	if tc.HTTP != nil && tc.HTTP.Body == "" {
 		tc.HTTP.Body, tc.HTTP.BodyGenerated = runObject(tc.HTTP.Run, parDay, hourPart), true
