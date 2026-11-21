@@ -231,7 +231,7 @@ postRun:
 1. **Baseline capture**: When a job completes successfully, the orchestrator reads all sensors and writes a date-scoped baseline (`postrun-baseline#<date>`) to the control table.
 2. **Stream-based evaluation**: When a sensor matching a post-run rule arrives via DynamoDB Stream, the stream-router evaluates it:
    - If the trigger is **RUNNING**, drift is logged as an informational `POST_RUN_DRIFT_INFLIGHT` event (no rerun).
-   - If the trigger is **COMPLETED** and the date is inside its watch window, the sensor count is compared against the baseline. Drift above `driftThreshold` triggers a rerun via the circuit breaker.
+   - If the trigger is **COMPLETED** and the date is inside its watch window, the sensor count is compared against the baseline. Drift above `driftThreshold` writes a `data-drift` rerun request, which skips the circuit breaker.
 3. **Watchdog safety net**: If no post-run sensor arrives within `sensorTimeout` after job completion, the watchdog publishes a `POST_RUN_SENSOR_MISSING` event.
 
 complete-trigger records the completion as `completedAt` on the trigger row. Late data, drift and the post-run checks are acted on only within `postRun.watchWindow` (default `4h`) of it, an automatic rerun request (late data or drift) handled after the window is skipped, and the watchdog counts `sensorTimeout` from it. See [Watch window](../../configuration/pipelines/#watch-window).

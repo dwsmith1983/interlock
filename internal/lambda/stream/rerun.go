@@ -118,26 +118,12 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 		return nil
 	}
 
-	// Circuit breaker (sensor freshness).
-	job, err := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
+	breaker, err := runCircuitBreaker(ctx, d, pipelineID, schedule, date, reason)
 	if err != nil {
-		return fmt.Errorf("get latest job event for %q/%s/%s: %w", pipelineID, schedule, date, err)
+		return err
 	}
-
-	allowed := true
-	rejectReason := ""
-	if job != nil && job.Event == types.JobEventSuccess {
-		fresh, err := checkSensorFreshness(ctx, d, pipelineID, job.SK)
-		if err != nil {
-			return fmt.Errorf("check sensor freshness for %q: %w", pipelineID, err)
-		}
-		if !fresh {
-			allowed = false
-			rejectReason = "previous run succeeded and no sensor data has changed"
-		}
-	}
-
-	if !allowed {
+	if breaker == breakerRejected {
+		rejectReason := "previous run succeeded and no sensor data has changed"
 		if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 			types.JobEventRerunRejected, "", 0, rejectReason); err != nil {
 			d.Logger.Warn("failed to write rerun-rejected joblog for circuit breaker", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
@@ -205,6 +191,43 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 	d.Logger.Info("started rerun",
 		"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason)
 	return nil
+}
+
+// Circuit breaker verdicts. The dry-run detail reports them as they are.
+const (
+	breakerPassed    = "passed"
+	breakerRejected  = "rejected"
+	breakerNoHistory = "skipped (no job history)"
+	breakerAutomatic = "skipped (automatic request)"
+)
+
+// runCircuitBreaker decides whether a rerun request may run again after the
+// date's last run succeeded: only when some sensor changed since. The last
+// run is the newest job outcome, not a row about an earlier request or late
+// data. A late-data or data-drift request skips it, since the stream-router
+// wrote that request on a change it had already seen.
+func runCircuitBreaker(ctx context.Context, d *lambda.Deps, pipelineID, schedule, date, reason string) (string, error) {
+	if reason == "late-data" || reason == "data-drift" {
+		return breakerAutomatic, nil
+	}
+	job, err := d.Store.GetLatestJobOutcome(ctx, pipelineID, schedule, date)
+	if err != nil {
+		return "", fmt.Errorf("get latest job outcome for %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	if job == nil {
+		return breakerNoHistory, nil
+	}
+	if job.Event != types.JobEventSuccess {
+		return breakerPassed, nil
+	}
+	fresh, err := checkSensorFreshness(ctx, d, pipelineID, job.SK)
+	if err != nil {
+		return "", fmt.Errorf("check sensor freshness for %q: %w", pipelineID, err)
+	}
+	if !fresh {
+		return breakerRejected, nil
+	}
+	return breakerPassed, nil
 }
 
 // parseRerunRequestSK extracts schedule and date from a RERUN_REQUEST# sort
@@ -287,7 +310,7 @@ func checkLateDataArrival(ctx context.Context, d *lambda.Deps, cfg *types.Pipeli
 		return nil
 	}
 
-	job, err := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
+	job, err := d.Store.GetLatestJobOutcome(ctx, pipelineID, schedule, date)
 	if err != nil || job == nil {
 		return err
 	}

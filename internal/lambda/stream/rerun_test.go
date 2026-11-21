@@ -482,3 +482,129 @@ func TestCheckSensorFreshness(t *testing.T) {
 		})
 	}
 }
+
+// rerunWorld is a stream-router for pipeline p whose date 2026-03-10 has a
+// COMPLETED trigger row (completedAt 12:00), a success job row at 08:00 and
+// an "upstream" sensor updated at updatedAt. The router and the store read
+// *now.
+func rerunWorld(t *testing.T, updatedAt string, now *time.Time) (*lambda.Deps, *storetest.Mem, *countingSFN, *recordingEventBridge) {
+	t.Helper()
+	const date = "2026-03-10"
+	d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
+		PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
+	})
+	mem.Put("control", completedRow(date, "2026-03-10T12:00:00Z"))
+	mem.Put("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess}})
+	if err := d.Store.WriteSensor(context.Background(), "p", "upstream", map[string]interface{}{"status": "ready", "updatedAt": updatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	rerunCountQuery(d.Store.Client.(*storetest.FakeDynamo), mem)
+	d.NowFunc = func() time.Time { return *now }
+	d.Store.Now = func() time.Time { return *now }
+	return d, mem, sfnFake, eb
+}
+
+// rerunRequestRecord is the stream record of a RERUN_REQUEST# row for p on
+// 2026-03-10.
+func rerunRequestRecord(reason, requestedAt string) events.DynamoDBEventRecord {
+	return events.DynamoDBEventRecord{EventName: "INSERT", Change: events.DynamoDBStreamRecord{
+		SequenceNumber: "1",
+		Keys: map[string]events.DynamoDBAttributeValue{
+			"PK": events.NewStringAttribute(types.PipelinePK("p")),
+			"SK": events.NewStringAttribute(types.RerunRequestSK("stream", "2026-03-10")),
+		},
+		NewImage: map[string]events.DynamoDBAttributeValue{
+			"reason":      events.NewStringAttribute(reason),
+			"requestedAt": events.NewStringAttribute(requestedAt),
+		},
+	}}
+}
+
+// TestRerunRequest_RepeatedAfterBreakerRejection: the circuit breaker judges
+// by the last run, not by the rerun-rejected row its own first rejection
+// wrote, so asking again does not get a rerun past it.
+func TestRerunRequest_RepeatedAfterBreakerRejection(t *testing.T) {
+	now := mustTime(t, "2026-03-10T13:00:00Z")
+	d, mem, sfnFake, eb := rerunWorld(t, "1773100800000", &now)
+	ctx := context.Background()
+
+	if err := handleRecord(ctx, d, rerunRequestRecord("manual", "2026-03-10T13:00:00Z")); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	now = now.Add(5 * time.Minute)
+	if err := handleRecord(ctx, d, rerunRequestRecord("manual", "2026-03-10T13:05:00Z")); err != nil {
+		t.Fatalf("second request: %v", err)
+	}
+
+	const wantMsg = "rerun rejected for p: previous run succeeded and no sensor data has changed"
+	if len(eb.events) != 2 {
+		t.Fatalf("events = %+v, want two %s", eb.events, types.EventRerunRejected)
+	}
+	for i, e := range eb.events {
+		if e.Type != string(types.EventRerunRejected) || e.Message != wantMsg {
+			t.Errorf("event %d = %s %q, want %s %q", i, e.Type, e.Message, types.EventRerunRejected, wantMsg)
+		}
+	}
+	if sfnFake.calls != 0 || len(mem.Items("rerun")) != 0 {
+		t.Errorf("StartExecution calls %d, rerun rows %d; want 0 and 0", sfnFake.calls, len(mem.Items("rerun")))
+	}
+	wantJobs := []string{types.JobEventSuccess, types.JobEventRerunRejected, types.JobEventRerunRejected}
+	if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
+		t.Errorf("job rows = %v, want %v", got, wantJobs)
+	}
+	status := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("stream", "2026-03-10"))["status"].(*ddbtypes.AttributeValueMemberS).Value
+	if status != types.TriggerStatusCompleted {
+		t.Errorf("trigger status = %q, want COMPLETED", status)
+	}
+}
+
+// TestRerunRequest_AutomaticSkipsBreaker: a late-data or data-drift request
+// is not sent through the circuit breaker (the stream-router already saw the
+// change it reruns for), so it starts a rerun after a success even though no
+// sensor is newer than the run. A manual request is still checked.
+func TestRerunRequest_AutomaticSkipsBreaker(t *testing.T) {
+	tests := []struct {
+		reason    string
+		wantStart bool
+	}{
+		{reason: "late-data", wantStart: true},
+		{reason: "data-drift", wantStart: true},
+		{reason: "manual"}, // guard
+	}
+	for _, tt := range tests {
+		t.Run(tt.reason, func(t *testing.T) {
+			now := mustTime(t, "2026-03-10T13:00:00Z")
+			d, mem, sfnFake, eb := rerunWorld(t, "2026-03-10T07:00:00Z", &now)
+
+			if err := handleRecord(context.Background(), d, rerunRequestRecord(tt.reason, "2026-03-10T13:00:00Z")); err != nil {
+				t.Fatalf("handleRecord: %v", err)
+			}
+
+			var gotEvents []string
+			for _, e := range eb.events {
+				gotEvents = append(gotEvents, e.Type)
+			}
+			wantStarts, wantEvents, wantReruns := 0, []string{string(types.EventRerunRejected)}, 0
+			wantJobs := []string{types.JobEventSuccess, types.JobEventRerunRejected}
+			if tt.wantStart {
+				wantStarts, wantEvents, wantReruns = 1, []string{string(types.EventRerunAccepted)}, 1
+				wantJobs = []string{types.JobEventSuccess, types.JobEventRerunAccepted}
+			}
+			if sfnFake.calls != wantStarts || !slices.Equal(gotEvents, wantEvents) {
+				t.Errorf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, gotEvents, wantStarts, wantEvents)
+			}
+			if got := len(mem.Items("rerun")); got != wantReruns {
+				t.Errorf("rerun rows = %d, want %d", got, wantReruns)
+			}
+			if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
+				t.Errorf("job rows = %v, want %v", got, wantJobs)
+			}
+		})
+	}
+}

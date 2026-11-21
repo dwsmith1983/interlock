@@ -148,3 +148,59 @@ func isTerminalJobEvent(event string) bool {
 	}
 	return false
 }
+
+// jobOutcomePageSize is how many job rows GetLatestJobOutcome reads per page.
+// Rows the stream-router writes can pile up above the last run during a long
+// watch window, and the rows are small.
+const jobOutcomePageSize = 100
+
+// GetLatestJobOutcome returns the newest job row for a pipeline, schedule and
+// date that records what the date's run did, skipping the rows the
+// stream-router writes about reruns and late data (see isAuditJobEvent).
+// Returns nil, nil if there is none. Only the event attribute of a skipped row
+// is read, so a malformed older row cannot fail the lookup.
+func (s *Store) GetLatestJobOutcome(ctx context.Context, pipelineID, schedule, date string) (*types.JobLogRecord, error) {
+	prefix := "JOB#" + schedule + "#" + date + "#"
+	var startKey map[string]ddbtypes.AttributeValue
+	for {
+		out, err := s.Client.Query(ctx, &dynamodb.QueryInput{
+			TableName:              &s.JobLogTable,
+			KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":pk":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+				":prefix": &ddbtypes.AttributeValueMemberS{Value: prefix},
+			},
+			ScanIndexForward:  aws.Bool(false),
+			Limit:             aws.Int32(jobOutcomePageSize),
+			ExclusiveStartKey: startKey,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get latest job outcome %q/%s/%s: %w", pipelineID, schedule, date, err)
+		}
+		for _, item := range out.Items {
+			if ev, ok := item["event"].(*ddbtypes.AttributeValueMemberS); ok && isAuditJobEvent(ev.Value) {
+				continue
+			}
+			var rec types.JobLogRecord
+			if err := attributevalue.UnmarshalMap(item, &rec); err != nil {
+				return nil, fmt.Errorf("unmarshal job outcome %q/%s/%s: %w", pipelineID, schedule, date, err)
+			}
+			return &rec, nil
+		}
+		if out.LastEvaluatedKey == nil {
+			return nil, nil
+		}
+		startKey = out.LastEvaluatedKey
+	}
+}
+
+// isAuditJobEvent reports whether a job row is one the stream-router writes
+// about a rerun request or late data rather than a record of the run. Any
+// other event, including one this version does not know, is an outcome.
+func isAuditJobEvent(event string) bool {
+	switch event {
+	case types.JobEventRerunAccepted, types.JobEventRerunRejected, types.JobEventLateDataArrival:
+		return true
+	}
+	return false
+}
