@@ -337,6 +337,8 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 		{name: "emr-serverless gets the execution name", execName: execName, wantRunID: execName,
 			job: job(types.TriggerEMRServerless, map[string]interface{}{"applicationId": "app-1", "jobName": "etl",
 				"executionRoleArn": "arn:aws:iam::123456789012:role/emr-job", "entryPoint": "s3://bucket/etl.py"})},
+		{name: "databricks gets the execution name", execName: execName, wantRunID: execName,
+			job: job(types.TriggerDatabricks, map[string]interface{}{"workspaceUrl": "https://dbc.example.com", "jobId": "1"})},
 	}
 
 	for _, tt := range tests {
@@ -401,6 +403,10 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 			case types.TriggerEMRServerless:
 				if exec.got.EMRServerless.Run != wantRun {
 					t.Errorf("EMRServerless.Run = %+v, want %+v", exec.got.EMRServerless.Run, wantRun)
+				}
+			case types.TriggerDatabricks:
+				if exec.got.Databricks.Run != wantRun {
+					t.Errorf("Databricks.Run = %+v, want %+v", exec.got.Databricks.Run, wantRun)
 				}
 			case types.TriggerGlue:
 				if exec.got.Glue == nil || exec.got.Glue.JobName != "my-etl" {

@@ -291,6 +291,7 @@ func TestRunner_Execute_DatabricksType(t *testing.T) {
 		Databricks: &types.DatabricksTriggerConfig{
 			WorkspaceURL: srv.URL,
 			JobID:        "12345",
+			Run:          types.RunIdentity{RunID: "exec-1"},
 		},
 	})
 	require.NoError(t, err)

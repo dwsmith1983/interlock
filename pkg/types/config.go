@@ -102,6 +102,9 @@ type DatabricksTriggerConfig struct {
 	JobID        string            `yaml:"job_id,omitempty" json:"jobId,omitempty"`
 	Headers      map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	Arguments    map[string]string `yaml:"arguments,omitempty" json:"arguments,omitempty"`
+	// Run identifies the launch. The orchestrator sets it; it is never
+	// configured. Its run ID makes the run-now idempotency token.
+	Run RunIdentity `yaml:"-" json:"-"`
 }
 
 // LambdaTriggerConfig holds configuration for direct AWS Lambda invocation.

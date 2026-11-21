@@ -317,11 +317,21 @@ job:
 | `headers` | map | Authentication headers |
 | `arguments` | map | Job parameters of the run; Interlock adds `par_day` (`20260301`) and, for hourly dates, `par_hour` (`05`), replacing a configured value of the same key |
 
-The request body is `{"job_id": <jobId>, "job_parameters": <arguments>}`, so
-the job must define job-level parameters named `par_day` and `par_hour` (and
-any other key in `arguments`) for the run to accept them. Validation rejects a
+The request body is `{"job_id": <jobId>, "idempotency_token": <token>,
+"job_parameters": <arguments>}`, so the job must define job-level parameters
+named `par_day` and `par_hour` (and any other key in `arguments`) for the run
+to accept them. Validation rejects a
 `jobId` that is missing, unquoted (a number loses precision above 2^53) or not
 a positive base-10 integer, and the trigger checks it again before any request.
+
+The run-now `idempotency_token` is derived from the run ID (its hex SHA-256,
+64 characters, the most Databricks accepts), so when the Trigger state retries
+a start whose response was lost, the retry sends the same token and Databricks
+returns the run it already started instead of starting a second one. A redrive
+that runs the Trigger state again keeps the run ID and so also gets the earlier
+run back. A failure retry, a rerun or a run the watchdog starts has a new run
+ID and starts a new run. If the earlier run was deleted, Databricks rejects the
+token and the retry fails rather than starting another run.
 
 **Returned metadata**: `databricks_workspace_url`, `databricks_run_id` -- used by the orchestrator to poll `GET /api/2.1/jobs/runs/get`.
 

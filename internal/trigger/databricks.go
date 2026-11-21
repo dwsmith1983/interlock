@@ -3,6 +3,8 @@ package trigger
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,12 +17,16 @@ import (
 
 // runNowRequest is the body of a Jobs API 2.1 run-now call.
 type runNowRequest struct {
-	JobID         int64             `json:"job_id"`
-	JobParameters map[string]string `json:"job_parameters,omitempty"`
+	JobID            int64             `json:"job_id"`
+	IdempotencyToken string            `json:"idempotency_token"`
+	JobParameters    map[string]string `json:"job_parameters,omitempty"`
 }
 
 // ExecuteDatabricks starts a run of an existing Databricks job with run-now,
-// passing the arguments as job parameters.
+// passing the arguments as job parameters. The idempotency token is the hex
+// SHA-256 of the run ID (64 characters, the token's limit, while a run ID can
+// be longer): a retried start of the same run reuses the token, so Databricks
+// returns the run it already started, and a new run starts a new one.
 func ExecuteDatabricks(ctx context.Context, cfg *types.DatabricksTriggerConfig, httpClient *http.Client) (map[string]interface{}, error) {
 	if cfg.WorkspaceURL == "" {
 		return nil, fmt.Errorf("databricks trigger: workspaceUrl is required")
@@ -35,10 +41,18 @@ func ExecuteDatabricks(ctx context.Context, cfg *types.DatabricksTriggerConfig, 
 	if err != nil || jobID <= 0 {
 		return nil, fmt.Errorf("databricks trigger: jobId must be a positive integer job ID, got %q", cfg.JobID)
 	}
+	if cfg.Run.RunID == "" {
+		return nil, fmt.Errorf("databricks trigger: run ID is required for the idempotency token")
+	}
 
 	url := strings.TrimRight(cfg.WorkspaceURL, "/") + "/api/2.1/jobs/run-now"
 
-	body, err := json.Marshal(runNowRequest{JobID: jobID, JobParameters: cfg.Arguments})
+	token := sha256.Sum256([]byte(cfg.Run.RunID))
+	body, err := json.Marshal(runNowRequest{
+		JobID:            jobID,
+		IdempotencyToken: hex.EncodeToString(token[:]),
+		JobParameters:    cfg.Arguments,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("databricks trigger: marshaling payload: %w", err)
 	}

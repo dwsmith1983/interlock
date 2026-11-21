@@ -2,6 +2,8 @@ package trigger
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,10 +16,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// databricksRun is the launch identity the orchestrator sets on every config.
+var databricksRun = types.RunIdentity{PipelineID: "p", ScheduleID: "s", Date: "2026-03-11", RunID: "exec-1"}
+
+// databricksToken is the idempotency token run-now gets for runID.
+func databricksToken(runID string) string {
+	sum := sha256.Sum256([]byte(runID))
+	return hex.EncodeToString(sum[:])
+}
+
 // run-now starts the configured job with its arguments as job parameters.
 // The job ID goes out as the exact JSON number, past 2^53 too, and the run ID
 // comes back without passing through float64.
 func TestExecuteDatabricks_RunNow(t *testing.T) {
+	token := `"idempotency_token":"` + databricksToken(databricksRun.RunID) + `"`
 	tests := []struct {
 		name      string
 		jobID     string
@@ -29,11 +41,11 @@ func TestExecuteDatabricks_RunNow(t *testing.T) {
 		{name: "job parameters", jobID: "12345",
 			args:  map[string]string{"par_day": "20260311", "par_hour": "05", "env": "prod"},
 			runID: "77", wantRunID: "77",
-			wantBody: `{"job_id":12345,"job_parameters":{"env":"prod","par_day":"20260311","par_hour":"05"}}`},
+			wantBody: `{"job_id":12345,` + token + `,"job_parameters":{"env":"prod","par_day":"20260311","par_hour":"05"}}`},
 		{name: "no arguments", jobID: "12345", runID: "77", wantRunID: "77",
-			wantBody: `{"job_id":12345}`},
+			wantBody: `{"job_id":12345,` + token + `}`},
 		{name: "ids above 2^53", jobID: "9007199254740993", runID: "9007199254740995", wantRunID: "9007199254740995",
-			wantBody: `{"job_id":9007199254740993}`},
+			wantBody: `{"job_id":9007199254740993,` + token + `}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -47,7 +59,7 @@ func TestExecuteDatabricks_RunNow(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cfg := &types.DatabricksTriggerConfig{WorkspaceURL: srv.URL, JobID: tt.jobID, Arguments: tt.args}
+			cfg := &types.DatabricksTriggerConfig{WorkspaceURL: srv.URL, JobID: tt.jobID, Arguments: tt.args, Run: databricksRun}
 			meta, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())
 
 			require.NoError(t, err)
@@ -59,6 +71,54 @@ func TestExecuteDatabricks_RunNow(t *testing.T) {
 	}
 }
 
+// The idempotency token is the hex SHA-256 of the run ID, 64 characters (the
+// run-now limit, while a run ID can be longer): a retried start of the same
+// run sends the same token, so Databricks returns the run it already started,
+// and another run sends its own.
+func TestExecuteDatabricks_SendsIdempotencyToken(t *testing.T) {
+	var tokens []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		token, _ := body["idempotency_token"].(string)
+		tokens = append(tokens, token)
+		_, _ = w.Write([]byte(`{"run_id": 77}`))
+	}))
+	defer srv.Close()
+
+	longRun := databricksRun
+	longRun.RunID = strings.Repeat("r", 80)
+	other := databricksRun
+	other.RunID = databricksRun.RunID + "-r1"
+	for _, run := range []types.RunIdentity{databricksRun, databricksRun, other, longRun} {
+		cfg := &types.DatabricksTriggerConfig{WorkspaceURL: srv.URL, JobID: "12345", Run: run}
+		_, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())
+		require.NoError(t, err)
+	}
+
+	require.Len(t, tokens, 4)
+	assert.Equal(t, databricksToken(databricksRun.RunID), tokens[0])
+	assert.Len(t, tokens[0], 64)
+	assert.Equal(t, tokens[0], tokens[1], "a retried start must reuse the token")
+	assert.NotEqual(t, tokens[0], tokens[2], "another run must get its own token")
+	assert.Len(t, tokens[3], 64, "a long run ID still fits the 64-character limit")
+}
+
+// A launch with no run ID has nothing to make the idempotency token from, so
+// it fails before any request.
+func TestExecuteDatabricks_RequiresRunID(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer srv.Close()
+
+	cfg := &types.DatabricksTriggerConfig{WorkspaceURL: srv.URL, JobID: "12345"}
+	_, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())
+
+	require.Error(t, err)
+	assert.Equal(t, "databricks trigger: run ID is required for the idempotency token", err.Error())
+	assert.False(t, called, "no request is sent without a run ID")
+}
+
 func TestExecuteDatabricks_JobIDNotAnInteger(t *testing.T) {
 	for _, jobID := range []string{"abc", "12.5", "1e3", "0", "-5", "99999999999999999999"} {
 		t.Run(jobID, func(t *testing.T) {
@@ -66,7 +126,7 @@ func TestExecuteDatabricks_JobIDNotAnInteger(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
 			defer srv.Close()
 
-			cfg := &types.DatabricksTriggerConfig{WorkspaceURL: srv.URL, JobID: jobID}
+			cfg := &types.DatabricksTriggerConfig{WorkspaceURL: srv.URL, JobID: jobID, Run: databricksRun}
 			_, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())
 
 			require.Error(t, err)
@@ -99,7 +159,7 @@ func TestExecuteDatabricks_BadRunID(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cfg := &types.DatabricksTriggerConfig{WorkspaceURL: srv.URL, JobID: "12345"}
+			cfg := &types.DatabricksTriggerConfig{WorkspaceURL: srv.URL, JobID: "12345", Run: databricksRun}
 			_, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())
 
 			require.Error(t, err)
@@ -147,6 +207,7 @@ func TestExecuteDatabricks_WithAuth(t *testing.T) {
 		WorkspaceURL: srv.URL,
 		JobID:        "12345",
 		Headers:      map[string]string{"Authorization": "Bearer db-token"},
+		Run:          databricksRun,
 	}
 
 	_, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())
@@ -178,6 +239,7 @@ func TestExecuteDatabricks_ServerError(t *testing.T) {
 	cfg := &types.DatabricksTriggerConfig{
 		WorkspaceURL: srv.URL,
 		JobID:        "12345",
+		Run:          databricksRun,
 	}
 
 	_, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())
@@ -297,6 +359,7 @@ func TestExecuteDatabricks_EnvExpansionRestricted(t *testing.T) {
 		WorkspaceURL: srv.URL,
 		JobID:        "12345",
 		Headers:      map[string]string{"Authorization": "Bearer ${INTERLOCK_TEST_VAR}/${SECRET_VAR}"},
+		Run:          databricksRun,
 	}
 
 	_, err := ExecuteDatabricks(context.Background(), cfg, srv.Client())

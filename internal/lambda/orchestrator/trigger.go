@@ -66,6 +66,9 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	if triggerCfg.EMRServerless != nil {
 		triggerCfg.EMRServerless.Run = run
 	}
+	if triggerCfg.Databricks != nil {
+		triggerCfg.Databricks.Run = run
+	}
 	InjectDateArgs(&triggerCfg, input.Date)
 
 	// startedAt marks the launch for the start-by check: set first, as a lambda job runs inside Execute.
