@@ -79,14 +79,16 @@ func TestNamesFitAtMaxInputs(t *testing.T) {
 
 // TestRerunNamesDifferInOneSecond: two accepted reruns of one pipeline and
 // date in the same second must not share an execution name, or the second
-// start fails as AlreadyExists and releases the lock the first run holds.
+// start fails as AlreadyExists and that rerun never runs.
 func TestRerunNamesDifferInOneSecond(t *testing.T) {
 	const id, date = "orders", "2026-03-07"
 	d, _, sfnM := newNameDeps(t, id, date, time.Unix(1772870400, 0))
 	requestRerun(t, d, id, date, "manual")
-	// The stubbed per-source budget queries answer zero, so this rerun is
-	// accepted too; CountReruns reads the first rerun's row from Mem, which
-	// makes this one attempt 1.
+	// The first rerun ends within the second, so the date is no longer
+	// RUNNING. The stubbed per-source budget queries answer zero, so this
+	// rerun is accepted too; CountReruns reads the first rerun's row from
+	// Mem, which makes this one attempt 1.
+	require.NoError(t, d.Store.SetTriggerStatus(context.Background(), id, "stream", date, types.TriggerStatusFailedFinal))
 	requestRerun(t, d, id, date, "data-drift")
 
 	assert.Equal(t, []string{"orders-stream-2026-03-07-rerun0-1772870400", "orders-stream-2026-03-07-rerun1-1772870400"}, executionNames(sfnM))
@@ -105,9 +107,10 @@ func (n *nameSFN) StartExecution(_ context.Context, in *sfn.StartExecutionInput,
 	return &sfn.StartExecutionOutput{}, nil
 }
 
-// newNameDeps returns deps fixed at now, with a config and trigger lock for id
-// and date. Mem has no FilterExpression, so the per-source rerun budget
-// queries answer zero; CountReruns has no filter and still counts Mem's rows.
+// newNameDeps returns deps fixed at now, with a config and a FAILED_FINAL
+// trigger row for id and date, so a rerun request is accepted. Mem has no
+// FilterExpression, so the per-source rerun budget queries answer zero;
+// CountReruns has no filter and still counts Mem's rows.
 func newNameDeps(t *testing.T, id, date string, now time.Time) (*lambda.Deps, *storetest.Mem, *nameSFN) {
 	t.Helper()
 	fake, mem := storetest.NewMem()
@@ -125,7 +128,7 @@ func newNameDeps(t *testing.T, id, date string, now time.Time) (*lambda.Deps, *s
 		"SK": &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK}, "config": &ddbtypes.AttributeValueMemberS{Value: string(cfg)}})
 	mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": pk,
 		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
-		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning}})
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusFailedFinal}})
 	s, sfnN := storetest.NewStore(fake), &nameSFN{}
 	return &lambda.Deps{Store: s, ConfigCache: store.NewConfigCache(s, 5*time.Minute), SFNClient: sfnN,
 		NowFunc: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, mem, sfnN

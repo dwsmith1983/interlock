@@ -292,6 +292,21 @@ func handleDryRunRerunRequest(ctx context.Context, d *lambda.Deps, cfg *types.Pi
 		return nil
 	}
 
+	tr, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
+	if err != nil {
+		return fmt.Errorf("dry-run: read trigger for rerun request of %q: %w", pipelineID, err)
+	}
+	if tr != nil && tr.Status == types.TriggerStatusRunning {
+		if pubErr := lambda.PublishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
+			fmt.Sprintf("dry-run: rerun rejected for %s: %s", pipelineID, runInProgress(date)),
+			map[string]interface{}{
+				"reason": "run in progress",
+			}); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunRerunRejected, "error", pubErr)
+		}
+		return nil
+	}
+
 	cbStatus, err := runCircuitBreaker(ctx, d, pipelineID, schedule, date, reason)
 	if err != nil {
 		return fmt.Errorf("dry-run: %w", err)

@@ -19,10 +19,11 @@ import (
 )
 
 // TestStreamDryRunRerunRequest: a dry-run pipeline's rerun request runs the
-// live checks in order (calendar, budget, circuit breaker) and publishes the
-// verdict, but never starts a run or writes a rerun or job row. Unless a row
-// gives a reason the request has an empty one, so it counts as manual; a
-// late-data or data-drift request skips the circuit breaker. Unless a row
+// live checks in order (calendar, budget, run in progress, circuit breaker)
+// and publishes the verdict, but never starts a run or writes a rerun or job
+// row. Unless a row gives a reason the request has an empty one, so it counts
+// as manual; a late-data or data-drift request skips the circuit breaker.
+// Unless a row gives a trigger status the date has no trigger row. Unless a row
 // says otherwise the "upstream" sensor was last updated at 00:00, before the
 // job row (08:00) when there is one, and now is 2026-03-10T13:00:00Z.
 // Calendar exclusion is checked on the request's date, not the wall-clock
@@ -35,6 +36,7 @@ func TestStreamDryRunRerunRequest(t *testing.T) {
 		job        string   // the run's job row event; empty means none
 		above      []string // newer job rows the stream-router wrote about reruns and late data
 		reason     string   // the request's reason; empty counts as manual
+		trigger    string   // the date's trigger row status; empty means no row
 		updatedAt  string   // the sensor's updatedAt; empty means 00:00 as epoch milliseconds
 		now        string   // empty means 2026-03-10T13:00:00Z
 		tweak      func(*types.PipelineConfig)
@@ -56,6 +58,13 @@ func TestStreamDryRunRerunRequest(t *testing.T) {
 		{name: "limit", job: types.JobEventFail, wantType: rejected,
 			tweak:      func(c *types.PipelineConfig) { zero := 0; c.Job.MaxManualReruns = &zero },
 			wantDetail: map[string]interface{}{"reason": "limit exceeded", "rerunCount": 0.0, "budget": 0.0}},
+		{name: "run in progress", job: types.JobEventFail, trigger: types.TriggerStatusRunning, wantType: rejected,
+			wantDetail: map[string]interface{}{"reason": "run in progress"}},
+		{name: "run in progress, budget spent", job: types.JobEventFail, trigger: types.TriggerStatusRunning, wantType: rejected,
+			tweak:      func(c *types.PipelineConfig) { zero := 0; c.Job.MaxManualReruns = &zero },
+			wantDetail: map[string]interface{}{"reason": "limit exceeded", "rerunCount": 0.0, "budget": 0.0}},
+		{name: "finished run (guard)", job: types.JobEventFail, trigger: types.TriggerStatusFailedFinal, wantType: wouldRerun,
+			wantDetail: map[string]interface{}{"reason": "manual", "circuitBreaker": "passed", "rerunCount": 0.0, "budget": 1.0}},
 		{name: "circuit breaker", job: types.JobEventSuccess, wantType: rejected,
 			wantDetail: map[string]interface{}{"reason": "circuit breaker", "circuitBreaker": "rejected"}},
 		{name: "circuit breaker under a rejected rerun", job: types.JobEventSuccess, above: []string{types.JobEventRerunRejected}, wantType: rejected,
@@ -77,6 +86,11 @@ func TestStreamDryRunRerunRequest(t *testing.T) {
 				tt.tweak(&cfg)
 			}
 			d, mem, sfnFake, eb := jobWorld(t, cfg)
+			if tt.trigger != "" {
+				row := completedRow(date, "")
+				row["status"] = &ddbtypes.AttributeValueMemberS{Value: tt.trigger}
+				mem.Put("control", row)
+			}
 			var wantJobs []string
 			if tt.job != "" {
 				mem.Put("joblog", map[string]ddbtypes.AttributeValue{
