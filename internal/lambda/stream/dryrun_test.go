@@ -6,6 +6,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -19,19 +20,23 @@ import (
 
 // TestStreamDryRunRerunRequest: a dry-run pipeline's rerun request runs the
 // live checks in order (calendar, budget, circuit breaker) and publishes the
-// verdict, but never starts a run or writes a rerun or job row. The request
-// has an empty reason, so it counts as manual. Unless a row says otherwise the
-// "upstream" sensor was last updated at 00:00, before the job row (08:00) when
-// there is one, and now is 2026-03-10T13:00:00Z. Calendar exclusion is checked
-// on the request's date, not the wall-clock date.
+// verdict, but never starts a run or writes a rerun or job row. Unless a row
+// gives a reason the request has an empty one, so it counts as manual; a
+// late-data or data-drift request skips the circuit breaker. Unless a row
+// says otherwise the "upstream" sensor was last updated at 00:00, before the
+// job row (08:00) when there is one, and now is 2026-03-10T13:00:00Z.
+// Calendar exclusion is checked on the request's date, not the wall-clock
+// date.
 func TestStreamDryRunRerunRequest(t *testing.T) {
 	const date = "2026-03-10"
 	wouldRerun, rejected := string(types.EventDryRunWouldRerun), string(types.EventDryRunRerunRejected)
 	tests := []struct {
 		name       string
-		job        string // the last job row's event; empty means none
-		updatedAt  string // the sensor's updatedAt; empty means 00:00 as epoch milliseconds
-		now        string // empty means 2026-03-10T13:00:00Z
+		job        string   // the run's job row event; empty means none
+		above      []string // newer job rows the stream-router wrote about reruns and late data
+		reason     string   // the request's reason; empty counts as manual
+		updatedAt  string   // the sensor's updatedAt; empty means 00:00 as epoch milliseconds
+		now        string   // empty means 2026-03-10T13:00:00Z
 		tweak      func(*types.PipelineConfig)
 		wantType   string
 		wantDetail map[string]interface{}
@@ -53,6 +58,10 @@ func TestStreamDryRunRerunRequest(t *testing.T) {
 			wantDetail: map[string]interface{}{"reason": "limit exceeded", "rerunCount": 0.0, "budget": 0.0}},
 		{name: "circuit breaker", job: types.JobEventSuccess, wantType: rejected,
 			wantDetail: map[string]interface{}{"reason": "circuit breaker", "circuitBreaker": "rejected"}},
+		{name: "circuit breaker under a rejected rerun", job: types.JobEventSuccess, above: []string{types.JobEventRerunRejected}, wantType: rejected,
+			wantDetail: map[string]interface{}{"reason": "circuit breaker", "circuitBreaker": "rejected"}},
+		{name: "late-data skips the circuit breaker", job: types.JobEventSuccess, reason: "late-data", wantType: wouldRerun,
+			wantDetail: map[string]interface{}{"reason": "late-data", "circuitBreaker": "skipped (automatic request)", "rerunCount": 0.0, "budget": 1.0}},
 		{name: "circuit breaker, fresh RFC3339 sensor", job: types.JobEventSuccess, updatedAt: "2026-03-10T09:00:00Z", wantType: wouldRerun,
 			wantDetail: map[string]interface{}{"reason": "manual", "circuitBreaker": "passed", "rerunCount": 0.0, "budget": 1.0}},
 	}
@@ -76,6 +85,13 @@ func TestStreamDryRunRerunRequest(t *testing.T) {
 					"event": &ddbtypes.AttributeValueMemberS{Value: tt.job}})
 				wantJobs = []string{tt.job}
 			}
+			for i, event := range tt.above {
+				mem.Put("joblog", map[string]ddbtypes.AttributeValue{
+					"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
+					"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, strconv.Itoa(1773129600001+i))},
+					"event": &ddbtypes.AttributeValueMemberS{Value: event}})
+				wantJobs = append(wantJobs, event)
+			}
 			ctx := context.Background()
 			if err := d.Store.WriteSensor(ctx, "p", "upstream", map[string]interface{}{"status": "ready", "updatedAt": cmp.Or(tt.updatedAt, "1773100800000")}); err != nil {
 				t.Fatal(err)
@@ -89,7 +105,7 @@ func TestStreamDryRunRerunRequest(t *testing.T) {
 					"PK": events.NewStringAttribute(types.PipelinePK("p")),
 					"SK": events.NewStringAttribute(types.RerunRequestSK("stream", date)),
 				},
-				NewImage: map[string]events.DynamoDBAttributeValue{"reason": events.NewStringAttribute("")},
+				NewImage: map[string]events.DynamoDBAttributeValue{"reason": events.NewStringAttribute(tt.reason)},
 			}}
 
 			if err := handleRecord(ctx, d, record); err != nil {

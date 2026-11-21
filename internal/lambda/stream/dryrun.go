@@ -292,30 +292,20 @@ func handleDryRunRerunRequest(ctx context.Context, d *lambda.Deps, cfg *types.Pi
 		return nil
 	}
 
-	cbStatus := "passed"
-	job, err := d.Store.GetLatestJobEvent(ctx, pipelineID, schedule, date)
+	cbStatus, err := runCircuitBreaker(ctx, d, pipelineID, schedule, date, reason)
 	if err != nil {
-		return fmt.Errorf("dry-run: get latest job event for %q/%s/%s: %w", pipelineID, schedule, date, err)
+		return fmt.Errorf("dry-run: %w", err)
 	}
-
-	if job == nil {
-		cbStatus = "skipped (no job history)"
-	} else if job.Event == types.JobEventSuccess {
-		fresh, freshErr := checkSensorFreshness(ctx, d, pipelineID, job.SK)
-		if freshErr != nil {
-			return fmt.Errorf("dry-run: check sensor freshness for %q: %w", pipelineID, freshErr)
+	if cbStatus == breakerRejected {
+		if pubErr := lambda.PublishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
+			fmt.Sprintf("dry-run: rerun rejected for %s: previous run succeeded and no sensor data has changed", pipelineID),
+			map[string]interface{}{
+				"reason":         "circuit breaker",
+				"circuitBreaker": breakerRejected,
+			}); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunRerunRejected, "error", pubErr)
 		}
-		if !fresh {
-			if pubErr := lambda.PublishEvent(ctx, d, string(types.EventDryRunRerunRejected), pipelineID, schedule, date,
-				fmt.Sprintf("dry-run: rerun rejected for %s: previous run succeeded and no sensor data has changed", pipelineID),
-				map[string]interface{}{
-					"reason":         "circuit breaker",
-					"circuitBreaker": "rejected",
-				}); pubErr != nil {
-				d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventDryRunRerunRejected, "error", pubErr)
-			}
-			return nil
-		}
+		return nil
 	}
 
 	if pubErr := lambda.PublishEvent(ctx, d, string(types.EventDryRunWouldRerun), pipelineID, schedule, date,

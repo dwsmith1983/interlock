@@ -255,17 +255,17 @@ postRun:
 1. When a job completes successfully, the orchestrator captures a date-scoped baseline of all sensor values.
 2. When a sensor matching a `postRun.rules[].key` arrives via DynamoDB Stream:
    - **Trigger RUNNING**: drift is logged as `POST_RUN_DRIFT_INFLIGHT` (informational, no rerun)
-   - **Trigger COMPLETED**, inside the [watch window](#watch-window): sensor count is compared against the baseline. Drift above `driftThreshold` triggers a rerun via the circuit breaker; otherwise the rules are evaluated (`POST_RUN_PASSED` or `POST_RUN_FAILED`)
+   - **Trigger COMPLETED**, inside the [watch window](#watch-window): sensor count is compared against the baseline. Drift above `driftThreshold` writes a `data-drift` rerun request, which skips the circuit breaker; otherwise the rules are evaluated (`POST_RUN_PASSED` or `POST_RUN_FAILED`)
 3. If no post-run sensor arrives within `sensorTimeout` of `completedAt`, the watchdog publishes `POST_RUN_SENSOR_MISSING`.
 
 ### Watch window
 
 A completed date is watched for late data, drift and the post-run checks from the run's completion until `watchWindow` later (default `4h`). complete-trigger records the completion as `completedAt` on the trigger row, and a rerun's completion starts a new window. At the limit the watch has ended.
 
-- Inside the window, a trigger sensor written again for the date is late data: `LATE_DATA_ARRIVAL` and a `late-data` `RERUN_REQUEST`.
+- Inside the window, a trigger sensor written again for a date whose last run succeeded is late data: `LATE_DATA_ARRIVAL` and a `late-data` `RERUN_REQUEST`. Job rows about rerun requests and late data do not count as a run. Once the rerun budget is spent, the late-data event and the rerun rejection (`RERUN_REJECTED`) repeat for each late trigger-sensor write inside the window.
 - Inside the window, a post-run sensor is compared with the baseline and checked against `rules`: `POST_RUN_DRIFT` and a `data-drift` `RERUN_REQUEST`, or `POST_RUN_PASSED` / `POST_RUN_FAILED`.
 - After it, a trigger or post-run sensor write is ignored with no event and no rerun request. A `COMPLETED` row without `completedAt` is not watched. Inflight drift (`POST_RUN_DRIFT_INFLIGHT`, trigger `RUNNING`) is not bounded by the window.
-- An automatic `RERUN_REQUEST` (reason `late-data` or `data-drift`) is checked again when the stream-router handles it: for a `COMPLETED` date outside the window it is skipped with no rerun, row or event. A request written just inside the window but handled at or after the limit is skipped too. A manual `RERUN_REQUEST` (any other reason) still runs.
+- An automatic `RERUN_REQUEST` (reason `late-data` or `data-drift`) is checked again when the stream-router handles it: for a `COMPLETED` date outside the window it is skipped with no rerun, row or event. A request written just inside the window but handled at or after the limit is skipped too. A manual `RERUN_REQUEST` (any other reason) still runs. Automatic requests skip the circuit breaker, since the stream-router wrote them on a change it had already seen; manual ones go through it.
 - The window is independent of `schedule.trigger.cutoff`: a late-data rerun inside the window runs after the cutoff, and a sensor after the window and before the cutoff starts nothing.
 - A sensor is judged by when the stream-router handles it, not when it was written.
 - Nothing is published when a window ends.
@@ -283,6 +283,6 @@ The framework reads sensor data from DynamoDB but does not write it. External pr
 | `SK` | `SENSOR#{key}` |
 | `data` | A map of the fields referenced by validation rules (e.g., `status`, `count`, `updatedAt`). Rules read only this map, not top-level attributes. |
 
-`age_lt` and the rerun circuit breaker read a timestamp in `data`, such as `updatedAt`, as RFC3339 (`2026-03-10T09:00:00Z`) or as epoch seconds or milliseconds, given as a number or a string of digits. A value below 10^12 is read as seconds. `age_lt` fails on a value in none of these forms. The rerun circuit breaker compares each sensor's `updatedAt` with the last successful run and ignores one it cannot read; when no sensor has a readable `updatedAt`, it lets the rerun through.
+`age_lt` and the rerun circuit breaker read a timestamp in `data`, such as `updatedAt`, as RFC3339 (`2026-03-10T09:00:00Z`) or as epoch seconds or milliseconds, given as a number or a string of digits. A value below 10^12 is read as seconds. `age_lt` fails on a value in none of these forms. The rerun circuit breaker, which checks manual requests only, compares each sensor's `updatedAt` with the last successful run and ignores one it cannot read; when no sensor has a readable `updatedAt`, it lets the rerun through.
 
 When a sensor record is written, the DynamoDB stream triggers the stream-router Lambda, which starts the Step Functions execution for that pipeline.

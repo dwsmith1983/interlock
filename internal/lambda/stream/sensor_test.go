@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"maps"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -394,7 +395,6 @@ func jobEvents(mem *storetest.Mem) []string {
 func TestLateData_WatchWindow(t *testing.T) {
 	const date = "2026-03-10"
 	late := []string{string(types.EventLateDataArrival)}
-	lateJobs := []string{types.JobEventSuccess, types.JobEventLateDataArrival}
 	window := func(w string) func(*types.PipelineConfig) {
 		return func(c *types.PipelineConfig) { c.PostRun = &types.PostRunConfig{WatchWindow: w} }
 	}
@@ -404,11 +404,16 @@ func TestLateData_WatchWindow(t *testing.T) {
 		tweaks      []func(*types.PipelineConfig)
 		completedAt string
 		now         string
-		jobEvent    string   // the last job row; empty means success
+		jobEvent    string   // the run's job row; empty means success
+		above       []string // newer job rows the stream-router wrote about reruns and late data
 		wantEvents  []string // nil means none; a late sensor also writes a request and a job row
 	}{
 		{name: "inside (guard)", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z", wantEvents: late},
 		{name: "inside, job failed", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z", jobEvent: types.JobEventFail},
+		{name: "inside, rejected rerun on top", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z",
+			above: []string{types.JobEventLateDataArrival, types.JobEventRerunRejected}, wantEvents: late},
+		{name: "inside, fail under a rejected rerun", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z",
+			jobEvent: types.JobEventFail, above: []string{types.JobEventRerunRejected}},
 		{name: "at the limit", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T18:00:00Z"},
 		{name: "two days later", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-12T09:00:00Z"},
 		{name: "default window, inside (guard)", tweaks: []func(*types.PipelineConfig){func(c *types.PipelineConfig) { c.PostRun = nil }},
@@ -440,8 +445,14 @@ func TestLateData_WatchWindow(t *testing.T) {
 			mem.Put("joblog", map[string]ddbtypes.AttributeValue{"PK": &ddbtypes.AttributeValueMemberS{Value: pk},
 				"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
 				"event": &ddbtypes.AttributeValueMemberS{Value: cmp.Or(tt.jobEvent, types.JobEventSuccess)}})
+			for i, event := range tt.above {
+				mem.Put("joblog", map[string]ddbtypes.AttributeValue{"PK": &ddbtypes.AttributeValueMemberS{Value: pk},
+					"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, strconv.Itoa(1773129600001+i))},
+					"event": &ddbtypes.AttributeValueMemberS{Value: event}})
+			}
 			now := mustTime(t, tt.now)
 			d.NowFunc = func() time.Time { return now }
+			d.Store.Now = func() time.Time { return now }
 
 			if err := handleRecord(context.Background(), d, sensorRecord(date)); err != nil {
 				t.Fatalf("handleRecord: %v", err)
@@ -451,9 +462,9 @@ func TestLateData_WatchWindow(t *testing.T) {
 			for _, e := range eb.events {
 				gotEvents = append(gotEvents, e.Type)
 			}
-			wantJobs, wantRerun := []string{cmp.Or(tt.jobEvent, types.JobEventSuccess)}, tt.wantEvents != nil
+			wantJobs, wantRerun := append([]string{cmp.Or(tt.jobEvent, types.JobEventSuccess)}, tt.above...), tt.wantEvents != nil
 			if wantRerun {
-				wantJobs = lateJobs
+				wantJobs = append(wantJobs, types.JobEventLateDataArrival)
 			}
 			if sfnFake.calls != 0 || !slices.Equal(gotEvents, tt.wantEvents) {
 				t.Errorf("StartExecution calls %d, events %v; want 0 and %v", sfnFake.calls, gotEvents, tt.wantEvents)
