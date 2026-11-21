@@ -2,6 +2,8 @@ package orchestrator_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"maps"
@@ -219,14 +221,18 @@ func TestInjectDateArgs_Databricks(t *testing.T) {
 	}))
 	defer srv.Close()
 	tc := types.TriggerConfig{Type: types.TriggerDatabricks, Databricks: &types.DatabricksTriggerConfig{
-		WorkspaceURL: srv.URL, JobID: "12345", Arguments: map[string]string{"env": "prod"}}}
+		WorkspaceURL: srv.URL, JobID: "12345", Arguments: map[string]string{"env": "prod"},
+		Run: types.RunIdentity{RunID: "exec-1"}}}
 
 	orchestrator.InjectDateArgs(&tc, "2026-03-11T05")
 	if _, err := trigger.ExecuteDatabricks(context.Background(), tc.Databricks, srv.Client()); err != nil {
 		t.Fatalf("ExecuteDatabricks: %v", err)
 	}
 
-	if want := `{"job_id":12345,"job_parameters":{"env":"prod","par_day":"20260311","par_hour":"05"}}`; body != want {
+	token := sha256.Sum256([]byte("exec-1"))
+	want := `{"job_id":12345,"idempotency_token":"` + hex.EncodeToString(token[:]) +
+		`","job_parameters":{"env":"prod","par_day":"20260311","par_hour":"05"}}`
+	if body != want {
 		t.Errorf("run-now body = %s, want %s", body, want)
 	}
 }
