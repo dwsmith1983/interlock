@@ -2,6 +2,8 @@ package trigger
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -24,8 +26,12 @@ type CloudWatchLogsAPI interface {
 	FilterLogEvents(ctx context.Context, params *cloudwatchlogs.FilterLogEventsInput, optFns ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.FilterLogEventsOutput, error)
 }
 
-// defaultGlueLogGroup is the standard CloudWatch log group for Glue v2 jobs.
-const defaultGlueLogGroup = "/aws-glue/jobs/logs-v2"
+// glueInsightsLogGroup is the group Glue writes the job insights streams to
+// for a job without a security configuration or --continuous-log-logGroup.
+// It is always the group read: the LogGroupName GetJobRun reports is a
+// prefix (/aws-glue/jobs, or /aws-glue/jobs-<role>-<config>/ with a security
+// configuration), not a group.
+const glueInsightsLogGroup = "/aws-glue/jobs/logs-v2"
 
 // ExecuteGlue starts an AWS Glue job run.
 func ExecuteGlue(ctx context.Context, cfg *types.GlueTriggerConfig, client GlueAPI) (map[string]interface{}, error) {
@@ -84,8 +90,8 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 	case gluetypes.JobRunStateSucceeded:
 		// Glue can report SUCCEEDED when the Spark job actually failed
 		// (driver exits 0 despite SparkException, or disk-full errors).
-		// Cross-check RCA insights and the error log group.
-		if failed, reason := r.verifyGlueRCA(ctx, runID, out.JobRun.LogGroupName); failed {
+		// Cross-check the job insights exception analysis stream.
+		if failed, reason := r.verifyGlueRCA(ctx, runID); failed {
 			return StatusResult{
 				State:           RunCheckFailed,
 				Message:         fmt.Sprintf("SUCCEEDED (%s)", reason),
@@ -102,82 +108,89 @@ func (r *Runner) checkGlueStatus(ctx context.Context, metadata map[string]interf
 	}
 }
 
-// driverOutputFilterPattern matches ERROR or FATAL log4j severity markers in
-// the Glue driver output (stdout) stream. The surrounding spaces ensure we
-// match log4j format ("timestamp ERROR class - message") and avoid false
-// positives from JVM flags like -XX:OnOutOfMemoryError.
+// verifyGlueRCA checks the job insights exception analysis stream
+// (<runId>-job-insights-rca-driver) of a Glue job run for a
+// GlueExceptionAnalysisJobFailed event, to detect false successes: Glue can
+// report SUCCEEDED when the Spark job actually failed (driver exits 0 despite
+// SparkException). Glue writes the stream only for a failed run of a job with
+// job insights on.
 //
-// This is intentionally scoped to the driver output stream (runID), NOT the
-// stderr stream (runID-driver-stderr) which contains benign JVM noise.
-const driverOutputFilterPattern = `?" ERROR " ?" FATAL "`
-
-// verifyGlueRCA checks CloudWatch log streams for a Glue job run to detect
-// false successes. Glue can report SUCCEEDED when the Spark job actually
-// failed (driver exits 0 despite SparkException).
-//
-// Check 1: RCA stream — looks for GlueExceptionAnalysisJobFailed events.
-// Check 2: Driver output stream — looks for ERROR/FATAL log4j severity markers.
-//
-// Returns (true, reason) if failure evidence is found. Returns (false, "") on
-// any error or if no failure is found.
-func (r *Runner) verifyGlueRCA(ctx context.Context, runID string, logGroupName *string) (failed bool, reason string) {
+// Returns (true, reason) if the event is found, with control characters other
+// than newline and tab removed from the failure reason and the reason cut to
+// maxErrorBodyBytes (512). Returns (false, "") if it is not found or
+// CloudWatch cannot be read; a failed read logs one warning and never fails
+// the run.
+func (r *Runner) verifyGlueRCA(ctx context.Context, runID string) (failed bool, reason string) {
 	client, err := r.getCWLogsClient(ctx, "")
 	if err != nil {
+		r.logger.WarnContext(ctx, "glue log check skipped: no CloudWatch Logs client",
+			"logGroup", glueInsightsLogGroup, "runId", runID, "errorCode", awsErrorCode(err))
 		return false, ""
 	}
 
-	logGroup := defaultGlueLogGroup
-	if logGroupName != nil && *logGroupName != "" {
-		logGroup = *logGroupName
+	msg, ok := r.firstGlueLogEvent(ctx, client, glueInsightsLogGroup, runID+"-job-insights-rca-driver", "GlueExceptionAnalysisJobFailed")
+	if !ok {
+		return false, ""
 	}
-
-	// Check 1: RCA stream for GlueExceptionAnalysisJobFailed events.
-	rcaStream := runID + "-job-insights-rca-driver"
-	out, err := client.FilterLogEvents(ctx, &cloudwatchlogs.FilterLogEventsInput{
-		LogGroupName:   &logGroup,
-		LogStreamNames: []string{rcaStream},
-		FilterPattern:  aws.String("GlueExceptionAnalysisJobFailed"),
-		Limit:          aws.Int32(1),
-	})
-	if err == nil && len(out.Events) > 0 {
-		r := extractGlueFailureReason(aws.ToString(out.Events[0].Message))
-		if r != "" {
-			return true, "RCA: " + r
-		}
-		return true, "RCA: JobFailed"
+	if fr := sanitizeBody([]byte(extractGlueFailureReason(msg)), nil, maxErrorBodyBytes); fr != "" {
+		return true, "RCA: " + fr
 	}
-
-	// Check 2: Driver output stream for ERROR/FATAL log4j severity markers.
-	dout, derr := client.FilterLogEvents(ctx, &cloudwatchlogs.FilterLogEventsInput{
-		LogGroupName:   &logGroup,
-		LogStreamNames: []string{runID},
-		FilterPattern:  aws.String(driverOutputFilterPattern),
-		Limit:          aws.Int32(1),
-	})
-	if derr == nil && len(dout.Events) > 0 {
-		msg := aws.ToString(dout.Events[0].Message)
-		if len(msg) > 200 {
-			msg = msg[:200]
-		}
-		return true, "driver log: " + msg
-	}
-
-	return false, ""
+	return true, "RCA: JobFailed"
 }
 
-// extractGlueFailureReason pulls the "Failure Reason" value from a Glue RCA
-// log message. The message is JSON but we do a simple string extraction to
-// avoid a full parse dependency for a single field.
+// cwLogsNotFoundCode is the error code CloudWatch Logs returns for a missing
+// log group or stream.
+const cwLogsNotFoundCode = "ResourceNotFoundException"
+
+// firstGlueLogEvent returns the message of the first event in stream matching
+// pattern. A missing stream or group is not an error: a clean success writes
+// no insights stream. Any other failed query logs one warning naming the
+// group, stream and AWS error code, but not the error message, which can echo
+// log content.
+func (r *Runner) firstGlueLogEvent(ctx context.Context, client CloudWatchLogsAPI, logGroup, stream, pattern string) (string, bool) {
+	out, err := client.FilterLogEvents(ctx, &cloudwatchlogs.FilterLogEventsInput{
+		LogGroupName:   &logGroup,
+		LogStreamNames: []string{stream},
+		FilterPattern:  &pattern,
+		Limit:          aws.Int32(1),
+	})
+	if err != nil {
+		if code := awsErrorCode(err); code != cwLogsNotFoundCode {
+			r.logger.WarnContext(ctx, "glue log check could not read CloudWatch Logs",
+				"logGroup", logGroup, "logStream", stream, "errorCode", code)
+		}
+		return "", false
+	}
+	if len(out.Events) == 0 {
+		return "", false
+	}
+	return aws.ToString(out.Events[0].Message), true
+}
+
+// awsErrorCode returns the AWS API error code in err's chain, or "unknown"
+// when err carries none (a network failure, a cancelled context or an AWS
+// config that does not load).
+func awsErrorCode(err error) string {
+	var coded interface{ ErrorCode() string }
+	if errors.As(err, &coded) {
+		return coded.ErrorCode()
+	}
+	return "unknown"
+}
+
+// extractGlueFailureReason returns the "Failure Reason" of a job insights
+// failure event: a log4j prefix, then one JSON object to the end of the line.
+// It returns "" when the message holds no such object.
 func extractGlueFailureReason(msg string) string {
-	const marker = `"Failure Reason":"`
-	idx := strings.Index(msg, marker)
-	if idx < 0 {
+	start := strings.IndexByte(msg, '{')
+	if start < 0 {
 		return ""
 	}
-	start := idx + len(marker)
-	end := strings.Index(msg[start:], `"`)
-	if end < 0 {
+	var event struct {
+		FailureReason string `json:"Failure Reason"`
+	}
+	if err := json.Unmarshal([]byte(msg[start:]), &event); err != nil {
 		return ""
 	}
-	return msg[start : start+end]
+	return event.FailureReason
 }

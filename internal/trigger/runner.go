@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -21,6 +22,7 @@ import (
 // and status checking across all supported trigger types.
 type Runner struct {
 	httpClient *http.Client
+	logger     *slog.Logger
 
 	mu     sync.Mutex
 	awsCfg *aws.Config // shared AWS config, loaded lazily
@@ -66,6 +68,17 @@ func WithLambdaClient(c LambdaAPI) RunnerOption {
 	return func(r *Runner) { r.lambdaClient = c }
 }
 
+// WithLogger sets the logger for warnings that do not fail a call, such as
+// a glue log check that could not read CloudWatch. The default is
+// slog.Default(), which a nil l keeps.
+func WithLogger(l *slog.Logger) RunnerOption {
+	return func(r *Runner) {
+		if l != nil {
+			r.logger = l
+		}
+	}
+}
+
 // WithHTTPClient sets the HTTP client the databricks trigger and the airflow
 // and databricks status checks use. It replaces the default client's redirect
 // rule and SSRF-safe transport, so the caller's client must provide both.
@@ -77,6 +90,7 @@ func WithHTTPClient(c *http.Client) RunnerOption {
 func NewRunner(opts ...RunnerOption) *Runner {
 	r := &Runner{
 		httpClient: defaultHTTPClient,
+		logger:     slog.Default(),
 	}
 	for _, o := range opts {
 		o(r)

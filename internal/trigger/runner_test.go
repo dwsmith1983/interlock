@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/emr"
 	emrtypes "github.com/aws/aws-sdk-go-v2/service/emr/types"
 	"github.com/aws/aws-sdk-go-v2/service/emrserverless"
@@ -62,7 +63,8 @@ func TestRunner_CheckStatus_GlueDispatch(t *testing.T) {
 			},
 		},
 	}
-	r := NewRunner(WithGlueClient(client))
+	r := NewRunner(WithGlueClient(client),
+		WithCloudWatchLogsClient(&mockCWLogsClient{filterOut: &cloudwatchlogs.FilterLogEventsOutput{}}))
 
 	result, err := r.CheckStatus(context.Background(), types.TriggerGlue, map[string]interface{}{
 		"glue_job_name":   "job",

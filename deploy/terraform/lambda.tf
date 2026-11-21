@@ -667,7 +667,6 @@ resource "aws_iam_role_policy" "glue_trigger" {
         Action = ["logs:FilterLogEvents"]
         Resource = [
           "arn:aws:logs:*:*:log-group:/aws-glue/jobs/logs-v2:*",
-          "arn:aws:logs:*:*:log-group:/aws-glue/jobs/error:*"
         ]
       }
     ]

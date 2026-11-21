@@ -1,8 +1,14 @@
 package trigger
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -125,24 +131,9 @@ func TestCheckGlueStatus_MissingMetadata(t *testing.T) {
 type mockCWLogsClient struct {
 	filterOut *cloudwatchlogs.FilterLogEventsOutput
 	filterErr error
-	// streamResponses maps a log stream name to a specific response.
-	// When set, FilterLogEvents returns the response matching the first
-	// stream name in the request; it falls back to filterOut/filterErr
-	// for unmatched streams.
-	streamResponses map[string]mockCWLogsResponse
-}
-
-type mockCWLogsResponse struct {
-	out *cloudwatchlogs.FilterLogEventsOutput
-	err error
 }
 
 func (m *mockCWLogsClient) FilterLogEvents(ctx context.Context, params *cloudwatchlogs.FilterLogEventsInput, optFns ...func(*cloudwatchlogs.Options)) (*cloudwatchlogs.FilterLogEventsOutput, error) {
-	if m.streamResponses != nil && len(params.LogStreamNames) > 0 {
-		if resp, ok := m.streamResponses[params.LogStreamNames[0]]; ok {
-			return resp.out, resp.err
-		}
-	}
 	return m.filterOut, m.filterErr
 }
 
@@ -157,7 +148,7 @@ func TestCheckGlueStatus_RCADetectsFalseSuccess(t *testing.T) {
 	cwClient := &mockCWLogsClient{
 		filterOut: &cloudwatchlogs.FilterLogEventsOutput{
 			Events: []cwltypes.FilteredLogEvent{
-				{Message: aws.String(`{"Event":"GlueExceptionAnalysisJobFailed","Failure Reason":"No space left on device","Job Result":"JobFailed"}`)},
+				{Message: aws.String(glueRCAMessage(`"No space left on device"`))},
 			},
 		},
 	}
@@ -219,58 +210,6 @@ func TestCheckGlueStatus_RCAErrorFallsThrough(t *testing.T) {
 	assert.Equal(t, RunCheckSucceeded, result.State, "should fall through to SUCCEEDED when RCA check fails")
 }
 
-func TestCheckGlueStatus_NoCWLogsClientFallsThrough(t *testing.T) {
-	glueClient := &mockGlueClient{
-		getOut: &glue.GetJobRunOutput{
-			JobRun: &gluetypes.JobRun{
-				JobRunState: gluetypes.JobRunStateSucceeded,
-			},
-		},
-	}
-
-	// No CW Logs client injected, and no AWS config available → graceful fallthrough
-	r := NewRunner(WithGlueClient(glueClient))
-	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
-		"glue_job_name":   "my-job",
-		"glue_job_run_id": "jr_abc123",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, RunCheckSucceeded, result.State)
-}
-
-func TestCheckGlueStatus_RCAUsesJobRunLogGroup(t *testing.T) {
-	customLogGroup := "/aws-glue/jobs/custom-group"
-	glueClient := &mockGlueClient{
-		getOut: &glue.GetJobRunOutput{
-			JobRun: &gluetypes.JobRun{
-				JobRunState:  gluetypes.JobRunStateSucceeded,
-				LogGroupName: &customLogGroup,
-			},
-		},
-	}
-
-	var capturedLogGroups []string
-	cwClient := &mockCWLogsClient{
-		filterOut: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
-	}
-	captureClient := &capturingCWLogsClient{
-		delegate: cwClient,
-		onFilter: func(input *cloudwatchlogs.FilterLogEventsInput) {
-			capturedLogGroups = append(capturedLogGroups, aws.ToString(input.LogGroupName))
-		},
-	}
-
-	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(captureClient))
-	_, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
-		"glue_job_name":   "my-job",
-		"glue_job_run_id": "jr_abc123",
-	})
-	require.NoError(t, err)
-	require.Len(t, capturedLogGroups, 2, "both RCA and driver output checks should use custom log group")
-	assert.Equal(t, customLogGroup, capturedLogGroups[0], "RCA check should use custom log group")
-	assert.Equal(t, customLogGroup, capturedLogGroups[1], "driver output check should use custom log group")
-}
-
 type capturingCWLogsClient struct {
 	delegate CloudWatchLogsAPI
 	onFilter func(*cloudwatchlogs.FilterLogEventsInput)
@@ -283,209 +222,199 @@ func (c *capturingCWLogsClient) FilterLogEvents(ctx context.Context, params *clo
 	return c.delegate.FilterLogEvents(ctx, params, optFns...)
 }
 
-func TestCheckGlueStatus_RCAAndDriverOutputChecks(t *testing.T) {
-	// Verify that both the RCA check and driver output check are performed,
-	// but NOT the error log group check (removed in PR #60 due to 100%
-	// false positive rate from benign JVM startup stderr).
-	glueClient := &mockGlueClient{
-		getOut: &glue.GetJobRunOutput{
-			JobRun: &gluetypes.JobRun{
-				JobRunState: gluetypes.JobRunStateSucceeded,
-			},
-		},
-	}
-
-	var capturedInputs []*cloudwatchlogs.FilterLogEventsInput
-	cwClient := &capturingCWLogsClient{
-		delegate: &mockCWLogsClient{
-			filterOut: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
-		},
-		onFilter: func(input *cloudwatchlogs.FilterLogEventsInput) {
-			capturedInputs = append(capturedInputs, input)
-		},
-	}
-
-	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
-	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
-		"glue_job_name":   "my-job",
-		"glue_job_run_id": "jr_abc123",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, RunCheckSucceeded, result.State)
-
-	// Two FilterLogEvents calls: RCA check + driver output check.
-	require.Len(t, capturedInputs, 2)
-
-	// First call: RCA stream check.
-	assert.Equal(t, "/aws-glue/jobs/logs-v2", aws.ToString(capturedInputs[0].LogGroupName))
-	assert.Equal(t, []string{"jr_abc123-job-insights-rca-driver"}, capturedInputs[0].LogStreamNames)
-	assert.Contains(t, aws.ToString(capturedInputs[0].FilterPattern), "GlueExceptionAnalysisJobFailed")
-
-	// Second call: driver output stream check.
-	assert.Equal(t, "/aws-glue/jobs/logs-v2", aws.ToString(capturedInputs[1].LogGroupName))
-	assert.Equal(t, []string{"jr_abc123"}, capturedInputs[1].LogStreamNames)
-	assert.Contains(t, aws.ToString(capturedInputs[1].FilterPattern), `" ERROR "`)
-	assert.Contains(t, aws.ToString(capturedInputs[1].FilterPattern), `" FATAL "`)
-}
-
-func TestCheckGlueStatus_DriverLogDetectsError(t *testing.T) {
-	// Glue reports SUCCEEDED, RCA stream is empty, but driver output stream
-	// contains an ERROR log4j line → should detect as FAILED.
-	glueClient := &mockGlueClient{
-		getOut: &glue.GetJobRunOutput{
-			JobRun: &gluetypes.JobRun{
-				JobRunState: gluetypes.JobRunStateSucceeded,
-			},
-		},
-	}
-	cwClient := &mockCWLogsClient{
-		streamResponses: map[string]mockCWLogsResponse{
-			"jr_abc123-job-insights-rca-driver": {
-				out: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
-			},
-			"jr_abc123": {
-				out: &cloudwatchlogs.FilterLogEventsOutput{
-					Events: []cwltypes.FilteredLogEvent{
-						{Message: aws.String("2026-01-15 10:00:00,000 ERROR org.apache.spark.sql.FileFormatWriter: Aborting job abc123. java.io.IOException: No space left on device")},
-					},
-				},
-			},
-		},
-	}
-
-	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
-	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
-		"glue_job_name":   "my-job",
-		"glue_job_run_id": "jr_abc123",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, RunCheckFailed, result.State)
-	assert.Contains(t, result.Message, "driver log")
-	assert.Equal(t, types.FailureTransient, result.FailureCategory)
-}
-
-func TestCheckGlueStatus_DriverLogDetectsFatal(t *testing.T) {
-	// Glue reports SUCCEEDED, RCA empty, driver output has a FATAL log4j
-	// line → should detect as FAILED.
-	glueClient := &mockGlueClient{
-		getOut: &glue.GetJobRunOutput{
-			JobRun: &gluetypes.JobRun{
-				JobRunState: gluetypes.JobRunStateSucceeded,
-			},
-		},
-	}
-	cwClient := &mockCWLogsClient{
-		streamResponses: map[string]mockCWLogsResponse{
-			"jr_abc123-job-insights-rca-driver": {
-				out: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
-			},
-			"jr_abc123": {
-				out: &cloudwatchlogs.FilterLogEventsOutput{
-					Events: []cwltypes.FilteredLogEvent{
-						{Message: aws.String("2026-01-15 10:00:00,000 FATAL org.apache.spark.util.SparkUncaughtExceptionHandler: Uncaught exception")},
-					},
-				},
-			},
-		},
-	}
-
-	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
-	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
-		"glue_job_name":   "my-job",
-		"glue_job_run_id": "jr_abc123",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, RunCheckFailed, result.State)
-	assert.Contains(t, result.Message, "driver log")
-	assert.Contains(t, result.Message, "FATAL")
-	assert.Equal(t, types.FailureTransient, result.FailureCategory)
-}
-
-func TestCheckGlueStatus_DriverLogClean(t *testing.T) {
-	// Glue SUCCEEDED, RCA empty, driver log empty → SUCCEEDED (no false positive).
-	glueClient := &mockGlueClient{
-		getOut: &glue.GetJobRunOutput{
-			JobRun: &gluetypes.JobRun{
-				JobRunState: gluetypes.JobRunStateSucceeded,
-			},
-		},
-	}
-	cwClient := &mockCWLogsClient{
-		streamResponses: map[string]mockCWLogsResponse{
-			"jr_abc123-job-insights-rca-driver": {
-				out: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
-			},
-			"jr_abc123": {
-				out: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
-			},
-		},
-	}
-
-	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
-	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
-		"glue_job_name":   "my-job",
-		"glue_job_run_id": "jr_abc123",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, RunCheckSucceeded, result.State)
-	assert.Equal(t, "SUCCEEDED", result.Message)
-}
-
-func TestCheckGlueStatus_DriverLogErrorFallsThrough(t *testing.T) {
-	// Glue SUCCEEDED, RCA empty, driver log query returns error →
-	// should fall through to SUCCEEDED (graceful degradation).
-	glueClient := &mockGlueClient{
-		getOut: &glue.GetJobRunOutput{
-			JobRun: &gluetypes.JobRun{
-				JobRunState: gluetypes.JobRunStateSucceeded,
-			},
-		},
-	}
-	cwClient := &mockCWLogsClient{
-		streamResponses: map[string]mockCWLogsResponse{
-			"jr_abc123-job-insights-rca-driver": {
-				out: &cloudwatchlogs.FilterLogEventsOutput{Events: []cwltypes.FilteredLogEvent{}},
-			},
-			"jr_abc123": {
-				err: fmt.Errorf("ResourceNotFoundException: log stream not found"),
-			},
-		},
-	}
-
-	r := NewRunner(WithGlueClient(glueClient), WithCloudWatchLogsClient(cwClient))
-	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
-		"glue_job_name":   "my-job",
-		"glue_job_run_id": "jr_abc123",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, RunCheckSucceeded, result.State, "should fall through to SUCCEEDED when driver log check fails")
-}
-
-func TestExtractGlueFailureReason(t *testing.T) {
+func TestCheckGlueStatus_RCAReadsInsightsStreamInLogsV2(t *testing.T) {
+	// Whatever log group GetJobRun reports, Glue writes the job insights
+	// stream to /aws-glue/jobs/logs-v2.
 	tests := []struct {
-		name     string
-		msg      string
-		expected string
+		name         string
+		logGroupName string
 	}{
-		{
-			name:     "standard RCA message",
-			msg:      `{"Event":"GlueExceptionAnalysisJobFailed","Failure Reason":"No space left on device","Job Result":"JobFailed"}`,
-			expected: "No space left on device",
-		},
-		{
-			name:     "no failure reason field",
-			msg:      `{"Event":"GlueExceptionAnalysisJobFailed"}`,
-			expected: "",
-		},
-		{
-			name:     "empty message",
-			msg:      "",
-			expected: "",
-		},
+		{"default jobs prefix", "/aws-glue/jobs"},
+		{"security configuration prefix", "/aws-glue/jobs-etl-role-secconf/"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, extractGlueFailureReason(tt.msg))
+			var captured []*cloudwatchlogs.FilterLogEventsInput
+			cw := &capturingCWLogsClient{
+				delegate: &mockCWLogsClient{filterOut: &cloudwatchlogs.FilterLogEventsOutput{}},
+				onFilter: func(in *cloudwatchlogs.FilterLogEventsInput) { captured = append(captured, in) },
+			}
+			r, buf := glueSucceededRunner(aws.String(tt.logGroupName), cw)
+
+			result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+				"glue_job_name":   "my-job",
+				"glue_job_run_id": "jr_abc123",
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, RunCheckSucceeded, result.State)
+			require.Len(t, captured, 1, "only the job insights stream is read")
+			assert.Equal(t, "/aws-glue/jobs/logs-v2", aws.ToString(captured[0].LogGroupName))
+			assert.Equal(t, []string{"jr_abc123-job-insights-rca-driver"}, captured[0].LogStreamNames)
+			assert.Equal(t, "GlueExceptionAnalysisJobFailed", aws.ToString(captured[0].FilterPattern))
+			assert.Empty(t, buf.String(), "a clean success logs nothing")
 		})
 	}
+}
+
+// glueRCAMessage returns a job insights failure event as Glue logs it: a
+// log4j prefix, then one JSON object whose "Failure Reason" is the JSON value
+// reasonJSON.
+func glueRCAMessage(reasonJSON string) string {
+	return `12:34:56 ERROR GlueExceptionAnalysisListener: [Glue Exception Analysis] ` +
+		`{"Event":"GlueExceptionAnalysisJobFailed","Timestamp":1763700000000,"Failure Reason":` + reasonJSON +
+		`,"Failed Stage Id":3,"Job Id":2,"Job Result":"JobFailed",` +
+		`"Stack Trace":["org.apache.spark.SparkException: Job aborted","at org.apache.spark.scheduler.DAGScheduler.run"]}`
+}
+
+func TestCheckGlueStatus_RCAReason(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want string
+	}{
+		{"reason", glueRCAMessage(`"No space left on device"`), "No space left on device"},
+		{"escaped quote survives whole", glueRCAMessage(`"Path \"s3://bucket/key\" does not exist"`), `Path "s3://bucket/key" does not exist`},
+		{"escaped control character removed", glueRCAMessage(`"No space\u001b[31m left on device"`), "No space[31m left on device"},
+		{"cut to the error body limit", glueRCAMessage(`"` + strings.Repeat("a", 2*maxErrorBodyBytes) + `"`), strings.Repeat("a", maxErrorBodyBytes)},
+		{"not JSON", "12:34:56 ERROR GlueExceptionAnalysisListener: [Glue Exception Analysis] Event: GlueExceptionAnalysisJobFailed Failure Reason: disk full", "JobFailed"},
+		{"broken JSON", `12:34:56 ERROR GlueExceptionAnalysisListener: [Glue Exception Analysis] {"Failure Reason":"disk`, "JobFailed"},
+		{"no reason", `12:34:56 ERROR GlueExceptionAnalysisListener: [Glue Exception Analysis] {"Event":"GlueExceptionAnalysisJobFailed"}`, "JobFailed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cw := &mockCWLogsClient{filterOut: &cloudwatchlogs.FilterLogEventsOutput{
+				Events: []cwltypes.FilteredLogEvent{{Message: aws.String(tt.msg)}},
+			}}
+			r, _ := glueSucceededRunner(nil, cw)
+
+			result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+				"glue_job_name":   "my-job",
+				"glue_job_run_id": "jr_abc123",
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, RunCheckFailed, result.State, "the event fails the run whatever its reason")
+			assert.Equal(t, "SUCCEEDED (RCA: "+tt.want+")", result.Message)
+		})
+	}
+}
+
+// glueSucceededRunner returns a Runner whose Glue client reports SUCCEEDED
+// with the log group name logGroupName, the CloudWatch Logs client cw and a
+// JSON logger writing to the returned buffer.
+func glueSucceededRunner(logGroupName *string, cw CloudWatchLogsAPI) (*Runner, *bytes.Buffer) {
+	glueClient := &mockGlueClient{
+		getOut: &glue.GetJobRunOutput{
+			JobRun: &gluetypes.JobRun{
+				JobRunState:  gluetypes.JobRunStateSucceeded,
+				LogGroupName: logGroupName,
+			},
+		},
+	}
+	var buf bytes.Buffer
+	opts := []RunnerOption{WithGlueClient(glueClient), WithLogger(slog.New(slog.NewJSONHandler(&buf, nil)))}
+	if cw != nil {
+		opts = append(opts, WithCloudWatchLogsClient(cw))
+	}
+	return NewRunner(opts...), &buf
+}
+
+// logLines decodes each JSON log line in buf.
+func logLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for _, raw := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if raw == "" {
+			continue
+		}
+		var line map[string]any
+		require.NoError(t, json.Unmarshal([]byte(raw), &line), "log line %q", raw)
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// codedError is an AWS API error: its message can echo log content, its
+// code cannot.
+type codedError struct{ code, message string }
+
+func (e *codedError) Error() string     { return e.code + ": " + e.message }
+func (e *codedError) ErrorCode() string { return e.code }
+
+func TestCheckGlueStatus_LogQueryErrorsWarnWithGroupStreamAndCode(t *testing.T) {
+	cw := &mockCWLogsClient{
+		filterErr: fmt.Errorf("operation error: %w",
+			&codedError{code: "AccessDeniedException", message: "secret-log-content"}),
+	}
+	r, buf := glueSucceededRunner(aws.String("/aws-glue/jobs"), cw)
+
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckSucceeded, result.State, "a CloudWatch error must not fail the run")
+	assert.NotContains(t, buf.String(), "secret-log-content", "the error message must not be logged")
+	lines := logLines(t, buf)
+	require.Len(t, lines, 1, "one warning for the failed query")
+	assert.Equal(t, "WARN", lines[0]["level"])
+	assert.Equal(t, "/aws-glue/jobs/logs-v2", lines[0]["logGroup"])
+	assert.Equal(t, "jr_abc123-job-insights-rca-driver", lines[0]["logStream"])
+	assert.Equal(t, "AccessDeniedException", lines[0]["errorCode"])
+}
+
+func TestCheckGlueStatus_MissingStreamOrGroupDoesNotWarn(t *testing.T) {
+	// A clean success has no insights stream: CloudWatch answers
+	// ResourceNotFoundException.
+	notFound := &codedError{code: "ResourceNotFoundException", message: "The specified log stream does not exist."}
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"not found", notFound},
+		{"wrapped not found", fmt.Errorf("operation error: %w", notFound)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cw := &mockCWLogsClient{filterErr: tt.err}
+			r, buf := glueSucceededRunner(nil, cw)
+
+			result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+				"glue_job_name":   "my-job",
+				"glue_job_run_id": "jr_abc123",
+			})
+
+			require.NoError(t, err)
+			assert.Equal(t, RunCheckSucceeded, result.State)
+			assert.Empty(t, buf.String())
+		})
+	}
+}
+
+func TestCheckGlueStatus_NoLogsClientWarns(t *testing.T) {
+	// A named profile that does not exist makes the AWS config fail to load.
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty")
+	require.NoError(t, os.WriteFile(empty, nil, 0o600))
+	t.Setenv("AWS_CONFIG_FILE", empty)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", empty)
+	t.Setenv("AWS_PROFILE", "interlock-missing-profile")
+	r, buf := glueSucceededRunner(nil, nil)
+
+	result, err := r.checkGlueStatus(context.Background(), map[string]interface{}{
+		"glue_job_name":   "my-job",
+		"glue_job_run_id": "jr_abc123",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, RunCheckSucceeded, result.State)
+	lines := logLines(t, buf)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "WARN", lines[0]["level"])
+	assert.Equal(t, "/aws-glue/jobs/logs-v2", lines[0]["logGroup"])
+	assert.Equal(t, "jr_abc123", lines[0]["runId"])
+	assert.Equal(t, "unknown", lines[0]["errorCode"], "a config load error carries no AWS error code")
+	assert.NotContains(t, lines[0], "error", "the raw error is not logged")
 }
