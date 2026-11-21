@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
@@ -513,4 +515,89 @@ func TestCheckAirflowStatus_API3(t *testing.T) {
 
 	_, err = CheckAirflowStatus(context.Background(), srv.URL, "etl", "r1", 1, nil, srv.Client())
 	require.EqualError(t, err, "airflow status: unsupported apiVersion 1")
+}
+
+// A DAG ID holding /, ?, # and .. reaches Airflow as one escaped path
+// segment of the trigger POST, with no query.
+func TestExecuteAirflow_EscapesDagID(t *testing.T) {
+	const dagID = "a/../b?x=1#y"
+	var escapedPath, rawQuery, segment string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		escapedPath, rawQuery = r.URL.EscapedPath(), r.URL.RawQuery
+		parts := strings.Split(escapedPath, "/")
+		var err error
+		segment, err = url.PathUnescape(parts[len(parts)-2])
+		assert.NoError(t, err)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"dag_run_id": "r1"})
+	}))
+	t.Cleanup(srv.Close)
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	t.Cleanup(func() { defaultHTTPClient = origClient })
+
+	_, err := ExecuteAirflow(context.Background(), &types.AirflowTriggerConfig{URL: srv.URL, DagID: dagID})
+	require.NoError(t, err)
+	assert.Equal(t, "/api/v1/dags/a%2F..%2Fb%3Fx=1%23y/dagRuns", escapedPath)
+	assert.Empty(t, rawQuery)
+	assert.Equal(t, dagID, segment)
+}
+
+// The status poll puts the DAG ID and the DAG run ID from the trigger
+// metadata in one escaped path segment each, so neither can change the path
+// or add a query. An ordinary run ID reaches Airflow unchanged.
+func TestCheckAirflowStatus_EscapesIDs(t *testing.T) {
+	tests := []struct {
+		name, dagID, runID, wantPath string
+	}{
+		{"hostile ids", "a/../b?x#y", "../../variables?k=v#f",
+			"/api/v2/dags/a%2F..%2Fb%3Fx%23y/dagRuns/..%2F..%2Fvariables%3Fk=v%23f"},
+		{"manual run id", "etl", "manual__2026-11-21T00:00:00+00:00",
+			"/api/v2/dags/etl/dagRuns/manual__2026-11-21T00:00:00+00:00"},
+		{"percent, backslash and space", "etl", "%2e%2e\\x y",
+			"/api/v2/dags/etl/dagRuns/%252e%252e%5Cx%20y"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var escapedPath, rawQuery, runSegment string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				escapedPath, rawQuery = r.URL.EscapedPath(), r.URL.RawQuery
+				var err error
+				runSegment, err = url.PathUnescape(escapedPath[strings.LastIndex(escapedPath, "/")+1:])
+				assert.NoError(t, err)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"state": "success"})
+			}))
+			defer srv.Close()
+
+			state, err := CheckAirflowStatus(context.Background(), srv.URL, tt.dagID, tt.runID, 3, nil, srv.Client())
+			require.NoError(t, err)
+			assert.Equal(t, "success", state)
+			assert.Equal(t, tt.wantPath, escapedPath)
+			assert.Empty(t, rawQuery)
+			assert.Equal(t, tt.runID, runSegment)
+		})
+	}
+}
+
+// An ID of . or .. would still be a dot segment after escaping, which a
+// server or proxy resolves against the path, so it is refused before any
+// request.
+func TestAirflow_RejectsDotSegmentIDs(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer srv.Close()
+	origClient := defaultHTTPClient
+	defaultHTTPClient = srv.Client()
+	defer func() { defaultHTTPClient = origClient }()
+
+	for _, id := range []string{".", ".."} {
+		_, err := ExecuteAirflow(context.Background(), &types.AirflowTriggerConfig{URL: srv.URL, DagID: id})
+		require.EqualError(t, err, `airflow trigger: dag id "`+id+`" is not a valid path segment`)
+
+		_, err = CheckAirflowStatus(context.Background(), srv.URL, id, "run-1", 2, nil, srv.Client())
+		require.EqualError(t, err, `airflow status: dag id "`+id+`" is not a valid path segment`)
+
+		_, err = CheckAirflowStatus(context.Background(), srv.URL, "etl", id, 2, nil, srv.Client())
+		require.EqualError(t, err, `airflow status: dag run id "`+id+`" is not a valid path segment`)
+	}
+	assert.False(t, called, "no request may be sent")
 }

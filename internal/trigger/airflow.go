@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strings"
 
@@ -109,7 +110,21 @@ func dagRunsURL(baseURL, dagID string, apiVersion int) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported apiVersion %d", apiVersion)
 	}
-	return strings.TrimRight(baseURL, "/") + api + "/dags/" + dagID + "/dagRuns", nil
+	segment, err := pathSegment("dag id", dagID)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(baseURL, "/") + api + "/dags/" + segment + "/dagRuns", nil
+}
+
+// pathSegment escapes id as one URL path segment, so a /, ? or # in it stays
+// part of the id. An id of . or .. is refused: escaping leaves it a dot
+// segment, which a server or proxy may resolve.
+func pathSegment(name, id string) (string, error) {
+	if id == "." || id == ".." {
+		return "", fmt.Errorf("%s %q is not a valid path segment", name, id)
+	}
+	return neturl.PathEscape(id), nil
 }
 
 // CheckAirflowStatus polls the status of an Airflow DAG run with client, on
@@ -120,7 +135,11 @@ func CheckAirflowStatus(ctx context.Context, airflowURL, dagID, dagRunID string,
 	if err != nil {
 		return "", fmt.Errorf("airflow status: %w", err)
 	}
-	url := runsURL + "/" + dagRunID
+	runSegment, err := pathSegment("dag run id", dagRunID)
+	if err != nil {
+		return "", fmt.Errorf("airflow status: %w", err)
+	}
+	url := runsURL + "/" + runSegment
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
