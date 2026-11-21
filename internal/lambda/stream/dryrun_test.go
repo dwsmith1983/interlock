@@ -20,16 +20,17 @@ import (
 // TestStreamDryRunRerunRequest: a dry-run pipeline's rerun request runs the
 // live checks in order (calendar, budget, circuit breaker) and publishes the
 // verdict, but never starts a run or writes a rerun or job row. The request
-// has an empty reason, so it counts as manual. The "upstream" sensor was last
-// updated at 00:00, before the job row (08:00) when there is one. Now is
-// 2026-03-10T13:00:00Z unless a row says otherwise; calendar exclusion is
-// checked on the request's date, not the wall-clock date.
+// has an empty reason, so it counts as manual. Unless a row says otherwise the
+// "upstream" sensor was last updated at 00:00, before the job row (08:00) when
+// there is one, and now is 2026-03-10T13:00:00Z. Calendar exclusion is checked
+// on the request's date, not the wall-clock date.
 func TestStreamDryRunRerunRequest(t *testing.T) {
 	const date = "2026-03-10"
 	wouldRerun, rejected := string(types.EventDryRunWouldRerun), string(types.EventDryRunRerunRejected)
 	tests := []struct {
 		name       string
 		job        string // the last job row's event; empty means none
+		updatedAt  string // the sensor's updatedAt; empty means 00:00 as epoch milliseconds
 		now        string // empty means 2026-03-10T13:00:00Z
 		tweak      func(*types.PipelineConfig)
 		wantType   string
@@ -52,6 +53,8 @@ func TestStreamDryRunRerunRequest(t *testing.T) {
 			wantDetail: map[string]interface{}{"reason": "limit exceeded", "rerunCount": 0.0, "budget": 0.0}},
 		{name: "circuit breaker", job: types.JobEventSuccess, wantType: rejected,
 			wantDetail: map[string]interface{}{"reason": "circuit breaker", "circuitBreaker": "rejected"}},
+		{name: "circuit breaker, fresh RFC3339 sensor", job: types.JobEventSuccess, updatedAt: "2026-03-10T09:00:00Z", wantType: wouldRerun,
+			wantDetail: map[string]interface{}{"reason": "manual", "circuitBreaker": "passed", "rerunCount": 0.0, "budget": 1.0}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -74,7 +77,7 @@ func TestStreamDryRunRerunRequest(t *testing.T) {
 				wantJobs = []string{tt.job}
 			}
 			ctx := context.Background()
-			if err := d.Store.WriteSensor(ctx, "p", "upstream", map[string]interface{}{"status": "ready", "updatedAt": "1773100800000"}); err != nil {
+			if err := d.Store.WriteSensor(ctx, "p", "upstream", map[string]interface{}{"status": "ready", "updatedAt": cmp.Or(tt.updatedAt, "1773100800000")}); err != nil {
 				t.Fatal(err)
 			}
 			rerunCountQuery(d.Store.Client.(*storetest.FakeDynamo), mem)

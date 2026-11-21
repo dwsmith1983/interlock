@@ -71,7 +71,7 @@ Published by the **stream-router** when processing rerun requests and late data 
 | Detail Type | Meaning | When |
 |---|---|---|
 | `LATE_DATA_ARRIVAL` | Sensor updated after job completed | The trigger sensor was written again for a `COMPLETED` date whose newest job row is `success`, inside the [watch window](../../configuration/pipelines/#watch-window) |
-| `RERUN_REJECTED` | Rerun request rejected by circuit breaker | No new sensor data since last job completion |
+| `RERUN_REJECTED` | Rerun request rejected by circuit breaker | The last run succeeded, at least one sensor has a readable `updatedAt` ([accepted forms](../../configuration/pipelines/#pushing-sensor-data)), and none is later than that run |
 | `RERUN_ACCEPTED` | Rerun request accepted | Rerun passed circuit breaker validation and trigger lock was reset |
 
 ### Dry-Run Events

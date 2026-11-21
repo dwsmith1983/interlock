@@ -77,7 +77,7 @@ validation:
 | `gte` | Field value greater than or equal to threshold | Yes | Numeric |
 | `lt` | Field value less than threshold | Yes | Numeric |
 | `lte` | Field value less than or equal to threshold | Yes | Numeric |
-| `age_lt` | Time since RFC3339 timestamp is less than duration | Yes | Duration string (e.g. `"2h"`) |
+| `age_lt` | Time since the field's timestamp ([forms](../../configuration/pipelines/#pushing-sensor-data)) is less than duration | Yes | Duration string (e.g. `"2h"`) |
 
 ### Trigger Modes
 

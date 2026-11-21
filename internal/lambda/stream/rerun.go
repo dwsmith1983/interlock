@@ -11,6 +11,7 @@ import (
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // handleRerunRequest processes a RERUN_REQUEST# stream record.
@@ -220,7 +221,8 @@ func parseRerunRequestSK(sk string) (schedule, date string, err error) {
 }
 
 // checkSensorFreshness determines whether any sensor data has been updated
-// after the given job completed.
+// after the given job completed. An updatedAt that validation.ParseTimestamp
+// cannot read counts as absent.
 func checkSensorFreshness(ctx context.Context, d *lambda.Deps, pipelineID, jobSK string) (bool, error) {
 	parts := strings.Split(jobSK, "#")
 	if len(parts) < 4 {
@@ -239,39 +241,27 @@ func checkSensorFreshness(ctx context.Context, d *lambda.Deps, pipelineID, jobSK
 		return true, nil
 	}
 
-	hasAnyUpdatedAt := false
-	for _, data := range sensors {
+	jobTime := time.UnixMilli(jobTimestamp)
+	sawTimestamp := false
+	for key, data := range sensors {
 		updatedAt, ok := data["updatedAt"]
 		if !ok {
 			continue
 		}
-		hasAnyUpdatedAt = true
-
-		var ts int64
-		switch v := updatedAt.(type) {
-		case float64:
-			ts = int64(v)
-		case int64:
-			ts = v
-		case string:
-			ts, err = strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				continue
-			}
-		default:
+		ts, ok := validation.ParseTimestamp(updatedAt)
+		if !ok {
+			d.Logger.Warn("ignoring sensor updatedAt that is not a timestamp",
+				"pipelineId", pipelineID, "sensor", key)
 			continue
 		}
+		sawTimestamp = true
 
-		if ts > 0 && ts < 1e12 {
-			ts *= 1000
-		}
-
-		if ts > jobTimestamp {
+		if ts.After(jobTime) {
 			return true, nil
 		}
 	}
 
-	if !hasAnyUpdatedAt {
+	if !sawTimestamp {
 		return true, nil
 	}
 
