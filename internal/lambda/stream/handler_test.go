@@ -411,7 +411,7 @@ func TestHandleRecord_SensorBesideBadConfig(t *testing.T) {
 			d, mem, sfnFake, _ := jobWorld(t, types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
-				Job:      types.JobConfig{Type: types.TriggerHTTP},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 			})
 			mem.Put("control", map[string]ddbtypes.AttributeValue{
 				"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("q")},

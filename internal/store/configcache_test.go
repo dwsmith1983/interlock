@@ -393,7 +393,7 @@ func TestConfigCache_GetAll_ReturnsDeepCopyNested(t *testing.T) {
 		Pipeline: types.PipelineIdentity{ID: "nested-pipe", Owner: "team-x"},
 		Job: types.JobConfig{
 			Type:   "glue",
-			Config: map[string]interface{}{"key": "value"},
+			Config: map[string]interface{}{"jobName": "value"},
 		},
 		SLA: &types.SLAConfig{
 			Deadline:         "14:00",
@@ -439,8 +439,8 @@ func TestConfigCache_GetAll_ReturnsDeepCopyNested(t *testing.T) {
 	if _, ok := cfg2.Job.Config["injected"]; ok {
 		t.Error("Job.Config mutation leaked into cache: 'injected' key should not exist")
 	}
-	if cfg2.Job.Config["key"] != "value" {
-		t.Errorf("Job.Config[\"key\"] = %v, want %q", cfg2.Job.Config["key"], "value")
+	if cfg2.Job.Config["jobName"] != "value" {
+		t.Errorf("Job.Config[\"jobName\"] = %v, want %q", cfg2.Job.Config["jobName"], "value")
 	}
 
 	// Verify SLA pointer field was not corrupted.

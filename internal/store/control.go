@@ -104,13 +104,18 @@ func loadConfigRow(item map[string]ddbtypes.AttributeValue) (*types.PipelineConf
 			return &cfg, r
 		}
 	}
-	// Cut to maxReasonBytes; ToValidUTF8 drops a rune the cut splits.
-	r.Reason = strings.ToValidUTF8(r.Reason[:min(len(r.Reason), maxReasonBytes)], "")
+	r.Reason = CutReason(r.Reason)
 	return nil, r
 }
 
 // maxReasonBytes bounds a rejection reason, which can quote the config.
 const maxReasonBytes = 1024
+
+// CutReason cuts a config rejection reason to maxReasonBytes; ToValidUTF8
+// drops a rune the cut splits.
+func CutReason(reason string) string {
+	return strings.ToValidUTF8(reason[:min(len(reason), maxReasonBytes)], "")
+}
 
 // configInvalidKey is the key of rejection r's marker: r's own PK and SK
 // CONFIG_INVALID#<hash>, the hash of the reason when r has no config string.

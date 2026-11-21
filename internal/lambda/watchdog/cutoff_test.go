@@ -14,6 +14,14 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+// httpJobConfig is the smallest job.config validation accepts for an http job.
+var httpJobConfig = map[string]interface{}{"url": "https://example.com/job"}
+
+// dryRunHTTP makes the pipeline a dry run with a valid http job.
+func dryRunHTTP(c *types.PipelineConfig) {
+	c.DryRun, c.Job.Type, c.Job.Config = true, types.TriggerHTTP, httpJobConfig
+}
+
 // TestCheckTriggerDeadlines: each RUN# key whose cutoff passed with no trigger
 // row is closed with FAILED_FINAL and one SENSOR_DEADLINE_EXPIRED. Cutoff 14:00
 // UTC and one RUN# row for slaTestDate unless a case says otherwise.
@@ -47,7 +55,7 @@ func TestCheckTriggerDeadlines(t *testing.T) {
 		{name: "no RUN# rows", keys: []string{}, now: at(10, 14, 5)},
 		{name: "malformed key", keys: []string{"2026-3-10"}, now: at(10, 14, 5)},
 		{name: "excluded date", keys: []string{"2026-03-14"}, now: at(14, 14, 5), tweak: func(c *types.PipelineConfig) { c.Schedule.Exclude = &types.ExclusionConfig{Weekends: true} }},
-		{name: "dry run", now: at(10, 14, 5), tweak: func(c *types.PipelineConfig) { c.DryRun, c.Job.Type = true, types.TriggerHTTP }},
+		{name: "dry run", now: at(10, 14, 5), tweak: dryRunHTTP},
 		{name: "hourly", cutoff: ":45", keys: []string{"2026-03-10T13"}, now: at(10, 14, 50), wantDate: "2026-03-10T13", wantAt: "2026-03-10T14:45:00Z"},
 		{name: "schedule tz over SLA tz, before", cutoff: "09:00", tz: "America/New_York", now: at(10, 12, 30), tweak: tokyoSLA},
 		{name: "schedule tz over SLA tz, after", cutoff: "09:00", tz: "America/New_York", now: at(10, 13, 30), tweak: tokyoSLA,

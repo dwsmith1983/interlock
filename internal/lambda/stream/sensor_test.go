@@ -16,6 +16,9 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
+// httpJobConfig is the smallest job.config validation accepts for an http job.
+var httpJobConfig = map[string]interface{}{"url": "https://example.com/job"}
+
 // sensorRecord is the stream record of the "upstream" sensor naming date.
 func sensorRecord(date string) events.DynamoDBEventRecord {
 	return sensorRecordWith("upstream", map[string]events.DynamoDBAttributeValue{"date": events.NewStringAttribute(date)})
@@ -44,7 +47,7 @@ func TestSensorEvent_HourlyKeysStartSeparately(t *testing.T) {
 		Pipeline: types.PipelineIdentity{ID: "p"},
 		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{
 			Key: "hourly-status", Check: types.CheckEquals, Field: "status", Value: "ready"}},
-		Job: types.JobConfig{Type: types.TriggerHTTP},
+		Job: types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 	})
 	hour := func(date, hour string) map[string]events.DynamoDBAttributeValue {
 		return map[string]events.DynamoDBAttributeValue{"status": events.NewStringAttribute("ready"),
@@ -142,7 +145,7 @@ func TestSensorEvent_Gates(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
-				Job:      types.JobConfig{Type: types.TriggerHTTP},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 			}
 			if tt.tweak != nil {
 				tt.tweak(&cfg)
@@ -197,7 +200,7 @@ func TestSensorEvent_FirstArrival(t *testing.T) {
 			d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
-				Job:      types.JobConfig{Type: types.TriggerHTTP},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 			})
 			ctx, arrivalKey := context.Background(), "first-sensor-arrival#"+tt.date
 			if tt.seeded != "" {
@@ -300,7 +303,7 @@ func TestSensorEvent_Cutoff(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "14:00"}},
-				Job:      types.JobConfig{Type: types.TriggerHTTP},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 			}
 			if tt.tweak != nil {
 				tt.tweak(&cfg)
@@ -425,7 +428,7 @@ func TestLateData_WatchWindow(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
-				Job:      types.JobConfig{Type: types.TriggerHTTP},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
 			}
 			for _, f := range tt.tweaks {

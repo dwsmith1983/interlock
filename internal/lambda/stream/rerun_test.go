@@ -114,7 +114,7 @@ func TestRerunRequest_WatchWindow(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
-				Job:      types.JobConfig{Type: types.TriggerHTTP},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
 			}
 			if tt.excluded {
@@ -322,7 +322,7 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
-				Job:      types.JobConfig{Type: types.TriggerHTTP},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
 			}
 			if tt.tweak != nil {

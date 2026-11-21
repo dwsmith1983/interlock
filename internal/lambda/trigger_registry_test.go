@@ -13,7 +13,16 @@ import (
 // trigger type, so adding one to the registry alone cannot reject its configs.
 func TestTriggerRegistryTypesPassValidation(t *testing.T) {
 	// The fields a type's own checks require.
-	required := map[types.TriggerType]map[string]interface{}{types.TriggerDatabricks: {"jobId": "1"}}
+	required := map[types.TriggerType]map[string]interface{}{
+		types.TriggerHTTP:          {"url": "https://example.com"},
+		types.TriggerAirflow:       {"url": "https://airflow", "dagId": "d"},
+		types.TriggerGlue:          {"jobName": "j"},
+		types.TriggerEMR:           {"clusterId": "j-1", "stepName": "s", "command": "c"},
+		types.TriggerEMRServerless: {"applicationId": "a", "jobName": "j", "executionRoleArn": "r", "entryPoint": "e"},
+		types.TriggerDatabricks:    {"workspaceUrl": "https://db", "jobId": "1"},
+		types.TriggerStepFunction:  {"stateMachineArn": "arn:sm"},
+		types.TriggerLambda:        {"functionName": "f"},
+	}
 	for typ := range lambda.TriggerUnmarshalers {
 		cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: types.JobConfig{Type: typ, Config: required[typ]}}
 		if errs := validation.ValidatePipelineConfig(&cfg); len(errs) > 0 {

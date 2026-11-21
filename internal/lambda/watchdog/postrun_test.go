@@ -62,7 +62,7 @@ func TestDetectMissingPostRunSensors(t *testing.T) {
 					c.PostRun = nil
 				}
 				if tt.dryRun {
-					c.DryRun, c.Job.Type = true, types.TriggerHTTP
+					c.DryRun, c.Job.Type, c.Job.Config = true, types.TriggerHTTP, httpJobConfig
 				}
 			})
 			pk := types.PipelinePK("p")

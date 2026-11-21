@@ -87,7 +87,7 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
-				Job:      types.JobConfig{Type: types.TriggerHTTP},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun: &types.PostRunConfig{
 					Rules:      []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}},
 					DriftField: "count", DriftThreshold: &threshold, WatchWindow: "6h",

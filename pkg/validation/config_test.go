@@ -289,7 +289,7 @@ func TestValidatePipelineConfig(t *testing.T) {
 			name: "dryRun with job.type but no trigger",
 			cfg: types.PipelineConfig{
 				DryRun: true,
-				Job:    types.JobConfig{Type: "glue"},
+				Job:    types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "etl"}},
 			},
 			wantCount:  1,
 			wantSubstr: "dryRun requires schedule.trigger",
@@ -301,7 +301,7 @@ func TestValidatePipelineConfig(t *testing.T) {
 				Schedule: types.ScheduleConfig{
 					Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists},
 				},
-				Job: types.JobConfig{Type: "glue"},
+				Job: types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "etl"}},
 			},
 			wantCount: 0,
 		},
@@ -567,7 +567,7 @@ func TestValidate_AirflowAPIVersion(t *testing.T) {
 	withVersion := func(jobType types.TriggerType, version interface{}) *types.PipelineConfig {
 		return &types.PipelineConfig{
 			Pipeline: types.PipelineIdentity{ID: "orders"},
-			Job:      types.JobConfig{Type: jobType, Config: map[string]interface{}{"dagId": "etl", "apiVersion": version}},
+			Job:      types.JobConfig{Type: jobType, Config: map[string]interface{}{"url": "https://a", "dagId": "etl", "apiVersion": version}},
 		}
 	}
 	// YAML decodes the number as an int, JSON as a float64.
@@ -576,7 +576,7 @@ func TestValidate_AirflowAPIVersion(t *testing.T) {
 	}
 	assert.Empty(t, ValidatePipelineConfig(&types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "orders"},
-		Job:      types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{"dagId": "etl"}},
+		Job:      types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{"url": "https://a", "dagId": "etl"}},
 	}), "an unset apiVersion should be accepted")
 	for v, shown := range map[interface{}]string{1: "1", 4: "4", float64(4): "4", 2.5: "2.5", "3": `"3"`} {
 		assert.Equal(t, []string{"job.config.apiVersion " + shown + " must be 2 or 3"},
@@ -585,9 +585,10 @@ func TestValidate_AirflowAPIVersion(t *testing.T) {
 	// The trigger config decoder matches keys without regard to case.
 	assert.Equal(t, []string{"job.config.apiVersion 4 must be 2 or 3"}, ValidatePipelineConfig(&types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "orders"},
-		Job:      types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{"dagId": "etl", "apiversion": 4}},
+		Job:      types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{"url": "https://a", "dagId": "etl", "apiversion": 4}},
 	}))
-	assert.Empty(t, ValidatePipelineConfig(withVersion(types.TriggerHTTP, 4)), "apiVersion is an airflow setting")
+	assert.Equal(t, []string{`job.config: unknown field "apiVersion"`}, ValidatePipelineConfig(withVersion(types.TriggerHTTP, 4)),
+		"apiVersion is an airflow setting")
 }
 
 // The databricks jobId is checked as the orchestrator decodes it: a string
@@ -606,23 +607,161 @@ func TestValidate_DatabricksJobID(t *testing.T) {
 		conf map[string]interface{}
 		want []string
 	}{
-		{"valid", map[string]interface{}{"jobId": "12345"}, nil},
-		{"above 2^53", map[string]interface{}{"jobId": "9007199254740993"}, nil},
-		{"case-folded key", map[string]interface{}{"jobid": "abc"}, []string{`job.config.jobId "abc" must be a positive base-10 integer job ID`}},
-		{"not an integer", map[string]interface{}{"jobId": "abc"}, []string{`job.config.jobId "abc" must be a positive base-10 integer job ID`}},
-		{"zero", map[string]interface{}{"jobId": "0"}, []string{`job.config.jobId "0" must be a positive base-10 integer job ID`}},
-		{"empty", map[string]interface{}{"jobId": ""}, []string{"job.config.jobId is required"}},
-		{"null", map[string]interface{}{"jobId": nil}, []string{"job.config.jobId is required"}},
+		{"valid", map[string]interface{}{"workspaceUrl": "https://dbc", "jobId": "12345"}, nil},
+		{"above 2^53", map[string]interface{}{"workspaceUrl": "https://dbc", "jobId": "9007199254740993"}, nil},
+		{"case-folded key", map[string]interface{}{"workspaceUrl": "https://dbc", "jobid": "abc"}, []string{`job.config.jobId "abc" must be a positive base-10 integer job ID`}},
+		{"not an integer", map[string]interface{}{"workspaceUrl": "https://dbc", "jobId": "abc"}, []string{`job.config.jobId "abc" must be a positive base-10 integer job ID`}},
+		{"zero", map[string]interface{}{"workspaceUrl": "https://dbc", "jobId": "0"}, []string{`job.config.jobId "0" must be a positive base-10 integer job ID`}},
+		{"empty", map[string]interface{}{"workspaceUrl": "https://dbc", "jobId": ""}, []string{"job.config.jobId is required"}},
+		{"null", map[string]interface{}{"workspaceUrl": "https://dbc", "jobId": nil}, []string{"job.config.jobId is required"}},
 		{"missing", map[string]interface{}{"workspaceUrl": "https://dbc"}, []string{"job.config.jobId is required"}},
-		{"no config", nil, []string{"job.config.jobId is required"}},
+		{"no config", nil, []string{"job.config.workspaceUrl is required", "job.config.jobId is required"}},
 		// YAML decodes the number as an int, JSON as a float64.
-		{"yaml number", map[string]interface{}{"jobId": 12345}, []string{fmt.Sprintf(quote, "12345")}},
-		{"json number", map[string]interface{}{"jobId": float64(12345)}, []string{fmt.Sprintf(quote, "12345")}},
+		{"yaml number", map[string]interface{}{"workspaceUrl": "https://dbc", "jobId": 12345}, []string{fmt.Sprintf(quote, "12345")}},
+		{"json number", map[string]interface{}{"workspaceUrl": "https://dbc", "jobId": float64(12345)}, []string{fmt.Sprintf(quote, "12345")}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, ValidatePipelineConfig(withConfig(types.TriggerDatabricks, tt.conf)))
 		})
 	}
-	assert.Empty(t, ValidatePipelineConfig(withConfig(types.TriggerHTTP, map[string]interface{}{"jobId": 1})), "jobId is a databricks setting")
+	assert.Equal(t, []string{`job.config: unknown field "jobId"`}, ValidatePipelineConfig(withConfig(types.TriggerHTTP, map[string]interface{}{"jobId": 1})),
+		"jobId is a databricks setting")
+}
+
+// validTriggerConfigs holds a complete job.config for every trigger type.
+func validTriggerConfigs() map[types.TriggerType]map[string]interface{} {
+	return map[types.TriggerType]map[string]interface{}{
+		types.TriggerHTTP:    {"url": "https://example.com/start", "method": "POST"},
+		types.TriggerAirflow: {"url": "https://airflow.example.com", "dagId": "etl", "apiVersion": 3},
+		types.TriggerGlue:    {"jobName": "etl"},
+		types.TriggerEMR:     {"clusterId": "j-1", "stepName": "etl", "command": "s3://bucket/etl.jar"},
+		types.TriggerEMRServerless: {"applicationId": "app-1", "jobName": "etl", "executionRoleArn": "arn:aws:iam::1:role/r",
+			"entryPoint": "s3://bucket/etl.py", "entryPointArguments": []interface{}{"--par_day", "x", "--par_hour=05"}},
+		types.TriggerDatabricks:   {"workspaceUrl": "https://dbc.example.com", "jobId": "123"},
+		types.TriggerStepFunction: {"stateMachineArn": "arn:aws:states:eu-west-1:1:stateMachine:sm"},
+		types.TriggerLambda:       {"functionName": "audit"},
+	}
+}
+
+// requiredTriggerFields lists, in the order the trigger checks them, the
+// fields each trigger rejects when empty.
+var requiredTriggerFields = map[types.TriggerType][]string{
+	types.TriggerHTTP:          {"url"},
+	types.TriggerAirflow:       {"url", "dagId"},
+	types.TriggerGlue:          {"jobName"},
+	types.TriggerEMR:           {"clusterId", "stepName", "command"},
+	types.TriggerEMRServerless: {"applicationId", "jobName", "executionRoleArn", "entryPoint"},
+	types.TriggerDatabricks:    {"workspaceUrl", "jobId"},
+	types.TriggerStepFunction:  {"stateMachineArn"},
+	types.TriggerLambda:        {"functionName"},
+}
+
+func TestValidate_TriggerRequiredFields(t *testing.T) {
+	withConfig := func(jobType types.TriggerType, conf map[string]interface{}) *types.PipelineConfig {
+		return &types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "orders"},
+			Job:      types.JobConfig{Type: jobType, Config: conf},
+		}
+	}
+	for typ, conf := range validTriggerConfigs() {
+		t.Run(string(typ)+" valid", func(t *testing.T) {
+			assert.Empty(t, ValidatePipelineConfig(withConfig(typ, conf)))
+		})
+	}
+	for typ, fields := range requiredTriggerFields {
+		for _, field := range fields {
+			t.Run(string(typ)+" missing "+field, func(t *testing.T) {
+				conf := validTriggerConfigs()[typ]
+				delete(conf, field)
+				assert.Equal(t, []string{"job.config." + field + " is required"}, ValidatePipelineConfig(withConfig(typ, conf)))
+			})
+		}
+		t.Run(string(typ)+" no config", func(t *testing.T) {
+			var want []string
+			for _, field := range fields {
+				want = append(want, "job.config."+field+" is required")
+			}
+			assert.Equal(t, want, ValidatePipelineConfig(withConfig(typ, nil)))
+		})
+	}
+
+	tests := []struct {
+		name string
+		typ  types.TriggerType
+		conf map[string]interface{}
+		want []string
+	}{
+		{"snake_case key is unknown", types.TriggerAirflow, map[string]interface{}{"url": "https://a", "dag_id": "etl"},
+			[]string{`job.config: unknown field "dag_id"`}},
+		{"key of another type is unknown", types.TriggerGlue, map[string]interface{}{"jobName": "etl", "clusterId": "j-1"},
+			[]string{`job.config: unknown field "clusterId"`}},
+		{"keys match without regard to case", types.TriggerAirflow, map[string]interface{}{"URL": "https://a", "dagID": "etl"}, nil},
+		// A config that does not decode reports only the decode error.
+		{"wrong value type", types.TriggerGlue, map[string]interface{}{"jobName": 5},
+			[]string{"job.config.jobName holds a number where a string is expected"}},
+		{"wrong value type behind a raw field", types.TriggerAirflow, map[string]interface{}{"url": "https://a", "dagId": 5},
+			[]string{"job.config.dagId holds a number where a string is expected"}},
+		{"wrong value type in a map", types.TriggerGlue, map[string]interface{}{"jobName": "etl", "arguments": map[string]interface{}{"--limit": 100}},
+			[]string{"job.config.arguments holds a number where a string is expected"}},
+		{"wrong value type in a list", types.TriggerEMRServerless, map[string]interface{}{"applicationId": "a", "jobName": "j",
+			"executionRoleArn": "r", "entryPoint": "e", "entryPointArguments": []interface{}{"--x", true}},
+			[]string{"job.config.entryPointArguments holds a boolean where a string is expected"}},
+		{"object for a string", types.TriggerDatabricks, map[string]interface{}{"workspaceUrl": map[string]interface{}{"u": "x"}, "jobId": "1"},
+			[]string{"job.config.workspaceUrl holds an object where a string is expected"}},
+		{"string for an integer", types.TriggerHTTP, map[string]interface{}{"url": "https://a", "timeout": "30"},
+			[]string{"job.config.timeout holds a string where an integer is expected"}},
+		{"fraction for an integer", types.TriggerHTTP, map[string]interface{}{"url": "https://a", "timeout": 1.5},
+			[]string{"job.config.timeout holds a number where an integer is expected"}},
+		{"http method unset", types.TriggerHTTP, map[string]interface{}{"url": "https://a"}, nil},
+		{"http method lowercase", types.TriggerHTTP, map[string]interface{}{"url": "https://a", "method": "get"},
+			[]string{`job.config.method "get" must be empty or one of GET, HEAD, POST, PUT, PATCH, DELETE`}},
+		{"http method unsupported", types.TriggerHTTP, map[string]interface{}{"url": "https://a", "method": "OPTIONS"},
+			[]string{`job.config.method "OPTIONS" must be empty or one of GET, HEAD, POST, PUT, PATCH, DELETE`}},
+	}
+	for _, m := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"} {
+		tests = append(tests, struct {
+			name string
+			typ  types.TriggerType
+			conf map[string]interface{}
+			want []string
+		}{"http method " + m, types.TriggerHTTP, map[string]interface{}{"url": "https://a", "method": m}, nil})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ValidatePipelineConfig(withConfig(tt.typ, tt.conf)))
+		})
+	}
+}
+
+// The orchestrator writes the run date into the argument after --par_day and
+// --par_hour, so each must have a value after it that is not another flag.
+func TestValidate_EMRServerlessDateFlags(t *testing.T) {
+	withArgs := func(args ...interface{}) *types.PipelineConfig {
+		conf := validTriggerConfigs()[types.TriggerEMRServerless]
+		conf["entryPointArguments"] = args
+		return &types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "orders"},
+			Job:      types.JobConfig{Type: types.TriggerEMRServerless, Config: conf},
+		}
+	}
+	noValue := func(flag string) []string {
+		return []string{"job.config.entryPointArguments has no value after " + flag}
+	}
+	assert.Empty(t, ValidatePipelineConfig(withArgs()))
+	assert.Empty(t, ValidatePipelineConfig(withArgs("--par_day", "x", "--par_hour", "y")))
+	assert.Empty(t, ValidatePipelineConfig(withArgs("--par_day=x", "--par_hour=y")), "the = form is left alone")
+	assert.Empty(t, ValidatePipelineConfig(withArgs("--input", "--par_day", "x")))
+	assert.Equal(t, noValue("--par_day"), ValidatePipelineConfig(withArgs("--input", "s3://in", "--par_day")))
+	assert.Equal(t, noValue("--par_hour"), ValidatePipelineConfig(withArgs("--par_hour", "--input", "s3://in")))
+	assert.Equal(t, append(noValue("--par_day"), noValue("--par_hour")...),
+		ValidatePipelineConfig(withArgs("--par_day", "--par_hour")))
+}
+
+// Every job.type validation accepts must have its own config check.
+func TestValidate_EveryTriggerTypeHasARequiredFieldCheck(t *testing.T) {
+	for typ := range triggerTypes {
+		assert.Contains(t, triggerConfigChecks, typ, "job.type %q has no config check", typ)
+	}
+	assert.Len(t, triggerConfigChecks, len(triggerTypes))
 }

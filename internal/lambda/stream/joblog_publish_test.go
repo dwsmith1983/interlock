@@ -44,7 +44,7 @@ func TestStreamJobRows_PublishGates(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: cmpOr(tt.pipeline, "p")}, Job: types.JobConfig{Type: types.TriggerHTTP}, DryRun: tt.dryRun,
+			cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: cmpOr(tt.pipeline, "p")}, Job: types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig}, DryRun: tt.dryRun,
 				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}}}
 			d, mem, _, eb := jobWorld(t, cfg)
 			if !tt.noTrigger {
@@ -85,7 +85,7 @@ func cmpOr(s, def string) string {
 // TestStreamJobFail_TruncatesError: a row's error is cut to 2 KB on a UTF-8
 // boundary before it reaches the message or the detail.
 func TestStreamJobFail_TruncatesError(t *testing.T) {
-	d, mem, _, eb := jobWorld(t, types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: types.JobConfig{Type: types.TriggerHTTP}})
+	d, mem, _, eb := jobWorld(t, types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig}})
 	mem.Put("control", map[string]ddbtypes.AttributeValue{
 		"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")}, "SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", testDate)},
 	})

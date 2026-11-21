@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // SecretGetter is the Secrets Manager call LoadSecretEnv needs.
@@ -52,6 +54,9 @@ func LoadSecretEnv(ctx context.Context, client SecretGetter, arn string) error {
 	for k, v := range raw {
 		if !secretKeyPattern.MatchString(k) {
 			return errSecretBadKey
+		}
+		if slices.ContainsFunc(runFields(types.RunIdentity{}), func(f runField) bool { return f.variable == k }) {
+			return fmt.Errorf("trigger secret key %s is a run identity variable, which each run sets itself", k)
 		}
 		s, ok := v.(string)
 		if !ok {

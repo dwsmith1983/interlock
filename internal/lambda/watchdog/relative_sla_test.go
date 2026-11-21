@@ -66,7 +66,7 @@ func TestRelativeSLA(t *testing.T) {
 			d, mem, rec := slaDeps(t, tt.trigger, "", func(c *types.PipelineConfig) {
 				c.SLA = &types.SLAConfig{MaxDuration: "2h", ExpectedDuration: tt.expected}
 				if tt.dryRun {
-					c.DryRun, c.Job.Type = true, types.TriggerHTTP
+					c.DryRun, c.Job.Type, c.Job.Config = true, types.TriggerHTTP, httpJobConfig
 				}
 			})
 			now := tt.now
