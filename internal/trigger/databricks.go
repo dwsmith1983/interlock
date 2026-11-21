@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -113,7 +114,7 @@ func (r *Runner) checkDatabricksStatus(ctx context.Context, metadata map[string]
 		return StatusResult{State: RunCheckRunning, Message: "missing databricks metadata"}, nil
 	}
 
-	url := strings.TrimRight(workspaceURL, "/") + "/api/2.1/jobs/runs/get?run_id=" + runID
+	url := strings.TrimRight(workspaceURL, "/") + "/api/2.1/jobs/runs/get?" + neturl.Values{"run_id": {runID}}.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {

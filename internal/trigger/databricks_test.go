@@ -464,3 +464,26 @@ func TestCheckDatabricksStatus_SanitizesMessage(t *testing.T) {
 		})
 	}
 }
+
+// A run ID from the trigger metadata holding &, /, ?, # and .. reaches
+// runs/get as the one run_id query value, and the path stays fixed.
+func TestCheckDatabricksStatus_EscapesRunID(t *testing.T) {
+	const runID = "1&run_id=2/../x?y#z"
+	var path, rawQuery string
+	var query map[string][]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, rawQuery, query = r.URL.EscapedPath(), r.URL.RawQuery, r.URL.Query()
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"state": map[string]interface{}{"life_cycle_state": "RUNNING"}})
+	}))
+	defer srv.Close()
+
+	r := NewRunner(WithHTTPClient(srv.Client()))
+	_, err := r.checkDatabricksStatus(context.Background(), map[string]interface{}{
+		"databricks_workspace_url": srv.URL,
+		"databricks_run_id":        runID,
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "/api/2.1/jobs/runs/get", path)
+	assert.Equal(t, "run_id=1%26run_id%3D2%2F..%2Fx%3Fy%23z", rawQuery)
+	assert.Equal(t, map[string][]string{"run_id": {runID}}, query)
+}
