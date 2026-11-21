@@ -86,7 +86,7 @@ func TestDetectStaleTriggers(t *testing.T) {
 		{name: "bad PK", pk: "BADPREFIX#p", ttl: ttl(1773129600)},
 		{name: "bad SK", sk: "TRIGGER#nodatepart", ttl: ttl(1773129600)},
 		{name: "non-trigger SK", sk: types.SensorSK("upstream"), ttl: ttl(1773129600)},
-		{name: "dry run", ttl: ttl(1773129600), tweak: func(c *types.PipelineConfig) { c.DryRun, c.Job.Type = true, types.TriggerHTTP }},
+		{name: "dry run", ttl: ttl(1773129600), tweak: dryRunHTTP},
 		{name: "expired COMPLETED", status: types.TriggerStatusCompleted, ttl: ttl(1773129600)},
 	}
 	for _, tt := range tests {
@@ -304,7 +304,7 @@ func TestReconcile_Gating(t *testing.T) {
 		{name: "per-hour partial", sensors: hourly, running: "2026-03-10T10", wantSFN: 1, wantDates: []string{"2026-03-10T11"}},
 		{name: "nil trigger", sensors: daily, tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger = nil }},
 		{name: "SFN error", sensors: daily, sfnErr: errors.New("execution limit exceeded"), wantSFN: 1},
-		{name: "dry run", sensors: daily, tweak: func(c *types.PipelineConfig) { c.DryRun, c.Job.Type = true, types.TriggerHTTP }},
+		{name: "dry run", sensors: daily, tweak: dryRunHTTP},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -1,9 +1,13 @@
 package validation
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -90,16 +94,8 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		errs = append(errs, fmt.Sprintf("job.type %q is not a supported trigger type", t))
 	}
 
-	if cfg.Job.Type == types.TriggerAirflow {
-		if v, ok := airflowAPIVersion(cfg.Job.Config); !ok {
-			errs = append(errs, fmt.Sprintf("job.config.apiVersion %s must be 2 or 3", v))
-		}
-	}
-
-	if cfg.Job.Type == types.TriggerDatabricks {
-		if msg := databricksJobIDError(cfg.Job.Config); msg != "" {
-			errs = append(errs, "job.config.jobId "+msg)
-		}
+	if check := triggerConfigChecks[cfg.Job.Type]; check != nil {
+		errs = append(errs, check(cfg.Job.Config)...)
 	}
 
 	if cfg.Job.MaxRetries < 0 || cfg.Job.MaxRetries > 10 {
@@ -221,41 +217,179 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	return errs
 }
 
-// airflowAPIVersion decodes the apiVersion of an airflow job.config through
-// JSON, as the orchestrator decodes the trigger config, and reports whether it
-// is unset, 2 or 3. It returns the value as JSON for the error.
-func airflowAPIVersion(conf map[string]interface{}) (string, bool) {
-	var c struct {
-		APIVersion json.RawMessage `json:"apiVersion"`
+// triggerConfigChecks checks the job.config of each job.type: the fields its
+// trigger rejects when empty, and the values it cannot use.
+var triggerConfigChecks = map[types.TriggerType]func(map[string]interface{}) []string{
+	types.TriggerHTTP: decodeTrigger(func(c *types.HTTPTriggerConfig) []string {
+		errs := required("url", c.URL)
+		if c.Method != "" && !slices.Contains(httpMethods, c.Method) {
+			errs = append(errs, fmt.Sprintf("job.config.method %q must be empty or one of %s", c.Method, strings.Join(httpMethods, ", ")))
+		}
+		return errs
+	}),
+	types.TriggerAirflow: decodeTrigger(func(c *airflowConfig) []string {
+		errs := required("url", c.URL, "dagId", c.DagID)
+		if v, ok := airflowAPIVersion(c.APIVersion); !ok {
+			errs = append(errs, fmt.Sprintf("job.config.apiVersion %s must be 2 or 3", v))
+		}
+		return errs
+	}),
+	types.TriggerGlue: decodeTrigger(func(c *types.GlueTriggerConfig) []string {
+		return required("jobName", c.JobName)
+	}),
+	types.TriggerEMR: decodeTrigger(func(c *types.EMRTriggerConfig) []string {
+		return required("clusterId", c.ClusterID, "stepName", c.StepName, "command", c.Command)
+	}),
+	types.TriggerEMRServerless: decodeTrigger(func(c *types.EMRServerlessTriggerConfig) []string {
+		errs := required("applicationId", c.ApplicationID, "jobName", c.JobName,
+			"executionRoleArn", c.ExecutionRoleARN, "entryPoint", c.EntryPoint)
+		return append(errs, dateFlagErrors(c.EntryPointArguments)...)
+	}),
+	types.TriggerDatabricks: decodeTrigger(func(c *databricksConfig) []string {
+		errs := required("workspaceUrl", c.WorkspaceURL)
+		if msg := databricksJobIDError(c.JobID); msg != "" {
+			errs = append(errs, "job.config.jobId "+msg)
+		}
+		return errs
+	}),
+	types.TriggerStepFunction: decodeTrigger(func(c *types.StepFunctionTriggerConfig) []string {
+		return required("stateMachineArn", c.StateMachineARN)
+	}),
+	types.TriggerLambda: decodeTrigger(func(c *types.LambdaTriggerConfig) []string {
+		return required("functionName", c.FunctionName)
+	}),
+}
+
+// httpMethods are the methods an http trigger may set. They are upper case,
+// as the redirect rule compares the method with "GET" and "HEAD".
+var httpMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
+
+// airflowConfig and databricksConfig keep apiVersion and jobId as raw JSON,
+// so a value of the wrong type is reported as it was written.
+type airflowConfig struct {
+	types.AirflowTriggerConfig
+	APIVersion json.RawMessage `json:"apiVersion"`
+}
+
+type databricksConfig struct {
+	types.DatabricksTriggerConfig
+	JobID json.RawMessage `json:"jobId"`
+}
+
+// decodeTrigger returns a check that decodes a job.config into T through
+// JSON, as the orchestrator decodes the trigger config (keys match without
+// regard to case), refusing keys T does not have, and then runs check on it.
+// A config that does not decode reports only the decode error.
+func decodeTrigger[T any](check func(*T) []string) func(map[string]interface{}) []string {
+	return func(conf map[string]interface{}) []string {
+		data, err := json.Marshal(conf)
+		if err != nil {
+			return []string{"job.config is not encodable as JSON: " + err.Error()}
+		}
+		var c T
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&c); err != nil {
+			return []string{decodeError(err)}
+		}
+		return check(&c)
 	}
-	// A job.config loaded from YAML or JSON always marshals and decodes into
-	// c, so only a missing apiVersion leaves it nil: unset.
-	data, err := json.Marshal(conf)
-	if err != nil || json.Unmarshal(data, &c) != nil || c.APIVersion == nil {
+}
+
+// jsonValues names each JSON value kind as a decode error reports it.
+var jsonValues = map[string]string{
+	"string": "a string", "number": "a number", "bool": "a boolean", "object": "an object", "array": "a list",
+}
+
+// expectedValue names the JSON value a Go type of kind k decodes from.
+func expectedValue(k reflect.Kind) string {
+	switch {
+	case k == reflect.String:
+		return "a string"
+	case k >= reflect.Int && k <= reflect.Uint64:
+		return "an integer"
+	case k == reflect.Float32 || k == reflect.Float64:
+		return "a number"
+	case k == reflect.Bool:
+		return "a boolean"
+	case k == reflect.Map || k == reflect.Struct:
+		return "an object"
+	case k == reflect.Slice || k == reflect.Array:
+		return "a list"
+	}
+	return "another value"
+}
+
+// decodeError describes a job.config decode error by the struct's JSON key,
+// whatever case the config used (DAGID: 5 reports job.config.dagId). A
+// wrong-type error's Field is a dotted path, led by an embedded
+// struct's name for airflowConfig and databricksConfig, whose last element is
+// the top-level JSON key: the trigger configs have no nested structs, and the
+// error for a map value or list element names the map or list.
+func decodeError(err error) string {
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &typeErr) || typeErr.Field == "" {
+		return "job.config: " + strings.TrimPrefix(err.Error(), "json: ")
+	}
+	field := typeErr.Field[strings.LastIndex(typeErr.Field, ".")+1:]
+	// Value is the kind, then for a number the number itself: never shown.
+	kind, _, _ := strings.Cut(typeErr.Value, " ")
+	got, ok := jsonValues[kind]
+	if !ok {
+		got = "a value"
+	}
+	// Type is the Go type of the element the value was meant for, so a map
+	// value or list element names what the entry needs.
+	return fmt.Sprintf("job.config.%s holds %s where %s is expected", field, got, expectedValue(typeErr.Type.Kind()))
+}
+
+// required reports each empty value of the name, value pairs, in order.
+func required(pairs ...string) []string {
+	var errs []string
+	for i := 0; i+1 < len(pairs); i += 2 {
+		if pairs[i+1] == "" {
+			errs = append(errs, "job.config."+pairs[i]+" is required")
+		}
+	}
+	return errs
+}
+
+// dateFlagErrors reports a --par_day or --par_hour entry point argument with
+// no value after it: the orchestrator writes the run date into the argument
+// that follows the flag, which would otherwise be another flag or missing.
+func dateFlagErrors(args []string) []string {
+	var errs []string
+	for _, flag := range []string{"--par_day", "--par_hour"} {
+		if i := slices.Index(args, flag); i >= 0 && (i+1 == len(args) || strings.HasPrefix(args[i+1], "--")) {
+			errs = append(errs, "job.config.entryPointArguments has no value after "+flag)
+		}
+	}
+	return errs
+}
+
+// airflowAPIVersion reports whether an airflow apiVersion is unset, 2 or 3,
+// and returns it as JSON for the error.
+func airflowAPIVersion(raw json.RawMessage) (string, bool) {
+	if raw == nil {
 		return "", true
 	}
 	var n int
-	if json.Unmarshal(c.APIVersion, &n) != nil {
-		return string(c.APIVersion), false
+	if json.Unmarshal(raw, &n) != nil {
+		return string(raw), false
 	}
-	return string(c.APIVersion), n == 0 || n == 2 || n == 3
+	return string(raw), n == 0 || n == 2 || n == 3
 }
 
-// databricksJobIDError decodes the jobId of a databricks job.config through
-// JSON, as the orchestrator decodes the trigger config, and says what is wrong
-// with it, or returns "" for a string holding a positive base-10 integer. A
-// number is refused, as the orchestrator's decode into a string fails on it.
-func databricksJobIDError(conf map[string]interface{}) string {
-	var c struct {
-		JobID json.RawMessage `json:"jobId"`
-	}
-	data, err := json.Marshal(conf)
-	if err != nil || json.Unmarshal(data, &c) != nil || c.JobID == nil || string(c.JobID) == "null" {
+// databricksJobIDError says what is wrong with a databricks jobId, or returns
+// "" for a string holding a positive base-10 integer. A number is refused, as
+// the orchestrator's decode into a string fails on it.
+func databricksJobIDError(raw json.RawMessage) string {
+	if raw == nil || string(raw) == "null" {
 		return "is required"
 	}
 	var id string
-	if json.Unmarshal(c.JobID, &id) != nil {
-		return string(c.JobID) + " must be a string: quote the job ID, as a number loses precision above 2^53"
+	if json.Unmarshal(raw, &id) != nil {
+		return string(raw) + " must be a string: quote the job ID, as a number loses precision above 2^53"
 	}
 	if id == "" {
 		return "is required"

@@ -325,7 +325,7 @@ func TestScheduleSLAAlerts_RunRows(t *testing.T) {
 		{name: "NoSLA", keys: []string{slaTestDate}, tweak: func(c *types.PipelineConfig) { c.SLA = nil }},
 		{name: "InvalidDeadline", keys: []string{slaTestDate}, wantLog: "SLA calculate failed", wantLevel: "ERROR",
 			tweak: func(c *types.PipelineConfig) { c.SLA.Deadline = "INVALID" }},
-		{name: "DryRun", keys: []string{slaTestDate}, tweak: func(c *types.PipelineConfig) { c.DryRun, c.Job.Type = true, types.TriggerHTTP }},
+		{name: "DryRun", keys: []string{slaTestDate}, tweak: dryRunHTTP},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

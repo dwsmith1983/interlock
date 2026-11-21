@@ -13,6 +13,7 @@ import (
 	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // handleTrigger builds a TriggerConfig from the JobConfig, executes it,
@@ -31,6 +32,14 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	}
 	if cfg == nil {
 		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger: config not found for pipeline %q", input.PipelineID)
+	}
+	// The row is read fresh, so one rewritten after the run started is
+	// validated again before anything is sent. Validation runs on the stored
+	// row, before any INTERLOCK_ value is expanded, and its reasons never
+	// quote the url, headers, body, payload or arguments.
+	if errs := validation.ValidatePipelineConfig(cfg); len(errs) > 0 {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger: config for pipeline %q is invalid: %s",
+			input.PipelineID, store.CutReason(strings.Join(errs, "; ")))
 	}
 
 	triggerCfg, err := BuildTriggerConfig(cfg.Job)

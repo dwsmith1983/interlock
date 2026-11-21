@@ -48,7 +48,7 @@ func TestDetectMissedSchedules(t *testing.T) {
 			want: map[string]string{"2026-03-09": "2026-03-09T08:00:00Z", slaTestDate: "2026-03-10T08:00:00Z"}},
 		{name: "excluded date", keys: []string{"2026-03-14"}, now: at(14, 9, 0),
 			tweak: func(c *types.PipelineConfig) { c.Schedule.Exclude = &types.ExclusionConfig{Weekends: true} }},
-		{name: "dry run", now: at(10, 8, 5), tweak: func(c *types.PipelineConfig) { c.DryRun, c.Job.Type = true, types.TriggerHTTP }},
+		{name: "dry run", now: at(10, 8, 5), tweak: dryRunHTTP},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -147,7 +147,7 @@ func TestDetectMissedInclusionSchedules(t *testing.T) {
 				c.Schedule.Include = &types.InclusionConfig{Dates: tt.dates}
 			}
 			if tt.dryRun {
-				c.DryRun, c.Job.Type = true, types.TriggerHTTP
+				c.DryRun, c.Job.Type, c.Job.Config = true, types.TriggerHTTP, httpJobConfig
 			}
 		})
 		ctx := context.Background()

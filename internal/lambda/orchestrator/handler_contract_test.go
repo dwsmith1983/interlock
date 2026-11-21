@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -21,6 +22,7 @@ import (
 	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // configItem builds the control-table row that store.GetConfig expects.
@@ -197,6 +199,11 @@ func TestTrigger_FailuresReturnLambdaError(t *testing.T) {
 			Config: map[string]interface{}{"jobName": "x"},
 		},
 	}
+	// A row rewritten after the run started is validated again here.
+	badMethodCfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com", "method": "get"}},
+	}
 
 	tests := []struct {
 		name       string
@@ -224,14 +231,24 @@ func TestTrigger_FailuresReturnLambdaError(t *testing.T) {
 					return &dynamodb.GetItemOutput{Item: configItem(t, badTypeCfg)}, nil
 				},
 			},
-			wantErrSub: "unsupported trigger type",
+			wantErrSub: `job.type "bogus" is not a supported trigger type`,
+		},
+		{
+			name: "invalid config",
+			fake: &storetest.FakeDynamo{
+				GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+					return &dynamodb.GetItemOutput{Item: configItem(t, badMethodCfg)}, nil
+				},
+			},
+			wantErrSub: `trigger: config for pipeline "p" is invalid: job.config.method "get" must be empty or one of`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := testDeps(tt.fake)
-			d.TriggerRunner = &fakeExecutor{}
+			exec := &fakeExecutor{}
+			d.TriggerRunner = exec
 			out, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
 				Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01",
 			})
@@ -244,7 +261,39 @@ func TestTrigger_FailuresReturnLambdaError(t *testing.T) {
 			if out.Mode != "" || out.RunID != "" || out.Metadata != nil {
 				t.Errorf("output = %+v, want the zero value so ResultPath is never written", out)
 			}
+			if exec.got != nil {
+				t.Errorf("trigger executed %+v, want nothing sent", exec.got)
+			}
 		})
+	}
+}
+
+// TestTrigger_InvalidConfigReasonIsCut: the reasons in the error are cut to
+// 1 KB on a rune boundary, as a rejected config's reason is in the store.
+func TestTrigger_InvalidConfigReasonIsCut(t *testing.T) {
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Include: &types.InclusionConfig{Dates: []string{"x" + strings.Repeat("é", 600)}}},
+		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com"}},
+	}
+	full := strings.Join(validation.ValidatePipelineConfig(&cfg), "; ")
+	if len(full) <= 1024 || utf8.RuneStart(full[1024]) {
+		t.Fatalf("fixture reason is %d bytes, want over 1024 with byte 1024 inside a rune", len(full))
+	}
+	d := testDeps(&storetest.FakeDynamo{
+		GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+			return &dynamodb.GetItemOutput{Item: configItem(t, cfg)}, nil
+		},
+	})
+	exec := &fakeExecutor{}
+	d.TriggerRunner = exec
+
+	_, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01",
+	})
+	want := `trigger: config for pipeline "p" is invalid: ` + full[:1023]
+	if err == nil || err.Error() != want || exec.got != nil {
+		t.Fatalf("err = %v, executed %+v; want %q and nothing sent", err, exec.got, want)
 	}
 }
 

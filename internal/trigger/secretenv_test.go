@@ -163,6 +163,17 @@ func TestLoadSecretEnv(t *testing.T) {
 			errEquals: badKeyMessage,
 		},
 		{
+			name:      "run identity name is rejected and nothing is set",
+			getter:    &fakeSecretGetter{out: secretOutput(`{"INTERLOCK_A":"x","INTERLOCK_RUN_ID":"s3cret"}`)},
+			touches:   []string{"INTERLOCK_A", "INTERLOCK_RUN_ID"},
+			wantErr:   true,
+			errEquals: "trigger secret key INTERLOCK_RUN_ID is a run identity variable, which each run sets itself",
+			check: func(t *testing.T, _ error) {
+				assert.Empty(t, os.Getenv("INTERLOCK_A"))
+				assert.Empty(t, os.Getenv("INTERLOCK_RUN_ID"))
+			},
+		},
+		{
 			name:    "fetch error names the ARN and the cause",
 			getter:  &fakeSecretGetter{err: errors.New(fetchFailureCause)},
 			wantErr: true,

@@ -100,6 +100,11 @@ variable "orchestrator_env" {
     condition     = alltrue([for k in keys(var.orchestrator_env) : can(regex("^INTERLOCK_[A-Z0-9_]+$", k))])
     error_message = "Every orchestrator_env key must match ^INTERLOCK_[A-Z0-9_]+$."
   }
+
+  validation {
+    condition     = length(setintersection(keys(var.orchestrator_env), ["INTERLOCK_PIPELINE_ID", "INTERLOCK_SCHEDULE_ID", "INTERLOCK_DATE", "INTERLOCK_RUN_ID"])) == 0
+    error_message = "orchestrator_env must not set INTERLOCK_PIPELINE_ID, INTERLOCK_SCHEDULE_ID, INTERLOCK_DATE or INTERLOCK_RUN_ID: each run sets its own run identity."
+  }
 }
 
 variable "lambda_concurrency" {

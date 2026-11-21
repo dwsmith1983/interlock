@@ -26,6 +26,11 @@ job:
 
 ## Job Types
 
+The `config` keys are the names in each type's table, such as `dagId` and
+`clusterId` (not `dag_id`); they match without regard to case. Validation rejects a config with a key its type does
+not have or without a field marked required, so the pipeline is skipped at load
+rather than failing when it triggers.
+
 ### `http`
 
 Sends an HTTP request to an arbitrary endpoint.
@@ -43,10 +48,11 @@ job:
 
 | Field | Type | Description |
 |---|---|---|
-| `method` | string | HTTP method (`GET`, `POST`, `PUT`) |
-| `url` | string | Target URL |
+| `method` | string | HTTP method, upper case: `GET`, `HEAD`, `POST` (default), `PUT`, `PATCH` or `DELETE` |
+| `url` | string | Target URL (required) |
 | `headers` | map | HTTP headers |
 | `body` | string | Request body (supports [template variables](#template-variables)) |
+| `timeout` | int | Request timeout in seconds; unset or 0 uses 30 |
 
 #### Run identity
 
@@ -152,20 +158,19 @@ job:
   type: airflow
   config:
     url: https://airflow.example.com
-    dagID: my_dag
+    dagId: my_dag
     headers:
       Authorization: "Bearer ${INTERLOCK_AIRFLOW_TOKEN}"
-    pollInterval: 1m
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `url` | string | Airflow webserver URL |
-| `dagID` | string | DAG identifier |
+| `url` | string | Airflow webserver URL (required) |
+| `dagId` | string | DAG identifier (required) |
 | `headers` | map | Authentication headers |
 | `body` | string | JSON sent as the DAG run's `conf` (optional) |
+| `timeout` | int | Timeout of the request that starts the DAG run, in seconds; unset or 0 uses 30 |
 | `apiVersion` | int | Airflow major version: `2` (default) or `3` |
-| `pollInterval` | string | Status poll interval (e.g. `1m`) |
 
 The DAG run's `conf` carries the run. With no `body` it is the same JSON object
 the `http` default body is (`par_day`, `par_hour` for hourly dates,
@@ -175,8 +180,8 @@ strings. The headers expand only `INTERLOCK_` environment variables: the status
 poll sends them again without a run identity.
 
 `apiVersion: 3` targets the Airflow 3 REST API: the run starts with
-`POST /api/v2/dags/{dagID}/dagRuns` and is polled at
-`/api/v2/dags/{dagID}/dagRuns/{runID}`. The request body carries
+`POST /api/v2/dags/{dagId}/dagRuns` and is polled at
+`/api/v2/dags/{dagId}/dagRuns/{runID}`. The request body carries
 `"logical_date": null`, which Airflow 3 requires, so Airflow picks the run's
 date as Airflow 2 does; the run date still reaches the DAG through `conf`.
 Airflow 2 (`apiVersion` unset or `2`) uses `/api/v1` and sends only `conf`.
@@ -203,7 +208,7 @@ job:
 
 | Field | Type | Description |
 |---|---|---|
-| `jobName` | string | Glue job name |
+| `jobName` | string | Glue job name (required) |
 | `arguments` | map | Job arguments (keys prefixed with `--`); Interlock adds `--par_day` and, for hourly dates, `--par_hour` |
 
 **Returned metadata**: `jobRunId` -- used by the orchestrator to poll `GetJobRun`.
@@ -216,15 +221,18 @@ Submits a step to an existing EMR cluster.
 job:
   type: emr
   config:
-    clusterID: j-1234567890ABC
+    clusterId: j-1234567890ABC
+    stepName: daily-etl
+    command: s3://bucket/etl.jar
     arguments:
       "--class": com.example.ETLJob
-      "--jar": s3://bucket/etl.jar
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `clusterID` | string | EMR cluster ID |
+| `clusterId` | string | EMR cluster ID (required) |
+| `stepName` | string | Name of the step (required) |
+| `command` | string | JAR the step runs, such as an S3 URI (required) |
 | `arguments` | map | Step arguments, sent as `key=value` in key order; Interlock adds `--par_day` (`--par_day=20260301`) and, for hourly dates, `--par_hour`, replacing a configured value of the same key |
 
 **Returned metadata**: `clusterID`, `stepId` -- used by the orchestrator to poll `DescribeStep`.
@@ -247,11 +255,11 @@ job:
 
 | Field | Type | Description |
 |---|---|---|
-| `applicationId` | string | EMR Serverless application ID |
-| `jobName` | string | Job run name |
-| `executionRoleArn` | string | IAM runtime role the job run executes under; it must be in the Terraform module's `emr_serverless_execution_role_arns` |
-| `entryPoint` | string | Script or JAR that `spark-submit` runs, such as an S3 URI |
-| `entryPointArguments` | list | Arguments passed to the entry point (optional); Interlock adds `--par_day` `20260301` and, for hourly dates, `--par_hour` `05`, each flag followed by its value. A flag already in the list keeps its place and takes the run's value. Only the two-argument form (`--par_day`, `20260301`) is recognised: a `--par_day=20260301` element is left as is and the run's flag is appended |
+| `applicationId` | string | EMR Serverless application ID (required) |
+| `jobName` | string | Job run name (required) |
+| `executionRoleArn` | string | IAM runtime role the job run executes under (required); it must be in the Terraform module's `emr_serverless_execution_role_arns` |
+| `entryPoint` | string | Script or JAR that `spark-submit` runs, such as an S3 URI (required) |
+| `entryPointArguments` | list | Arguments passed to the entry point (optional); Interlock adds `--par_day` `20260301` and, for hourly dates, `--par_hour` `05`, each flag followed by its value. A flag already in the list keeps its place and takes the run's value, so validation rejects one with no value after it (last in the list, or followed by another `--` flag). Only the two-argument form (`--par_day`, `20260301`) is recognised: a `--par_day=20260301` element is left as is and the run's flag is appended |
 | `sparkSubmitParameters` | string | Extra `spark-submit` parameters (optional) |
 
 The job run's client token is derived from the run ID, so when the Trigger
@@ -273,14 +281,14 @@ Starts an AWS Step Functions execution.
 job:
   type: step-function
   config:
-    stateMachineARN: arn:aws:states:us-east-1:123456789:stateMachine:my-workflow
+    stateMachineArn: arn:aws:states:us-east-1:123456789:stateMachine:my-workflow
     arguments:
       env: prod
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `stateMachineARN` | string | Step Function state machine ARN |
+| `stateMachineArn` | string | Step Function state machine ARN (required) |
 | `arguments` | map | Top-level string fields of the execution input; Interlock adds `par_day` (`20260301`) and, for hourly dates, `par_hour` (`05`), replacing a configured value of the same key |
 
 **Returned metadata**: `executionArn` -- used by the orchestrator to poll `DescribeExecution`.
@@ -304,8 +312,8 @@ job:
 
 | Field | Type | Description |
 |---|---|---|
-| `workspaceUrl` | string | Databricks workspace URL |
-| `jobId` | string | Numeric ID of the job to start, quoted so an ID of any size stays exact |
+| `workspaceUrl` | string | Databricks workspace URL (required) |
+| `jobId` | string | Numeric ID of the job to start, quoted so an ID of any size stays exact (required) |
 | `headers` | map | Authentication headers |
 | `arguments` | map | Job parameters of the run; Interlock adds `par_day` (`20260301`) and, for hourly dates, `par_hour` (`05`), replacing a configured value of the same key |
 
@@ -331,7 +339,7 @@ job:
 
 | Field | Type | Description |
 |---|---|---|
-| `functionName` | string | Function name or ARN |
+| `functionName` | string | Function name or ARN (required) |
 | `payload` | string | JSON event passed to the function (optional) |
 
 The event carries the run. With no `payload` it is the same JSON object the
@@ -415,14 +423,15 @@ trigger_secrets_arn = "<that ARN>"
 The secret must exist before `terraform apply`, or the orchestrator's cold
 start fails.
 
-Both take keys matching `^INTERLOCK_[A-Z0-9_]+$`. A key named like a run
-identity variable (`INTERLOCK_PIPELINE_ID`, `INTERLOCK_SCHEDULE_ID`,
-`INTERLOCK_DATE`, `INTERLOCK_RUN_ID`) is accepted, but the run identity wins
-where the table above says so. The orchestrator reads the secret at cold start
+Both take keys matching `^INTERLOCK_[A-Z0-9_]+$`, except the run identity
+variables (`INTERLOCK_PIPELINE_ID`, `INTERLOCK_SCHEDULE_ID`, `INTERLOCK_DATE`,
+`INTERLOCK_RUN_ID`), which each run sets itself: Terraform rejects them in
+`orchestrator_env`. The orchestrator reads the secret at cold start
 and sets each pair in its environment, so a secret key wins over an
 `orchestrator_env` entry of the same name. A secret that cannot be read, is not
-a JSON object of strings, has another key, or has a value containing a control
-character (a trailing newline, for one) stops the cold start.
+a JSON object of strings, has another key or a run identity key, or has a value
+containing a control character (a trailing newline, for one) stops the cold
+start.
 
 Because values load at cold start, running containers keep the old value after
 a rotation. A code or configuration update to the function (a new build, or a

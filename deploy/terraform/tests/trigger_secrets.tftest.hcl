@@ -81,6 +81,16 @@ run "orchestrator_env_rejects_other_keys" {
   expect_failures = [var.orchestrator_env]
 }
 
+run "orchestrator_env_rejects_run_identity_keys" {
+  command = plan
+
+  variables {
+    orchestrator_env = { INTERLOCK_DATE = "x" }
+  }
+
+  expect_failures = [var.orchestrator_env]
+}
+
 run "orchestrator_env_rejects_unprefixed_keys" {
   command = plan
 
