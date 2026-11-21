@@ -122,14 +122,9 @@ func evaluateNumeric(rule types.ValidationRule, fieldVal interface{}) RuleResult
 
 // evaluateAgeLT checks that now - timestamp < duration.
 func evaluateAgeLT(rule types.ValidationRule, fieldVal interface{}, now time.Time) RuleResult {
-	tsStr, ok := fieldVal.(string)
+	ts, ok := ParseTimestamp(fieldVal)
 	if !ok {
-		return RuleResult{Key: rule.Key, Passed: false, Reason: fmt.Sprintf("field %q value is not a string timestamp", rule.Field)}
-	}
-
-	ts, err := time.Parse(time.RFC3339, tsStr)
-	if err != nil {
-		return RuleResult{Key: rule.Key, Passed: false, Reason: fmt.Sprintf("field %q value %q is not a valid RFC3339 timestamp", rule.Field, tsStr)}
+		return RuleResult{Key: rule.Key, Passed: false, Reason: fmt.Sprintf("field %q value %v is not a timestamp (RFC3339, or epoch seconds or milliseconds)", rule.Field, fieldVal)}
 	}
 
 	durStr, ok := rule.Value.(string)

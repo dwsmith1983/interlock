@@ -131,7 +131,7 @@ The `validation` block replaces the old archetype/trait system with a declarativ
 | `gte` | Field is greater than or equal to the value (numeric) | `check: gte`, `field: count`, `value: 1000` |
 | `lt` | Field is less than the value (numeric) | `check: lt`, `field: errorRate`, `value: 5` |
 | `lte` | Field is less than or equal to the value (numeric) | `check: lte`, `field: latency`, `value: 100` |
-| `age_lt` | Field timestamp is newer than the duration | `check: age_lt`, `field: updatedAt`, `value: 2h` |
+| `age_lt` | Field timestamp ([forms](#pushing-sensor-data)) is newer than the duration | `check: age_lt`, `field: updatedAt`, `value: 2h` |
 
 ### Example: Event-Driven Pipeline
 
@@ -282,5 +282,7 @@ The framework reads sensor data from DynamoDB but does not write it. External pr
 | `PK` | `PIPELINE#{pipeline-id}` |
 | `SK` | `SENSOR#{key}` |
 | `data` | A map of the fields referenced by validation rules (e.g., `status`, `count`, `updatedAt`). Rules read only this map, not top-level attributes. |
+
+`age_lt` and the rerun circuit breaker read a timestamp in `data`, such as `updatedAt`, as RFC3339 (`2026-03-10T09:00:00Z`) or as epoch seconds or milliseconds, given as a number or a string of digits. A value below 10^12 is read as seconds. `age_lt` fails on a value in none of these forms. The rerun circuit breaker compares each sensor's `updatedAt` with the last successful run and ignores one it cannot read; when no sensor has a readable `updatedAt`, it lets the rerun through.
 
 When a sensor record is written, the DynamoDB stream triggers the stream-router Lambda, which starts the Step Functions execution for that pipeline.

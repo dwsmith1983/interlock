@@ -273,6 +273,11 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 		{name: "success, stale sensor", reason: "manual", updatedAt: stale,
 			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantStatus: completed,
 			wantMsg: "rerun rejected for p: previous run succeeded and no sensor data has changed"},
+		{name: "success, fresh RFC3339 sensor", reason: "manual", updatedAt: "2026-03-10T09:00:00Z",
+			wantStarts: 1, wantEvents: accepted, wantJobs: []string{success, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
+		{name: "success, stale RFC3339 sensor", reason: "manual", updatedAt: "2026-03-10T07:00:00Z",
+			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantStatus: completed,
+			wantMsg: "rerun rejected for p: previous run succeeded and no sensor data has changed"},
 		{name: "fail, stale sensor", reason: "manual", trigger: types.TriggerStatusFailedFinal, job: fail, updatedAt: stale,
 			wantStarts: 1, wantEvents: accepted, wantJobs: []string{fail, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
 		{name: "first drift", reason: "data-drift", tweak: budgets(1, 1),
@@ -412,39 +417,49 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 
 // TestCheckSensorFreshness: the rerun circuit breaker lets a rerun through
 // when any sensor was updated after the job row's timestamp (epoch
-// milliseconds, the last SK segment). updatedAt may be a number or a numeric
-// string, in seconds or milliseconds. No sensors, no updatedAt at all, or a
-// job SK it cannot read also let it through.
+// milliseconds, the last SK segment). updatedAt may be RFC3339, or a number or
+// numeric string in seconds or milliseconds; one it cannot read counts as
+// absent and is logged. No sensors, no readable updatedAt at all, or a job SK
+// it cannot read also let it through.
 func TestCheckSensorFreshness(t *testing.T) {
 	const jobSK = "JOB#stream#2026-03-01#"
+	const rfcJob = jobSK + "1773133200000" // 2026-03-10T09:00:00Z
 	tests := []struct {
-		name, sk  string
-		updatedAt any // nil means a sensor without updatedAt
-		noSensor  bool
-		want      bool
+		name, sk string
+		sensors  []any // one updatedAt per sensor; a nil entry is a sensor without updatedAt
+		want     bool
+		wantWarn string // the sensor key logged as unreadable; empty means no warning
+		anyWarn  bool   // map order decides whether the unreadable sensor is read before the fresh one, so a warning is optional
 	}{
-		{name: "no sensors", sk: jobSK + "1000000", noSensor: true, want: true},
-		{name: "no updatedAt", sk: jobSK + "1000000", want: true},
-		{name: "fresh float", sk: jobSK + "1000000", updatedAt: 2000000.0, want: true},
-		{name: "stale float", sk: jobSK + "2000000000000", updatedAt: 1000000000000.0, want: false},
-		{name: "fresh string", sk: jobSK + "1000000", updatedAt: "2000000", want: true},
-		{name: "epoch seconds", sk: jobSK + "2000000000000", updatedAt: 2000000001.0, want: true},
-		{name: "equal", sk: jobSK + "2000000000000", updatedAt: 2000000000000.0, want: false},
-		{name: "short SK", sk: "JOB#stream#2026-03-01", updatedAt: 1.0, want: true},
-		{name: "short SK ending in a number", sk: "JOB#stream#2000000000000", updatedAt: 1.0, want: true},
-		{name: "non-numeric timestamp", sk: jobSK + "not-a-number", updatedAt: 1.0, want: true},
+		{name: "no sensors", sk: jobSK + "1000000", want: true},
+		{name: "no updatedAt", sk: jobSK + "1000000", sensors: []any{nil}, want: true},
+		{name: "fresh float", sk: jobSK + "1000000", sensors: []any{2000000.0}, want: true},
+		{name: "stale float", sk: jobSK + "2000000000000", sensors: []any{1000000000000.0}, want: false},
+		{name: "fresh string", sk: jobSK + "1000000", sensors: []any{"2000000"}, want: true},
+		{name: "epoch seconds", sk: jobSK + "2000000000000", sensors: []any{2000000001.0}, want: true},
+		{name: "equal", sk: jobSK + "2000000000000", sensors: []any{2000000000000.0}, want: false},
+		{name: "short SK", sk: "JOB#stream#2026-03-01", sensors: []any{1.0}, want: true},
+		{name: "short SK ending in a number", sk: "JOB#stream#2000000000000", sensors: []any{1.0}, want: true},
+		{name: "non-numeric timestamp", sk: jobSK + "not-a-number", sensors: []any{1.0}, want: true},
+		{name: "RFC3339 after the job", sk: rfcJob, sensors: []any{"2026-03-10T09:00:01Z"}, want: true},
+		{name: "RFC3339 before the job", sk: rfcJob, sensors: []any{"2026-03-10T08:59:59Z"}, want: false},
+		{name: "unreadable alone", sk: rfcJob, sensors: []any{"yesterday"}, want: true, wantWarn: "s0"},
+		{name: "unreadable and stale", sk: rfcJob, sensors: []any{"yesterday", "2026-03-10T08:00:00Z"}, want: false, wantWarn: "s0"},
+		{name: "unreadable and fresh", sk: rfcJob, sensors: []any{"yesterday", "2026-03-10T10:00:00Z"}, want: true, wantWarn: "s0", anyWarn: true},
+		{name: "stale epoch and fresh RFC3339", sk: rfcJob, sensors: []any{1773129600000.0, "2026-03-10T10:00:00Z"}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake, _ := storetest.NewMem()
-			d := &lambda.Deps{Store: storetest.NewStore(fake), Logger: discardLogger()}
+			logs := &bytes.Buffer{}
+			d := &lambda.Deps{Store: storetest.NewStore(fake), Logger: slog.New(slog.NewTextHandler(logs, nil))}
 			ctx := context.Background()
-			if !tt.noSensor {
+			for i, updatedAt := range tt.sensors {
 				data := map[string]interface{}{"status": "ready"}
-				if tt.updatedAt != nil {
-					data["updatedAt"] = tt.updatedAt
+				if updatedAt != nil {
+					data["updatedAt"] = updatedAt
 				}
-				if err := d.Store.WriteSensor(ctx, "p", "upstream", data); err != nil {
+				if err := d.Store.WriteSensor(ctx, "p", "s"+strconv.Itoa(i), data); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -452,6 +467,17 @@ func TestCheckSensorFreshness(t *testing.T) {
 			got, err := checkSensorFreshness(ctx, d, "p", tt.sk)
 			if err != nil || got != tt.want {
 				t.Errorf("checkSensorFreshness(%q) = %v, %v; want %v, nil", tt.sk, got, err, tt.want)
+			}
+			warned := strings.Contains(logs.String(), "level=WARN")
+			switch {
+			case tt.anyWarn:
+				if warned && !strings.Contains(logs.String(), "sensor="+tt.wantWarn) {
+					t.Errorf("warning does not name sensor %s:\n%s", tt.wantWarn, logs)
+				}
+			case tt.wantWarn != "" && (!warned || !strings.Contains(logs.String(), "sensor="+tt.wantWarn)):
+				t.Errorf("no warning naming sensor %s in logs:\n%s", tt.wantWarn, logs)
+			case tt.wantWarn == "" && warned:
+				t.Errorf("unexpected warning:\n%s", logs)
 			}
 		})
 	}

@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -173,6 +174,39 @@ func TestEvaluateRule_AgeLT_Stale(t *testing.T) {
 
 	assert.False(t, result.Passed)
 	assert.Contains(t, result.Reason, "exceeds")
+}
+
+func TestEvaluateRule_AgeLT_EpochForms(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	rule := types.ValidationRule{
+		Key:   "SENSOR#freshness",
+		Check: types.CheckAgeLT,
+		Field: "updatedAt",
+		Value: "1h",
+	}
+	fresh, stale := now.Add(-30*time.Minute), now.Add(-2*time.Hour)
+	tests := []struct {
+		name       string
+		updatedAt  interface{}
+		wantPassed bool
+	}{
+		{name: "fresh millis number", updatedAt: float64(fresh.UnixMilli()), wantPassed: true},
+		{name: "fresh millis string", updatedAt: strconv.FormatInt(fresh.UnixMilli(), 10), wantPassed: true},
+		{name: "fresh seconds number", updatedAt: float64(fresh.Unix()), wantPassed: true},
+		{name: "stale millis number", updatedAt: float64(stale.UnixMilli())},
+		{name: "stale millis string", updatedAt: strconv.FormatInt(stale.UnixMilli(), 10)},
+		{name: "stale seconds number", updatedAt: float64(stale.Unix())},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := EvaluateRule(rule, map[string]interface{}{"updatedAt": tt.updatedAt}, now)
+
+			assert.Equal(t, tt.wantPassed, result.Passed)
+			if !tt.wantPassed {
+				assert.Equal(t, "age 2h0m0s exceeds threshold 1h0m0s", result.Reason)
+			}
+		})
+	}
 }
 
 func TestEvaluateRule_MissingField(t *testing.T) {
@@ -358,11 +392,11 @@ func TestEvaluateRule_AgeLT_NonStringField(t *testing.T) {
 		Field: "updatedAt",
 		Value: "1h",
 	}
-	sensor := map[string]interface{}{"updatedAt": 12345} // not a string
+	sensor := map[string]interface{}{"updatedAt": true}
 	result := EvaluateRule(rule, sensor, time.Now())
 
 	assert.False(t, result.Passed)
-	assert.Contains(t, result.Reason, "not a string timestamp")
+	assert.Equal(t, `field "updatedAt" value true is not a timestamp (RFC3339, or epoch seconds or milliseconds)`, result.Reason)
 }
 
 func TestEvaluateRule_AgeLT_InvalidTimestamp(t *testing.T) {
@@ -376,7 +410,7 @@ func TestEvaluateRule_AgeLT_InvalidTimestamp(t *testing.T) {
 	result := EvaluateRule(rule, sensor, time.Now())
 
 	assert.False(t, result.Passed)
-	assert.Contains(t, result.Reason, "not a valid RFC3339 timestamp")
+	assert.Equal(t, `field "updatedAt" value not-a-timestamp is not a timestamp (RFC3339, or epoch seconds or milliseconds)`, result.Reason)
 }
 
 func TestEvaluateRule_AgeLT_NonStringDuration(t *testing.T) {
