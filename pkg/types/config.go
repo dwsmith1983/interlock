@@ -73,10 +73,19 @@ type EMRTriggerConfig struct {
 	Arguments map[string]string `yaml:"arguments,omitempty" json:"arguments,omitempty"`
 }
 
-// EMRServerlessTriggerConfig holds configuration for AWS EMR Serverless triggers.
+// EMRServerlessTriggerConfig holds configuration for AWS EMR Serverless
+// triggers. The job run is a spark-submit of EntryPoint under the
+// ExecutionRoleARN runtime role.
 type EMRServerlessTriggerConfig struct {
-	ApplicationID string `yaml:"application_id" json:"applicationId"`
-	JobName       string `yaml:"job_name,omitempty" json:"jobName,omitempty"`
+	ApplicationID         string   `yaml:"application_id" json:"applicationId"`
+	JobName               string   `yaml:"job_name,omitempty" json:"jobName,omitempty"`
+	ExecutionRoleARN      string   `yaml:"execution_role_arn" json:"executionRoleArn"`
+	EntryPoint            string   `yaml:"entry_point" json:"entryPoint"`
+	EntryPointArguments   []string `yaml:"entry_point_arguments,omitempty" json:"entryPointArguments,omitempty"`
+	SparkSubmitParameters string   `yaml:"spark_submit_parameters,omitempty" json:"sparkSubmitParameters,omitempty"`
+	// Run identifies the launch. The orchestrator sets it; it is never
+	// configured. Its run ID makes the job run's client token.
+	Run RunIdentity `yaml:"-" json:"-"`
 }
 
 // StepFunctionTriggerConfig holds configuration for AWS Step Functions triggers.

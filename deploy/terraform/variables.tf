@@ -193,6 +193,17 @@ variable "emr_serverless_app_arns" {
   default     = []
 }
 
+variable "emr_serverless_execution_role_arns" {
+  description = "ARNs of the IAM runtime roles EMR Serverless job runs execute under; the orchestrator can pass them to EMR Serverless only. Required when enable_emr_serverless_trigger is true."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for a in var.emr_serverless_execution_role_arns : can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$", a))])
+    error_message = "emr_serverless_execution_role_arns must be IAM role ARNs (arn:<partition>:iam::<account>:role/<optional path/><name>), no wildcards."
+  }
+}
+
 variable "sfn_trigger_arns" {
   description = "ARNs of state machines the orchestrator can start; alias and version ARNs are accepted, and it can poll their executions. Required when enable_sfn_trigger is true."
   type        = list(string)

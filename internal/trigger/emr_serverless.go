@@ -2,8 +2,11 @@ package trigger
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/emrserverless"
 	emrtypes "github.com/aws/aws-sdk-go-v2/service/emrserverless/types"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -15,7 +18,11 @@ type EMRServerlessAPI interface {
 	GetJobRun(ctx context.Context, params *emrserverless.GetJobRunInput, optFns ...func(*emrserverless.Options)) (*emrserverless.GetJobRunOutput, error)
 }
 
-// ExecuteEMRServerless starts an EMR Serverless job run.
+// ExecuteEMRServerless starts an EMR Serverless job run: a spark-submit of the
+// entry point under the execution role. The client token is the hex SHA-256 of
+// the run ID (64 characters, the token's limit, while a run ID can be 80): a
+// retried start of the same run reuses the token, so EMR Serverless does not
+// start a second job run, and a new run starts a new one.
 func ExecuteEMRServerless(ctx context.Context, cfg *types.EMRServerlessTriggerConfig, client EMRServerlessAPI) (map[string]interface{}, error) {
 	if cfg.ApplicationID == "" {
 		return nil, fmt.Errorf("emr-serverless trigger: applicationId is required")
@@ -23,10 +30,30 @@ func ExecuteEMRServerless(ctx context.Context, cfg *types.EMRServerlessTriggerCo
 	if cfg.JobName == "" {
 		return nil, fmt.Errorf("emr-serverless trigger: jobName is required")
 	}
+	if cfg.ExecutionRoleARN == "" {
+		return nil, fmt.Errorf("emr-serverless trigger: executionRoleArn is required")
+	}
+	if cfg.EntryPoint == "" {
+		return nil, fmt.Errorf("emr-serverless trigger: entryPoint is required")
+	}
+	if cfg.Run.RunID == "" {
+		return nil, fmt.Errorf("emr-serverless trigger: run ID is required for the client token")
+	}
 
+	token := sha256.Sum256([]byte(cfg.Run.RunID))
+	submit := emrtypes.SparkSubmit{
+		EntryPoint:          &cfg.EntryPoint,
+		EntryPointArguments: cfg.EntryPointArguments,
+	}
+	if cfg.SparkSubmitParameters != "" {
+		submit.SparkSubmitParameters = &cfg.SparkSubmitParameters
+	}
 	input := &emrserverless.StartJobRunInput{
-		ApplicationId: &cfg.ApplicationID,
-		Name:          &cfg.JobName,
+		ApplicationId:    &cfg.ApplicationID,
+		Name:             &cfg.JobName,
+		ClientToken:      aws.String(hex.EncodeToString(token[:])),
+		ExecutionRoleArn: &cfg.ExecutionRoleARN,
+		JobDriver:        &emrtypes.JobDriverMemberSparkSubmit{Value: submit},
 	}
 
 	out, err := client.StartJobRun(ctx, input)

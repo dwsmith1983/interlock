@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
@@ -52,6 +53,9 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	}
 	if triggerCfg.Airflow != nil {
 		triggerCfg.Airflow.Run = run
+	}
+	if triggerCfg.EMRServerless != nil {
+		triggerCfg.EMRServerless.Run = run
 	}
 	InjectDateArgs(&triggerCfg, input.Date)
 
@@ -149,9 +153,9 @@ func ExtractRunID(metadata map[string]interface{}) string {
 }
 
 // InjectDateArgs gives the job the execution date it runs for. Glue and EMR
-// arguments get --par_day (and --par_hour for hourly dates), a step
-// function's input and a databricks job's parameters par_day (and par_hour),
-// overwriting a configured value.
+// arguments and EMR Serverless entry point arguments get --par_day (and
+// --par_hour for hourly dates), a step function's input and a databricks
+// job's parameters par_day (and par_hour), overwriting a configured value.
 // An http body, lambda payload or airflow body left empty becomes the
 // generated run object (see runObject), marked generated so it is sent as is.
 func InjectDateArgs(tc *types.TriggerConfig, date string) {
@@ -163,6 +167,9 @@ func InjectDateArgs(tc *types.TriggerConfig, date string) {
 	}
 	if tc.EMR != nil {
 		tc.EMR.Arguments = withDateArgs(tc.EMR.Arguments, "--", parDay, hourPart)
+	}
+	if tc.EMRServerless != nil {
+		tc.EMRServerless.EntryPointArguments = withDateFlags(tc.EMRServerless.EntryPointArguments, parDay, hourPart)
 	}
 	if tc.StepFunction != nil {
 		tc.StepFunction.Arguments = withDateArgs(tc.StepFunction.Arguments, "", parDay, hourPart)
@@ -192,6 +199,26 @@ func withDateArgs(args map[string]string, prefix, parDay, parHour string) map[st
 		args[prefix+"par_hour"] = parHour
 	}
 	return args
+}
+
+// withDateFlags returns a copy of the argument list with "--par_day" and, for
+// an hourly date, "--par_hour" set: a flag already in the list keeps its place
+// and takes the new value in the next argument, otherwise flag and value are
+// appended.
+func withDateFlags(args []string, parDay, parHour string) []string {
+	out := slices.Clone(args)
+	set := func(flag, value string) {
+		if i := slices.Index(out, flag); i >= 0 && i+1 < len(out) {
+			out[i+1] = value
+			return
+		}
+		out = append(out, flag, value)
+	}
+	set("--par_day", parDay)
+	if parHour != "" {
+		set("--par_hour", parHour)
+	}
+	return out
 }
 
 // runObject is the JSON object a body or payload job receives when none is

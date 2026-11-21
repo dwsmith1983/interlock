@@ -710,6 +710,10 @@ resource "aws_iam_role_policy" "emr_serverless_trigger" {
       condition     = length(var.emr_serverless_app_arns) > 0
       error_message = "emr_serverless_app_arns must be non-empty when enable_emr_serverless_trigger is true."
     }
+    precondition {
+      condition     = length(var.emr_serverless_execution_role_arns) > 0
+      error_message = "emr_serverless_execution_role_arns must be non-empty when enable_emr_serverless_trigger is true."
+    }
   }
 
   policy = jsonencode({
@@ -725,6 +729,15 @@ resource "aws_iam_role_policy" "emr_serverless_trigger" {
         Effect   = "Allow"
         Action   = "emr-serverless:GetJobRun"
         Resource = [for a in var.emr_serverless_app_arns : "${a}/jobruns/*"]
+      },
+      {
+        # StartJobRun hands the job run its runtime role.
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = var.emr_serverless_execution_role_arns
+        Condition = {
+          StringEquals = { "iam:PassedToService" = "emr-serverless.amazonaws.com" }
+        }
       },
     ]
   })
