@@ -185,3 +185,22 @@ run "sfn_trigger_arns_reject_trailing_segments" {
 
   expect_failures = [var.sfn_trigger_arns]
 }
+
+run "glue_log_check_reads_logs_v2_only" {
+  command = plan
+
+  variables {
+    enable_glue_trigger = true
+    glue_job_arns       = ["arn:aws:glue:eu-west-1:123456789012:job/etl"]
+  }
+
+  assert {
+    condition = toset(flatten([
+      for s in jsondecode(aws_iam_role_policy.glue_trigger[0].policy).Statement :
+      flatten([s.Resource]) if contains(flatten([s.Action]), "logs:FilterLogEvents")
+      ])) == toset([
+      "arn:aws:logs:*:*:log-group:/aws-glue/jobs/logs-v2:*",
+    ])
+    error_message = "FilterLogEvents must be granted on the job insights log group only."
+  }
+}

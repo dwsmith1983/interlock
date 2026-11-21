@@ -82,7 +82,7 @@ func main() {
 		}
 	}
 
-	runner := trigger.NewRunner()
+	runner := trigger.NewRunner(trigger.WithLogger(logger))
 	deps := &ilambda.Deps{
 		Store:           s,
 		ConfigCache:     cache,

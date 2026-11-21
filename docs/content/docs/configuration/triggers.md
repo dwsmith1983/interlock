@@ -503,9 +503,13 @@ The `http` and `lambda` types have no status API. An `http` job reports its own 
 
 ### Glue RCA Verification
 
-AWS Glue can report `SUCCEEDED` via the `GetJobRun` API even when the Spark job failed internally (the driver process catches the exception and exits cleanly). When a Glue job reports `SUCCEEDED`, the orchestrator cross-checks the CloudWatch RCA (root cause analysis) log stream for `GlueExceptionAnalysisJobFailed` events. If the RCA log confirms a failure, the job is marked as failed with the actual failure reason.
+AWS Glue can report `SUCCEEDED` via the `GetJobRun` API even when the Spark job failed internally (the driver process catches the exception and exits cleanly). When a Glue job reports `SUCCEEDED`, the orchestrator reads the run's job insights exception analysis stream, `<runId>-job-insights-rca-driver`, for a `GlueExceptionAnalysisJobFailed` event. If it finds one, the job is marked as failed, and the event's failure reason, with control characters other than newline and tab removed and cut to 512 bytes, goes into the failure message and the alerts that carry it.
 
-This check requires `logs:FilterLogEvents` permission on the Glue log group (granted automatically when `enable_glue_trigger = true`). If the permission is missing or the RCA log stream does not exist, the check degrades gracefully and trusts the Glue API response.
+Glue writes that stream only for a failed run of a job with job run insights on (`--enable-job-insights`). A job without job insights gets no false-success check, and its `SUCCEEDED` is trusted as reported.
+
+Only `/aws-glue/jobs/logs-v2` is read, always. A job with a security configuration or a custom `--continuous-log-logGroup` writes its job insights streams elsewhere, so it gets no false-success check. AWS's job insights page puts these streams in that group for Glue 2.0 and above, but the Glue 5.0 logging page moves the driver logs and does not mention job insights streams, so a Glue 5.0 job is checked only if its stream still lands there.
+
+This check requires `logs:FilterLogEvents` permission on `/aws-glue/jobs/logs-v2` (granted automatically when `enable_glue_trigger = true`). A missing stream or log group logs nothing, since CloudWatch returns `ResourceNotFoundException` for both and a missing stream is the normal result for a clean success. Any other failed query, such as a missing permission or CloudWatch Logs being unreachable, trusts the Glue response and logs one warning naming the log group, the stream and the AWS error code. If the orchestrator cannot build a CloudWatch Logs client, the check is skipped with a warning naming the log group, the run and the error code.
 
 ## IAM Permissions
 
