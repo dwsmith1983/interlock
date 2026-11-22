@@ -11,53 +11,91 @@ import (
 	"testing"
 	"time"
 
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // TestDetectMissingPostRunSensors: POST_RUN_SENSOR_MISSING fires once
 // postRun.sensorTimeout (2h by default) has passed since the trigger row's
-// completedAt with no post-run sensor update after it. The job rows do not
-// set the anchor. Completion 12:00 on slaTestDate unless a row says otherwise.
-// An alert writes the postrun-check marker for the date.
+// completedAt and no post-run sensor has arrived. A sensor has arrived when
+// it is present now and its value differs from its entry in the baseline
+// captured at completion, or the baseline has no entry for it. The job rows
+// do not set the anchor. Completion 12:00 on slaTestDate unless a row says
+// otherwise. An alert writes the postrun-check marker for the date.
 func TestDetectMissingPostRunSensors(t *testing.T) {
+	type sensors = map[string]map[string]interface{}
 	at := func(hour, minute int) time.Time { return time.Date(2026, 3, 10, hour, minute, 0, 0, time.UTC) }
 	ms := func(tm time.Time) string { return strconv.FormatInt(tm.UnixMilli(), 10) }
 	missing := []string{string(types.EventPostRunSensorMissing)}
+	rows := func(n int) map[string]interface{} {
+		return map[string]interface{}{"count": n, "tags": []string{"a", "b"}}
+	}
+	same := sensors{"row-count": rows(100)}
+	changed := sensors{"row-count": rows(120)}
+	twoRules := []string{"row-count", "freshness"}
+	fresh := map[string]interface{}{"lagMinutes": 5}
 	tests := []struct {
-		name        string
-		completedAt string
-		jobAt       time.Time // a success job row at this time; zero means none
-		updatedAt   time.Time // the post-run sensor's updatedAt; zero means no sensor
-		now         time.Time
-		noBaseline  bool
-		marked      bool // the postrun-check marker is already there
-		noPostRun   bool
-		dryRun      bool
-		status      string // of the trigger row; "" means COMPLETED
-		timeout     string // postRun.sensorTimeout
-		wantEvents  []string
-		wantMarker  bool
-		wantWarn    bool // a warning about completedAt
+		name         string
+		completedAt  string
+		jobAt        time.Time // a success job row at this time; zero means none
+		atCompletion sensors   // sensors when the baseline is captured
+		current      sensors   // sensors when the watchdog runs
+		rules        []string  // post-run rule keys; nil means row-count
+		now          time.Time
+		marked       bool // the postrun-check marker is already there
+		setSensor    bool // a row-count sensor with a string set, put raw and never changed
+		noPostRun    bool
+		dryRun       bool
+		status       string // of the trigger row; "" means COMPLETED
+		timeout      string // postRun.sensorTimeout
+		wantEvents   []string
+		wantMarker   bool
+		wantWarn     bool // a warning about completedAt
 	}{
-		{name: "past the timeout (guard)", completedAt: "2026-03-10T12:00:00Z", jobAt: at(12, 0), now: at(14, 30), wantEvents: missing, wantMarker: true},
-		{name: "within the timeout (guard)", completedAt: "2026-03-10T12:00:00Z", jobAt: at(12, 0), now: at(13, 30)},
-		{name: "sensor updated after completion (guard)", completedAt: "2026-03-10T12:00:00Z", jobAt: at(12, 0), updatedAt: at(13, 0), now: at(14, 30)},
-		{name: "completedAt set, no success job row", completedAt: "2026-03-10T12:00:00Z", now: at(14, 0), wantEvents: missing, wantMarker: true},
-		{name: "anchor is completedAt, not the job row", completedAt: "2026-03-10T12:00:00Z", jobAt: at(8, 0), now: at(13, 0)},
-		{name: "no completedAt", jobAt: at(12, 0), now: at(14, 30)},
-		{name: "completedAt does not parse", completedAt: "yesterday", jobAt: at(12, 0), now: at(14, 30), wantWarn: true},
-		{name: "already alerted", completedAt: "2026-03-10T12:00:00Z", marked: true, now: at(14, 30)},
-		{name: "no baseline", completedAt: "2026-03-10T12:00:00Z", noBaseline: true, now: at(14, 30)},
-		{name: "trigger RUNNING", completedAt: "2026-03-10T12:00:00Z", status: types.TriggerStatusRunning, now: at(14, 30)},
-		{name: "timeout 1h", completedAt: "2026-03-10T12:00:00Z", timeout: "1h", now: at(13, 30), wantEvents: missing, wantMarker: true},
-		{name: "no postRun", completedAt: "2026-03-10T12:00:00Z", noPostRun: true, now: at(14, 30)},
-		{name: "dry run", completedAt: "2026-03-10T12:00:00Z", dryRun: true, now: at(14, 30)},
+		{name: "past the timeout (guard)", completedAt: "2026-03-10T12:00:00Z", jobAt: at(12, 0), atCompletion: same, current: same, now: at(14, 30), wantEvents: missing, wantMarker: true},
+		{name: "within the timeout (guard)", completedAt: "2026-03-10T12:00:00Z", jobAt: at(12, 0), atCompletion: same, current: same, now: at(13, 30)},
+		{name: "sensor changed after completion (guard)", completedAt: "2026-03-10T12:00:00Z", jobAt: at(12, 0), atCompletion: same, current: changed, now: at(14, 30)},
+		{name: "completedAt set, no success job row", completedAt: "2026-03-10T12:00:00Z", atCompletion: same, current: same, now: at(14, 0), wantEvents: missing, wantMarker: true},
+		{name: "anchor is completedAt, not the job row", completedAt: "2026-03-10T12:00:00Z", jobAt: at(8, 0), atCompletion: same, current: same, now: at(13, 0)},
+		{name: "no completedAt", jobAt: at(12, 0), atCompletion: same, current: same, now: at(14, 30)},
+		{name: "completedAt does not parse", completedAt: "yesterday", jobAt: at(12, 0), atCompletion: same, current: same, now: at(14, 30), wantWarn: true},
+		{name: "already alerted", completedAt: "2026-03-10T12:00:00Z", atCompletion: same, current: same, marked: true, now: at(14, 30)},
+		{name: "no sensor then or now, no baseline", completedAt: "2026-03-10T12:00:00Z", now: at(14, 30), wantEvents: missing, wantMarker: true},
+		{name: "trigger RUNNING", completedAt: "2026-03-10T12:00:00Z", status: types.TriggerStatusRunning, atCompletion: same, current: same, now: at(14, 30)},
+		{name: "timeout 1h", completedAt: "2026-03-10T12:00:00Z", timeout: "1h", atCompletion: same, current: same, now: at(13, 30), wantEvents: missing, wantMarker: true},
+		{name: "no postRun", completedAt: "2026-03-10T12:00:00Z", noPostRun: true, atCompletion: same, current: same, now: at(14, 30)},
+		{name: "dry run", completedAt: "2026-03-10T12:00:00Z", dryRun: true, atCompletion: same, current: same, now: at(14, 30)},
+		{name: "per-period sensor unchanged", completedAt: "2026-03-10T12:00:00Z", atCompletion: sensors{"row-count#2026-03-10": rows(100)}, current: sensors{"row-count#2026-03-10": rows(100)}, now: at(14, 30), wantEvents: missing, wantMarker: true},
+		{name: "only yesterday's per-period sensor now", completedAt: "2026-03-10T12:00:00Z", current: sensors{"row-count#2026-03-09": rows(100)}, now: at(14, 30), wantEvents: missing, wantMarker: true},
+		{name: "only updatedAt differs", completedAt: "2026-03-10T12:00:00Z",
+			atCompletion: sensors{"row-count": {"count": 100, "updatedAt": ms(at(11, 0))}},
+			current:      sensors{"row-count": {"count": 100, "updatedAt": ms(at(13, 0))}}, now: at(14, 30)},
+		{name: "a field added", completedAt: "2026-03-10T12:00:00Z", atCompletion: same,
+			current: sensors{"row-count": {"count": 100, "tags": []string{"a", "b"}, "status": "final"}}, now: at(14, 30)},
+		{name: "absent at completion, present now, no baseline", completedAt: "2026-03-10T12:00:00Z", current: same, now: at(14, 30)},
+		{name: "absent at completion, baseline holds another rule", completedAt: "2026-03-10T12:00:00Z", rules: twoRules,
+			atCompletion: sensors{"freshness": fresh}, current: sensors{"freshness": fresh, "row-count": rows(100)}, now: at(14, 30)},
+		{name: "per-period sensor arrives after completion", completedAt: "2026-03-10T12:00:00Z", current: sensors{"row-count#2026-03-10": rows(100)}, now: at(14, 30)},
+		{name: "compact per-period sensor arrives after completion", completedAt: "2026-03-10T12:00:00Z", current: sensors{"row-count#20260310": rows(100)}, now: at(14, 30)},
+		{name: "two rules, one unchanged, one changed", completedAt: "2026-03-10T12:00:00Z", rules: twoRules,
+			atCompletion: sensors{"row-count": rows(100), "freshness": fresh},
+			current:      sensors{"row-count": rows(100), "freshness": {"lagMinutes": 7}}, now: at(14, 30)},
+		{name: "string-set sensor unchanged", completedAt: "2026-03-10T12:00:00Z", setSensor: true, now: at(14, 30), wantEvents: missing, wantMarker: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ruleKeys := tt.rules
+			if ruleKeys == nil {
+				ruleKeys = []string{"row-count"}
+			}
 			d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
 				c.SLA = nil
-				c.PostRun = &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}, SensorTimeout: tt.timeout}
+				c.PostRun = &types.PostRunConfig{SensorTimeout: tt.timeout}
+				for _, k := range ruleKeys {
+					c.PostRun.Rules = append(c.PostRun.Rules, types.ValidationRule{Key: k, Check: types.CheckExists})
+				}
 				if tt.noPostRun {
 					c.PostRun = nil
 				}
@@ -75,18 +113,36 @@ func TestDetectMissingPostRunSensors(t *testing.T) {
 				mem.Put("joblog", sItem("PK", pk, "SK", types.JobSK("stream", slaTestDate, ms(tt.jobAt)), "event", types.JobEventSuccess))
 			}
 			ctx := context.Background()
-			if !tt.noBaseline {
-				if err := d.Store.WriteSensor(ctx, "p", "postrun-baseline#"+slaTestDate, map[string]interface{}{"row-count": map[string]interface{}{"count": 1}}); err != nil {
+			if tt.setSensor {
+				mem.Put("control", map[string]ddbtypes.AttributeValue{
+					"PK": &ddbtypes.AttributeValueMemberS{Value: pk},
+					"SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK("row-count")},
+					"data": &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
+						"tags": &ddbtypes.AttributeValueMemberSS{Value: []string{"a", "b"}},
+					}},
+				})
+			}
+			for k, v := range tt.atCompletion {
+				if err := d.Store.WriteSensor(ctx, "p", k, v); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := lambda.CapturePostRunBaseline(ctx, d, "p", "stream", slaTestDate); err != nil {
+				t.Fatalf("CapturePostRunBaseline: %v", err)
+			}
+			rec.events = nil
+			for k := range tt.atCompletion {
+				if err := d.Store.DeleteSensor(ctx, "p", k); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for k, v := range tt.current {
+				if err := d.Store.WriteSensor(ctx, "p", k, v); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if tt.marked {
 				if err := d.Store.WriteSensor(ctx, "p", "postrun-check#"+slaTestDate, map[string]interface{}{"alerted": "true"}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if !tt.updatedAt.IsZero() {
-				if err := d.Store.WriteSensor(ctx, "p", "row-count", map[string]interface{}{"updatedAt": tt.updatedAt.UnixMilli()}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -141,5 +197,22 @@ func TestDetectMissingPostRunSensors_PublishFailureRetries(t *testing.T) {
 			(want == 1 && rec.events[0] != string(types.EventPostRunSensorMissing)) {
 			t.Fatalf("pass %d: events %v, marker %v; want %d POST_RUN_SENSOR_MISSING and marker %v", pass, rec.events, marked, want, want == 1)
 		}
+	}
+}
+
+// TestPostRunSensorArrived_UncomparableSensor: a sensor that cannot be
+// encoded again (an empty field name) counts as arrived, with a warning
+// naming the pipeline and sensor.
+func TestPostRunSensorArrived_UncomparableSensor(t *testing.T) {
+	logs := &bytes.Buffer{}
+	rules := []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}
+	sensors := map[string]map[string]interface{}{"row-count": {"": "x"}}
+	baseline := map[string]interface{}{"row-count": map[string]interface{}{"count": float64(100)}}
+
+	if !postRunSensorArrived(slog.New(slog.NewTextHandler(logs, nil)), "p", rules, sensors, baseline) {
+		t.Error("arrived = false, want true")
+	}
+	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "pipelineId=p") || !strings.Contains(out, "sensor=row-count") {
+		t.Errorf("want a warning naming pipeline p and sensor row-count; logs: %s", out)
 	}
 }

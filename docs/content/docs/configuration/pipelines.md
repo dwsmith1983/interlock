@@ -268,7 +268,7 @@ postRun:
 2. When a sensor matching a `postRun.rules[].key` arrives via DynamoDB Stream:
    - **Trigger RUNNING**: drift is logged as `POST_RUN_DRIFT_INFLIGHT` (informational, no rerun)
    - **Trigger COMPLETED**, inside the [watch window](#watch-window): sensor count is compared against the baseline. Drift above `driftThreshold` writes a `data-drift` rerun request, which skips the circuit breaker; otherwise the rules are evaluated (`POST_RUN_PASSED` or `POST_RUN_FAILED`)
-3. If no post-run sensor arrives within `sensorTimeout` of `completedAt`, the watchdog publishes `POST_RUN_SENSOR_MISSING`.
+3. If no post-run sensor arrives within `sensorTimeout` of `completedAt`, the watchdog publishes `POST_RUN_SENSOR_MISSING`. A sensor has arrived when it exists and either differs from its baseline value or did not exist at completion; a sensor rewritten with identical values has not.
 
 ### Watch window
 
@@ -281,7 +281,7 @@ A completed date is watched for late data, drift and the post-run checks from th
 - The window is independent of `schedule.trigger.cutoff`: a late-data rerun inside the window runs after the cutoff, and a sensor after the window and before the cutoff starts nothing.
 - A sensor is judged by when the stream-router handles it, not when it was written.
 - Nothing is published when a window ends.
-- `POST_RUN_SENSOR_MISSING` counts `sensorTimeout` from `completedAt`, which is why `sensorTimeout` may not exceed the window.
+- `POST_RUN_SENSOR_MISSING` counts `sensorTimeout` from `completedAt`, which is why `sensorTimeout` may not exceed the window. It compares each post-run sensor's whole stored record with the baseline, so a change in any field, a timestamp such as `updatedAt` included, counts; when the write happened is not otherwise used.
 
 Dry-run pipelines are not bounded by the window; their late data and drift last as long as the dry-run marker (7-day TTL).
 
