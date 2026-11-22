@@ -212,15 +212,16 @@ func TestSetTriggerStatus(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
 
-	// Seed a trigger row with TTL.
+	// Seed a running trigger row with staleAt and ttl.
 	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
-		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
-		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+		"PK":      &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+		"SK":      &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status":  &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"staleAt": &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+		"ttl":     &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
 	})
 
-	// Update to COMPLETED — should remove TTL.
+	// Update to COMPLETED: removes staleAt and ttl.
 	err := s.SetTriggerStatus(context.Background(), "pipe-1", "daily", "2026-03-01", types.TriggerStatusCompleted)
 	if err != nil {
 		t.Fatalf("SetTriggerStatus: %v", err)
@@ -239,9 +240,10 @@ func TestSetTriggerStatus(t *testing.T) {
 		t.Errorf("status = %q, want %q", status, types.TriggerStatusCompleted)
 	}
 
-	// TTL should be REMOVED for terminal status.
-	if _, hasTTL := item["ttl"]; hasTTL {
-		t.Error("expected ttl attribute to be removed for COMPLETED status")
+	for _, attr := range []string{"staleAt", "ttl"} {
+		if _, has := item[attr]; has {
+			t.Errorf("expected %s attribute to be removed for COMPLETED status", attr)
+		}
 	}
 }
 
@@ -250,10 +252,11 @@ func TestSetTriggerStatus_FailedFinal_RemovesTTL(t *testing.T) {
 	s := newTestStore(mock)
 
 	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
-		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
-		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+		"PK":      &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+		"SK":      &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status":  &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"staleAt": &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+		"ttl":     &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
 	})
 
 	err := s.SetTriggerStatus(context.Background(), "pipe-1", "daily", "2026-03-01", types.TriggerStatusFailedFinal)
@@ -270,8 +273,10 @@ func TestSetTriggerStatus_FailedFinal_RemovesTTL(t *testing.T) {
 	if status != types.TriggerStatusFailedFinal {
 		t.Errorf("status = %q, want %q", status, types.TriggerStatusFailedFinal)
 	}
-	if _, hasTTL := item["ttl"]; hasTTL {
-		t.Error("expected ttl attribute to be removed for FAILED_FINAL status")
+	for _, attr := range []string{"staleAt", "ttl"} {
+		if _, has := item[attr]; has {
+			t.Errorf("expected %s attribute to be removed for FAILED_FINAL status", attr)
+		}
 	}
 }
 
@@ -280,13 +285,14 @@ func TestSetTriggerStatus_Running_PreservesTTL(t *testing.T) {
 	s := newTestStore(mock)
 
 	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
-		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
-		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
-		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
-		"ttl":    &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+		"PK":      &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
+		"SK":      &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("daily", "2026-03-01")},
+		"status":  &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"staleAt": &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
+		"ttl":     &ddbtypes.AttributeValueMemberN{Value: "1740000000"},
 	})
 
-	// Non-terminal status should preserve TTL.
+	// Non-terminal status should preserve staleAt and ttl.
 	err := s.SetTriggerStatus(context.Background(), "pipe-1", "daily", "2026-03-01", types.TriggerStatusRunning)
 	if err != nil {
 		t.Fatalf("SetTriggerStatus: %v", err)
@@ -297,13 +303,11 @@ func TestSetTriggerStatus_Running_PreservesTTL(t *testing.T) {
 	item := mock.items[key]
 	mock.mu.Unlock()
 
-	ttlAttr, ok := item["ttl"]
-	if !ok {
-		t.Fatal("expected ttl attribute to be preserved for non-terminal status")
-	}
-	ttlVal := ttlAttr.(*ddbtypes.AttributeValueMemberN).Value
-	if ttlVal != "1740000000" {
-		t.Errorf("ttl = %q, want %q", ttlVal, "1740000000")
+	for _, attr := range []string{"staleAt", "ttl"} {
+		v, ok := item[attr].(*ddbtypes.AttributeValueMemberN)
+		if !ok || v.Value != "1740000000" {
+			t.Errorf("%s = %v, want 1740000000 preserved for non-terminal status", attr, item[attr])
+		}
 	}
 }
 

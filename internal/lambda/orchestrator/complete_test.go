@@ -181,7 +181,7 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 		calls         []ctCall
 		wantOps       []string
 		wantTrigger   string
-		wantTTL       bool
+		wantStaleAt   bool
 		wantReruns    []string // execution names keying the rerun rows
 		wantExhausted map[string]interface{}
 	}{
@@ -203,7 +203,7 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 			name: "PermanentUsesMaxCodeRetries_OtherRunIgnored", maxRetries: 3, tweak: func(c *types.PipelineConfig) { c.Job.MaxCodeRetries = &one },
 			rows:    []map[string]ddbtypes.AttributeValue{categorizedRow("300", "other-run", types.FailurePermanent), categorizedRow("200", r1, types.FailureTransient)},
 			calls:   []ctCall{failCall(r1, retrying, r2)},
-			wantOps: []string{"rerun " + r2, "start " + r2}, wantTrigger: running, wantTTL: true, wantReruns: []string{r2},
+			wantOps: []string{"rerun " + r2, "start " + r2}, wantTrigger: running, wantStaleAt: true, wantReruns: []string{r2},
 		},
 		{
 			// The job may still be running, so neither budget applies.
@@ -215,14 +215,14 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 		{
 			name: "RetriedLambdaDoesNotDoubleStart", maxRetries: 2,
 			calls:   []ctCall{failCall(ctExec, retrying, r1), failCall(ctExec, retrying, r1)},
-			wantOps: []string{"rerun " + r1, "start " + r1, "start " + r1}, wantTrigger: running, wantTTL: true, wantReruns: []string{r1},
+			wantOps: []string{"rerun " + r1, "start " + r1, "start " + r1}, wantTrigger: running, wantStaleAt: true, wantReruns: []string{r1},
 		},
 		{
 			// maxCodeRetries 0 makes a PERMANENT reading final, so a retry
 			// proves a missing row counts as transient.
 			name: "TimeoutWithoutRowRetries", maxRetries: 1, tweak: func(c *types.PipelineConfig) { c.Job.MaxCodeRetries = &zero },
 			calls:   []ctCall{{types.JobEventTimeout, ctExec, ctExec, retrying, r1, ""}},
-			wantOps: []string{"rerun " + r1, "start " + r1}, wantTrigger: running, wantTTL: true, wantReruns: []string{r1},
+			wantOps: []string{"rerun " + r1, "start " + r1}, wantTrigger: running, wantStaleAt: true, wantReruns: []string{r1},
 		},
 		{
 			// The Task's retry reads the row again; nothing starts on a guess.
@@ -265,7 +265,7 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 		{
 			name: "LockRowGoneIsRecreated", maxRetries: 1, row: "none",
 			calls:   []ctCall{failCall(ctExec, retrying, r1)},
-			wantOps: []string{"rerun " + r1, "start " + r1, "status " + running}, wantTrigger: running, wantTTL: true, wantReruns: []string{r1},
+			wantOps: []string{"rerun " + r1, "start " + r1, "status " + running}, wantTrigger: running, wantStaleAt: true, wantReruns: []string{r1},
 		},
 		{
 			name: "TerminalRowLeftAlone", maxRetries: 1, row: final,
@@ -343,8 +343,8 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 				t.Errorf("ops %q, want %q", rec.ops, tt.wantOps)
 			}
 			item := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", ctDate))
-			if _, hasTTL := item["ttl"]; strAttr(t, item, "status") != tt.wantTrigger || hasTTL != tt.wantTTL {
-				t.Errorf("trigger row %v, want status %q ttl %v", item, tt.wantTrigger, tt.wantTTL)
+			if _, hasStaleAt := item["staleAt"]; strAttr(t, item, "status") != tt.wantTrigger || hasStaleAt != tt.wantStaleAt {
+				t.Errorf("trigger row %v, want status %q staleAt %v", item, tt.wantTrigger, tt.wantStaleAt)
 			}
 			var reruns []string
 			for _, row := range mem.Items("rerun") {
@@ -366,12 +366,14 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 }
 
 // TestCompleteTrigger_SuccessStampsCompletedAt: a success sets COMPLETED with
-// the completion time and no TTL; a later completion moves the time forward.
+// the completion time and neither staleAt nor ttl; a later completion moves
+// the time forward.
 func TestCompleteTrigger_SuccessStampsCompletedAt(t *testing.T) {
 	d, mem, rec := memDeps(t, failCfg(0))
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	d.NowFunc = func() time.Time { return now }
 	row := strItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("s", ctDate), "status", types.TriggerStatusRunning)
+	row["staleAt"] = &ddbtypes.AttributeValueMemberN{Value: "1"}
 	row["ttl"] = &ddbtypes.AttributeValueMemberN{Value: "1"}
 	mem.Put("control", row)
 
@@ -384,8 +386,9 @@ func TestCompleteTrigger_SuccessStampsCompletedAt(t *testing.T) {
 			t.Fatalf("complete-trigger at %s: status %q err %v, want %q", want, out.Status, err, types.TriggerStatusCompleted)
 		}
 		item := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", ctDate))
-		if _, hasTTL := item["ttl"]; strAttr(t, item, "status") != types.TriggerStatusCompleted || strAttr(t, item, "completedAt") != want || hasTTL {
-			t.Errorf("trigger row %v, want status COMPLETED, completedAt %s and no ttl", item, want)
+		_, hasStaleAt := item["staleAt"]
+		if _, hasTTL := item["ttl"]; strAttr(t, item, "status") != types.TriggerStatusCompleted || strAttr(t, item, "completedAt") != want || hasStaleAt || hasTTL {
+			t.Errorf("trigger row %v, want status COMPLETED, completedAt %s and neither staleAt nor ttl", item, want)
 		}
 		now = now.Add(5 * time.Minute)
 	}

@@ -431,17 +431,16 @@ func (s *Store) GetDryRunMarker(ctx context.Context, pipelineID, schedule, date 
 
 // AcquireTriggerLock attempts to acquire a trigger lock for a given pipeline,
 // schedule, and date. Returns true if the lock was acquired, false if it is
-// already held. The lock is set with a TTL for automatic expiration.
-func (s *Store) AcquireTriggerLock(ctx context.Context, pipelineID, schedule, date string, ttl time.Duration) (bool, error) {
-	ttlEpoch := s.now().Add(ttl).Unix()
-
+// already held. The row carries no ttl, so DynamoDB never deletes it; its
+// staleAt (now plus staleAfter) tells the watchdog when the run is dead.
+func (s *Store) AcquireTriggerLock(ctx context.Context, pipelineID, schedule, date string, staleAfter time.Duration) (bool, error) {
 	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &s.ControlTable,
 		Item: map[string]ddbtypes.AttributeValue{
-			"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
-			"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
-			"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
-			"ttl":    &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttlEpoch)},
+			"PK":      &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK":      &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
+			"status":  &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+			"staleAt": &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", s.now().Add(staleAfter).Unix())},
 		},
 		ConditionExpression: aws.String("attribute_not_exists(PK)"),
 	})
@@ -551,11 +550,11 @@ func (s *Store) HasTriggerForDate(ctx context.Context, pipelineID, schedule, dat
 }
 
 // ResetTriggerLock takes a finished date's trigger row back for a rerun: it
-// sets the row RUNNING with a fresh TTL. It returns (true, nil) when it did,
-// and (false, nil) when the row is missing or already RUNNING, so a rerun
-// never starts beside a run in progress.
-func (s *Store) ResetTriggerLock(ctx context.Context, pipelineID, schedule, date string, ttl time.Duration) (bool, error) {
-	ttlEpoch := fmt.Sprintf("%d", s.now().Add(ttl).Unix())
+// sets the row RUNNING with a fresh staleAt (now plus staleAfter) and removes
+// any ttl. It returns (true, nil) when it did, and (false, nil) when the row
+// is missing or already RUNNING, so a rerun never starts beside a run in
+// progress.
+func (s *Store) ResetTriggerLock(ctx context.Context, pipelineID, schedule, date string, staleAfter time.Duration) (bool, error) {
 	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.ControlTable,
 		Key: map[string]ddbtypes.AttributeValue{
@@ -563,14 +562,14 @@ func (s *Store) ResetTriggerLock(ctx context.Context, pipelineID, schedule, date
 			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
 		},
 		ConditionExpression: aws.String("attribute_exists(PK) AND #status <> :running"),
-		UpdateExpression:    aws.String("SET #status = :running, #ttl = :ttl"),
+		UpdateExpression:    aws.String("SET #status = :running, staleAt = :staleAt REMOVE #ttl"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 			"#ttl":    "ttl",
 		},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":running": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
-			":ttl":     &ddbtypes.AttributeValueMemberN{Value: ttlEpoch},
+			":staleAt": &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", s.now().Add(staleAfter).Unix())},
 		},
 	})
 	if err != nil {
@@ -583,10 +582,11 @@ func (s *Store) ResetTriggerLock(ctx context.Context, pipelineID, schedule, date
 	return true, nil
 }
 
-// RefreshRunningTriggerLock gives a RUNNING trigger row a fresh TTL. Unlike
-// ResetTriggerLock it never changes the status: it returns (false, nil) when
-// the row is missing or already COMPLETED or FAILED_FINAL.
-func (s *Store) RefreshRunningTriggerLock(ctx context.Context, pipelineID, schedule, date string, ttl time.Duration) (bool, error) {
+// RefreshRunningTriggerLock gives a RUNNING trigger row a fresh staleAt (now
+// plus staleAfter) and removes any ttl. Unlike ResetTriggerLock it never
+// changes the status: it returns (false, nil) when the row is missing or
+// already COMPLETED or FAILED_FINAL.
+func (s *Store) RefreshRunningTriggerLock(ctx context.Context, pipelineID, schedule, date string, staleAfter time.Duration) (bool, error) {
 	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.ControlTable,
 		Key: map[string]ddbtypes.AttributeValue{
@@ -594,11 +594,11 @@ func (s *Store) RefreshRunningTriggerLock(ctx context.Context, pipelineID, sched
 			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
 		},
 		ConditionExpression:      aws.String("attribute_exists(PK) AND #status = :running"),
-		UpdateExpression:         aws.String("SET #ttl = :ttl"),
+		UpdateExpression:         aws.String("SET staleAt = :staleAt REMOVE #ttl"),
 		ExpressionAttributeNames: map[string]string{"#status": "status", "#ttl": "ttl"},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":running": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
-			":ttl":     &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", s.now().Add(ttl).Unix())},
+			":staleAt": &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", s.now().Add(staleAfter).Unix())},
 		},
 	})
 	if err != nil {
@@ -640,8 +640,8 @@ func (s *Store) MarkTriggerStarted(ctx context.Context, pipelineID, schedule, da
 }
 
 // MarkTriggerCompleted sets the trigger row to COMPLETED with completedAt = at
-// (RFC3339 UTC; a later completion overwrites it) and removes its TTL. Like
-// SetTriggerStatus it creates the row when absent.
+// (RFC3339 UTC; a later completion overwrites it) and removes its staleAt and
+// any ttl. Like SetTriggerStatus it creates the row when absent.
 func (s *Store) MarkTriggerCompleted(ctx context.Context, pipelineID, schedule, date string, at time.Time) error {
 	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.ControlTable,
@@ -649,7 +649,7 @@ func (s *Store) MarkTriggerCompleted(ctx context.Context, pipelineID, schedule, 
 			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
 			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
 		},
-		UpdateExpression:         aws.String("SET #status = :s, completedAt = :t REMOVE #ttl"),
+		UpdateExpression:         aws.String("SET #status = :s, completedAt = :t REMOVE #ttl, staleAt"),
 		ExpressionAttributeNames: map[string]string{"#status": "status", "#ttl": "ttl"},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":s": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusCompleted},
@@ -663,8 +663,8 @@ func (s *Store) MarkTriggerCompleted(ctx context.Context, pipelineID, schedule, 
 }
 
 // FailTriggerUnlessCompleted sets the trigger row to FAILED_FINAL (removing
-// its TTL, creating it when absent) unless it is COMPLETED. It returns false,
-// and writes nothing, for a COMPLETED row.
+// its staleAt and any ttl, creating it when absent) unless it is COMPLETED. It
+// returns false, and writes nothing, for a COMPLETED row.
 func (s *Store) FailTriggerUnlessCompleted(ctx context.Context, pipelineID, schedule, date string) (bool, error) {
 	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &s.ControlTable,
@@ -673,7 +673,7 @@ func (s *Store) FailTriggerUnlessCompleted(ctx context.Context, pipelineID, sche
 			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
 		},
 		ConditionExpression:      aws.String("attribute_not_exists(PK) OR #status <> :completed"),
-		UpdateExpression:         aws.String("SET #status = :s REMOVE #ttl"),
+		UpdateExpression:         aws.String("SET #status = :s REMOVE #ttl, staleAt"),
 		ExpressionAttributeNames: map[string]string{"#status": "status", "#ttl": "ttl"},
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":s":         &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusFailedFinal},
@@ -690,19 +690,20 @@ func (s *Store) FailTriggerUnlessCompleted(ctx context.Context, pipelineID, sche
 	return true, nil
 }
 
-// SetTriggerStatus updates only the status attribute of an existing trigger row,
-// preserving TTL and other attributes.
+// SetTriggerStatus updates the status attribute of a trigger row, creating it
+// when absent. COMPLETED and FAILED_FINAL also remove its staleAt and any ttl;
+// any other status leaves every other attribute as it was.
 func (s *Store) SetTriggerStatus(ctx context.Context, pipelineID, schedule, date, status string) error {
 	expr := "SET #status = :s"
 	names := map[string]string{
 		"#status": "status",
 	}
 
-	// Terminal statuses remove the TTL so DynamoDB doesn't auto-delete the
-	// trigger record. Without this, TTL expiry removes the record and the
-	// watchdog reconcile loop re-triggers completed pipelines.
+	// A finished run is no longer stale. Removing a ttl left by an older
+	// writer keeps DynamoDB from deleting the row, after which the watchdog
+	// reconcile loop would start the date again.
 	if status == types.TriggerStatusCompleted || status == types.TriggerStatusFailedFinal {
-		expr = "SET #status = :s REMOVE #ttl"
+		expr = "SET #status = :s REMOVE #ttl, staleAt"
 		names["#ttl"] = "ttl"
 	}
 

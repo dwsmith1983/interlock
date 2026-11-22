@@ -12,7 +12,9 @@ import (
 )
 
 // detectStaleTriggers scans for TRIGGER# rows with status=RUNNING and
-// publishes an SFN_TIMEOUT event for any that have exceeded their TTL.
+// publishes an SFN_TIMEOUT event for any past their staleAt, then sets them
+// FAILED_FINAL. A dry-run pipeline never takes a trigger lock, so a RUNNING
+// row for one is left from before it switched to dry-run and is closed too.
 func detectStaleTriggers(ctx context.Context, d *lambda.Deps) error {
 	triggers, err := d.Store.ScanRunningTriggers(ctx)
 	if err != nil {
@@ -31,16 +33,10 @@ func detectStaleTriggers(ctx context.Context, d *lambda.Deps) error {
 			continue
 		}
 
-		if cfg, cfgErr := d.ConfigCache.Get(ctx, pipelineID); cfgErr == nil && cfg != nil && cfg.DryRun {
-			continue
-		}
-
 		alertDetail := map[string]interface{}{
 			"source":     "watchdog",
-			"actionHint": "step function exceeded TTL — check SFN execution history",
-		}
-		if tr.TTL > 0 {
-			alertDetail["ttlExpired"] = time.Unix(tr.TTL, 0).UTC().Format(time.RFC3339)
+			"actionHint": "step function passed its stale deadline: check SFN execution history",
+			"staleAt":    time.Unix(tr.StaleAt, 0).UTC().Format(time.RFC3339),
 		}
 		if err := lambda.PublishEvent(ctx, d, string(types.EventSFNTimeout), pipelineID, schedule, date,
 			fmt.Sprintf("step function timed out for %s/%s/%s", pipelineID, schedule, date), alertDetail); err != nil {
@@ -59,11 +55,10 @@ func detectStaleTriggers(ctx context.Context, d *lambda.Deps) error {
 	return nil
 }
 
+// isStaleTrigger reports whether a RUNNING trigger row is past its staleAt.
+// A row with no staleAt is never stale.
 func isStaleTrigger(tr types.ControlRecord, now time.Time) bool {
-	if tr.TTL > 0 {
-		return now.Unix() > tr.TTL
-	}
-	return false
+	return tr.StaleAt > 0 && now.Unix() > tr.StaleAt
 }
 
 func parseTriggerRecord(tr types.ControlRecord) (pipelineID, schedule, date string, err error) {

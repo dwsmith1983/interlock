@@ -131,18 +131,19 @@ func startFailed(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorI
 	return lambda.OrchestratorOutput{Mode: "complete-trigger", Status: types.TriggerStatusFailedFinal}, nil
 }
 
-// holdLock gives a RUNNING trigger row a fresh TTL for the next attempt. A
+// holdLock gives a RUNNING trigger row a fresh stale deadline (staleAt) for
+// the next attempt. A
 // finished row is left alone (a Task retry can run after the next attempt
 // ended); a missing row is recreated only by the invocation that started it.
 func holdLock(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput, started bool) error {
 	pipelineID, schedule, date := input.PipelineID, input.ScheduleID, input.Date
-	ttl := lambda.ResolveTriggerLockTTL()
-	held, err := d.Store.RefreshRunningTriggerLock(ctx, pipelineID, schedule, date, ttl)
+	staleAfter := lambda.ResolveTriggerLockTTL()
+	held, err := d.Store.RefreshRunningTriggerLock(ctx, pipelineID, schedule, date, staleAfter)
 	if err != nil {
 		return fmt.Errorf("refresh trigger lock for %q: %w", pipelineID, err)
 	}
 	if !held && started {
-		if held, err = d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, ttl); err != nil {
+		if held, err = d.Store.AcquireTriggerLock(ctx, pipelineID, schedule, date, staleAfter); err != nil {
 			return fmt.Errorf("acquire trigger lock for %q: %w", pipelineID, err)
 		}
 	}

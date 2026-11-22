@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"maps"
 	"strconv"
 	"testing"
 	"time"
@@ -22,11 +23,12 @@ func TestRefreshRunningTriggerLock(t *testing.T) {
 			s := storetest.NewStore(fake)
 			s.Now = func() time.Time { return now }
 			pk, sk := types.PipelinePK("p"), types.TriggerSK("s", "2026-03-01")
+			seeded := map[string]ddbtypes.AttributeValue{
+				"PK": &ddbtypes.AttributeValueMemberS{Value: pk}, "SK": &ddbtypes.AttributeValueMemberS{Value: sk},
+				"status": &ddbtypes.AttributeValueMemberS{Value: status}, "staleAt": &ddbtypes.AttributeValueMemberN{Value: "1"},
+			}
 			if status != "" {
-				mem.Put("control", map[string]ddbtypes.AttributeValue{
-					"PK": &ddbtypes.AttributeValueMemberS{Value: pk}, "SK": &ddbtypes.AttributeValueMemberS{Value: sk},
-					"status": &ddbtypes.AttributeValueMemberS{Value: status}, "ttl": &ddbtypes.AttributeValueMemberN{Value: "1"},
-				})
+				mem.Put("control", seeded)
 			}
 
 			refreshed, err := s.RefreshRunningTriggerLock(context.Background(), "p", "s", "2026-03-01", time.Hour)
@@ -40,13 +42,16 @@ func TestRefreshRunningTriggerLock(t *testing.T) {
 				}
 				return
 			}
-			wantTTL := "1"
-			if refreshed {
-				wantTTL = strconv.FormatInt(now.Add(time.Hour).Unix(), 10)
+			if !refreshed {
+				if !maps.Equal(item, seeded) {
+					t.Errorf("refused refresh changed the row to %v, want %v", item, seeded)
+				}
+				return
 			}
-			got := [2]string{item["status"].(*ddbtypes.AttributeValueMemberS).Value, item["ttl"].(*ddbtypes.AttributeValueMemberN).Value}
-			if got != [2]string{status, wantTTL} {
-				t.Errorf("row status/ttl = %v, want [%s %s]", got, status, wantTTL)
+			want := strconv.FormatInt(now.Add(time.Hour).Unix(), 10)
+			got := [2]string{item["status"].(*ddbtypes.AttributeValueMemberS).Value, item["staleAt"].(*ddbtypes.AttributeValueMemberN).Value}
+			if got != [2]string{status, want} {
+				t.Errorf("row status/staleAt = %v, want [%s %s]", got, status, want)
 			}
 		})
 	}

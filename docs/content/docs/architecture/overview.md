@@ -199,7 +199,7 @@ When a triggered job fails or times out (including a closed job poll window), th
 1. If the date is excluded by the calendar, publish `PIPELINE_EXCLUDED` and mark the trigger as `FAILED_FINAL`; an excluded date is never retried
 2. Read the number of retries so far from the execution name's `-r{N}` suffix (none means 0), and the failure category from the run's own job log row (`PERMANENT` uses `job.maxCodeRetries`, default 1; anything else, or no row, uses `job.maxRetries`)
 3. If at the limit, mark the trigger as `FAILED_FINAL` and publish a `RETRY_EXHAUSTED` event
-4. Otherwise write a re-run record, start the next execution (which keeps the SLA schedules) and give the trigger lock a fresh TTL while it is still `RUNNING`. If the execution cannot be started, mark the trigger as `FAILED_FINAL` and publish `INFRA_FAILURE`
+4. Otherwise write a re-run record, start the next execution (which keeps the SLA schedules) and give the trigger row a fresh stale deadline (`staleAt`) while it is still `RUNNING`. If the execution cannot be started, mark the trigger as `FAILED_FINAL` and publish `INFRA_FAILURE`
 
 A dry-run pipeline, or one without a valid config, is never retried: the trigger goes to `FAILED_FINAL`.
 

@@ -79,7 +79,12 @@ type ControlRecord struct {
 	Config string                 `dynamodbav:"config,omitempty"`
 	Data   map[string]interface{} `dynamodbav:"data,omitempty"`
 	Status string                 `dynamodbav:"status,omitempty"`
-	TTL    int64                  `dynamodbav:"ttl,omitempty"`
+	// TTL is when DynamoDB deletes the row (epoch seconds). Rows that expire
+	// carry it (DRY_RUN#, config-invalid markers); no TRIGGER# row is written with one.
+	TTL int64 `dynamodbav:"ttl,omitempty"`
+	// StaleAt is, on a RUNNING TRIGGER# row, the epoch second after which the
+	// watchdog treats the run as dead and closes it.
+	StaleAt int64 `dynamodbav:"staleAt,omitempty"`
 	// StartedAt is when the job last started (RFC3339 UTC), on TRIGGER# rows.
 	StartedAt string `dynamodbav:"startedAt,omitempty"`
 	// CompletedAt is when the run last completed (RFC3339 UTC), on TRIGGER# rows;

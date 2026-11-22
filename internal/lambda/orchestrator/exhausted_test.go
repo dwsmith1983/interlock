@@ -180,7 +180,7 @@ func TestValidationExhausted(t *testing.T) {
 		wantErr    bool
 		wantErrSub string
 		wantStatus string
-		wantRow    string // trigger row status after the call, "" for none; a RUNNING row keeps its ttl, a FAILED_FINAL one has none
+		wantRow    string // trigger row status after the call, "" for none; a RUNNING row keeps its staleAt, a FAILED_FINAL one has none
 	}
 	noCutoff := func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = "" }
 	hourly := func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = ":15" }
@@ -341,8 +341,8 @@ func TestValidationExhausted(t *testing.T) {
 				if got := strAttr(t, row, "status"); got != c.wantRow {
 					t.Errorf("call %d: trigger row status = %q, want %q", i, got, c.wantRow)
 				}
-				if _, hasTTL := row["ttl"]; row != nil && hasTTL != (c.wantRow == running) {
-					t.Errorf("call %d: %s trigger row has ttl = %v", i, c.wantRow, hasTTL)
+				if _, hasStaleAt := row["staleAt"]; row != nil && hasStaleAt != (c.wantRow == running) {
+					t.Errorf("call %d: %s trigger row has staleAt = %v", i, c.wantRow, hasStaleAt)
 				}
 			}
 			var joblog []string

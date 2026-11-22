@@ -99,8 +99,8 @@ func failExhausted(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 
 // failAtCutoff publishes SENSOR_DEADLINE_EXPIRED, then sets the RUNNING
 // trigger row FAILED_FINAL. Publishing first keeps a failed publish
-// retryable: FAILED_FINAL removes the TTL, so a write to revert would leave a
-// row RUNNING for good.
+// retryable: FAILED_FINAL removes the stale deadline (staleAt), so a write to
+// revert would leave a row RUNNING for good.
 func failAtCutoff(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, input lambda.OrchestratorInput) error {
 	pipelineID, schedule, date := input.PipelineID, input.ScheduleID, input.Date
 	if running, err := triggerRunning(ctx, d, input); err != nil || !running {

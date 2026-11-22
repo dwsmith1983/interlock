@@ -660,7 +660,7 @@ func TestRerunRequest_RunningDateIsRefused(t *testing.T) {
 			mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": pk,
 				"SK":        &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
 				"status":    &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
-				"ttl":       &ddbtypes.AttributeValueMemberN{Value: "1773160200"},
+				"staleAt":   &ddbtypes.AttributeValueMemberN{Value: "1773160200"},
 				"startedAt": &ddbtypes.AttributeValueMemberS{Value: "2026-03-10T12:30:00Z"}})
 			mem.Put("joblog", map[string]ddbtypes.AttributeValue{"PK": pk,
 				"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
@@ -712,9 +712,12 @@ func TestRerunRequest_RunningDateIsRefused(t *testing.T) {
 				t.Errorf("post-run baseline = %v, %v; want it kept", baseline, err)
 			}
 			row := mem.Get("control", pk.Value, types.TriggerSK("stream", date))
-			got := [3]string{strAttr(row["status"]), numAttr(row["ttl"]), strAttr(row["startedAt"])}
+			got := [3]string{strAttr(row["status"]), numAttr(row["staleAt"]), strAttr(row["startedAt"])}
 			if want := [3]string{types.TriggerStatusRunning, "1773160200", "2026-03-10T12:30:00Z"}; got != want {
-				t.Errorf("trigger status/ttl/startedAt = %v, want %v", got, want)
+				t.Errorf("trigger status/staleAt/startedAt = %v, want %v", got, want)
+			}
+			if _, hasTTL := row["ttl"]; hasTTL {
+				t.Errorf("trigger row has ttl %v, want none", row["ttl"])
 			}
 		})
 	}
@@ -795,7 +798,7 @@ func baselineKept(t *testing.T, d *lambda.Deps) bool {
 
 // TestRerunRequest_FailedStartThenRedelivery: a late-data rerun (the default
 // drift budget of 1) whose execution cannot start returns an error and leaves
-// the COMPLETED date as it was: completedAt kept, no ttl, no rerun row, no
+// the COMPLETED date as it was: completedAt kept, no staleAt, no rerun row, no
 // event, no new job row and the baseline kept. The stream redelivers the same
 // record, which then starts the rerun under a name built from the record's
 // creation time, not the clock.
@@ -813,8 +816,8 @@ func TestRerunRequest_FailedStartThenRedelivery(t *testing.T) {
 	if got := [2]string{strAttr(row["status"]), strAttr(row["completedAt"])}; got != [2]string{types.TriggerStatusCompleted, "2026-03-10T12:00:00Z"} {
 		t.Errorf("after the failed start: trigger status/completedAt = %v, want COMPLETED and 12:00", got)
 	}
-	if _, ok := row["ttl"]; ok {
-		t.Errorf("after the failed start: trigger ttl = %v, want none", row["ttl"])
+	if _, ok := row["staleAt"]; ok {
+		t.Errorf("after the failed start: trigger staleAt = %v, want none", row["staleAt"])
 	}
 	if got := len(mem.Items("rerun")); got != 0 || len(eb.events) != 0 || sfnFake.calls != 0 {
 		t.Errorf("after the failed start: rerun rows %d, events %+v, starts %d; want none", got, eb.events, sfnFake.calls)
@@ -853,7 +856,7 @@ func TestRerunRequest_FailedStartThenRedelivery(t *testing.T) {
 }
 
 // TestRerunRequest_FailedStartKeepsFailedFinal: a FAILED_FINAL date whose
-// rerun cannot start is FAILED_FINAL again, with no ttl.
+// rerun cannot start is FAILED_FINAL again, with no staleAt.
 func TestRerunRequest_FailedStartKeepsFailedFinal(t *testing.T) {
 	d, mem, sfnFake, _, _ := failedStartWorld(t, types.TriggerStatusFailedFinal, nil)
 
@@ -861,8 +864,8 @@ func TestRerunRequest_FailedStartKeepsFailedFinal(t *testing.T) {
 		t.Fatal("handleRecord = nil, want the start error")
 	}
 	row := triggerRow(mem)
-	if got := strAttr(row["status"]); got != types.TriggerStatusFailedFinal || row["ttl"] != nil {
-		t.Errorf("trigger status %q, ttl %v; want FAILED_FINAL and none", got, row["ttl"])
+	if got := strAttr(row["status"]); got != types.TriggerStatusFailedFinal || row["staleAt"] != nil {
+		t.Errorf("trigger status %q, staleAt %v; want FAILED_FINAL and none", got, row["staleAt"])
 	}
 	if got := len(mem.Items("rerun")); got != 0 || sfnFake.calls != 0 {
 		t.Errorf("rerun rows %d, starts %d; want 0 and 0", got, sfnFake.calls)
@@ -928,7 +931,7 @@ func TestRerunRequest_UndoFails(t *testing.T) {
 	fake := d.Store.Client.(*storetest.FakeDynamo)
 	update := fake.UpdateItemFn
 	fake.UpdateItemFn = func(ctx context.Context, in *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
-		if strings.HasPrefix(strAttr(in.Key["SK"]), "TRIGGER#") && strings.Contains(*in.UpdateExpression, "REMOVE") {
+		if strings.HasPrefix(strAttr(in.Key["SK"]), "TRIGGER#") && in.ExpressionAttributeValues[":s"] != nil {
 			return nil, errors.New("restore failed")
 		}
 		return update(ctx, in)
@@ -971,8 +974,8 @@ func TestRerunRequest_UndoDeleteFails(t *testing.T) {
 		t.Fatalf("handleRecord = %v, want the start error", err)
 	}
 	row := triggerRow(mem)
-	if got := strAttr(row["status"]); got != types.TriggerStatusCompleted || row["ttl"] != nil {
-		t.Errorf("trigger status %q, ttl %v; want COMPLETED and none", got, row["ttl"])
+	if got := strAttr(row["status"]); got != types.TriggerStatusCompleted || row["staleAt"] != nil {
+		t.Errorf("trigger status %q, staleAt %v; want COMPLETED and none", got, row["staleAt"])
 	}
 	if got := len(mem.Items("rerun")); got != 1 {
 		t.Errorf("rerun rows = %d, want 1 (the delete failed)", got)

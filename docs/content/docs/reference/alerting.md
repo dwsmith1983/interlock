@@ -52,7 +52,7 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `JOB_FAILED` | Triggered job failed | The stream-router sees a `fail` or `timeout` job log row: one the job wrote, one CheckJob wrote after polling a failure, the `fail` row the orchestrator writes when a `lambda` function returns an error, or the `timeout` row written when the job poll window closes. Only new rows for a date with a trigger row are reported. Detail carries `event`, `error` (cut to 2 KB), `runId` and, when set, `category` |
 | `RETRY_EXHAUSTED` | All retry attempts consumed | Job failed `maxRetries` (or `maxCodeRetries` for permanent failures) times without success |
 | `INFRA_FAILURE` | Unrecoverable infrastructure error | Step Functions execution reaches Fail state |
-| `SFN_TIMEOUT` | Step Functions execution timed out | Global `TimeoutSeconds` exceeded (configurable via `sfn_timeout_seconds` Terraform variable) |
+| `SFN_TIMEOUT` | Step Functions execution timed out | Global `TimeoutSeconds` exceeded (configurable via `sfn_timeout_seconds` Terraform variable); the watchdog publishes it once the trigger row's `staleAt` passes, with `staleAt` in the detail |
 | `DATA_DRIFT` | Reserved | Defined and on the alert rule, but nothing publishes it; post-run drift is `POST_RUN_DRIFT` |
 | `POST_RUN_DRIFT` | Post-run sensor changed after completion | Sensor value drifted from baseline after job completed, inside the [watch window](../../configuration/pipelines/#watch-window) |
 | `POST_RUN_DRIFT_INFLIGHT` | Post-run sensor changed while job running | Informational drift detected during an active execution |

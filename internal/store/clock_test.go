@@ -104,20 +104,20 @@ func TestWriters_UseInjectedClock(t *testing.T) {
 			},
 		},
 		{
-			name: "AcquireTriggerLock ttl",
+			name: "AcquireTriggerLock staleAt",
 			call: func(ctx context.Context, s *store.Store) error {
 				_, err := s.AcquireTriggerLock(ctx, "pipe-1", "daily", "2026-03-10", lockTTL)
 				return err
 			},
 			check: func(t *testing.T, put *dynamodb.PutItemInput, _ *dynamodb.UpdateItemInput) {
 				want := fmt.Sprintf("%d", fixedClockStart.Add(lockTTL).Unix())
-				if got := numAttr(t, put.Item["ttl"], "ttl"); got != want {
-					t.Errorf("ttl = %s, want %s", got, want)
+				if got := numAttr(t, put.Item["staleAt"], "staleAt"); got != want {
+					t.Errorf("staleAt = %s, want %s", got, want)
 				}
 			},
 		},
 		{
-			name: "ResetTriggerLock ttl",
+			name: "ResetTriggerLock staleAt",
 			call: func(ctx context.Context, s *store.Store) error {
 				_, err := s.ResetTriggerLock(ctx, "pipe-1", "daily", "2026-03-10", lockTTL)
 				return err
@@ -127,8 +127,8 @@ func TestWriters_UseInjectedClock(t *testing.T) {
 					t.Fatal("UpdateItem was not called")
 				}
 				want := fmt.Sprintf("%d", fixedClockStart.Add(lockTTL).Unix())
-				if got := numAttr(t, upd.ExpressionAttributeValues[":ttl"], ":ttl"); got != want {
-					t.Errorf(":ttl = %s, want %s", got, want)
+				if got := numAttr(t, upd.ExpressionAttributeValues[":staleAt"], ":staleAt"); got != want {
+					t.Errorf(":staleAt = %s, want %s", got, want)
 				}
 			},
 		},
