@@ -52,14 +52,14 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `JOB_FAILED` | Triggered job failed | The stream-router sees a `fail` or `timeout` job log row: one the job wrote, one CheckJob wrote after polling a failure, the `fail` row the orchestrator writes when a `lambda` function returns an error, or the `timeout` row written when the job poll window closes. Only new rows for a date with a trigger row are reported. Detail carries `event`, `error` (cut to 2 KB), `runId` and, when set, `category` |
 | `RETRY_EXHAUSTED` | All retry attempts consumed | Job failed `maxRetries` (or `maxCodeRetries` for permanent failures) times without success |
 | `INFRA_FAILURE` | Unrecoverable infrastructure error | Step Functions execution reaches Fail state |
-| `SFN_TIMEOUT` | Step Functions execution timed out | Global `TimeoutSeconds` exceeded (configurable via `sfn_timeout_seconds` Terraform variable); the watchdog publishes it once the trigger row's `staleAt` passes, with `staleAt` in the detail |
+| `SFN_TIMEOUT` | Step Functions execution timed out | Global `TimeoutSeconds` exceeded (configurable via `sfn_timeout_seconds` Terraform variable); the watchdog publishes it once the trigger row's `staleAt` passes, with `staleAt` in the detail, and closes the row `FAILED_FINAL` only after the publish succeeds, so a failed publish is retried on the next pass |
 | `DATA_DRIFT` | Reserved | Defined and on the alert rule, but nothing publishes it; post-run drift is `POST_RUN_DRIFT` |
 | `POST_RUN_DRIFT` | Post-run sensor changed after completion | Sensor value drifted from baseline after job completed, inside the [watch window](../../configuration/pipelines/#watch-window) |
 | `POST_RUN_DRIFT_INFLIGHT` | Post-run sensor changed while job running | Informational drift detected during an active execution |
 | `POST_RUN_FAILED` | Post-run rules failed | A post-run sensor arrived inside the watch window, did not drift, and the `postRun.rules` failed |
 | `POST_RUN_PASSED` | Post-run rules passed | As `POST_RUN_FAILED`, when the rules pass. Not an alert |
 | `POST_RUN_BASELINE_CAPTURED` | Post-run baseline written | A successful run's sensor values were captured as the drift baseline. Not an alert |
-| `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Watchdog detected no post-run sensor within `sensorTimeout` of the trigger row's `completedAt` |
+| `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Watchdog detected no post-run sensor within `sensorTimeout` of the trigger row's `completedAt`; once per date, retried on the next pass if the publish fails |
 | `BASELINE_CAPTURE_FAILED` | Baseline capture error | Error occurred while capturing the post-run baseline at trigger completion |
 | `SENSOR_DEADLINE_EXPIRED` | A run date passed its cutoff without starting | The run date is closed (`FAILED_FINAL`) by the stream-router or the watchdog's reconciliation when a sensor is processed after the cutoff, by the watchdog on its next pass for a date with a `RUN#` row, or by the orchestrator when a run is still evaluating at the cutoff, and from then nothing more starts for it; `source` says which; detail has `cutoff` and `cutoffAt`; run it manually with `RERUN_REQUEST` |
 | `PIPELINE_EXCLUDED` | Pipeline excluded by calendar | Sensor, rerun, job-failure, or post-run drift skipped due to calendar exclusion |
@@ -102,7 +102,7 @@ Published by the **watchdog** Lambda, invoked on an EventBridge schedule (defaul
 |---|---|---|
 | `RELATIVE_SLA_WARNING` | A relative SLA (`sla.maxDuration`) is at risk | Once per date whose run has not finished, on the first watchdog pass at or after first sensor arrival + `maxDuration` - `expectedDuration` (75% of `maxDuration` without `expectedDuration`) and before the breach; detail carries `maxDuration`, `expectedDuration`, `sensorArrivalAt`, `warningAt` and `breachAt` |
 | `RELATIVE_SLA_BREACH` | A relative SLA (`sla.maxDuration`) was exceeded | Once per date whose run has not finished, on the first watchdog pass at or after first sensor arrival + `maxDuration`; detail carries `maxDuration`, `sensorArrivalAt` and `breachAt` |
-| `IRREGULAR_SCHEDULE_MISSED` | An inclusion-calendar date has no run | Once per past `schedule.include` date with no trigger row (after `schedule.time` on that date) |
+| `IRREGULAR_SCHEDULE_MISSED` | An inclusion-calendar date has no run | Once per past `schedule.include` date with no trigger row (after `schedule.time` on that date); retried on the next pass if the publish fails |
 | `SCHEDULE_MISSED` | The job for a run date has not started by the cron's start-by time, so the SLA is at risk | Once per `RUN#` date of a cron pipeline, on the first watchdog pass after the start-by time; detail carries `cron` and `startBy` |
 | `TRIGGER_RECOVERED` | Sensor trigger condition met but no trigger existed | Watchdog re-evaluated sensor data and self-healed a trigger the stream-router missed. A restart of a date whose evaluation was released publishes `JOB_TRIGGERED` instead |
 | `WATCHDOG_DEGRADED` | One or more watchdog checks failed | Detail lists the failed checks; `pipelineId` is empty. Not an alert |

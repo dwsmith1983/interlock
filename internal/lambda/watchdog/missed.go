@@ -164,6 +164,7 @@ func detectMissedInclusionSchedules(ctx context.Context, d *lambda.Deps) error {
 			if err := lambda.PublishEvent(ctx, d, string(types.EventIrregularScheduleMissed), id, scheduleID, date,
 				fmt.Sprintf("missed inclusion schedule for %s on %s", id, date), alertDetail); err != nil {
 				d.Logger.Warn("failed to publish irregular schedule missed event", "error", err, "pipeline", id, "date", date)
+				continue // no marker, so the next pass retries
 			}
 
 			if err := d.Store.WriteSensor(ctx, id, dedupKey, map[string]interface{}{

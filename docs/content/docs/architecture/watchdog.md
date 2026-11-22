@@ -8,7 +8,7 @@ The watchdog is one of six Lambda functions in the Interlock framework. It runs 
 
 1. **Stale triggers** -- a Step Function execution started but never completed (timeout, infrastructure failure)
 2. **Missed schedules** -- a cron pipeline's job has not started by the cron start-by time for a `RUN#` date
-3. **Missed inclusion schedules** -- a pipeline with an inclusion calendar has no trigger on a scheduled date. A date whose evaluation was released before its cutoff has no trigger row either, so `IRREGULAR_SCHEDULE_MISSED` fires once for it, as for a date that never started
+3. **Missed inclusion schedules** -- a pipeline with an inclusion calendar has no trigger on a scheduled date. A date whose evaluation was released before its cutoff has no trigger row either, so `IRREGULAR_SCHEDULE_MISSED` fires once for it, as for a date that never started. The once-per-date marker (`SENSOR#irregular-missed-check#<date>`) is written only after the publish succeeds, so a failed publish is retried on the next pass
 4. **Sensor-trigger reconciliation** -- a sensor-triggered pipeline's conditions (with or without `schedule.cron`) are met but no trigger exists (self-heals missed triggers); past the date's `schedule.trigger.cutoff` it closes the date with `FAILED_FINAL` and one `SENSOR_DEADLINE_EXPIRED` instead of starting it
 5. **SLA scheduling** -- proactively ensures EventBridge Scheduler entries exist for each expected run date (`RUN#` row) of a pipeline with an SLA config
 6. **Cutoffs** -- an expected run date (`RUN#` row) passed its `schedule.trigger.cutoff` without starting; it is closed with `FAILED_FINAL` and one `SENSOR_DEADLINE_EXPIRED`
@@ -43,12 +43,15 @@ For each trigger:
 
   Parse pipeline ID, schedule, date from PK/SK
   Publish SFN_TIMEOUT event to EventBridge
+  If the publish failed → skip (still RUNNING, retried next pass)
   Set trigger status to FAILED_FINAL
 ```
 
 ### Stale Threshold
 
-A running trigger row carries its stale deadline as `staleAt`: `sfn_timeout_seconds` plus 30 minutes (4h30m by default) from the run's latest attempt, since each retry refreshes it. The row has no `ttl`, so DynamoDB never deletes it: a live run's row is closed by its own execution, and a dead run's only by the watchdog. Triggers past their `staleAt` are considered timed-out Step Function executions. The watchdog transitions them to `FAILED_FINAL` status. It does not retry: retries start only from a run's CompleteTrigger, and a stale trigger has no run left to start one. With the watchdog stopped, a dead run stays `RUNNING`.
+A running trigger row carries its stale deadline as `staleAt`: `sfn_timeout_seconds` plus 30 minutes (4h30m by default) from the run's latest attempt, since each retry refreshes it. The row has no `ttl`, so DynamoDB never deletes it: a live run's row is closed by its own execution, and a dead run's only by the watchdog. Triggers past their `staleAt` are considered timed-out Step Function executions. The watchdog transitions them to `FAILED_FINAL` status. It does not retry the job: retries start only from a run's CompleteTrigger, and a stale trigger has no run left to start one. With the watchdog stopped, a dead run stays `RUNNING`.
+
+The status is set only after `SFN_TIMEOUT` is published. A failed publish leaves the row `RUNNING` with its `staleAt`, so the next pass sends the alert and closes the row. If the status write fails after a successful publish, the next pass sends `SFN_TIMEOUT` again. While a failed publish keeps a stale run `RUNNING`, a `RERUN_REQUEST` for that date is still refused as in progress, and the date is closed once a later pass publishes.
 
 A dry-run pipeline never takes a trigger lock, so a `RUNNING` row for one is left from before the pipeline switched to dry-run; the watchdog closes it the same way.
 
@@ -138,6 +141,7 @@ Load all pipeline configs (via config cache)
 For each pipeline with postRun config:
   Find TRIGGER# record for today with status=COMPLETED
   If no completed trigger, or it has no completedAt → skip
+  Marker SENSOR#postrun-check#<date> present → already alerted (skip)
 
   Calculate elapsed time since completedAt
   If elapsed < sensorTimeout → skip (still within grace period)
@@ -147,7 +151,10 @@ For each pipeline with postRun config:
     If sensor exists → skip
 
   Publish POST_RUN_SENSOR_MISSING event to EventBridge
+  On success, write the marker SENSOR#postrun-check#<date>
 ```
+
+The marker makes the alert once per date. It is written only after the publish succeeds, so a failed publish is retried on the next pass.
 
 ### Configuration
 

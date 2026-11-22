@@ -13,8 +13,9 @@ import (
 
 // detectStaleTriggers scans for TRIGGER# rows with status=RUNNING and
 // publishes an SFN_TIMEOUT event for any past their staleAt, then sets them
-// FAILED_FINAL. A dry-run pipeline never takes a trigger lock, so a RUNNING
-// row for one is left from before it switched to dry-run and is closed too.
+// FAILED_FINAL. A row whose publish fails stays RUNNING for the next pass.
+// A dry-run pipeline never takes a trigger lock, so a RUNNING row for one is
+// left from before it switched to dry-run and is closed too.
 func detectStaleTriggers(ctx context.Context, d *lambda.Deps) error {
 	triggers, err := d.Store.ScanRunningTriggers(ctx)
 	if err != nil {
@@ -41,6 +42,7 @@ func detectStaleTriggers(ctx context.Context, d *lambda.Deps) error {
 		if err := lambda.PublishEvent(ctx, d, string(types.EventSFNTimeout), pipelineID, schedule, date,
 			fmt.Sprintf("step function timed out for %s/%s/%s", pipelineID, schedule, date), alertDetail); err != nil {
 			d.Logger.Warn("failed to publish SFN timeout event", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
+			continue // still RUNNING with its staleAt, so the next pass retries
 		}
 
 		if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, types.TriggerStatusFailedFinal); err != nil {

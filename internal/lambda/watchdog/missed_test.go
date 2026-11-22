@@ -124,6 +124,29 @@ func TestDetectMissedSchedules_PublishFailureRetries(t *testing.T) {
 	}
 }
 
+// TestDetectMissedInclusionSchedules_PublishFailureRetries: no marker after a
+// failed publish, so the next pass alerts, and the pass after adds nothing.
+func TestDetectMissedInclusionSchedules_PublishFailureRetries(t *testing.T) {
+	d, _, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+		c.SLA, c.Schedule.Include = nil, &types.InclusionConfig{Dates: []string{"2026-03-05", "2026-03-15"}}
+	})
+	ctx := context.Background()
+	rec.failEvents = 1
+	for pass, want := range []int{0, 1, 1} {
+		if err := detectMissedInclusionSchedules(ctx, d); err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+		marker, err := d.Store.GetSensorData(ctx, "p", "irregular-missed-check#2026-03-05")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if marked := marker != nil; len(rec.events) != want || marked != (want == 1) ||
+			(want == 1 && rec.events[0] != string(types.EventIrregularScheduleMissed)) {
+			t.Fatalf("pass %d: events %v, marker %v; want %d IRREGULAR_SCHEDULE_MISSED and marker %v", pass, rec.events, marked, want, want == 1)
+		}
+	}
+}
+
 // TestDetectMissedInclusionSchedules: one IRREGULAR_SCHEDULE_MISSED per past
 // inclusion date (the newest three) with no trigger row and no marker, newest
 // first, each followed by its marker. The clock is 09:00 on slaTestDate
