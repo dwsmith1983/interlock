@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`IRREGULAR_SCHEDULE_MISSED` compared inclusion dates with the UTC date, so west of UTC it fired the evening before the date and was then never sent for a real miss; east of UTC it waited for UTC midnight.** Dates are now compared in `schedule.timezone`.
 - **When an alert could not be published, the watchdog still closed the stale run as `FAILED_FINAL`, or still wrote the once-per-date marker for a missed inclusion date or a missing post-run sensor, so the alert was lost for good.** The run now stays `RUNNING` and the marker is not written, and the next pass tries again.
 - **A run whose execution died could be deleted by DynamoDB before the watchdog reported it: no `SFN_TIMEOUT` was sent and the watchdog then started the date a second time.** A running trigger row now carries its stale deadline as `staleAt` and no `ttl`, so DynamoDB never deletes it and a dead run is closed only by the watchdog (a live run's row is closed by its own execution). A pipeline switched to dry-run has its leftover running row closed the same way.
 - **A rerun whose execution could not start deleted the date's trigger row and still spent the rerun budget, so the retried request was rejected and the date lost its record.** The date now keeps its status, no budget is spent, and a retry of the request can start the rerun.

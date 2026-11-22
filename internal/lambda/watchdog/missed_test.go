@@ -147,6 +147,32 @@ func TestDetectMissedInclusionSchedules_PublishFailureRetries(t *testing.T) {
 	}
 }
 
+// TestDetectMissedInclusionSchedules_EveningBeforeThenMissed: a pass on the
+// evening before the date in New York neither alerts nor marks the date, so
+// the pass once the date's time has passed still alerts.
+func TestDetectMissedInclusionSchedules_EveningBeforeThenMissed(t *testing.T) {
+	d, _, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+		c.SLA, c.Schedule.Time, c.Schedule.Timezone = nil, "09:00", "America/New_York"
+		c.Schedule.Include = &types.InclusionConfig{Dates: []string{"2026-03-31"}}
+	})
+	ctx := context.Background()
+	now := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return now }
+	for pass, at := range []time.Time{now, time.Date(2026, 3, 31, 13, 30, 0, 0, time.UTC)} {
+		now = at
+		if err := detectMissedInclusionSchedules(ctx, d); err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+		marker, err := d.Store.GetSensorData(ctx, "p", "irregular-missed-check#2026-03-31")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if marked := marker != nil; len(rec.events) != pass || marked != (pass == 1) {
+			t.Fatalf("pass %d at %s: events %v, marker %v; want %d events and marker %v", pass, at.Format(time.RFC3339), rec.events, marked, pass, pass == 1)
+		}
+	}
+}
+
 // TestDetectMissedInclusionSchedules: one IRREGULAR_SCHEDULE_MISSED per past
 // inclusion date (the newest three) with no trigger row and no marker, newest
 // first, each followed by its marker. The clock is 09:00 on slaTestDate
@@ -241,6 +267,11 @@ func TestDetectMissedInclusionSchedules(t *testing.T) {
 			// 22:00 on the date in New York is already the next day in UTC.
 			{name: "New York evening, before the time", tm: "23:30", tz: "America/New_York", now: time.Date(2026, 4, 1, 2, 0, 0, 0, time.UTC)},
 			{name: "no time", now: at(0, 5), want: end},
+			// New York is UTC-4 here, so 00:00Z is 20:00 the evening before.
+			{name: "New York, the evening before", tm: "09:00", tz: "America/New_York", now: at(0, 0)},
+			{name: "New York, the evening before, no time", tz: "America/New_York", now: at(0, 0)},
+			{name: "New York, on the date past the time", tm: "09:00", tz: "America/New_York", now: at(13, 30), want: end},
+			{name: "Tokyo, date begun before UTC midnight", tz: "Asia/Tokyo", now: time.Date(2026, 3, 30, 15, 30, 0, 0, time.UTC), want: end},
 		}
 		for _, tt := range tests {
 			tt.dates = end

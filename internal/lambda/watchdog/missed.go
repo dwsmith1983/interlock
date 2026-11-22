@@ -117,14 +117,13 @@ func detectMissedInclusionSchedules(ctx context.Context, d *lambda.Deps) error {
 			continue
 		}
 
-		pastDates := lambda.PastInclusionDates(cfg.Schedule.Include.Dates, now)
+		tzLoc := lambda.ResolveTimezone(cfg.Schedule.Timezone)
+		pastDates := lambda.PastInclusionDates(cfg.Schedule.Include.Dates, now, tzLoc)
 		if len(pastDates) == 0 {
 			continue
 		}
 
 		scheduleID := lambda.ResolveScheduleID(cfg)
-
-		tzLoc := lambda.ResolveTimezone(cfg.Schedule.Timezone)
 		today := now.In(tzLoc).Format("2006-01-02")
 
 		for _, date := range pastDates {
