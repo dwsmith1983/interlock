@@ -89,13 +89,13 @@ func ResolveTimezone(tz string) *time.Location {
 // Caps DynamoDB reads when the watchdog has been down for an extended period.
 const maxInclusionLookback = 3
 
-// PastInclusionDates returns dates from the list that are on or before now,
-// sorted most recent first and capped at maxInclusionLookback (3) entries.
-// The cap bounds DynamoDB reads when the watchdog has been down for an
+// PastInclusionDates returns dates from the list that are on or before now's
+// date in loc, sorted most recent first and capped at maxInclusionLookback (3)
+// entries. The cap bounds DynamoDB reads when the watchdog has been down for an
 // extended period. Dates must be YYYY-MM-DD strings; unparseable entries
 // are silently skipped. Returns nil if no dates qualify.
-func PastInclusionDates(dates []string, now time.Time) []string {
-	nowDate := now.Format("2006-01-02")
+func PastInclusionDates(dates []string, now time.Time, loc *time.Location) []string {
+	nowDate := now.In(loc).Format("2006-01-02")
 	var past []string
 	for _, d := range dates {
 		if _, err := time.Parse("2006-01-02", d); err != nil {

@@ -31,8 +31,8 @@ schedule:
 | `trigger` | object | no | Condition that activates the evaluation loop (see below) |
 | `evaluation` | object | no | Window and interval settings for the evaluation loop |
 | `exclude` | object | no | Dates the pipeline does not run (see [Calendar Exclusions](#calendar-exclusions)) |
-| `include` | object | no | `dates` (`YYYY-MM-DD` list) the pipeline is expected to run on; the watchdog publishes `IRREGULAR_SCHEDULE_MISSED` for a past date with no trigger row. It does not stop runs on other dates. Not allowed with `cron` |
-| `time` | string | no | `HH:MM` in `timezone`: on an `include` date, the missed-date check waits until this time. Not allowed with `cron` |
+| `include` | object | no | `dates` (`YYYY-MM-DD` list) the pipeline is expected to run on; the watchdog publishes `IRREGULAR_SCHEDULE_MISSED` for a date with no trigger row once that date has begun in `timezone` (UTC when unset). It does not stop runs on other dates. Not allowed with `cron` |
+| `time` | string | no | `HH:MM` in `timezone`: on an `include` date, the missed-date check waits until this time. Without it the check fires at local midnight of the date, so set `time` to avoid an alert before the run is due. Not allowed with `cron` |
 
 ### Trigger Condition
 
