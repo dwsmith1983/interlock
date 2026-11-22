@@ -512,6 +512,7 @@ func (s *Store) GetTrigger(ctx context.Context, pipelineID, schedule, date strin
 			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
 			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
 		},
+		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get trigger %q/%s/%s: %w", pipelineID, schedule, date, err)

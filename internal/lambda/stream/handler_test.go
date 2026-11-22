@@ -88,21 +88,28 @@ func testNow() time.Time {
 }
 
 // countingSFN is a lambda.SFNAPI double that counts started executions and
-// keeps each one's input. While fail > 0, StartExecution fails without
-// counting and counts fail down, so calls always means "started".
+// keeps each one's input and name. While fail > 0, StartExecution fails
+// without counting and counts fail down, so calls always means "started". It
+// fails with err, or a plain error when err is nil.
 type countingSFN struct {
 	calls  int
 	fail   int
+	err    error
 	inputs []string
+	names  []string
 }
 
 func (c *countingSFN) StartExecution(_ context.Context, in *sfn.StartExecutionInput, _ ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
 	if c.fail > 0 {
 		c.fail--
+		if c.err != nil {
+			return nil, c.err
+		}
 		return nil, errors.New("start execution failed")
 	}
 	c.calls++
 	c.inputs = append(c.inputs, *in.Input)
+	c.names = append(c.names, *in.Name)
 	return &sfn.StartExecutionOutput{}, nil
 }
 

@@ -206,6 +206,14 @@ Fields marked `int*` use pointer semantics: omit to use the default, set to `0` 
 
 A `RERUN_REQUEST` for a date whose trigger row is still `RUNNING` is rejected with `RERUN_REJECTED` (`a run is in progress for <date>`), whatever its reason (manual, `late-data` or `data-drift`), and spends no budget. The calendar and the budget are checked first, so an excluded date or a spent budget gives those verdicts instead. A run whose execution died stays `RUNNING` until the watchdog's [stale-trigger check](../../architecture/watchdog/#stale-trigger-detection) publishes `SFN_TIMEOUT` and sets it to `FAILED_FINAL`. That happens once the trigger lock's TTL has passed, counted from the run's latest attempt (each retry refreshes it): `sfn_timeout_seconds` plus 30 minutes, 4h30m by default, plus up to one `watchdog_schedule` interval. Nothing shortens the wait. Request the rerun again once the run ends, or after the `SFN_TIMEOUT`.
 
+### A Rerun That Cannot Start
+
+When an accepted rerun's execution fails to start, the date keeps the status it had (`COMPLETED` or `FAILED_FINAL`), no rerun budget is spent, and nothing is published. The stream retries the request up to 3 times (`maximum_retry_attempts`) under the same execution name, so a retry can start the rerun; after the last one the request goes to the stream-router's dead-letter queue and has to be made again.
+
+If the rerun record cannot be deleted, the date still keeps its status, but the record stays and counts against the budget: with a budget of 1 the retry is rejected with `RERUN_REJECTED` as over the limit.
+
+The date is left `RUNNING` when the status restore fails, when the stream-router crashes between the lock reset and the start, or when the first start reached Step Functions but reported an error and that execution finished before the retry arrived (the retry counts it as started). Retries of the first two are rejected with `RERUN_REJECTED`. The date stays `RUNNING` until the watchdog's [stale-trigger check](../../architecture/watchdog/#stale-trigger-detection) publishes `SFN_TIMEOUT` and sets it to `FAILED_FINAL`, once the trigger lock's TTL has passed: `sfn_timeout_seconds` plus 30 minutes, 4h30m by default, plus up to one `watchdog_schedule` interval. Request the rerun again after the `SFN_TIMEOUT`. When a crash came after the rerun record was written, that rerun counts against the budget.
+
 ### Job Poll Window
 
 | Field | Type | Default | Range | Description |

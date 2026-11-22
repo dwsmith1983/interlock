@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A rerun whose execution could not start deleted the date's trigger row and still spent the rerun budget, so the retried request was rejected and the date lost its record.** The date now keeps its status, no budget is spent, and a retry of the request can start the rerun.
 - **A rerun request for a date whose run is still in progress started a second execution beside it.** It is now rejected with `RERUN_REJECTED` and spends no budget; request it again once the run ends. A run whose execution died stays `RUNNING` until the watchdog's stale-trigger check closes it with `SFN_TIMEOUT`, once the trigger lock's TTL has passed: `sfn_timeout_seconds` plus 30 minutes from the run's latest attempt (4h30m by default), plus up to one watchdog interval. Dry-run pipelines report the same rejection.
 - **A rejected or accepted rerun, or a late-data row, no longer hides the date's last run from the circuit breaker and the late-data check.** Asking twice no longer gets a rerun past the breaker, and late data after a rejected rerun is reported again. Late-data and drift reruns are not sent through the breaker.
 - **The rerun circuit breaker rejected every rerun of a successful date when its sensors' `updatedAt` values were RFC3339**, the documented format. It and `age_lt` now read RFC3339, epoch seconds and epoch milliseconds (a number or a string of digits), and the breaker treats an `updatedAt` it cannot read as absent, with a warning in the stream-router log.

@@ -2,12 +2,14 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	sfntypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -147,20 +149,37 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 		return nil
 	}
 
+	// Write rerun record AFTER lock is confirmed.
+	attempt, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, reason, "")
+	if err != nil {
+		undoRerunStart(ctx, d, pipelineID, schedule, date, tr, -1)
+		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
+	}
+
+	// The record's creation time, not the clock, so a redelivered request
+	// asks for the same execution. The attempt keeps two reruns started in
+	// the same second apart.
+	created := record.Change.ApproximateCreationDateTime.Time
+	if created.Unix() <= 0 {
+		created = d.Now()
+	}
+	execName := fmt.Sprintf("%s-%s-%s-rerun%d-%d", pipelineID, schedule, date, attempt, created.Unix())
+	if err := lambda.StartSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
+		// Counted as started on purpose, unlike startRetry in orchestrator/complete.go.
+		var exists *sfntypes.ExecutionAlreadyExists
+		if !errors.As(err, &exists) {
+			undoRerunStart(ctx, d, pipelineID, schedule, date, tr, attempt)
+			return fmt.Errorf("start SFN rerun for %q: %w", pipelineID, err)
+		}
+		d.Logger.Info("rerun execution already exists, counting it as started",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date, "execution", execName)
+	}
+
 	// Delete date-scoped postrun-baseline so re-run captures fresh baseline.
 	if cfg.PostRun != nil {
 		if err := d.Store.DeleteSensor(ctx, pipelineID, "postrun-baseline#"+date); err != nil {
 			d.Logger.Warn("failed to delete postrun-baseline sensor", "error", err, "pipeline", pipelineID, "date", date)
 		}
-	}
-
-	// Write rerun record AFTER lock is confirmed.
-	attempt, err := d.Store.WriteRerun(ctx, pipelineID, schedule, date, reason, "")
-	if err != nil {
-		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); relErr != nil {
-			d.Logger.Warn("failed to release lock after rerun write failure", "error", relErr)
-		}
-		return fmt.Errorf("write rerun for %q: %w", pipelineID, err)
 	}
 
 	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
@@ -173,18 +192,39 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunAccepted, "error", pubErr)
 	}
 
-	// The attempt keeps two reruns started in the same second apart.
-	execName := fmt.Sprintf("%s-%s-%s-rerun%d-%d", pipelineID, schedule, date, attempt, d.Now().Unix())
-	if err := lambda.StartSFNWithName(ctx, d, cfg, pipelineID, schedule, date, execName); err != nil {
-		if relErr := d.Store.ReleaseTriggerLock(ctx, pipelineID, schedule, date); relErr != nil {
-			d.Logger.Warn("failed to release lock after SFN start failure", "error", relErr)
-		}
-		return fmt.Errorf("start SFN rerun for %q: %w", pipelineID, err)
-	}
-
 	d.Logger.Info("started rerun",
 		"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason)
 	return nil
+}
+
+// rerunUndoTimeout bounds undoRerunStart, which runs on a context of its own
+// so an expired request context still lets it put the date back.
+const rerunUndoTimeout = 5 * time.Second
+
+// undoRerunStart puts a date back as it was before a rerun that could not
+// start: it deletes the rerun row when one was written (attempt >= 0) and
+// restores the trigger status tr held before the lock reset. Failures are
+// logged. A row that could not be deleted still counts against the budget;
+// a status that could not be restored leaves the date RUNNING until the
+// watchdog's stale-trigger check closes it.
+func undoRerunStart(ctx context.Context, d *lambda.Deps, pipelineID, schedule, date string, tr *types.ControlRecord, attempt int) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rerunUndoTimeout)
+	defer cancel()
+	if attempt >= 0 {
+		if err := d.Store.DeleteRerun(ctx, pipelineID, schedule, date, attempt); err != nil {
+			d.Logger.ErrorContext(ctx, "failed to delete rerun row of a rerun that did not start",
+				"pipelineId", pipelineID, "schedule", schedule, "date", date, "attempt", attempt, "error", err)
+		}
+	}
+	if tr == nil {
+		d.Logger.ErrorContext(ctx, "no earlier trigger status to restore after a rerun did not start",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date)
+		return
+	}
+	if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, tr.Status); err != nil {
+		d.Logger.ErrorContext(ctx, "failed to restore trigger status after a rerun did not start",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date, "status", tr.Status, "error", err)
+	}
 }
 
 // rejectRerun records a rejected rerun request: a rerun-rejected job row
