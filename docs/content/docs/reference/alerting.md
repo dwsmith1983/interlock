@@ -59,7 +59,7 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `POST_RUN_FAILED` | Post-run rules failed | A post-run sensor arrived inside the watch window, did not drift, and the `postRun.rules` failed |
 | `POST_RUN_PASSED` | Post-run rules passed | As `POST_RUN_FAILED`, when the rules pass. Not an alert |
 | `POST_RUN_BASELINE_CAPTURED` | Post-run baseline written | A successful run's sensor values were captured as the drift baseline. Not an alert |
-| `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Watchdog detected no post-run sensor within `sensorTimeout` of the trigger row's `completedAt`; once per date, retried on the next pass if the publish fails |
+| `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Within `sensorTimeout` of the trigger row's `completedAt`, the watchdog found no post-run sensor that exists and either differs from its completion-time baseline or was absent then; once per date, retried on the next pass if the publish fails |
 | `BASELINE_CAPTURE_FAILED` | Baseline capture error | Error occurred while capturing the post-run baseline at trigger completion |
 | `SENSOR_DEADLINE_EXPIRED` | A run date passed its cutoff without starting | The run date is closed (`FAILED_FINAL`) by the stream-router or the watchdog's reconciliation when a sensor is processed after the cutoff, by the watchdog on its next pass for a date with a `RUN#` row, or by the orchestrator when a run is still evaluating at the cutoff, and from then nothing more starts for it; `source` says which; detail has `cutoff` and `cutoffAt`; run it manually with `RERUN_REQUEST` |
 | `PIPELINE_EXCLUDED` | Pipeline excluded by calendar | Sensor, rerun, job-failure, or post-run drift skipped due to calendar exclusion |

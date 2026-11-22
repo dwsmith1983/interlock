@@ -3,9 +3,12 @@ package watchdog
 import (
 	"context"
 	"fmt"
-	"strconv"
+	"log/slog"
+	"reflect"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -43,14 +46,11 @@ func detectMissingPostRunSensors(ctx context.Context, d *lambda.Deps) error {
 			continue
 		}
 
-		baselineKey := "postrun-baseline#" + today
-		baseline, err := d.Store.GetSensorData(ctx, id, baselineKey)
+		// No baseline row means no post-run sensor existed at completion.
+		baseline, err := d.Store.GetSensorData(ctx, id, "postrun-baseline#"+today)
 		if err != nil {
 			d.Logger.Error("baseline lookup failed in post-run sensor check",
 				"pipelineId", id, "error", err)
-			continue
-		}
-		if baseline == nil {
 			continue
 		}
 
@@ -87,8 +87,9 @@ func detectMissingPostRunSensors(ctx context.Context, d *lambda.Deps) error {
 				"pipelineId", id, "error", err)
 			continue
 		}
+		lambda.RemapPerPeriodSensors(sensors, today)
 
-		if hasPostRunSensorUpdate(cfg.PostRun.Rules, sensors, completionTime) {
+		if postRunSensorArrived(d.Logger, id, cfg.PostRun.Rules, sensors, baseline) {
 			continue
 		}
 
@@ -132,35 +133,45 @@ func parseSensorTimeout(s string) time.Duration {
 	return d
 }
 
-func hasPostRunSensorUpdate(rules []types.ValidationRule, sensors map[string]map[string]interface{}, completionTime time.Time) bool {
-	completionMillis := completionTime.UnixMilli()
-
+// postRunSensorArrived reports whether any post-run rule's sensor is present
+// and differs from its entry in the baseline captured at completion, or has
+// no entry there. The baseline entry was stored once more than the sensor,
+// so the sensor is put through the same round trip before the comparison.
+// A sensor that cannot be compared counts as arrived, so it raises no alert.
+// A sensor rewritten with identical values has not arrived.
+func postRunSensorArrived(logger *slog.Logger, pipelineID string, rules []types.ValidationRule, sensors map[string]map[string]interface{}, baseline map[string]interface{}) bool {
 	for _, rule := range rules {
 		data, ok := sensors[rule.Key]
 		if !ok {
 			continue
 		}
-
-		updatedAt, ok := data["updatedAt"]
+		entry, ok := baseline[rule.Key]
 		if !ok {
-			continue
+			return true
 		}
-
-		var ts int64
-		switch v := updatedAt.(type) {
-		case float64:
-			ts = int64(v)
-		case int64:
-			ts = v
-		case string:
-			ts, _ = strconv.ParseInt(v, 10, 64)
-		default:
-			continue
+		stored, err := storedForm(data)
+		if err != nil {
+			logger.Warn("post-run sensor could not be compared with its baseline",
+				"pipelineId", pipelineID, "sensor", rule.Key, "error", err)
+			return true
 		}
-
-		if ts > completionMillis {
+		if !reflect.DeepEqual(entry, stored) {
 			return true
 		}
 	}
 	return false
+}
+
+// storedForm returns data as it reads back once stored as a baseline entry:
+// sets come back as lists and an empty binary as null.
+func storedForm(data map[string]interface{}) (interface{}, error) {
+	item, err := attributevalue.MarshalMap(map[string]interface{}{"v": data})
+	if err != nil {
+		return nil, fmt.Errorf("encode sensor: %w", err)
+	}
+	var out map[string]interface{}
+	if err := attributevalue.UnmarshalMap(item, &out); err != nil {
+		return nil, fmt.Errorf("decode sensor: %w", err)
+	}
+	return out["v"], nil
 }
