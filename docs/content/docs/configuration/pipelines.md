@@ -202,6 +202,10 @@ Fields marked `int*` use pointer semantics: omit to use the default, set to `0` 
 
 **Failure classification**: when a job fails, the trigger runner may report a `FailureCategory` (`PERMANENT`, `TRANSIENT`, or `TIMEOUT`). Permanent failures (e.g., application code bugs, schema mismatches) use the `maxCodeRetries` budget. Transient failures (e.g., service throttling, temporary network issues) and unclassified failures use the `maxRetries` budget.
 
+### Rerun Requests for a Running Date
+
+A `RERUN_REQUEST` for a date whose trigger row is still `RUNNING` is rejected with `RERUN_REJECTED` (`a run is in progress for <date>`), whatever its reason (manual, `late-data` or `data-drift`), and spends no budget. The calendar and the budget are checked first, so an excluded date or a spent budget gives those verdicts instead. A run whose execution died stays `RUNNING` until the watchdog's [stale-trigger check](../../architecture/watchdog/#stale-trigger-detection) publishes `SFN_TIMEOUT` and sets it to `FAILED_FINAL`. That happens once the trigger lock's TTL has passed, counted from the run's latest attempt (each retry refreshes it): `sfn_timeout_seconds` plus 30 minutes, 4h30m by default, plus up to one `watchdog_schedule` interval. Nothing shortens the wait. Request the rerun again once the run ends, or after the `SFN_TIMEOUT`.
+
 ### Job Poll Window
 
 | Field | Type | Default | Range | Description |

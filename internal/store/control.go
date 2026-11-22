@@ -549,10 +549,10 @@ func (s *Store) HasTriggerForDate(ctx context.Context, pipelineID, schedule, dat
 	return out.Count > 0, nil
 }
 
-// ResetTriggerLock refreshes the TTL on an existing trigger lock without
-// releasing it. This extends the lock window for long-running jobs that need
-// more time than the original TTL allowed. Returns (true, nil) if the row
-// existed and was updated, (false, nil) if the row does not exist.
+// ResetTriggerLock takes a finished date's trigger row back for a rerun: it
+// sets the row RUNNING with a fresh TTL. It returns (true, nil) when it did,
+// and (false, nil) when the row is missing or already RUNNING, so a rerun
+// never starts beside a run in progress.
 func (s *Store) ResetTriggerLock(ctx context.Context, pipelineID, schedule, date string, ttl time.Duration) (bool, error) {
 	ttlEpoch := fmt.Sprintf("%d", s.now().Add(ttl).Unix())
 	_, err := s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -561,7 +561,7 @@ func (s *Store) ResetTriggerLock(ctx context.Context, pipelineID, schedule, date
 			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
 			"SK": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, date)},
 		},
-		ConditionExpression: aws.String("attribute_exists(PK)"),
+		ConditionExpression: aws.String("attribute_exists(PK) AND #status <> :running"),
 		UpdateExpression:    aws.String("SET #status = :running, #ttl = :ttl"),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",

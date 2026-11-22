@@ -41,6 +41,9 @@ func TestMem_TriggerLockThroughStore(t *testing.T) {
 			t.Fatalf("acquire %d = %v, %v, want %v, nil", i+1, ok, err, want)
 		}
 	}
+	if ok, err := st.ResetTriggerLock(ctx, "p", "s", "d", time.Hour); ok || err != nil {
+		t.Fatalf("reset of a RUNNING row = %v, %v, want false, nil", ok, err)
+	}
 	if err := st.SetTriggerStatus(ctx, "p", "s", "d", types.TriggerStatusFailedFinal); err != nil {
 		t.Fatal(err)
 	}

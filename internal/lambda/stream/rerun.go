@@ -57,18 +57,20 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 		}
 	}
 
+	// The date's trigger row as it was before this request: nil when the date
+	// has none.
+	tr, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
+	if err != nil {
+		return fmt.Errorf("read trigger for rerun request of %q: %w", pipelineID, err)
+	}
+
 	// An automatic request is re-checked: the post-run watch window may have
 	// ended since it was written.
-	if reason == "late-data" || reason == "data-drift" {
-		tr, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
-		if err != nil {
-			return fmt.Errorf("re-check rerun request: %w", err)
-		}
-		if tr != nil && tr.Status == types.TriggerStatusCompleted && !lambda.PostRunWatched(cfg, tr, d.Now()) {
-			d.Logger.InfoContext(ctx, "rerun request skipped: post-run watch window has ended",
-				"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason, "completedAt", tr.CompletedAt)
-			return nil
-		}
+	automatic := reason == "late-data" || reason == "data-drift"
+	if automatic && tr != nil && tr.Status == types.TriggerStatusCompleted && !lambda.PostRunWatched(cfg, tr, d.Now()) {
+		d.Logger.InfoContext(ctx, "rerun request skipped: post-run watch window has ended",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason, "completedAt", tr.CompletedAt)
+		return nil
 	}
 
 	// Calendar exclusion check (execution date).
@@ -104,17 +106,14 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 	}
 
 	if count >= budget {
-		if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
-			types.JobEventRerunRejected, "", 0, limitLabel); err != nil {
-			d.Logger.Warn("failed to write rerun-rejected joblog for limit exceeded", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
-		}
-		if err := lambda.PublishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
-			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, limitLabel)); err != nil {
-			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunRejected, "error", err)
-		}
-		d.Logger.Info("rerun request rejected (limit exceeded)",
-			"pipelineId", pipelineID, "schedule", schedule, "date", date,
-			"reason", reason, "count", count, "budget", budget)
+		rejectRerun(ctx, d, pipelineID, schedule, date, reason, limitLabel)
+		return nil
+	}
+
+	// A rerun beside a run still in progress would launch the job twice, and
+	// whichever finished last would decide the date's status.
+	if tr != nil && tr.Status == types.TriggerStatusRunning {
+		rejectRerun(ctx, d, pipelineID, schedule, date, reason, runInProgress(date))
 		return nil
 	}
 
@@ -123,25 +122,20 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 		return err
 	}
 	if breaker == breakerRejected {
-		rejectReason := "previous run succeeded and no sensor data has changed"
-		if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
-			types.JobEventRerunRejected, "", 0, rejectReason); err != nil {
-			d.Logger.Warn("failed to write rerun-rejected joblog for circuit breaker", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
-		}
-		if err := lambda.PublishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
-			fmt.Sprintf("rerun rejected for %s: %s", pipelineID, rejectReason)); err != nil {
-			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunRejected, "error", err)
-		}
-		d.Logger.Info("rerun request rejected",
-			"pipelineId", pipelineID, "schedule", schedule, "date", date,
-			"reason", rejectReason)
+		rejectRerun(ctx, d, pipelineID, schedule, date, reason, "previous run succeeded and no sensor data has changed")
 		return nil
 	}
 
-	// Acceptance: acquire lock FIRST (before writing rerun).
+	// Acceptance: acquire lock FIRST (before writing rerun). The reset refuses
+	// a RUNNING row, so a run that took the date after the read above is
+	// rejected here like one the read saw.
 	acquired, err := d.Store.ResetTriggerLock(ctx, pipelineID, schedule, date, lambda.ResolveTriggerLockTTL())
 	if err != nil {
 		return fmt.Errorf("reset trigger lock for %q: %w", pipelineID, err)
+	}
+	if !acquired && tr != nil {
+		rejectRerun(ctx, d, pipelineID, schedule, date, reason, runInProgress(date))
+		return nil
 	}
 	if !acquired {
 		if pubErr := lambda.PublishEvent(ctx, d, string(types.EventInfraFailure), pipelineID, schedule, date,
@@ -191,6 +185,26 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 	d.Logger.Info("started rerun",
 		"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason)
 	return nil
+}
+
+// rejectRerun records a rejected rerun request: a rerun-rejected job row
+// carrying why, a RERUN_REJECTED event and an info log naming the request's
+// reason and why.
+func rejectRerun(ctx context.Context, d *lambda.Deps, pipelineID, schedule, date, reason, why string) {
+	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventRerunRejected, "", 0, why); err != nil {
+		d.Logger.Warn("failed to write rerun-rejected joblog", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
+	}
+	if err := lambda.PublishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
+		fmt.Sprintf("rerun rejected for %s: %s", pipelineID, why)); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunRejected, "error", err)
+	}
+	d.Logger.Info("rerun request rejected",
+		"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason, "why", why)
+}
+
+// runInProgress is the rejection reason for a date whose run is RUNNING.
+func runInProgress(date string) string {
+	return "a run is in progress for " + date
 }
 
 // Circuit breaker verdicts. The dry-run detail reports them as they are.

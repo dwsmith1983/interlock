@@ -608,3 +608,151 @@ func TestRerunRequest_AutomaticSkipsBreaker(t *testing.T) {
 		})
 	}
 }
+
+// TestRerunRequest_RunningDateIsRefused: a request of any reason for a date
+// whose run is still RUNNING is rejected with RERUN_REJECTED and leaves the
+// run alone: no start, no rerun row, the post-run baseline kept and the
+// trigger row's status, ttl and startedAt unchanged. The calendar and the
+// budget are checked first, so an excluded date or a spent budget gives
+// those verdicts instead; the circuit breaker comes after. A rejection is
+// logged with the request's reason. Unless a row says otherwise the date's
+// last job row is a fail and the sensor is newer.
+func TestRerunRequest_RunningDateIsRefused(t *testing.T) {
+	const date = "2026-03-10"
+	const inProgress = "rerun rejected for p: a run is in progress for 2026-03-10"
+	rejected := string(types.EventRerunRejected)
+	tests := []struct {
+		name, reason string
+		job          string // the last job row's event; empty means fail
+		updatedAt    string // the sensor's updatedAt; empty means 09:00, after the job
+		reruns       []string
+		excluded     bool
+		wantEvent    string
+		wantMsg      string
+	}{
+		{name: "manual", reason: "manual", wantEvent: rejected, wantMsg: inProgress},
+		{name: "late-data", reason: "late-data", wantEvent: rejected, wantMsg: inProgress},
+		{name: "data-drift", reason: "data-drift", wantEvent: rejected, wantMsg: inProgress},
+		{name: "breaker would reject", reason: "manual", job: types.JobEventSuccess, updatedAt: "1773100800000",
+			wantEvent: rejected, wantMsg: inProgress},
+		{name: "budget spent", reason: "manual", reruns: []string{"manual"}, wantEvent: rejected,
+			wantMsg: "rerun rejected for p: manual rerun limit exceeded"},
+		{name: "excluded date", reason: "manual", excluded: true, wantEvent: string(types.EventPipelineExcluded),
+			wantMsg: "rerun blocked for p: execution date 2026-03-10 excluded by calendar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "p"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
+				PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
+			}
+			if tt.excluded {
+				cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{date}}
+			}
+			d, mem, sfnFake, eb := jobWorld(t, cfg)
+			pk := &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")}
+			mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": pk,
+				"SK":        &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", date)},
+				"status":    &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+				"ttl":       &ddbtypes.AttributeValueMemberN{Value: "1773160200"},
+				"startedAt": &ddbtypes.AttributeValueMemberS{Value: "2026-03-10T12:30:00Z"}})
+			mem.Put("joblog", map[string]ddbtypes.AttributeValue{"PK": pk,
+				"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
+				"event": &ddbtypes.AttributeValueMemberS{Value: cmp.Or(tt.job, types.JobEventFail)}})
+			for i, reason := range tt.reruns {
+				mem.Put("rerun", map[string]ddbtypes.AttributeValue{"PK": pk,
+					"SK":     &ddbtypes.AttributeValueMemberS{Value: types.RerunSK("stream", date, i)},
+					"reason": &ddbtypes.AttributeValueMemberS{Value: reason}})
+			}
+			ctx := context.Background()
+			if err := d.Store.WriteSensor(ctx, "p", "upstream", map[string]interface{}{"status": "ready", "updatedAt": cmp.Or(tt.updatedAt, "1773133200000")}); err != nil {
+				t.Fatal(err)
+			}
+			baselineKey := "postrun-baseline#" + date
+			if err := d.Store.WriteSensor(ctx, "p", baselineKey, map[string]interface{}{"upstream": map[string]interface{}{"count": 1}}); err != nil {
+				t.Fatal(err)
+			}
+			rerunCountQuery(d.Store.Client.(*storetest.FakeDynamo), mem)
+			now := mustTime(t, "2026-03-10T13:00:00Z")
+			d.NowFunc = func() time.Time { return now }
+			d.Store.Now = func() time.Time { return now }
+			logs := &bytes.Buffer{}
+			d.Logger = slog.New(slog.NewTextHandler(logs, nil))
+
+			if err := handleRecord(ctx, d, rerunRequestRecord(tt.reason, "2026-03-10T13:00:00Z")); err != nil {
+				t.Fatalf("handleRecord: %v", err)
+			}
+
+			if len(eb.events) != 1 || eb.events[0].Type != tt.wantEvent || eb.events[0].Message != tt.wantMsg {
+				t.Errorf("events = %+v, want one %s %q", eb.events, tt.wantEvent, tt.wantMsg)
+			}
+			if tt.wantEvent == rejected {
+				why := strconv.Quote(strings.TrimPrefix(tt.wantMsg, "rerun rejected for p: "))
+				if !slices.ContainsFunc(strings.Split(logs.String(), "\n"), func(line string) bool {
+					return strings.Contains(line, `msg="rerun request rejected"`) &&
+						strings.Contains(line, " reason="+tt.reason+" ") && strings.Contains(line, " why="+why)
+				}) {
+					t.Errorf("no rejection log with reason=%s why=%s:\n%s", tt.reason, why, logs)
+				}
+			}
+			if sfnFake.calls != 0 || len(mem.Items("rerun")) != len(tt.reruns) {
+				t.Errorf("StartExecution calls %d, rerun rows %d; want 0 and %d", sfnFake.calls, len(mem.Items("rerun")), len(tt.reruns))
+			}
+			wantJobs := []string{cmp.Or(tt.job, types.JobEventFail), types.JobEventRerunRejected}
+			if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
+				t.Errorf("job rows = %v, want %v", got, wantJobs)
+			}
+			if baseline, err := d.Store.GetSensorData(ctx, "p", baselineKey); err != nil || baseline == nil {
+				t.Errorf("post-run baseline = %v, %v; want it kept", baseline, err)
+			}
+			row := mem.Get("control", pk.Value, types.TriggerSK("stream", date))
+			got := [3]string{strAttr(row["status"]), numAttr(row["ttl"]), strAttr(row["startedAt"])}
+			if want := [3]string{types.TriggerStatusRunning, "1773160200", "2026-03-10T12:30:00Z"}; got != want {
+				t.Errorf("trigger status/ttl/startedAt = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// numAttr is a number attribute's value, or "" for anything else.
+func numAttr(v ddbtypes.AttributeValue) string {
+	if n, ok := v.(*ddbtypes.AttributeValueMemberN); ok {
+		return n.Value
+	}
+	return ""
+}
+
+// TestRerunRequest_LostResetRace: the date read COMPLETED, but a run took the
+// row before the lock reset, so the reset's condition fails. That is a run in
+// progress, not an infrastructure failure: the request is rejected and
+// nothing starts.
+func TestRerunRequest_LostResetRace(t *testing.T) {
+	now := mustTime(t, "2026-03-10T13:00:00Z")
+	d, mem, sfnFake, eb := rerunWorld(t, "2026-03-10T09:00:00Z", &now)
+	fake := d.Store.Client.(*storetest.FakeDynamo)
+	update := fake.UpdateItemFn
+	fake.UpdateItemFn = func(ctx context.Context, in *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+		if sk := strAttr(in.Key["SK"]); strings.HasPrefix(sk, "TRIGGER#") {
+			return nil, &ddbtypes.ConditionalCheckFailedException{}
+		}
+		return update(ctx, in)
+	}
+
+	if err := handleRecord(context.Background(), d, rerunRequestRecord("manual", "2026-03-10T13:00:00Z")); err != nil {
+		t.Fatalf("handleRecord: %v", err)
+	}
+
+	const wantMsg = "rerun rejected for p: a run is in progress for 2026-03-10"
+	if len(eb.events) != 1 || eb.events[0].Type != string(types.EventRerunRejected) || eb.events[0].Message != wantMsg {
+		t.Errorf("events = %+v, want one %s %q", eb.events, types.EventRerunRejected, wantMsg)
+	}
+	if sfnFake.calls != 0 || len(mem.Items("rerun")) != 0 {
+		t.Errorf("StartExecution calls %d, rerun rows %d; want 0 and 0", sfnFake.calls, len(mem.Items("rerun")))
+	}
+	wantJobs := []string{types.JobEventSuccess, types.JobEventRerunRejected}
+	if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
+		t.Errorf("job rows = %v, want %v", got, wantJobs)
+	}
+}
