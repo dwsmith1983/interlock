@@ -15,7 +15,7 @@ import (
 // before the 14:00 cutoff, leaving no trigger row, and each watchdog pass
 // starts evaluation again. Without a cutoff the date would end with
 // VALIDATION_EXHAUSTED (a finished run), and a run left RUNNING would be
-// failed by its trigger lock TTL (1h30m in e2e) before 12:00. The watchdog
+// failed at its stale deadline (1h30m in e2e) before 12:00. The watchdog
 // publishes RELATIVE_SLA_WARNING once from 11:30 and RELATIVE_SLA_BREACH once
 // from 12:00.
 func TestScenarioRelativeSLAWarning(t *testing.T) {

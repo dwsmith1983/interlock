@@ -163,9 +163,10 @@ func localHourStart(y int, m time.Month, d, h int, loc *time.Location) time.Time
 	return t
 }
 
-// ResolveTriggerLockTTL returns the trigger lock TTL based on the
-// SFN_TIMEOUT_SECONDS env var plus a 30-minute buffer. Defaults to
-// 4h30m if the env var is not set or invalid.
+// ResolveTriggerLockTTL returns how long after a run's latest attempt its
+// trigger row's stale deadline (staleAt) falls: the SFN_TIMEOUT_SECONDS env
+// var plus a 30-minute buffer. Defaults to 4h30m if the env var is not set or
+// invalid.
 func ResolveTriggerLockTTL() time.Duration {
 	s := os.Getenv("SFN_TIMEOUT_SECONDS")
 	if s == "" {

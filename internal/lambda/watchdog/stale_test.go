@@ -64,30 +64,34 @@ func runningTriggerScan(fake *storetest.FakeDynamo, mem *storetest.Mem) {
 	}
 }
 
-// TestDetectStaleTriggers: a RUNNING trigger row whose ttl is before now gets
-// one SFN_TIMEOUT and turns FAILED_FINAL without its ttl. The clock is 09:00
+// TestDetectStaleTriggers: a RUNNING trigger row whose staleAt is before now
+// gets one SFN_TIMEOUT and turns FAILED_FINAL without staleAt or ttl, also
+// when its pipeline is now dry-run. A row with only a ttl is never stale. The
+// clock is 09:00
 // on slaTestDate (1773133200) and each row is on TriggerSK("stream",
 // slaTestDate) of pipeline p unless a case says otherwise.
 func TestDetectStaleTriggers(t *testing.T) {
 	const now = 1773133200
-	ttl := func(epoch int64) string { return strconv.FormatInt(epoch, 10) }
+	epoch := func(e int64) string { return strconv.FormatInt(e, 10) }
 	tests := []struct {
-		name   string
-		pk, sk string // "" means PipelinePK("p") and TriggerSK("stream", slaTestDate)
-		status string // "" means RUNNING
-		ttl    string // raw N value; "" means no ttl attribute
-		tweak  func(*types.PipelineConfig)
-		stale  bool
+		name    string
+		pk, sk  string // "" means PipelinePK("p") and TriggerSK("stream", slaTestDate)
+		status  string // "" means RUNNING
+		staleAt string // raw N value; "" means no staleAt attribute
+		ttl     string // raw N value; "" means no ttl attribute
+		tweak   func(*types.PipelineConfig)
+		stale   bool
 	}{
-		{name: "expired", ttl: ttl(1773129600), stale: true},
-		{name: "future", ttl: ttl(now + 12*3600)},
-		{name: "no ttl"},
-		{name: "ttl equals now", ttl: ttl(now)},
-		{name: "bad PK", pk: "BADPREFIX#p", ttl: ttl(1773129600)},
-		{name: "bad SK", sk: "TRIGGER#nodatepart", ttl: ttl(1773129600)},
-		{name: "non-trigger SK", sk: types.SensorSK("upstream"), ttl: ttl(1773129600)},
-		{name: "dry run", ttl: ttl(1773129600), tweak: dryRunHTTP},
-		{name: "expired COMPLETED", status: types.TriggerStatusCompleted, ttl: ttl(1773129600)},
+		{name: "expired", staleAt: epoch(1773129600), stale: true},
+		{name: "future", staleAt: epoch(now + 12*3600)},
+		{name: "no staleAt"},
+		{name: "staleAt equals now", staleAt: epoch(now)},
+		{name: "bad PK", pk: "BADPREFIX#p", staleAt: epoch(1773129600)},
+		{name: "bad SK", sk: "TRIGGER#nodatepart", staleAt: epoch(1773129600)},
+		{name: "non-trigger SK", sk: types.SensorSK("upstream"), staleAt: epoch(1773129600)},
+		{name: "dry run", staleAt: epoch(1773129600), tweak: dryRunHTTP, stale: true},
+		{name: "expired COMPLETED", status: types.TriggerStatusCompleted, staleAt: epoch(1773129600)},
+		{name: "ttl only, expired", ttl: epoch(1773129600)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -100,6 +104,9 @@ func TestDetectStaleTriggers(t *testing.T) {
 			d.NowFunc = func() time.Time { return time.Unix(now, 0).UTC() }
 			pk, sk, status := cmp.Or(tt.pk, types.PipelinePK("p")), cmp.Or(tt.sk, types.TriggerSK("stream", slaTestDate)), cmp.Or(tt.status, types.TriggerStatusRunning)
 			row := sItem("PK", pk, "SK", sk, "status", status)
+			if tt.staleAt != "" {
+				row["staleAt"] = &ddbtypes.AttributeValueMemberN{Value: tt.staleAt}
+			}
 			if tt.ttl != "" {
 				row["ttl"] = &ddbtypes.AttributeValueMemberN{Value: tt.ttl}
 			}
@@ -116,15 +123,16 @@ func TestDetectStaleTriggers(t *testing.T) {
 				}
 				return
 			}
-			want := map[string]interface{}{"source": "watchdog", "actionHint": "step function exceeded TTL \u2014 check SFN execution history",
-				"ttlExpired": "2026-03-10T08:00:00Z"}
+			want := map[string]interface{}{"source": "watchdog", "actionHint": "step function passed its stale deadline: check SFN execution history",
+				"staleAt": "2026-03-10T08:00:00Z"}
 			wantMsg := "step function timed out for p/stream/" + slaTestDate
 			if len(rec.events) != 1 || rec.events[0] != string(types.EventSFNTimeout) || rec.details[0].Date != slaTestDate ||
 				rec.details[0].Message != wantMsg || !maps.Equal(rec.details[0].Detail, want) {
 				t.Fatalf("events %v with %+v, want one SFN_TIMEOUT for %s, %q with %v", rec.events, rec.details, slaTestDate, wantMsg, want)
 			}
-			if _, hasTTL := got["ttl"]; got["status"].(*ddbtypes.AttributeValueMemberS).Value != types.TriggerStatusFailedFinal || hasTTL {
-				t.Errorf("trigger row = %v, want FAILED_FINAL without ttl", got)
+			_, hasStaleAt := got["staleAt"]
+			if _, hasTTL := got["ttl"]; got["status"].(*ddbtypes.AttributeValueMemberS).Value != types.TriggerStatusFailedFinal || hasStaleAt || hasTTL {
+				t.Errorf("trigger row = %v, want FAILED_FINAL without staleAt or ttl", got)
 			}
 		})
 	}

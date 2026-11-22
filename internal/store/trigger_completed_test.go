@@ -12,7 +12,8 @@ import (
 )
 
 // TestMarkTriggerCompleted: the row becomes COMPLETED with the completion time
-// in UTC and no TTL, keeping startedAt; a later completion moves completedAt.
+// in UTC and neither staleAt nor ttl, keeping startedAt; a later completion
+// moves completedAt.
 func TestMarkTriggerCompleted(t *testing.T) {
 	ctx := context.Background()
 	pk, sk := types.PipelinePK("p"), types.TriggerSK("stream", "2026-03-10")
@@ -21,6 +22,7 @@ func TestMarkTriggerCompleted(t *testing.T) {
 	mem.Put("control", map[string]ddbtypes.AttributeValue{
 		"PK": &ddbtypes.AttributeValueMemberS{Value: pk}, "SK": &ddbtypes.AttributeValueMemberS{Value: sk},
 		"status":    &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"staleAt":   &ddbtypes.AttributeValueMemberN{Value: "1"},
 		"ttl":       &ddbtypes.AttributeValueMemberN{Value: "1"},
 		"startedAt": &ddbtypes.AttributeValueMemberS{Value: "2026-03-10T11:00:00Z"},
 	})
@@ -33,9 +35,10 @@ func TestMarkTriggerCompleted(t *testing.T) {
 	if err != nil || rec == nil {
 		t.Fatalf("GetTrigger = %v, %v", rec, err)
 	}
-	if rec.Status != types.TriggerStatusCompleted || rec.CompletedAt != "2026-03-10T12:00:00Z" || rec.TTL != 0 || rec.StartedAt != "2026-03-10T11:00:00Z" {
-		t.Errorf("row status/completedAt/ttl/startedAt = %q %q %d %q, want COMPLETED 2026-03-10T12:00:00Z 0 2026-03-10T11:00:00Z",
-			rec.Status, rec.CompletedAt, rec.TTL, rec.StartedAt)
+	if rec.Status != types.TriggerStatusCompleted || rec.CompletedAt != "2026-03-10T12:00:00Z" || rec.StaleAt != 0 || rec.TTL != 0 ||
+		rec.StartedAt != "2026-03-10T11:00:00Z" {
+		t.Errorf("row status/completedAt/staleAt/ttl/startedAt = %q %q %d %d %q, want COMPLETED 2026-03-10T12:00:00Z 0 0 2026-03-10T11:00:00Z",
+			rec.Status, rec.CompletedAt, rec.StaleAt, rec.TTL, rec.StartedAt)
 	}
 
 	if err := s.MarkTriggerCompleted(ctx, "p", "stream", "2026-03-10", time.Date(2026, 3, 11, 8, 0, 0, 0, time.UTC)); err != nil {
@@ -51,7 +54,7 @@ func TestMarkTriggerCompleted(t *testing.T) {
 }
 
 // TestMarkTriggerCompleted_NoRow: like SetTriggerStatus, a missing row is
-// created COMPLETED with completedAt and no TTL.
+// created COMPLETED with completedAt and neither staleAt nor ttl.
 func TestMarkTriggerCompleted_NoRow(t *testing.T) {
 	ctx := context.Background()
 	fake, _ := storetest.NewMem()
@@ -64,7 +67,8 @@ func TestMarkTriggerCompleted_NoRow(t *testing.T) {
 	if err != nil || rec == nil {
 		t.Fatalf("GetTrigger = %v, %v, want the created row", rec, err)
 	}
-	if rec.Status != types.TriggerStatusCompleted || rec.CompletedAt != "2026-03-10T12:00:00Z" || rec.TTL != 0 {
-		t.Errorf("row status/completedAt/ttl = %q %q %d, want COMPLETED 2026-03-10T12:00:00Z 0", rec.Status, rec.CompletedAt, rec.TTL)
+	if rec.Status != types.TriggerStatusCompleted || rec.CompletedAt != "2026-03-10T12:00:00Z" || rec.StaleAt != 0 || rec.TTL != 0 {
+		t.Errorf("row status/completedAt/staleAt/ttl = %q %q %d %d, want COMPLETED 2026-03-10T12:00:00Z 0 0",
+			rec.Status, rec.CompletedAt, rec.StaleAt, rec.TTL)
 	}
 }

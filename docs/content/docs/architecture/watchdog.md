@@ -30,7 +30,7 @@ This is a classic STAMP gap: the control structure assumes the controlled proces
 
 ## Stale Trigger Detection
 
-The watchdog scans the control table for `TRIGGER#` records with `RUNNING` status and checks whether their TTL has expired.
+The watchdog scans the control table for `TRIGGER#` records with `RUNNING` status and checks whether their stale deadline (`staleAt`) has passed.
 
 ### Algorithm
 
@@ -38,7 +38,7 @@ The watchdog scans the control table for `TRIGGER#` records with `RUNNING` statu
 Scan all TRIGGER# records with status=RUNNING
 
 For each trigger:
-  If TTL > 0 and now > TTL → stale
+  If staleAt > 0 and now > staleAt → stale
   Otherwise → not stale (skip)
 
   Parse pipeline ID, schedule, date from PK/SK
@@ -48,7 +48,9 @@ For each trigger:
 
 ### Stale Threshold
 
-A trigger lock's TTL is `sfn_timeout_seconds` plus 30 minutes (4h30m by default). Triggers whose TTL has expired are considered timed-out Step Function executions. The watchdog transitions them to `FAILED_FINAL` status. It does not retry: retries start only from a run's CompleteTrigger, and a stale trigger has no run left to start one.
+A running trigger row carries its stale deadline as `staleAt`: `sfn_timeout_seconds` plus 30 minutes (4h30m by default) from the run's latest attempt, since each retry refreshes it. The row has no `ttl`, so DynamoDB never deletes it: a live run's row is closed by its own execution, and a dead run's only by the watchdog. Triggers past their `staleAt` are considered timed-out Step Function executions. The watchdog transitions them to `FAILED_FINAL` status. It does not retry: retries start only from a run's CompleteTrigger, and a stale trigger has no run left to start one. With the watchdog stopped, a dead run stays `RUNNING`.
+
+A dry-run pipeline never takes a trigger lock, so a `RUNNING` row for one is left from before the pipeline switched to dry-run; the watchdog closes it the same way.
 
 ### Event Format
 
@@ -61,10 +63,17 @@ A trigger lock's TTL is `sfn_timeout_seconds` plus 30 minutes (4h30m by default)
     "scheduleId": "stream",
     "date": "2026-03-01",
     "message": "step function timed out for silver-orders/stream/2026-03-01",
-    "timestamp": "2026-03-01T12:30:00Z"
+    "timestamp": "2026-03-01T12:30:00Z",
+    "detail": {
+      "source": "watchdog",
+      "actionHint": "step function passed its stale deadline: check SFN execution history",
+      "staleAt": "2026-03-01T12:25:00Z"
+    }
   }
 }
 ```
+
+`staleAt` is the row's stale deadline in RFC3339 UTC.
 
 ## Missed Schedule Detection
 

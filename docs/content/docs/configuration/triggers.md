@@ -147,7 +147,9 @@ run (reported as `JOB_FAILED`) and CompleteTrigger treats it like any other
 timeout, retrying while the budget lasts. Set the window to cover the job's
 runtime. A `fail` or `timeout` that arrives after its execution has ended, or
 for a run ID that is not the current attempt's, publishes `JOB_FAILED` and is
-otherwise ignored; a lock it leaves stale is the watchdog's to clear.
+otherwise ignored; a row it leaves `RUNNING` is closed by the watchdog with
+`SFN_TIMEOUT` once its stale deadline (`staleAt`, `sfn_timeout_seconds` plus 30
+minutes from the latest attempt) passes.
 
 ### `airflow`
 

@@ -20,7 +20,8 @@ func TestFailTriggerUnlessCompleted(t *testing.T) {
 			if status != "" {
 				mem.Put("control", map[string]ddbtypes.AttributeValue{
 					"PK": &ddbtypes.AttributeValueMemberS{Value: pk}, "SK": &ddbtypes.AttributeValueMemberS{Value: sk},
-					"status": &ddbtypes.AttributeValueMemberS{Value: status}, "ttl": &ddbtypes.AttributeValueMemberN{Value: "1"},
+					"status":  &ddbtypes.AttributeValueMemberS{Value: status},
+					"staleAt": &ddbtypes.AttributeValueMemberN{Value: "1"}, "ttl": &ddbtypes.AttributeValueMemberN{Value: "1"},
 				})
 			}
 			written, err := storetest.NewStore(fake).FailTriggerUnlessCompleted(context.Background(), "p", "s", "2026-03-01")
@@ -29,13 +30,14 @@ func TestFailTriggerUnlessCompleted(t *testing.T) {
 				t.Fatalf("FailTriggerUnlessCompleted = %v, %v, want %v, nil", written, err, wantWritten)
 			}
 			item := mem.Get("control", pk, sk)
+			_, hasStaleAt := item["staleAt"]
 			_, hasTTL := item["ttl"]
-			want, wantTTL := types.TriggerStatusFailedFinal, false
+			want, wantKept := types.TriggerStatusFailedFinal, false
 			if !wantWritten {
-				want, wantTTL = types.TriggerStatusCompleted, true
+				want, wantKept = types.TriggerStatusCompleted, true
 			}
-			if got := item["status"].(*ddbtypes.AttributeValueMemberS).Value; got != want || hasTTL != wantTTL {
-				t.Errorf("row status %q ttl %v, want %q ttl %v", got, hasTTL, want, wantTTL)
+			if got := item["status"].(*ddbtypes.AttributeValueMemberS).Value; got != want || hasStaleAt != wantKept || hasTTL != wantKept {
+				t.Errorf("row status %q staleAt %v ttl %v, want %q with both %v", got, hasStaleAt, hasTTL, want, wantKept)
 			}
 		})
 	}

@@ -24,13 +24,18 @@ func TestMem_TriggerLockThroughStore(t *testing.T) {
 	st := storetest.NewStore(fake)
 	st.Now = func() time.Time { return time.Unix(1000, 0) }
 	ctx := context.Background()
+	// status is the row's status and whether it has staleAt; a row with ttl
+	// fails the test, since trigger rows never carry one.
 	status := func() (string, bool) {
 		item := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", "d"))
-		_, hasTTL := item["ttl"]
 		if item == nil {
 			return "", false
 		}
-		return item["status"].(*ddbtypes.AttributeValueMemberS).Value, hasTTL
+		if _, hasTTL := item["ttl"]; hasTTL {
+			t.Fatalf("trigger row has ttl: %v", item)
+		}
+		_, hasStaleAt := item["staleAt"]
+		return item["status"].(*ddbtypes.AttributeValueMemberS).Value, hasStaleAt
 	}
 
 	if ok, err := st.ResetTriggerLock(ctx, "p", "s", "d", time.Hour); ok || err != nil {
@@ -44,17 +49,21 @@ func TestMem_TriggerLockThroughStore(t *testing.T) {
 	if ok, err := st.ResetTriggerLock(ctx, "p", "s", "d", time.Hour); ok || err != nil {
 		t.Fatalf("reset of a RUNNING row = %v, %v, want false, nil", ok, err)
 	}
+	// A row left by an older writer still has a ttl; FAILED_FINAL removes it.
+	old := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", "d"))
+	old["ttl"] = &ddbtypes.AttributeValueMemberN{Value: "1"}
+	mem.Put("control", old)
 	if err := st.SetTriggerStatus(ctx, "p", "s", "d", types.TriggerStatusFailedFinal); err != nil {
 		t.Fatal(err)
 	}
-	if got, hasTTL := status(); got != types.TriggerStatusFailedFinal || hasTTL {
-		t.Fatalf("after SetTriggerStatus = %q ttl %v, want FAILED_FINAL without ttl", got, hasTTL)
+	if got, hasStaleAt := status(); got != types.TriggerStatusFailedFinal || hasStaleAt {
+		t.Fatalf("after SetTriggerStatus = %q staleAt %v, want FAILED_FINAL without staleAt", got, hasStaleAt)
 	}
 	if ok, err := st.ResetTriggerLock(ctx, "p", "s", "d", time.Hour); !ok || err != nil {
 		t.Fatalf("reset of a present row = %v, %v, want true, nil", ok, err)
 	}
-	if got, hasTTL := status(); got != types.TriggerStatusRunning || !hasTTL {
-		t.Fatalf("after reset = %q ttl %v, want RUNNING with ttl", got, hasTTL)
+	if got, hasStaleAt := status(); got != types.TriggerStatusRunning || !hasStaleAt {
+		t.Fatalf("after reset = %q staleAt %v, want RUNNING with staleAt", got, hasStaleAt)
 	}
 	if err := st.ReleaseTriggerLock(ctx, "p", "s", "d"); err != nil {
 		t.Fatal(err)
