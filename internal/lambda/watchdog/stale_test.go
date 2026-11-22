@@ -138,6 +138,36 @@ func TestDetectStaleTriggers(t *testing.T) {
 	}
 }
 
+// TestDetectStaleTriggers_PublishFailureRetries: a failed publish leaves the
+// stale row RUNNING with its staleAt, so the next pass alerts and closes it.
+func TestDetectStaleTriggers_PublishFailureRetries(t *testing.T) {
+	d, mem, rec := slaDeps(t, "", "")
+	runningTriggerScan(d.Store.Client.(*storetest.FakeDynamo), mem)
+	d.NowFunc = func() time.Time { return time.Unix(1773133200, 0).UTC() }
+	pk, sk := types.PipelinePK("p"), types.TriggerSK("stream", slaTestDate)
+	row := sItem("PK", pk, "SK", sk, "status", types.TriggerStatusRunning)
+	row["staleAt"] = &ddbtypes.AttributeValueMemberN{Value: "1773129600"}
+	mem.Put("control", row)
+	rec.failEvents = 1
+
+	if err := detectStaleTriggers(context.Background(), d); err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	if got := mem.Get("control", pk, sk); len(rec.events) != 0 || !maps.Equal(got, row) {
+		t.Fatalf("pass 1: events %v, row %v; want none and the row unchanged", rec.events, got)
+	}
+
+	if err := detectStaleTriggers(context.Background(), d); err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	got := mem.Get("control", pk, sk)
+	_, hasStaleAt := got["staleAt"]
+	if !slices.Equal(rec.events, []string{string(types.EventSFNTimeout)}) ||
+		got["status"].(*ddbtypes.AttributeValueMemberS).Value != types.TriggerStatusFailedFinal || hasStaleAt {
+		t.Fatalf("pass 2: events %v, row %v; want one SFN_TIMEOUT and FAILED_FINAL without staleAt", rec.events, got)
+	}
+}
+
 // TestReconcile_Cutoff: the reconciler starts nothing for a ready sensor
 // whose date is past its 14:00 UTC cutoff; with no trigger row it closes the
 // date instead. Each row runs two passes, and the second adds nothing.

@@ -106,6 +106,7 @@ func detectMissingPostRunSensors(ctx context.Context, d *lambda.Deps) error {
 		if err := lambda.PublishEvent(ctx, d, string(types.EventPostRunSensorMissing), id, scheduleID, today,
 			fmt.Sprintf("post-run sensor missing for %s on %s", id, today), alertDetail); err != nil {
 			d.Logger.Warn("failed to publish post-run sensor missing event", "error", err, "pipeline", id, "schedule", scheduleID, "date", today)
+			continue // no marker, so the next pass retries
 		}
 
 		if err := d.Store.WriteSensor(ctx, id, dedupKey, map[string]interface{}{

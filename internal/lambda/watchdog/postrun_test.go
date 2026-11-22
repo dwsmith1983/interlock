@@ -113,3 +113,33 @@ func TestDetectMissingPostRunSensors(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectMissingPostRunSensors_PublishFailureRetries: no marker after a
+// failed publish, so the next pass alerts, and the pass after adds nothing.
+func TestDetectMissingPostRunSensors_PublishFailureRetries(t *testing.T) {
+	d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+		c.SLA = nil
+		c.PostRun = &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}}
+	})
+	mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("stream", slaTestDate),
+		"status", types.TriggerStatusCompleted, "completedAt", "2026-03-10T12:00:00Z"))
+	ctx := context.Background()
+	if err := d.Store.WriteSensor(ctx, "p", "postrun-baseline#"+slaTestDate, map[string]interface{}{"row-count": map[string]interface{}{"count": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	d.NowFunc = func() time.Time { return time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC) }
+	rec.failEvents = 1
+	for pass, want := range []int{0, 1, 1} {
+		if err := detectMissingPostRunSensors(ctx, d); err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+		marker, err := d.Store.GetSensorData(ctx, "p", "postrun-check#"+slaTestDate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if marked := marker != nil; len(rec.events) != want || marked != (want == 1) ||
+			(want == 1 && rec.events[0] != string(types.EventPostRunSensorMissing)) {
+			t.Fatalf("pass %d: events %v, marker %v; want %d POST_RUN_SENSOR_MISSING and marker %v", pass, rec.events, marked, want, want == 1)
+		}
+	}
+}
