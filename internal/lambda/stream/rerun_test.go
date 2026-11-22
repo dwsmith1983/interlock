@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -13,8 +14,11 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	sfntypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/store"
@@ -307,7 +311,7 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 		{name: "no config", reason: "manual", tweak: func(c *types.PipelineConfig) { c.Pipeline.ID = "other" },
 			wantJobs: []string{success}, wantStatus: completed},
 		{name: "start fails", reason: "manual", job: fail, sfnFail: 1, wantErr: true,
-			wantEvents: accepted, wantJobs: []string{fail, types.JobEventRerunAccepted}, wantReruns: 1},
+			wantJobs: []string{fail}, wantStatus: completed},
 		{name: "data-drift vs late-data row", reason: "data-drift", reruns: []string{"late-data"}, tweak: budgets(1, 1),
 			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantReruns: 1, wantStatus: completed,
 			wantMsg: "rerun rejected for p: drift rerun limit exceeded"},
@@ -754,5 +758,269 @@ func TestRerunRequest_LostResetRace(t *testing.T) {
 	wantJobs := []string{types.JobEventSuccess, types.JobEventRerunRejected}
 	if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
 		t.Errorf("job rows = %v, want %v", got, wantJobs)
+	}
+}
+
+// failedStartWorld is rerunWorld at 13:00 with a post-run baseline for
+// 2026-03-10, the date's trigger row set to status and an SFN double whose
+// next start fails with startErr (a plain error when nil).
+func failedStartWorld(t *testing.T, status string, startErr error) (*lambda.Deps, *storetest.Mem, *countingSFN, *recordingEventBridge, *time.Time) {
+	t.Helper()
+	now := mustTime(t, "2026-03-10T13:00:00Z")
+	d, mem, sfnFake, eb := rerunWorld(t, "2026-03-10T09:00:00Z", &now)
+	row := completedRow("2026-03-10", "2026-03-10T12:00:00Z")
+	row["status"] = &ddbtypes.AttributeValueMemberS{Value: status}
+	mem.Put("control", row)
+	if err := d.Store.WriteSensor(context.Background(), "p", "postrun-baseline#2026-03-10", map[string]interface{}{"upstream": map[string]interface{}{"count": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	sfnFake.fail, sfnFake.err = 1, startErr
+	return d, mem, sfnFake, eb, &now
+}
+
+// triggerRow is p's trigger row for 2026-03-10.
+func triggerRow(mem *storetest.Mem) map[string]ddbtypes.AttributeValue {
+	return mem.Get("control", types.PipelinePK("p"), types.TriggerSK("stream", "2026-03-10"))
+}
+
+// baselineKept reports whether the date's post-run baseline is still there.
+func baselineKept(t *testing.T, d *lambda.Deps) bool {
+	t.Helper()
+	baseline, err := d.Store.GetSensorData(context.Background(), "p", "postrun-baseline#2026-03-10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return baseline != nil
+}
+
+// TestRerunRequest_FailedStartThenRedelivery: a late-data rerun (the default
+// drift budget of 1) whose execution cannot start returns an error and leaves
+// the COMPLETED date as it was: completedAt kept, no ttl, no rerun row, no
+// event, no new job row and the baseline kept. The stream redelivers the same
+// record, which then starts the rerun under a name built from the record's
+// creation time, not the clock.
+func TestRerunRequest_FailedStartThenRedelivery(t *testing.T) {
+	d, mem, sfnFake, eb, now := failedStartWorld(t, types.TriggerStatusCompleted, nil)
+	created := mustTime(t, "2026-03-10T12:59:30Z")
+	record := rerunRequestRecord("late-data", "2026-03-10T12:59:30Z")
+	record.Change.ApproximateCreationDateTime = events.SecondsEpochTime{Time: created}
+	ctx := context.Background()
+
+	if err := handleRecord(ctx, d, record); err == nil {
+		t.Fatal("first delivery: handleRecord = nil, want the start error")
+	}
+	row := triggerRow(mem)
+	if got := [2]string{strAttr(row["status"]), strAttr(row["completedAt"])}; got != [2]string{types.TriggerStatusCompleted, "2026-03-10T12:00:00Z"} {
+		t.Errorf("after the failed start: trigger status/completedAt = %v, want COMPLETED and 12:00", got)
+	}
+	if _, ok := row["ttl"]; ok {
+		t.Errorf("after the failed start: trigger ttl = %v, want none", row["ttl"])
+	}
+	if got := len(mem.Items("rerun")); got != 0 || len(eb.events) != 0 || sfnFake.calls != 0 {
+		t.Errorf("after the failed start: rerun rows %d, events %+v, starts %d; want none", got, eb.events, sfnFake.calls)
+	}
+	if got := jobEvents(mem); !slices.Equal(got, []string{types.JobEventSuccess}) {
+		t.Errorf("after the failed start: job rows = %v, want [success]", got)
+	}
+	if !baselineKept(t, d) {
+		t.Error("after the failed start: post-run baseline deleted, want it kept")
+	}
+
+	*now = now.Add(time.Minute)
+	if err := handleRecord(ctx, d, record); err != nil {
+		t.Fatalf("redelivery: handleRecord = %v", err)
+	}
+	if got := strAttr(triggerRow(mem)["status"]); got != types.TriggerStatusRunning || sfnFake.calls != 1 {
+		t.Errorf("after the redelivery: trigger status %q, starts %d; want RUNNING and 1", got, sfnFake.calls)
+	}
+	reruns := mem.Items("rerun")
+	if len(reruns) != 1 || strAttr(reruns[0]["SK"]) != types.RerunSK("stream", "2026-03-10", 0) {
+		t.Errorf("after the redelivery: rerun rows = %v, want one at attempt 0", reruns)
+	}
+	if got, want := jobEvents(mem), []string{types.JobEventSuccess, types.JobEventRerunAccepted}; !slices.Equal(got, want) {
+		t.Errorf("after the redelivery: job rows = %v, want %v", got, want)
+	}
+	if len(eb.events) != 1 || eb.events[0].Type != string(types.EventRerunAccepted) {
+		t.Errorf("after the redelivery: events = %+v, want one %s", eb.events, types.EventRerunAccepted)
+	}
+	if baselineKept(t, d) {
+		t.Error("after the redelivery: post-run baseline kept, want it deleted")
+	}
+	want := fmt.Sprintf("%s-%s-%s-rerun%d-%d", "p", "stream", "2026-03-10", 0, created.Unix())
+	if !slices.Equal(sfnFake.names, []string{want}) {
+		t.Errorf("execution names = %v, want [%s]", sfnFake.names, want)
+	}
+}
+
+// TestRerunRequest_FailedStartKeepsFailedFinal: a FAILED_FINAL date whose
+// rerun cannot start is FAILED_FINAL again, with no ttl.
+func TestRerunRequest_FailedStartKeepsFailedFinal(t *testing.T) {
+	d, mem, sfnFake, _, _ := failedStartWorld(t, types.TriggerStatusFailedFinal, nil)
+
+	if err := handleRecord(context.Background(), d, rerunRequestRecord("manual", "2026-03-10T13:00:00Z")); err == nil {
+		t.Fatal("handleRecord = nil, want the start error")
+	}
+	row := triggerRow(mem)
+	if got := strAttr(row["status"]); got != types.TriggerStatusFailedFinal || row["ttl"] != nil {
+		t.Errorf("trigger status %q, ttl %v; want FAILED_FINAL and none", got, row["ttl"])
+	}
+	if got := len(mem.Items("rerun")); got != 0 || sfnFake.calls != 0 {
+		t.Errorf("rerun rows %d, starts %d; want 0 and 0", got, sfnFake.calls)
+	}
+}
+
+// TestRerunRequest_RerunWriteFails: when the rerun row cannot be written the
+// request fails before any start and the trigger row is restored, not
+// deleted.
+func TestRerunRequest_RerunWriteFails(t *testing.T) {
+	d, mem, sfnFake, eb, _ := failedStartWorld(t, types.TriggerStatusCompleted, nil)
+	sfnFake.fail = 0
+	fake := d.Store.Client.(*storetest.FakeDynamo)
+	put := fake.PutItemFn
+	fake.PutItemFn = func(ctx context.Context, in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+		if *in.TableName == "rerun" {
+			return nil, errors.New("put rerun failed")
+		}
+		return put(ctx, in)
+	}
+
+	if err := handleRecord(context.Background(), d, rerunRequestRecord("manual", "2026-03-10T13:00:00Z")); err == nil {
+		t.Fatal("handleRecord = nil, want the rerun write error")
+	}
+	row := triggerRow(mem)
+	if row == nil || strAttr(row["status"]) != types.TriggerStatusCompleted {
+		t.Errorf("trigger row = %v, want it restored to COMPLETED", row)
+	}
+	if sfnFake.calls != 0 || len(eb.events) != 0 || !baselineKept(t, d) {
+		t.Errorf("starts %d, events %+v, baseline kept %v; want 0, none and true", sfnFake.calls, eb.events, baselineKept(t, d))
+	}
+}
+
+// TestRerunRequest_ExecutionAlreadyExistsCountsAsStarted: a start answered
+// with ExecutionAlreadyExists means the rerun's execution exists, so the
+// request succeeds: the date stays RUNNING, the rerun row is kept and the
+// rerun is accepted once.
+func TestRerunRequest_ExecutionAlreadyExistsCountsAsStarted(t *testing.T) {
+	d, mem, _, eb, _ := failedStartWorld(t, types.TriggerStatusCompleted, &sfntypes.ExecutionAlreadyExists{Message: aws.String("exists")})
+
+	if err := handleRecord(context.Background(), d, rerunRequestRecord("manual", "2026-03-10T13:00:00Z")); err != nil {
+		t.Fatalf("handleRecord = %v, want nil", err)
+	}
+	if got := strAttr(triggerRow(mem)["status"]); got != types.TriggerStatusRunning {
+		t.Errorf("trigger status = %q, want RUNNING", got)
+	}
+	if got := len(mem.Items("rerun")); got != 1 {
+		t.Errorf("rerun rows = %d, want 1", got)
+	}
+	if len(eb.events) != 1 || eb.events[0].Type != string(types.EventRerunAccepted) {
+		t.Errorf("events = %+v, want one %s", eb.events, types.EventRerunAccepted)
+	}
+	if got, want := jobEvents(mem), []string{types.JobEventSuccess, types.JobEventRerunAccepted}; !slices.Equal(got, want) {
+		t.Errorf("job rows = %v, want %v", got, want)
+	}
+}
+
+// TestRerunRequest_UndoFails: when the status restore after a failed start
+// fails too, the start error is still returned and the restore failure is
+// logged at Error.
+func TestRerunRequest_UndoFails(t *testing.T) {
+	d, mem, _, _, _ := failedStartWorld(t, types.TriggerStatusCompleted, nil)
+	fake := d.Store.Client.(*storetest.FakeDynamo)
+	update := fake.UpdateItemFn
+	fake.UpdateItemFn = func(ctx context.Context, in *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+		if strings.HasPrefix(strAttr(in.Key["SK"]), "TRIGGER#") && strings.Contains(*in.UpdateExpression, "REMOVE") {
+			return nil, errors.New("restore failed")
+		}
+		return update(ctx, in)
+	}
+	logs := &bytes.Buffer{}
+	d.Logger = slog.New(slog.NewTextHandler(logs, nil))
+
+	err := handleRecord(context.Background(), d, rerunRequestRecord("manual", "2026-03-10T13:00:00Z"))
+	if err == nil || !strings.Contains(err.Error(), "start execution failed") {
+		t.Fatalf("handleRecord = %v, want the start error", err)
+	}
+	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "restore failed") {
+		t.Errorf("no Error log of the failed restore:\n%s", logs)
+	}
+	if got := len(mem.Items("rerun")); got != 0 {
+		t.Errorf("rerun rows = %d, want 0 (deleted before the restore)", got)
+	}
+}
+
+// TestRerunRequest_UndoDeleteFails: when the rerun row of a rerun that did
+// not start cannot be deleted, the status is still restored, so a COMPLETED
+// date stays COMPLETED (no ttl) rather than waiting for the watchdog. The
+// row stays and counts against the budget. The start error is returned and
+// the failed delete logged at Error.
+func TestRerunRequest_UndoDeleteFails(t *testing.T) {
+	d, mem, _, _, _ := failedStartWorld(t, types.TriggerStatusCompleted, nil)
+	fake := d.Store.Client.(*storetest.FakeDynamo)
+	del := fake.DeleteItemFn
+	fake.DeleteItemFn = func(ctx context.Context, in *dynamodb.DeleteItemInput) (*dynamodb.DeleteItemOutput, error) {
+		if *in.TableName == "rerun" {
+			return nil, errors.New("delete rerun failed")
+		}
+		return del(ctx, in)
+	}
+	logs := &bytes.Buffer{}
+	d.Logger = slog.New(slog.NewTextHandler(logs, nil))
+
+	err := handleRecord(context.Background(), d, rerunRequestRecord("manual", "2026-03-10T13:00:00Z"))
+	if err == nil || !strings.Contains(err.Error(), "start execution failed") {
+		t.Fatalf("handleRecord = %v, want the start error", err)
+	}
+	row := triggerRow(mem)
+	if got := strAttr(row["status"]); got != types.TriggerStatusCompleted || row["ttl"] != nil {
+		t.Errorf("trigger status %q, ttl %v; want COMPLETED and none", got, row["ttl"])
+	}
+	if got := len(mem.Items("rerun")); got != 1 {
+		t.Errorf("rerun rows = %d, want 1 (the delete failed)", got)
+	}
+	if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "delete rerun failed") {
+		t.Errorf("no Error log of the failed delete:\n%s", logs)
+	}
+}
+
+// cancellingSFN fails every start and cancels the request context first, as
+// a Lambda timeout during the call would.
+type cancellingSFN struct{ cancel context.CancelFunc }
+
+func (c cancellingSFN) StartExecution(context.Context, *sfn.StartExecutionInput, ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
+	c.cancel()
+	return nil, errors.New("start execution failed")
+}
+
+// TestRerunRequest_UndoSurvivesCancelledContext: the undo runs on a context
+// of its own, so a request context cancelled during the start still lets it
+// delete the rerun row and restore the date.
+func TestRerunRequest_UndoSurvivesCancelledContext(t *testing.T) {
+	d, mem, _, _, _ := failedStartWorld(t, types.TriggerStatusCompleted, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.SFNClient = cancellingSFN{cancel: cancel}
+	fake := d.Store.Client.(*storetest.FakeDynamo)
+	update, del := fake.UpdateItemFn, fake.DeleteItemFn
+	fake.UpdateItemFn = func(ctx context.Context, in *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return update(ctx, in)
+	}
+	fake.DeleteItemFn = func(ctx context.Context, in *dynamodb.DeleteItemInput) (*dynamodb.DeleteItemOutput, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return del(ctx, in)
+	}
+
+	if err := handleRecord(ctx, d, rerunRequestRecord("manual", "2026-03-10T13:00:00Z")); err == nil {
+		t.Fatal("handleRecord = nil, want the start error")
+	}
+	if got := strAttr(triggerRow(mem)["status"]); got != types.TriggerStatusCompleted {
+		t.Errorf("trigger status = %q, want COMPLETED", got)
+	}
+	if got := len(mem.Items("rerun")); got != 0 {
+		t.Errorf("rerun rows = %d, want 0", got)
 	}
 }

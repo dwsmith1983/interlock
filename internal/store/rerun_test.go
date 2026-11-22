@@ -260,3 +260,36 @@ func TestWriteRerunOnce_KeyedByExecution(t *testing.T) {
 		t.Errorf("WriteRerun after it = %d, %v, want attempt 1", attempt, err)
 	}
 }
+
+// TestDeleteRerun: DeleteRerun removes that attempt's rerun row and leaves the
+// date's other attempts. An absent row is not an error, and a client error is
+// returned wrapped.
+func TestDeleteRerun(t *testing.T) {
+	mock := newMockDDB()
+	s := newTestStore(mock)
+	ctx := context.Background()
+	for range 3 {
+		if _, err := s.WriteRerun(ctx, "pipe-1", "daily", "2026-03-01", "manual", ""); err != nil {
+			t.Fatalf("WriteRerun: %v", err)
+		}
+	}
+
+	if err := s.DeleteRerun(ctx, "pipe-1", "daily", "2026-03-01", 1); err != nil {
+		t.Fatalf("DeleteRerun: %v", err)
+	}
+	for attempt, want := range []bool{true, false, true} {
+		if _, ok := mock.items[itemKey("rerun", types.PipelinePK("pipe-1"), types.RerunSK("daily", "2026-03-01", attempt))]; ok != want {
+			t.Errorf("attempt %d present = %v, want %v", attempt, ok, want)
+		}
+	}
+	if err := s.DeleteRerun(ctx, "pipe-1", "daily", "2026-03-01", 1); err != nil {
+		t.Errorf("DeleteRerun of an absent row = %v, want nil", err)
+	}
+
+	injected := errors.New("service unavailable")
+	mock.errFn = errOnOp("DeleteItem", injected)
+	err := s.DeleteRerun(ctx, "pipe-1", "daily", "2026-03-01", 0)
+	if !errors.Is(err, injected) || !strings.Contains(err.Error(), "delete rerun") {
+		t.Errorf("DeleteRerun error = %v, want the injected error wrapped with context", err)
+	}
+}

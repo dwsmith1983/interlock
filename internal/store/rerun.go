@@ -56,6 +56,22 @@ func (s *Store) WriteRerun(ctx context.Context, pipelineID, schedule, date, reas
 	return attempt, nil
 }
 
+// DeleteRerun removes the rerun row of one attempt, written by WriteRerun.
+// An absent row is not an error.
+func (s *Store) DeleteRerun(ctx context.Context, pipelineID, schedule, date string, attempt int) error {
+	_, err := s.Client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: &s.RerunTable,
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.RerunSK(schedule, date, attempt)},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("delete rerun %q/%s/%s attempt %d: %w", pipelineID, schedule, date, attempt, err)
+	}
+	return nil
+}
+
 // WriteRerunOnce writes the rerun record for one execution, keyed by its
 // name (SK RERUN#<schedule>#<date>#<execName>), unless that row already
 // exists. It returns false when the row was already there, so a retried
@@ -143,6 +159,7 @@ func (s *Store) CountRerunsBySource(ctx context.Context, pipelineID, schedule, d
 			FilterExpression:          aws.String(filterExpr),
 			ExpressionAttributeValues: filterValues,
 			ExclusiveStartKey:         startKey,
+			ConsistentRead:            aws.Bool(true),
 		}
 	})
 	if err != nil {
