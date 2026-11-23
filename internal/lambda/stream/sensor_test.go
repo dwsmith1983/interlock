@@ -279,6 +279,8 @@ func TestSensorEvent_Cutoff(t *testing.T) {
 		{name: "COMPLETED row, late data", now: at(10, 14, 30), trigger: types.TriggerStatusCompleted, jobRow: types.JobEventSuccess,
 			wantStatus: types.TriggerStatusCompleted, wantEvents: []string{string(types.EventLateDataArrival)}, wantRerun: true},
 		{name: "hourly cutoff, daily sensor", now: at(10, 14, 30), tweak: setCutoff(":15"), wantSFN: 1, wantStatus: running, wantEvents: []string{triggered}},
+		{name: "hourly cutoff, daily sensor after its day", now: at(11, 0, 15), tweak: setCutoff(":15"),
+			wantStatus: final, wantEvents: []string{expired}, wantAt: "2026-03-11T00:15:00Z"},
 		{name: "yesterday's sensor", date: yesterday, now: at(10, 10, 0), wantStatus: final, wantEvents: []string{expired}, wantAt: "2026-03-09T14:00:00Z"},
 		{name: "excluded date", date: yesterday, now: at(10, 14, 30), tweak: func(c *types.PipelineConfig) {
 			c.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{yesterday}}

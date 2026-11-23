@@ -119,7 +119,7 @@ func TestEvaluate_Cutoff(t *testing.T) {
 		{name: "RowWithoutCutoff", tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = "" },
 			calls: []call{{at(0, 14, 30), "passed", passed}}},
 		{name: "HourlyCutoffDailyDate", tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = ":15" },
-			calls: []call{{at(0, 14, 30), "passed", passed}}},
+			calls: []call{{at(1, 0, 14), "passed", passed}, {at(1, 0, 15), "cutoff", passed}}},
 		{name: "CutoffDayOffset", tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger.CutoffDayOffset = 1 },
 			calls: []call{{at(1, 13, 59), "passed", passed}, {at(1, 14, 0), "cutoff", passed}}},
 		{name: "RerunLookupFails", failQuery: true, calls: []call{{at(0, 14, 30), "error", nil}}},

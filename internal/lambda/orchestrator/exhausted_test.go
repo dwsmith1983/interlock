@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -213,15 +214,22 @@ func TestTriggerExhausted(t *testing.T) {
 	}
 }
 
+// withCutoff returns detail with its cutoff and cutoffAt replaced.
+func withCutoff(detail map[string]interface{}, cutoff, cutoffAt string) map[string]interface{} {
+	out := maps.Clone(detail)
+	out["cutoff"], out["cutoffAt"] = cutoff, cutoffAt
+	return out
+}
+
 // TestValidationExhausted: an exhausted evaluation has four outcomes. Before
-// a cutoff that applies to the date, a first run is released: the trigger row
+// the cutoff, a daily or an hourly first run is released: the trigger row
 // is deleted after an evaluation-released joblog row, then
 // EVALUATION_RELEASED (best effort). For a rerun, or a row read without a
 // cutoff (validation rejects one, so only an unvalidated read sees it), the run
 // ends: validation-exhausted, VALIDATION_EXHAUSTED, then FAILED_FINAL. At or
 // after the cutoff a first run ends with one SENSOR_DEADLINE_EXPIRED, published
 // before FAILED_FINAL, and no joblog row. A missing or finished trigger row is
-// left alone. No rerun lookup is made when no cutoff applies.
+// left alone. No rerun lookup is made without a cutoff.
 func TestValidationExhausted(t *testing.T) {
 	expired, exhausted := "event "+string(types.EventSensorDeadlineExpired), "event "+string(types.EventValidationExhausted)
 	released := "event " + string(types.EventEvaluationReleased)
@@ -257,6 +265,7 @@ func TestValidationExhausted(t *testing.T) {
 		deleteFails  int // DeleteItem fails this many times first
 		joblogFails  bool
 		noRerunQuery bool
+		rerunQueried bool
 		calls        []call
 		wantJoblog   []string
 		wantOps      []string
@@ -283,10 +292,14 @@ func TestValidationExhausted(t *testing.T) {
 		{name: "RerunLookupFailsBeforeCutoff", failRerun: true, calls: []call{{now: at(0, 13, 59), wantErr: true, wantRow: running}}},
 		{name: "RowWithoutCutoff", tweak: noCutoff, noRerunQuery: true, calls: exhaust(at(0, 14, 30)),
 			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
-		{name: "HourlyCutoffDailyDate", tweak: hourly, noRerunQuery: true, calls: exhaust(at(0, 13, 0)),
-			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
-		{name: "DailyCutoffHourlyKey", date: "2026-03-10T10", noRerunQuery: true, calls: exhaust(at(0, 13, 0)),
-			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
+		{name: "HourlyCutoffDailyDate", tweak: hourly, rerunQueried: true, calls: release(at(0, 13, 0)),
+			wantJoblog: []string{er}, wantOps: []string{"release", released}, wantDetail: withCutoff(releasedDetail, ":15", "2026-03-11T00:15:00Z")},
+		{name: "HourlyCutoffDailyDateAtCutoff", tweak: hourly, calls: []call{{now: at(1, 0, 15), wantStatus: "cutoff", wantRow: final}},
+			wantOps: []string{expired, "status " + final}, wantDetail: withCutoff(wantDetail, ":15", "2026-03-11T00:15:00Z")},
+		{name: "DailyCutoffHourlyKey", date: "2026-03-10T10", rerunQueried: true, calls: release(at(0, 13, 0)),
+			wantJoblog: []string{er}, wantOps: []string{"release", released}, wantDetail: releasedDetail},
+		{name: "DailyCutoffHourlyKeyAtCutoff", date: "2026-03-10T10", calls: []call{{now: at(0, 14, 0), wantStatus: "cutoff", wantRow: final}},
+			wantOps: []string{expired, "status " + final}, wantDetail: wantDetail},
 		{name: "NoConfigExhausted", noConfig: true, noRerunQuery: true, calls: exhaust(at(0, 14, 30)),
 			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
 		{name: "RerunBeforeCutoff", rerun: true, calls: exhaust(at(0, 13, 59)),
@@ -417,6 +430,9 @@ func TestValidationExhausted(t *testing.T) {
 			}
 			if tt.noRerunQuery && rerunQueries != 0 {
 				t.Errorf("rerun table queried %d times, want none without a cutoff", rerunQueries)
+			}
+			if tt.rerunQueried && rerunQueries != 1 {
+				t.Errorf("rerun table queried %d times, want one", rerunQueries)
 			}
 		})
 	}

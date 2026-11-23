@@ -109,14 +109,25 @@ func TestResolveCutoffTime(t *testing.T) {
 		{"hourly into the DST gap", cutoffConfig(":15", 0, "America/New_York"), "2026-03-08T01", "2026-03-08T07:00:00Z"},
 		{"hourly", cutoffConfig(":15", 0, "UTC"), "2026-03-10T10", "2026-03-10T11:15:00Z"},
 		{"hourly at day end", cutoffConfig(":15", 0, "UTC"), "2026-03-10T23", "2026-03-11T00:15:00Z"},
-		{"daily cutoff, hourly key", cutoffConfig("14:00", 0, "UTC"), "2026-03-10T10", ""},
-		{"hourly cutoff, daily key", cutoffConfig(":15", 0, "UTC"), "2026-03-10", ""},
+		// A cutoff of the other cadence still applies: a daily cutoff covers
+		// the hourly keys of its date, and an hourly one falls MM minutes
+		// after a daily key's day ends.
+		{"daily cutoff, hourly key", cutoffConfig("14:00", 0, "UTC"), "2026-03-10T10", "2026-03-10T14:00:00Z"},
+		{"daily cutoff with offset, hourly key", cutoffConfig("02:00", 1, "UTC"), "2026-03-10T23", "2026-03-11T02:00:00Z"},
+		{"hourly cutoff, daily key", cutoffConfig(":15", 0, "UTC"), "2026-03-10", "2026-03-11T00:15:00Z"},
+		{"hourly cutoff, daily key, new york", cutoffConfig(":15", 0, "America/New_York"), "2026-03-10", "2026-03-11T04:15:00Z"},
+		// 02:30 on 2026-03-08 does not exist in New York, nor 00:15 in Havana,
+		// where the clock jumps from midnight to 01:00: each is the gap's end.
+		{"daily cutoff, hourly key, into the DST gap", cutoffConfig("02:30", 0, "America/New_York"), "2026-03-08T01", "2026-03-08T07:00:00Z"},
+		{"hourly cutoff, daily key, into the DST gap", cutoffConfig(":15", 0, "America/Havana"), "2026-03-07", "2026-03-08T05:00:00Z"},
 		{"sla timezone fallback", func() *types.PipelineConfig {
 			c := cutoffConfig("14:00", 0, "")
 			c.SLA = &types.SLAConfig{Timezone: "America/New_York"}
 			return c
 		}(), "2026-03-10", "2026-03-10T18:00:00Z"},
 		{"bad key", cutoffConfig("14:00", 0, "UTC"), "2026-3-10", ""},
+		{"one-digit hour", cutoffConfig(":15", 0, "UTC"), "2026-03-10T7", ""},
+		{"hour 24", cutoffConfig(":15", 0, "UTC"), "2026-03-10T24", ""},
 		{"no cutoff", cutoffConfig("", 0, "UTC"), "2026-03-10", ""},
 		{"none", &types.PipelineConfig{}, "2026-03-10", ""},
 	}
@@ -129,6 +140,13 @@ func TestResolveCutoffTime(t *testing.T) {
 			}
 			assert.Equal(t, tt.want, got.UTC().Format(time.RFC3339))
 		})
+	}
+	// A run key has a cutoff exactly when it is a valid execution date.
+	for _, key := range []string{"2026-03-10", "2026-03-10T07", "20260310", "2026-03-10T", "2026-03-10t07",
+		"2026-03-10T07x", "2026-03-10x", "2026-03-10T7", "2026-03-10T24"} {
+		for _, cutoff := range []string{"14:00", ":15"} {
+			assert.Equal(t, !IsValidExecutionDate(key), ResolveCutoffTime(cutoffConfig(cutoff, 0, "UTC"), key).IsZero(), "key %q, cutoff %q", key, cutoff)
+		}
 	}
 }
 
