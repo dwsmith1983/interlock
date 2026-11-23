@@ -35,8 +35,9 @@ const MaxPipelineIDLen = 31
 // Functions and the Scheduler name alphabets.
 var pipelineIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-// cutoffRe is a schedule.trigger.cutoff: "HH:MM" (daily) or ":MM" (hourly).
-var cutoffRe = regexp.MustCompile(`^([01]\d|2[0-3])?:[0-5]\d$`)
+// clockRe is a schedule.trigger.cutoff or an sla.deadline: "HH:MM" (daily) or
+// ":MM" (hourly).
+var clockRe = regexp.MustCompile(`^([01]\d|2[0-3])?:[0-5]\d$`)
 
 // triggerTypes is every job.type the orchestrator can launch. Keep it in step
 // with the trigger registry in internal/lambda; a test there fails when a
@@ -174,6 +175,12 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		}
 	}
 
+	// Absolute SLA (deadline) validation. With maxDuration set, the block above
+	// checks expectedDuration.
+	if s := cfg.SLA; s != nil {
+		errs = append(errs, validateSLADeadline(s)...)
+	}
+
 	if cfg.SLA != nil && cfg.SLA.DeadlineDayOffset != 0 {
 		switch off := cfg.SLA.DeadlineDayOffset; {
 		case off < 0 || off > 7:
@@ -186,7 +193,7 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	}
 
 	if tr := cfg.Schedule.Trigger; tr != nil {
-		if tr.Cutoff != "" && !cutoffRe.MatchString(tr.Cutoff) {
+		if tr.Cutoff != "" && !clockRe.MatchString(tr.Cutoff) {
 			errs = append(errs, fmt.Sprintf("schedule.trigger.cutoff %q must be HH:MM or :MM", tr.Cutoff))
 		}
 		switch off := tr.CutoffDayOffset; {
@@ -214,6 +221,35 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		}
 	}
 
+	return errs
+}
+
+// validateSLADeadline checks that an sla block can produce alerts: it has a
+// deadline or a maxDuration, and a deadline has a parseable format and a
+// positive expectedDuration, which sets the warning before the breach.
+func validateSLADeadline(s *types.SLAConfig) []string {
+	if s.Deadline == "" {
+		if s.MaxDuration == "" {
+			return []string{"sla must set deadline or maxDuration"}
+		}
+		return nil
+	}
+	var errs []string
+	if !clockRe.MatchString(s.Deadline) {
+		errs = append(errs, fmt.Sprintf("sla.deadline %q must be HH:MM or :MM", s.Deadline))
+	}
+	switch exp := s.ExpectedDuration; {
+	case exp == "":
+		errs = append(errs, "sla.expectedDuration is required with sla.deadline")
+	case s.MaxDuration != "":
+		// Checked against maxDuration with the relative SLA.
+	default:
+		if e, err := time.ParseDuration(exp); err != nil {
+			errs = append(errs, fmt.Sprintf("sla.expectedDuration invalid Go duration %q", exp))
+		} else if e <= 0 {
+			errs = append(errs, fmt.Sprintf("sla.expectedDuration %q must be positive", exp))
+		}
+	}
 	return errs
 }
 

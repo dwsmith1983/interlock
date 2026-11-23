@@ -305,6 +305,7 @@ func TestScheduleSLAAlerts_RunRows(t *testing.T) {
 		wantExprs []string
 		wantLog   string
 		wantLevel string // level of the wantLog line; "" means WARN
+		wantNoLog string // text no ERROR line may contain
 	}{
 		{name: "RowForDate", keys: []string{slaTestDate}, want: names(slaTestDate),
 			wantExprs: []string{"at(2026-03-10T09:30:00)", "at(2026-03-10T10:00:00)"}},
@@ -324,8 +325,9 @@ func TestScheduleSLAAlerts_RunRows(t *testing.T) {
 			wantExprs: []string{"at(2026-03-10T09:30:00)", "at(2026-03-10T10:00:00)"},
 			tweak:     func(c *types.PipelineConfig) { c.SLA.DeadlineDayOffset = 1 }},
 		{name: "NoSLA", keys: []string{slaTestDate}, tweak: func(c *types.PipelineConfig) { c.SLA = nil }},
-		{name: "InvalidDeadline", keys: []string{slaTestDate}, wantLog: "SLA calculate failed", wantLevel: "ERROR",
-			tweak: func(c *types.PipelineConfig) { c.SLA.Deadline = "INVALID" }},
+		// A relative-only SLA has no absolute deadline to schedule.
+		{name: "RelativeOnly", keys: []string{slaTestDate}, wantNoLog: "SLA calculate failed",
+			tweak: func(c *types.PipelineConfig) { c.SLA = &types.SLAConfig{MaxDuration: "2h"} }},
 		{name: "DryRun", keys: []string{slaTestDate}, tweak: dryRunHTTP},
 	}
 	for _, tt := range tests {
@@ -366,6 +368,11 @@ func TestScheduleSLAAlerts_RunRows(t *testing.T) {
 				return strings.Contains(line, "level="+cmp.Or(tt.wantLevel, "WARN")) && strings.Contains(line, tt.wantLog)
 			}) {
 				t.Fatalf("logs = %q, want a %s line with %q", logs.String(), cmp.Or(tt.wantLevel, "WARN"), tt.wantLog)
+			}
+			if tt.wantNoLog != "" && slices.ContainsFunc(strings.Split(logs.String(), "\n"), func(line string) bool {
+				return strings.Contains(line, "level=ERROR") && strings.Contains(line, tt.wantNoLog)
+			}) {
+				t.Fatalf("logs = %q, want no ERROR line with %q", logs.String(), tt.wantNoLog)
 			}
 		})
 	}

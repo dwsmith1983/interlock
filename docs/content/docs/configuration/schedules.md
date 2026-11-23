@@ -169,7 +169,7 @@ Common cron patterns:
 
 ## SLA Configuration
 
-SLAs enforce time-based constraints. Breaching an SLA emits an EventBridge event but does not cancel the pipeline.
+SLAs enforce time-based constraints. Breaching an SLA emits an EventBridge event but does not cancel the pipeline. An `sla` block sets `deadline`, `maxDuration` or both; one with neither, or a `deadline` without `expectedDuration`, rejects the config as `CONFIG_INVALID`.
 
 ```yaml
 sla:
@@ -181,9 +181,9 @@ sla:
 
 | Field | Type | Description |
 |---|---|---|
-| `deadline` | string | `HH:MM` for daily execution dates, `:MM` for hourly ones -- all validation rules must pass and the job must complete by this time |
+| `deadline` | string | `HH:MM` (two-digit hour, `00:00` to `23:59`) for daily execution dates, `:MM` (two-digit minute) for hourly ones -- all validation rules must pass and the job must complete by this time. Any other form rejects the config as `CONFIG_INVALID` |
 | `deadlineDayOffset` | int | Days after the execution date on which a daily `HH:MM` deadline falls, 0 to 7. Default 0 (the same day) |
-| `expectedDuration` | duration | Expected time for the job to complete; the warning fires this long before the breach. With `maxDuration` it must be positive and below `maxDuration` |
+| `expectedDuration` | duration | Expected time for the job to complete; the warning fires this long before the breach. Required with `deadline`, and must be a positive Go duration (`30m`, `1h30m`). With `maxDuration` it must be positive and below `maxDuration`. A relative SLA with no `expectedDuration` warns at 75% of `maxDuration` |
 | `maxDuration` | duration | Relative SLA: the time budget from the first sensor arrival, at most `24h`. Needs `schedule.trigger` |
 | `timezone` | string | IANA time zone name (for example `America/New_York`) for `deadline`. Empty means `UTC`. An unknown name, or `Local`, rejects the config as `CONFIG_INVALID` |
 | `critical` | bool | Accepted and passed into the state machine input; nothing reads it |
@@ -196,6 +196,7 @@ A daily deadline falls on the execution date plus `deadlineDayOffset` days, for 
 sla:
   deadline: "10:00"
   deadlineDayOffset: 1   # the run for 2026-03-10 is due 2026-03-11 10:00
+  expectedDuration: 30m
 ```
 
 With the default of 0, the run for 2026-03-10 is due 2026-03-10 10:00, so a run that finishes after 10:00 that day is an `SLA_BREACH`. A non-zero offset is rejected with an hourly `:MM` deadline (its date already names the hour) and without a `deadline`.
@@ -228,6 +229,8 @@ The watchdog creates two one-time EventBridge Scheduler entries for each expecte
 
 - **Warning**: fires at `deadline - expectedDuration`
 - **Breach**: fires at `deadline`
+
+A config with a `deadline` must also set an `expectedDuration`; a `deadline` that is not `HH:MM` or `:MM`, or an `expectedDuration` that is missing, not a Go duration, zero or negative, rejects the config when it loads, instead of leaving the pipeline with no `SLA_WARNING`, `SLA_BREACH` or `SLA_MET`. A pipeline with only `maxDuration` gets no warning or breach schedules; its relative SLA is checked by the watchdog (see below).
 
 Each Scheduler entry invokes the sla-monitor Lambda at the exact timestamp to publish the corresponding event. Entries auto-delete after firing.
 
