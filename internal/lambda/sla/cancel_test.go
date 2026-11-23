@@ -81,18 +81,18 @@ func configItem(t *testing.T, cfg types.PipelineConfig) map[string]ddbtypes.Attr
 	}
 }
 
-// triggerItem builds a minimal TRIGGER row so store.GetTrigger returns non-nil.
-func triggerItem() map[string]ddbtypes.AttributeValue {
+// triggerItem builds a minimal TRIGGER row with the given status.
+func triggerItem(status string) map[string]ddbtypes.AttributeValue {
 	return map[string]ddbtypes.AttributeValue{
 		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
 		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK("stream", "2026-03-10")},
-		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+		"status": &ddbtypes.AttributeValueMemberS{Value: status},
 	}
 }
 
 // newFakeDynamo returns a FakeDynamo that serves cfg for CONFIG-key reads
 // (cfgErr, if set, or no row when cfg has no pipeline ID) and a minimal
-// TRIGGER row for every TRIGGER-key read.
+// COMPLETED TRIGGER row for every TRIGGER-key read.
 func newFakeDynamo(t *testing.T, cfg types.PipelineConfig, cfgErr error) *storetest.FakeDynamo {
 	t.Helper()
 	return &storetest.FakeDynamo{
@@ -111,7 +111,7 @@ func newFakeDynamo(t *testing.T, cfg types.PipelineConfig, cfgErr error) *storet
 				}
 				return &dynamodb.GetItemOutput{Item: configItem(t, cfg)}, nil
 			case strings.HasPrefix(skAttr.Value, "TRIGGER#"):
-				return &dynamodb.GetItemOutput{Item: triggerItem()}, nil
+				return &dynamodb.GetItemOutput{Item: triggerItem(types.TriggerStatusCompleted)}, nil
 			default:
 				return &dynamodb.GetItemOutput{}, nil
 			}
@@ -296,7 +296,10 @@ func TestSLACancel_NoDeadlineSkipsVerdict(t *testing.T) {
 // TestSLACancel_Verdict pins the verdict cancel publishes when a run ends:
 // SLA_MET before the breach time, SLA_BREACH at or after it, from the times
 // given or recalculated from the deadline, and none for a run that never
-// triggered. Both schedules are deleted first, whatever the deletes return.
+// triggered. SLA_MET needs a COMPLETED trigger row; a FAILED_FINAL or RUNNING
+// row, or a trigger read that fails, still gets SLA_BREACH. Both schedules
+// are deleted first, whatever the deletes return, and the output is the same
+// whether or not a verdict is published.
 func TestSLACancel_Verdict(t *testing.T) {
 	t.Setenv("SKIP_SCHEDULER", "")
 	now := time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC)
@@ -315,7 +318,9 @@ func TestSLACancel_Verdict(t *testing.T) {
 		noScheduler bool
 		deleteErr   error
 		ebErr       error
-		neverRan    bool // an empty store with no trigger row
+		neverRan    bool   // an empty store with no trigger row
+		status      string // the trigger row's status in a store holding only that row
+		triggerErr  error  // every store read fails with this
 		wantErr     string
 		want        lambda.SLAMonitorOutput
 		wantTypes   []string
@@ -348,13 +353,43 @@ func TestSLACancel_Verdict(t *testing.T) {
 			in:   in{PipelineID: "never-ran", Date: "2026-03-13", WarningAt: "2099-12-31T23:45:00Z", BreachAt: "2099-12-31T23:59:00Z"},
 			want: verdict(met, "2099-12-31T23:45:00Z", "2099-12-31T23:59:00Z"),
 		},
+		{
+			name: "never triggered past the breach", neverRan: true,
+			in:   in{PipelineID: "never-ran", Date: "2026-03-13", BreachAt: "2026-03-10T10:00:00Z"},
+			want: verdict(breach, "", "2026-03-10T10:00:00Z"),
+		},
+		{name: "COMPLETED before the breach", status: types.TriggerStatusCompleted, in: metIn, want: metOut, wantTypes: []string{met}},
+		{name: "FAILED_FINAL before the breach", status: types.TriggerStatusFailedFinal, in: metIn, want: metOut},
+		{
+			name: "FAILED_FINAL at or after the breach", status: types.TriggerStatusFailedFinal, in: in{BreachAt: "2026-03-10T11:00:00Z"},
+			want: verdict(breach, "", "2026-03-10T11:00:00Z"), wantTypes: []string{breach},
+		},
+		{name: "RUNNING at cancel", status: types.TriggerStatusRunning, in: metIn, want: metOut},
+		{
+			name: "RUNNING past the breach", status: types.TriggerStatusRunning, in: in{BreachAt: "2026-03-10T10:00:00Z"},
+			want: verdict(breach, "", "2026-03-10T10:00:00Z"), wantTypes: []string{breach},
+		},
+		{name: "trigger read fails before the breach", triggerErr: errors.New("throttled"), in: metIn, want: metOut},
+		{
+			name: "trigger read fails past the breach", triggerErr: errors.New("throttled"), in: in{BreachAt: "2026-03-10T10:00:00Z"},
+			want: verdict(breach, "", "2026-03-10T10:00:00Z"), wantTypes: []string{breach},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := newFakeDynamo(t, types.PipelineConfig{}, nil)
-			if tt.neverRan {
-				fake, _ = storetest.NewMem()
+			if tt.neverRan || tt.status != "" {
+				var mem *storetest.Mem
+				fake, mem = storetest.NewMem()
+				if tt.status != "" {
+					mem.Put("control", triggerItem(tt.status))
+				}
+			}
+			if tt.triggerErr != nil {
+				fake = &storetest.FakeDynamo{GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+					return nil, tt.triggerErr
+				}}
 			}
 			d := testDeps(fake, now)
 			sched := &deletingScheduler{deleteErr: tt.deleteErr}

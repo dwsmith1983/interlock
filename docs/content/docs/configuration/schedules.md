@@ -231,7 +231,7 @@ The watchdog creates two one-time EventBridge Scheduler entries for each expecte
 
 Each Scheduler entry invokes the sla-monitor Lambda at the exact timestamp to publish the corresponding event. Entries auto-delete after firing.
 
-When the pipeline job completes (or all retries are exhausted), the state machine cancels any unfired Scheduler entries. If the run ended before the breach time, a `SLA_MET` event is published.
+When the pipeline job completes (or all retries are exhausted), the state machine cancels any unfired Scheduler entries. `SLA_MET` is published only when the run ends before the breach time and the date's trigger row is `COMPLETED`. A run that did not complete (it ended `FAILED_FINAL`, its final status could not be recorded, or its status could not be read) gets no `SLA_MET`; `SLA_BREACH` is still published when the breach time has passed. A date that fails before its breach time gets its failure alert (`RETRY_EXHAUSTED`, `JOB_FAILED` and the like) and neither `SLA_MET` nor `SLA_BREACH`, because the cancel step removes the breach schedule.
 
 The deadline is interpreted in `sla.timezone` (or UTC if not set).
 
@@ -256,7 +256,7 @@ SLA events are published to the custom EventBridge bus. You can create rules to 
 |---|---|
 | `SLA_WARNING` | Warning deadline reached (job still running) |
 | `SLA_BREACH` | Final deadline reached (job still running) |
-| `SLA_MET` | Run ended before the breach time |
+| `SLA_MET` | Run ended before the breach time and its trigger row is `COMPLETED` |
 
 Example event:
 

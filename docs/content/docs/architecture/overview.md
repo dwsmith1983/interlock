@@ -140,7 +140,7 @@ The Step Functions state machine has 28 states:
 
 3. **Job polling** — polls the triggered job for completion via `check-job` mode. Terminal events (success, fail, timeout) proceed to SLA cleanup.
 
-4. **SLA cleanup**: cancels unfired SLA Scheduler entries and publishes `SLA_MET` if the run ended before the breach time (`SLA_BREACH` otherwise).
+4. **SLA cleanup**: cancels unfired SLA Scheduler entries and publishes `SLA_MET` if the run completed before the breach time, and `SLA_BREACH` once the breach time has passed.
 
 ## Event System
 
@@ -156,7 +156,7 @@ All lifecycle events are published to a custom EventBridge event bus. This repla
 | `JOB_FAILED` | Triggered job failed |
 | `SLA_WARNING` | SLA warning deadline reached |
 | `SLA_BREACH` | SLA breach deadline reached |
-| `SLA_MET` | Run ended before the SLA breach time |
+| `SLA_MET` | Run completed before the SLA breach time |
 | `RETRY_EXHAUSTED` | All retry attempts consumed |
 | `SFN_TIMEOUT` | Step Function execution timed out (watchdog) |
 | `SCHEDULE_MISSED` | A run date's cron start-by time passed before its job started (watchdog) |
