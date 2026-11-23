@@ -146,7 +146,7 @@ For each pipeline with postRun config:
   Calculate elapsed time since completedAt
   If elapsed < sensorTimeout → skip (still within grace period)
 
-  Read the baseline SENSOR#postrun-baseline#<date> (none if no rule's sensor existed at completion)
+  Read the baseline SENSOR#postrun-baseline#<date> (none if no rule's sensor existed at completion and none has been seeded inside the watch window since)
   For each postRun rule key:
     Look up SENSOR#{key}, or SENSOR#{key}#YYYY-MM-DD or SENSOR#{key}#YYYYMMDD for the date
     If it exists and its value differs from its baseline entry, or it has no entry → arrived (skip)
@@ -155,7 +155,7 @@ For each pipeline with postRun config:
   On success, write the marker SENSOR#postrun-check#<date>
 ```
 
-A post-run sensor has arrived when it exists and either differs from what it was when the run completed or did not exist then. The whole stored record is compared, so a change in any of its fields, a timestamp such as `updatedAt` included, counts as a change; when the write happened is not otherwise used. A sensor rewritten with identical values has not arrived. A sensor present at completion whose baseline capture failed (`BASELINE_CAPTURE_FAILED`) has no entry, so it counts as arrived. A post-run sensor written between the run completing and the baseline capture counts as present at completion.
+A post-run sensor has arrived when it exists and either differs from what it was when the run completed or did not exist then. The whole stored record is compared, so a change in any of its fields, a timestamp such as `updatedAt` included, counts as a change; when the write happened is not otherwise used. A sensor rewritten with identical values has not arrived. A sensor present at completion whose baseline capture failed (`BASELINE_CAPTURE_FAILED`) has no entry, so it counts as arrived. A post-run sensor written between the run completing and the baseline capture counts as present at completion. An entry the stream-router seeded from a first write after completion carries `_seededAfterCompletion`, so it differs from the sensor and counts as arrived.
 
 The marker makes the alert once per date. It is written only after the publish succeeds, so a failed publish is retried on the next pass.
 

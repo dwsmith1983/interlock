@@ -344,3 +344,54 @@ func TestStreamDryRunPostRunSensor(t *testing.T) {
 		})
 	}
 }
+
+// TestStreamDryRunPostRunSensor_FirstWriteSeeds: on a dry-run pipeline with no
+// baseline row, a post-run sensor written before the DRY_RUN# marker exists
+// is ignored. Its first write after the marker publishes nothing and becomes
+// the baseline entry, so a later changed count reports DRY_RUN_DRIFT against
+// it, as a live pipeline would report POST_RUN_DRIFT.
+func TestStreamDryRunPostRunSensor_FirstWriteSeeds(t *testing.T) {
+	const date = "2026-03-11"
+	d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		DryRun:   true,
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
+		PostRun:  &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}}},
+	})
+	ctx := context.Background()
+	now := mustTime(t, "2026-03-12T01:15:00Z")
+	d.NowFunc = func() time.Time { return now }
+	write := func(count string) {
+		t.Helper()
+		record := sensorRecordWith("audit-result", map[string]events.DynamoDBAttributeValue{
+			"sensor_count": events.NewNumberAttribute(count), "date": events.NewStringAttribute(date)})
+		if err := handleRecord(ctx, d, record); err != nil {
+			t.Fatalf("handleRecord(%s): %v", count, err)
+		}
+	}
+
+	write("400")
+	if b := baselineEntries(t, d, date); b != nil || len(eb.events) != 0 {
+		t.Fatalf("before the marker: baseline %v, events %+v; want none and none", b, eb.events)
+	}
+
+	seedDryRunMarker(mem, date, "2026-03-11T01:15:00Z")
+	write("500")
+	wantEntry := map[string]interface{}{"sensor_count": 500.0, "date": date, seededField: true}
+	if got := baselineEntries(t, d, date)["audit-result"]; !reflect.DeepEqual(got, wantEntry) || len(eb.events) != 0 {
+		t.Fatalf("first write: baseline entry %v, events %+v; want %v and none", got, eb.events, wantEntry)
+	}
+
+	write("520")
+	want := []publishedEvent{dryRunEvent(types.EventDryRunDrift, map[string]interface{}{
+		"previousCount": 500.0, "currentCount": 520.0, "delta": 20.0, "driftThreshold": 0.0,
+		"driftField": "sensor_count", "sensorKey": "audit-result"})}
+	if !sameEvents(eb.events, want) {
+		t.Errorf("events = %+v, want %+v", eb.events, want)
+	}
+	rerun := mem.Get("control", types.PipelinePK("p"), types.RerunRequestSK("stream", date))
+	if sfnFake.calls != 0 || rerun != nil {
+		t.Errorf("StartExecution calls %d, rerun request %v; want 0 and none", sfnFake.calls, rerun)
+	}
+}

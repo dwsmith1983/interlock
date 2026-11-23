@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
@@ -102,14 +103,11 @@ func handlePostRunCompleted(ctx context.Context, d *lambda.Deps, cfg *types.Pipe
 		return fmt.Errorf("get baseline for post-run: %w", err)
 	}
 
-	if baseline != nil {
-		var ruleBaseline map[string]interface{}
-		for _, rule := range cfg.PostRun.Rules {
-			if strings.HasPrefix(sensorKey, rule.Key) {
-				if nested, ok := baseline[rule.Key].(map[string]interface{}); ok {
-					ruleBaseline = nested
-				}
-				break
+	ruleKey, ruleBaseline := postRunBaselineEntry(cfg.PostRun.Rules, sensorKey, baseline)
+	if ruleKey != "" {
+		if ruleBaseline == nil && seedsPostRunBaseline(cfg.PostRun, ruleKey, sensorKey, date, sensorData) {
+			if ruleBaseline, err = seedPostRunBaseline(ctx, d, pipelineID, date, ruleKey, baseline != nil, sensorData); err != nil {
+				return err
 			}
 		}
 
@@ -175,4 +173,81 @@ func handlePostRunCompleted(ctx context.Context, d *lambda.Deps, cfg *types.Pipe
 	}
 
 	return nil
+}
+
+// postRunBaselineEntry returns the key of the first post-run rule sensorKey
+// matches by prefix, and that rule's entry in baseline, nil when it has none.
+// The key is empty when no rule matches.
+func postRunBaselineEntry(rules []types.ValidationRule, sensorKey string, baseline map[string]interface{}) (ruleKey string, entry map[string]interface{}) {
+	for _, rule := range rules {
+		if strings.HasPrefix(sensorKey, rule.Key) {
+			entry, _ = baseline[rule.Key].(map[string]interface{})
+			return rule.Key, entry
+		}
+	}
+	return "", nil
+}
+
+// seedsPostRunBaseline reports whether a write of sensorKey for date may
+// seed ruleKey's baseline entry: the key is one the baseline capture stores
+// under ruleKey (ruleKey itself, or ruleKey#<date> dashed or compact), and the
+// write carries the drift field as a number.
+func seedsPostRunBaseline(cfg *types.PostRunConfig, ruleKey, sensorKey, date string, sensorData map[string]interface{}) bool {
+	if ruleKey == "" {
+		return false
+	}
+	switch sensorKey {
+	case ruleKey, ruleKey + "#" + date, ruleKey + "#" + strings.ReplaceAll(date, "-", ""):
+	default:
+		return false
+	}
+	_, ok := lambda.ExtractFloatOk(sensorData, lambda.ResolveDriftField(cfg))
+	return ok
+}
+
+// seedPostRunBaseline stores sensorData, marked with lambda.PostRunSeededField,
+// as ruleKey's entry in the date's baseline: the first value of a post-run
+// sensor written after the run completed, which later writes are compared
+// with. It never replaces data: it creates the row only while it is absent
+// (rowExists false), and otherwise adds the entry only while the row lacks
+// it. After its own write it returns nil. When another writer got there
+// first it returns the entry now stored (nil if there is none) for the
+// caller to compare with.
+//
+// Limits: the baseline capture at completion writes the whole row
+// unconditionally, so it replaces a seed that landed between the run's
+// completion and the capture. A refused seed whose re-read finds no entry
+// (the row was deleted, the capture won without this rule's sensor, or
+// another rule's first write on a different shard created the row first)
+// is neither seeded nor compared; the sensor's next write that carries the
+// drift field seeds it.
+func seedPostRunBaseline(ctx context.Context, d *lambda.Deps, pipelineID, date, ruleKey string, rowExists bool, sensorData map[string]interface{}) (map[string]interface{}, error) {
+	entry := make(map[string]interface{}, len(sensorData)+1)
+	maps.Copy(entry, sensorData)
+	entry[lambda.PostRunSeededField] = true
+	key := "postrun-baseline#" + date
+	var written bool
+	var err error
+	if rowExists {
+		written, err = d.Store.WriteSensorFieldIfAbsent(ctx, pipelineID, key, ruleKey, entry)
+	} else {
+		written, err = d.Store.WriteSensorIfAbsent(ctx, pipelineID, key, map[string]interface{}{ruleKey: entry})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("seed post-run baseline for %q: %w", ruleKey, err)
+	}
+	if written {
+		d.Logger.InfoContext(ctx, "post-run baseline entry seeded from the first write after completion",
+			"pipelineId", pipelineID, "date", date, "rule", ruleKey)
+		return nil, nil
+	}
+
+	baseline, err := d.Store.GetSensorData(ctx, pipelineID, key)
+	if err != nil {
+		return nil, fmt.Errorf("read post-run baseline for %q after a refused seed: %w", ruleKey, err)
+	}
+	stored, _ := baseline[ruleKey].(map[string]interface{})
+	d.Logger.InfoContext(ctx, "post-run baseline entry was written first by another writer",
+		"pipelineId", pipelineID, "date", date, "rule", ruleKey, "found", stored != nil)
+	return stored, nil
 }

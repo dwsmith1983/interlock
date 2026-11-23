@@ -10,6 +10,10 @@ import (
 // PostRunConfig.DriftField is not set.
 const defaultDriftField = "sensor_count"
 
+// PostRunSeededField marks a post-run baseline entry written after the run
+// completed: the sensor's first value since then, not its value at completion.
+const PostRunSeededField = "_seededAfterCompletion"
+
 func ResolveDriftField(cfg *types.PostRunConfig) string {
 	if cfg.DriftField != "" {
 		return cfg.DriftField

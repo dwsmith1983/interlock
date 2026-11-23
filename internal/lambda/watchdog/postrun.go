@@ -138,7 +138,9 @@ func parseSensorTimeout(s string) time.Duration {
 // no entry there. The baseline entry was stored once more than the sensor,
 // so the sensor is put through the same round trip before the comparison.
 // A sensor that cannot be compared counts as arrived, so it raises no alert.
-// A sensor rewritten with identical values has not arrived.
+// A sensor rewritten with identical values has not arrived. An entry the
+// stream-router seeded from a first write after completion carries
+// lambda.PostRunSeededField, so it differs from the sensor and reads as arrived.
 func postRunSensorArrived(logger *slog.Logger, pipelineID string, rules []types.ValidationRule, sensors map[string]map[string]interface{}, baseline map[string]interface{}) bool {
 	for _, rule := range rules {
 		data, ok := sensors[rule.Key]

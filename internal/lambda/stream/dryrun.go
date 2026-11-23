@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -200,21 +199,14 @@ func handleDryRunPostRunSensor(ctx context.Context, d *lambda.Deps, cfg *types.P
 	if err != nil {
 		return fmt.Errorf("get baseline for dry-run post-run: %w", err)
 	}
-	if baseline == nil {
-		return nil
-	}
-
-	var ruleBaseline map[string]interface{}
-	for _, rule := range cfg.PostRun.Rules {
-		if strings.HasPrefix(sensorKey, rule.Key) {
-			if nested, ok := baseline[rule.Key].(map[string]interface{}); ok {
-				ruleBaseline = nested
-			}
-			break
-		}
-	}
+	ruleKey, ruleBaseline := postRunBaselineEntry(cfg.PostRun.Rules, sensorKey, baseline)
 	if ruleBaseline == nil {
-		return nil
+		if !seedsPostRunBaseline(cfg.PostRun, ruleKey, sensorKey, date, sensorData) {
+			return nil
+		}
+		if ruleBaseline, err = seedPostRunBaseline(ctx, d, pipelineID, date, ruleKey, baseline != nil, sensorData); err != nil || ruleBaseline == nil {
+			return err
+		}
 	}
 
 	driftField := lambda.ResolveDriftField(cfg.PostRun)
