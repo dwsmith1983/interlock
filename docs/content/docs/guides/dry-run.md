@@ -88,7 +88,7 @@ Dry-run pipelines emit these event types to EventBridge:
 | `DRY_RUN_SLA_PROJECTION` | Estimated completion time vs. deadline — `met` or `breach` status |
 | `DRY_RUN_COMPLETED` | Observation loop closed — carries the SLA verdict (`met`, `breach`, or `n/a`) |
 | `DRY_RUN_LATE_DATA` | Sensor data arrived after the trigger point was already recorded |
-| `DRY_RUN_DRIFT` | Post-run sensor data changed from the baseline captured at trigger time |
+| `DRY_RUN_DRIFT` | Post-run sensor data changed from its baseline |
 | `DRY_RUN_WOULD_RERUN` / `DRY_RUN_RERUN_REJECTED` | What a `RERUN_REQUEST` for the pipeline would do |
 | `DRY_RUN_WOULD_RETRY` / `DRY_RUN_RETRY_EXHAUSTED` | What CompleteTrigger would decide for a `fail` or `timeout` job row |
 
@@ -122,7 +122,7 @@ This lets you tune `expectedDuration` before going live, avoiding false SLA aler
 
 ## Drift Detection
 
-If `postRun` is configured, Interlock captures a baseline snapshot of the drift field at the moment validation passes. When the post-run sensor updates later, it compares the new value against the baseline.
+If `postRun` is configured, Interlock captures a baseline snapshot of the drift field at the moment validation passes. When the post-run sensor updates later, it compares the new value against the baseline. A post-run sensor missing from that snapshot takes its first later write as its baseline, as on a live pipeline.
 
 If the delta exceeds `driftThreshold`, a `DRY_RUN_DRIFT` event is published with the previous count, current count, delta, and the sensor key that changed. This tells you whether your production pipeline would have triggered a drift re-run.
 

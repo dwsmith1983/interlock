@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/lambda/stream"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -214,5 +216,62 @@ func TestPostRunSensorArrived_UncomparableSensor(t *testing.T) {
 	}
 	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "pipelineId=p") || !strings.Contains(out, "sensor=row-count") {
 		t.Errorf("want a warning naming pipeline p and sensor row-count; logs: %s", out)
+	}
+}
+
+// TestDetectMissingPostRunSensors_SeededBaseline: a post-run sensor first
+// written after completion, with no baseline row, is seeded as the baseline
+// entry by the stream-router. That entry still reads as arrived, so a pass
+// past the sensor timeout publishes no POST_RUN_SENSOR_MISSING.
+func TestDetectMissingPostRunSensors_SeededBaseline(t *testing.T) {
+	d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+		c.SLA = nil
+		c.PostRun = &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}}
+	})
+	mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("stream", slaTestDate),
+		"status", types.TriggerStatusCompleted, "completedAt", "2026-03-10T12:00:00Z"))
+	ctx := context.Background()
+	now := time.Date(2026, 3, 10, 13, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return now }
+	if err := d.Store.WriteSensor(ctx, "p", "row-count", map[string]interface{}{"date": slaTestDate, "sensor_count": 5000}); err != nil {
+		t.Fatal(err)
+	}
+	record := events.DynamoDBEventRecord{
+		EventName: "INSERT",
+		Change: events.DynamoDBStreamRecord{
+			SequenceNumber: "1",
+			Keys: map[string]events.DynamoDBAttributeValue{
+				"PK": events.NewStringAttribute(types.PipelinePK("p")),
+				"SK": events.NewStringAttribute(types.SensorSK("row-count")),
+			},
+			NewImage: map[string]events.DynamoDBAttributeValue{"data": events.NewMapAttribute(map[string]events.DynamoDBAttributeValue{
+				"date":         events.NewStringAttribute(slaTestDate),
+				"sensor_count": events.NewNumberAttribute("5000"),
+			})},
+		},
+	}
+	resp, err := stream.HandleStreamEvent(ctx, d, lambda.StreamEvent{Records: []events.DynamoDBEventRecord{record}})
+	if err != nil || len(resp.BatchItemFailures) != 0 {
+		t.Fatalf("HandleStreamEvent = %+v, %v; want no failures", resp, err)
+	}
+	baseline, err := d.Store.GetSensorData(ctx, "p", "postrun-baseline#"+slaTestDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := baseline["row-count"]; !ok {
+		t.Fatalf("baseline = %v, want a seeded row-count entry", baseline)
+	}
+	rec.events = nil
+
+	now = time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC)
+	if err := detectMissingPostRunSensors(ctx, d); err != nil {
+		t.Fatalf("detectMissingPostRunSensors: %v", err)
+	}
+	marker, err := d.Store.GetSensorData(ctx, "p", "postrun-check#"+slaTestDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.events) != 0 || marker != nil {
+		t.Errorf("events %v, postrun-check marker %v; want none and none", rec.events, marker)
 	}
 }
