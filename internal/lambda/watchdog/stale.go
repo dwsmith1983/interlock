@@ -168,6 +168,8 @@ func reconcileSensorTriggers(ctx context.Context, d *lambda.Deps) error {
 				continue
 			}
 
+			// A restart after a released evaluation keeps its first arrival.
+			lambda.RecordFirstSensorArrival(ctx, d, id, date, now)
 			if err := lambda.StartSFN(ctx, d, cfg, id, scheduleID, date); err != nil {
 				if relErr := d.Store.ReleaseTriggerLock(ctx, id, scheduleID, date); relErr != nil {
 					d.Logger.Warn("failed to release lock after SFN start failure during reconciliation", "error", relErr)

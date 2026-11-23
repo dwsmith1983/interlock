@@ -1,9 +1,12 @@
 package watchdog
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"maps"
 	"slices"
 	"strconv"
@@ -21,15 +24,17 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// countingSFN is a lambda.SFNAPI double that counts StartExecution calls
-// and answers each with err.
+// countingSFN is a lambda.SFNAPI double that counts StartExecution calls,
+// keeps each one's input and answers each with err.
 type countingSFN struct {
-	calls int
-	err   error
+	calls  int
+	err    error
+	inputs []string
 }
 
-func (c *countingSFN) StartExecution(context.Context, *sfn.StartExecutionInput, ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
+func (c *countingSFN) StartExecution(_ context.Context, in *sfn.StartExecutionInput, _ ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
 	c.calls++
+	c.inputs = append(c.inputs, aws.ToString(in.Input))
 	if c.err != nil {
 		return nil, c.err
 	}
@@ -401,5 +406,126 @@ func TestReconcile_Gating(t *testing.T) {
 				t.Errorf("trigger rows for %v, want %v", gotRows, wantRows)
 			}
 		})
+	}
+}
+
+// TestReconcile_RecordsFirstArrival: a run the reconciler starts records the
+// date's first sensor arrival at the pass's clock, the start of its relative
+// SLA, and passes it to the execution as sensorArrivalAt. An arrival already
+// recorded is kept, and an hourly date records under its hourly key. A failed
+// write is logged and the run starts without sensorArrivalAt. When another
+// start holds the trigger lock, nothing is written.
+func TestReconcile_RecordsFirstArrival(t *testing.T) {
+	const clock = "2026-03-10T09:00:00Z" // slaDeps' clock
+	tests := []struct {
+		name, seeded string
+		hour         string // hour field of the trigger sensor
+		lockHeld     bool
+		writeFails   bool     // the arrival write fails
+		wantArrival  string   // empty means no arrival row
+		wantInputs   []string // sensorArrivalAt of each started execution
+	}{
+		{name: "recovered", wantArrival: clock, wantInputs: []string{clock}},
+		{name: "kept", seeded: "2026-03-10T08:00:00Z", wantArrival: "2026-03-10T08:00:00Z", wantInputs: []string{"2026-03-10T08:00:00Z"}},
+		{name: "hourly", hour: "07", wantArrival: clock, wantInputs: []string{clock}},
+		{name: "write fails", writeFails: true, wantInputs: []string{""}},
+		{name: "lock held", lockHeld: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _, _ := slaDeps(t, "", "")
+			sfnFake := &countingSFN{}
+			var logs bytes.Buffer
+			d.SFNClient, d.Logger = sfnFake, slog.New(slog.NewTextHandler(&logs, nil))
+			date, sensor := slaTestDate, map[string]interface{}{"date": slaTestDate}
+			if tt.hour != "" {
+				date, sensor["hour"] = slaTestDate+"T"+tt.hour, tt.hour
+			}
+			ctx, arrivalKey := context.Background(), "first-sensor-arrival#"+date
+			if err := d.Store.WriteSensor(ctx, "p", "upstream", sensor); err != nil {
+				t.Fatalf("write sensor: %v", err)
+			}
+			if tt.seeded != "" {
+				if err := d.Store.WriteSensor(ctx, "p", arrivalKey, map[string]interface{}{"arrivedAt": tt.seeded}); err != nil {
+					t.Fatalf("write arrival: %v", err)
+				}
+			}
+			// With lockHeld, the stream-router takes the lock between the
+			// trigger check and the reconciler's lock attempt.
+			fake := d.Store.Client.(*storetest.FakeDynamo)
+			next := fake.PutItemFn
+			fake.PutItemFn = func(ctx context.Context, in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+				sk, _ := in.Item["SK"].(*ddbtypes.AttributeValueMemberS)
+				switch {
+				case sk == nil:
+				case tt.lockHeld && strings.HasPrefix(sk.Value, "TRIGGER#"):
+					return nil, &ddbtypes.ConditionalCheckFailedException{Message: aws.String("lock held")}
+				case tt.writeFails && sk.Value == types.SensorSK(arrivalKey):
+					return nil, errors.New("put item failed")
+				}
+				return next(ctx, in)
+			}
+
+			if err := reconcileSensorTriggers(ctx, d); err != nil {
+				t.Fatalf("reconcileSensorTriggers: %v", err)
+			}
+
+			got, err := d.Store.GetSensorData(ctx, "p", arrivalKey)
+			if err != nil {
+				t.Fatalf("read arrival: %v", err)
+			}
+			if gotArrival, _ := got["arrivedAt"].(string); gotArrival != tt.wantArrival {
+				t.Errorf("arrivedAt under %s = %q, want %q", arrivalKey, gotArrival, tt.wantArrival)
+			}
+			var gotInputs []string
+			for _, in := range sfnFake.inputs {
+				var input struct {
+					SensorArrivalAt string `json:"sensorArrivalAt"`
+				}
+				if err := json.Unmarshal([]byte(in), &input); err != nil {
+					t.Fatalf("decode execution input %q: %v", in, err)
+				}
+				gotInputs = append(gotInputs, input.SensorArrivalAt)
+			}
+			if !slices.Equal(gotInputs, tt.wantInputs) {
+				t.Errorf("execution sensorArrivalAt = %q, want %q", gotInputs, tt.wantInputs)
+			}
+			warned := strings.Contains(logs.String(), `level=WARN msg="failed to write first-sensor-arrival"`)
+			if warned != tt.writeFails {
+				t.Errorf("arrival write warning logged = %v, want %v; logs:\n%s", warned, tt.writeFails, logs.String())
+			}
+		})
+	}
+}
+
+// TestReconcile_RecoveredRunBreachesRelativeSLA: a run the reconciler starts
+// at 09:00 with a 1h maxDuration that has not finished by 10:01 gets one
+// RELATIVE_SLA_BREACH for its date.
+func TestReconcile_RecoveredRunBreachesRelativeSLA(t *testing.T) {
+	d, _, rec := slaDeps(t, "", "")
+	d.SFNClient = &countingSFN{}
+	now := time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC)
+	d.NowFunc = func() time.Time { return now }
+	ctx := context.Background()
+	if err := d.Store.WriteSensor(ctx, "p", "upstream", map[string]interface{}{"date": slaTestDate}); err != nil {
+		t.Fatalf("write sensor: %v", err)
+	}
+
+	if err := reconcileSensorTriggers(ctx, d); err != nil {
+		t.Fatalf("reconcileSensorTriggers: %v", err)
+	}
+	now = now.Add(61 * time.Minute)
+	if err := detectRelativeSLABreaches(ctx, d); err != nil {
+		t.Fatalf("detectRelativeSLABreaches: %v", err)
+	}
+
+	var breaches []string
+	for i, evt := range rec.events {
+		if evt == string(types.EventRelativeSLABreach) {
+			breaches = append(breaches, rec.details[i].Date)
+		}
+	}
+	if !slices.Equal(breaches, []string{slaTestDate}) {
+		t.Errorf("RELATIVE_SLA_BREACH dates = %v (events %v), want [%s]", breaches, rec.events, slaTestDate)
 	}
 }
