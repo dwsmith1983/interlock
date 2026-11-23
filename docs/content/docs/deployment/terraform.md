@@ -43,6 +43,7 @@ schedule:
     check: equals
     field: status
     value: ready
+    cutoff: "12:00"
   evaluation:
     window: 1h
     interval: 5m

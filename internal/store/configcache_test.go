@@ -15,8 +15,12 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// seedConfig inserts a CONFIG row into the mock for the given pipeline.
+// seedConfig inserts a CONFIG row into the mock for the given pipeline, with
+// a trigger that has a cutoff when cfg has none, so the row passes validation.
 func seedConfig(mock *mockDDB, cfg types.PipelineConfig) {
+	if cfg.Schedule.Trigger == nil {
+		cfg.Schedule.Trigger = &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}
+	}
 	data, _ := json.Marshal(cfg)
 	mock.putRaw("control", map[string]ddbtypes.AttributeValue{
 		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(cfg.Pipeline.ID)},

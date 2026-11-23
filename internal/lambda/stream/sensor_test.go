@@ -47,7 +47,7 @@ func TestSensorEvent_HourlyKeysStartSeparately(t *testing.T) {
 	d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
 		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{
-			Key: "hourly-status", Check: types.CheckEquals, Field: "status", Value: "ready"}},
+			Key: "hourly-status", Check: types.CheckEquals, Field: "status", Value: "ready", Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job: types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 	})
 	hour := func(date, hour string) map[string]events.DynamoDBAttributeValue {
@@ -131,9 +131,8 @@ func TestSensorEvent_Gates(t *testing.T) {
 			c.PostRun = &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}}
 		}},
 		{name: "no config", tweak: func(c *types.PipelineConfig) { c.Pipeline.ID = "other" }},
-		{name: "no trigger condition", tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger = nil }},
 		{name: "check fails", status: "not-ready", tweak: func(c *types.PipelineConfig) {
-			c.Schedule.Trigger = &types.TriggerCondition{Key: "upstream", Check: types.CheckEquals, Field: "status", Value: "ready"}
+			c.Schedule.Trigger = &types.TriggerCondition{Key: "upstream", Check: types.CheckEquals, Field: "status", Value: "ready", Cutoff: "23:59", CutoffDayOffset: 7}
 		}},
 		{name: "wall clock excluded", tweak: exclude(types.ExclusionConfig{Dates: []string{"2026-03-07"}}), wantEvents: excluded},
 		{name: "Saturday", tweak: weekends, wantEvents: excluded},
@@ -145,7 +144,7 @@ func TestSensorEvent_Gates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 			}
 			if tt.tweak != nil {
@@ -200,7 +199,7 @@ func TestSensorEvent_FirstArrival(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 			})
 			ctx, arrivalKey := context.Background(), "first-sensor-arrival#"+tt.date
@@ -279,7 +278,6 @@ func TestSensorEvent_Cutoff(t *testing.T) {
 		{name: "RUNNING row", now: at(10, 14, 30), trigger: running, wantStatus: running},
 		{name: "COMPLETED row, late data", now: at(10, 14, 30), trigger: types.TriggerStatusCompleted, jobRow: types.JobEventSuccess,
 			wantStatus: types.TriggerStatusCompleted, wantEvents: []string{string(types.EventLateDataArrival)}, wantRerun: true},
-		{name: "no cutoff", now: at(10, 14, 30), tweak: setCutoff(""), wantSFN: 1, wantStatus: running, wantEvents: []string{triggered}},
 		{name: "hourly cutoff, daily sensor", now: at(10, 14, 30), tweak: setCutoff(":15"), wantSFN: 1, wantStatus: running, wantEvents: []string{triggered}},
 		{name: "yesterday's sensor", date: yesterday, now: at(10, 10, 0), wantStatus: final, wantEvents: []string{expired}, wantAt: "2026-03-09T14:00:00Z"},
 		{name: "excluded date", date: yesterday, now: at(10, 14, 30), tweak: func(c *types.PipelineConfig) {
@@ -289,12 +287,10 @@ func TestSensorEvent_Cutoff(t *testing.T) {
 		{name: "exhausted job row, no trigger row", now: at(10, 14, 30), jobRow: types.JobEventInfraTriggerExhausted,
 			wantStatus: final, wantEvents: []string{expired}, wantAt: "2026-03-10T14:00:00Z"},
 		// A launch that ran out of retries ends FAILED_FINAL: no later sensor
-		// write starts it again, before or after the cutoff or without one.
+		// write starts it again, before or after the cutoff.
 		{name: "exhausted launch, before the cutoff", now: at(10, 13, 30), trigger: final,
 			jobRow: types.JobEventInfraTriggerExhausted, wantStatus: final},
 		{name: "exhausted launch, past the cutoff", now: at(10, 14, 30), trigger: final,
-			jobRow: types.JobEventInfraTriggerExhausted, wantStatus: final},
-		{name: "exhausted launch, no cutoff", now: at(10, 14, 30), tweak: setCutoff(""), trigger: final,
 			jobRow: types.JobEventInfraTriggerExhausted, wantStatus: final},
 		{name: "released, sensor before the cutoff", now: at(10, 13, 30), jobRow: types.JobEventEvaluationReleased,
 			wantSFN: 1, wantStatus: running, wantEvents: []string{triggered}},
@@ -440,7 +436,7 @@ func TestLateData_WatchWindow(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
 			}
@@ -525,7 +521,7 @@ func TestSensorEvent_KeyBoundary(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "orders", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "orders", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun: &types.PostRunConfig{DriftField: "count", DriftThreshold: &threshold, WatchWindow: "6h",
 					Rules: []types.ValidationRule{{Key: "orders-count", Check: types.CheckExists}}},

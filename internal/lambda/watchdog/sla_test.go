@@ -96,7 +96,7 @@ func slaDeps(t *testing.T, trigger, jobRow string, tweak ...func(*types.Pipeline
 	t.Setenv("SKIP_SCHEDULER", "")
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		SLA:      &types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", MaxDuration: "1h"},
 	}
 	for _, f := range tweak {

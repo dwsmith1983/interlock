@@ -37,7 +37,8 @@ func TestHandleTrigger_MarksStarted(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			d, _, _ := memDeps(t, types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: tt.job})
+			d, _, _ := memDeps(t, types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: tt.job,
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}}})
 			var logs bytes.Buffer
 			d.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 			var seen string // startedAt as Execute sees it

@@ -220,6 +220,7 @@ func triggerResult(t *testing.T) lambda.OrchestratorOutput {
 	t.Helper()
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "gold-orders"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	fake := &storetest.FakeDynamo{

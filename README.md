@@ -135,6 +135,7 @@ schedule:
     check: equals
     field: status
     value: ready
+    cutoff: "12:00"        # latest automatic start; after it only a RERUN_REQUEST runs the date
   evaluation:
     window: 1h
     interval: 5m
@@ -179,6 +180,7 @@ schedule:
     check: equals
     field: status
     value: ready
+    cutoff: "12:00"
 sla:
   deadline: "10:00"
   expectedDuration: 30m
@@ -241,6 +243,7 @@ schedule:
     check: equals
     field: status
     value: ready
+    cutoff: "12:00"
   evaluation:
     window: 1h
     interval: 5m
@@ -270,6 +273,7 @@ schedule:
     check: lte
     field: lag_seconds
     value: 30
+    cutoff: "20:00"
   evaluation:
     window: 30m
     interval: 2m
@@ -302,6 +306,8 @@ schedule:
     check: equals
     field: all_hours_complete
     value: true
+    cutoff: "06:00"
+    cutoffDayOffset: 1     # the morning after the run date
 validation:
   trigger: "ALL"
   rules:
@@ -329,6 +335,7 @@ schedule:
     check: equals
     field: status
     value: ready
+    cutoff: "23:00"
   evaluation:
     window: 8h
     interval: 10m

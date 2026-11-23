@@ -37,12 +37,12 @@ const (
 )
 
 // scenarioConfig is a sensor-triggered pipeline whose http job is the mock,
-// like smokeConfig without the cutoff.
+// like smokeConfig. Its 23:00 cutoff falls after every scenario's first start.
 func scenarioConfig(id string) types.PipelineConfig {
 	return types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: id},
 		Schedule: types.ScheduleConfig{
-			Trigger:    &types.TriggerCondition{Key: scenarioSensor, Check: types.CheckEquals, Field: "status", Value: "ready"},
+			Trigger:    &types.TriggerCondition{Key: scenarioSensor, Check: types.CheckEquals, Field: "status", Value: "ready", Cutoff: "23:00"},
 			Evaluation: types.EvaluationWindow{Window: "60s", Interval: "5s"},
 		},
 		Validation: types.ValidationConfig{

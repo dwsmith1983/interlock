@@ -81,9 +81,11 @@ func ParseCron(expr string) (*cron.SpecSchedule, error) {
 	return spec, nil
 }
 
-// ValidatePipelineConfig checks the pipeline ID and that all retry and
-// timeout fields are within safe bounds. Returns a list of human-readable
-// validation errors.
+// ValidatePipelineConfig checks a pipeline config before it is used: the
+// pipeline ID, required blocks such as schedule.trigger with its cutoff, the
+// job type and its config, schedule, SLA and post-run settings, and that retry
+// and timeout fields are within safe bounds. Returns a list of human-readable
+// validation errors, empty for a valid config.
 func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	var errs []string
 
@@ -156,9 +158,6 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 
 	// Relative SLA (maxDuration) validation.
 	if cfg.SLA != nil && cfg.SLA.MaxDuration != "" {
-		if cfg.Schedule.Trigger == nil {
-			errs = append(errs, "sla.maxDuration requires schedule.trigger (relative SLA needs a sensor signal)")
-		}
 		d, err := time.ParseDuration(cfg.SLA.MaxDuration)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("sla.maxDuration invalid Go duration %q", cfg.SLA.MaxDuration))
@@ -192,16 +191,21 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		}
 	}
 
-	if tr := cfg.Schedule.Trigger; tr != nil {
-		if tr.Cutoff != "" && !clockRe.MatchString(tr.Cutoff) {
+	// Every pipeline starts from a sensor trigger and has a latest automatic
+	// start; past it a date runs only from a RERUN_REQUEST.
+	switch tr := cfg.Schedule.Trigger; {
+	case tr == nil:
+		errs = append(errs, "schedule.trigger is required")
+	case tr.Cutoff == "":
+		errs = append(errs, "schedule.trigger.cutoff is required")
+	default:
+		if !clockRe.MatchString(tr.Cutoff) {
 			errs = append(errs, fmt.Sprintf("schedule.trigger.cutoff %q must be HH:MM or :MM", tr.Cutoff))
 		}
 		switch off := tr.CutoffDayOffset; {
 		case off == 0:
 		case off < 0 || off > 7:
 			errs = append(errs, fmt.Sprintf("schedule.trigger.cutoffDayOffset %d out of range [0,7]", off))
-		case tr.Cutoff == "":
-			errs = append(errs, "schedule.trigger.cutoffDayOffset is not supported without schedule.trigger.cutoff")
 		case strings.HasPrefix(tr.Cutoff, ":"):
 			errs = append(errs, `schedule.trigger.cutoffDayOffset is not supported with hourly ":MM" cutoffs`)
 		}
@@ -211,14 +215,8 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		errs = append(errs, validatePostRun(cfg.PostRun)...)
 	}
 
-	// Dry-run validation.
-	if cfg.DryRun {
-		if cfg.Job.Type == "" {
-			errs = append(errs, "dryRun requires job.type to be configured")
-		}
-		if cfg.Schedule.Trigger == nil {
-			errs = append(errs, "dryRun requires schedule.trigger (sensor-driven evaluation)")
-		}
+	if cfg.DryRun && cfg.Job.Type == "" {
+		errs = append(errs, "dryRun requires job.type to be configured")
 	}
 
 	return errs

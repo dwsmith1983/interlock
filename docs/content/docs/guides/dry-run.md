@@ -15,7 +15,7 @@ Dry-run mode lets you evaluate a pipeline against real sensor data without trigg
 
 ## Setup
 
-Add `dryRun: true` to your pipeline config. The pipeline must have `schedule.trigger` (sensor-driven evaluation) and `job.type` configured.
+Add `dryRun: true` to your pipeline config. The pipeline must have `job.type` configured.
 
 ```yaml
 pipeline:
@@ -29,6 +29,7 @@ schedule:
     check: gte
     field: files_processed
     value: 4
+    cutoff: "08:00"
 
 validation:
   trigger: "ALL"
@@ -154,7 +155,7 @@ Both pipelines receive the same sensor events. The live pipeline triggers jobs; 
 
 ## Troubleshooting
 
-**No events appearing.** Verify that `schedule.trigger` names the sensor key being written. Dry-run requires a trigger condition; a config without one is rejected.
+**No events appearing.** Verify that `schedule.trigger` names the sensor key being written. Every pipeline needs a trigger with a cutoff; a config without one is rejected.
 
 **Stale markers.** `DRY_RUN#` markers have a 7-day TTL. If you need to re-evaluate the same date, wait for the marker to expire or delete it manually from the control table.
 

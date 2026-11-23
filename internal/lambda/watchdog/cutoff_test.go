@@ -128,7 +128,9 @@ func TestCheckTriggerDeadlines(t *testing.T) {
 // TestCheckTriggerDeadlines_PublishFailureRetries: a failed publish removes the
 // FAILED_FINAL row it wrote, so the next pass closes the date and alerts.
 func TestCheckTriggerDeadlines_PublishFailureRetries(t *testing.T) {
-	d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) { c.SLA, c.Schedule.Trigger.Cutoff = nil, "08:00" })
+	d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+		c.SLA, c.Schedule.Trigger.Cutoff, c.Schedule.Trigger.CutoffDayOffset = nil, "08:00", 0
+	})
 	sk := types.TriggerSK("stream", slaTestDate)
 	rec.failEvents = 1
 	for pass, want := range []int{0, 1} {

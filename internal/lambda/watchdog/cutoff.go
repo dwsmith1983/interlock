@@ -21,7 +21,7 @@ func checkTriggerDeadlines(ctx context.Context, d *lambda.Deps) error {
 	to := now.UTC().AddDate(0, 0, runKeysDaysAhead).Format("2006-01-02")
 
 	for id, cfg := range configs {
-		if cfg.Schedule.Trigger == nil || cfg.Schedule.Trigger.Cutoff == "" || cfg.DryRun {
+		if cfg.DryRun {
 			continue
 		}
 

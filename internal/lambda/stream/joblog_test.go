@@ -112,7 +112,7 @@ func runJobFailCases(t *testing.T, tests []jobFailCase) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				DryRun:   tt.dryRun,
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig, MaxRetries: tt.maxRetries},
 			}
 			if tt.tweak != nil {

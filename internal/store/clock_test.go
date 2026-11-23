@@ -193,7 +193,7 @@ func TestConfigCache_UsesStoreClock(t *testing.T) {
 				Items: []map[string]ddbtypes.AttributeValue{{
 					"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("pipe-1")},
 					"SK":     &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
-					"config": &ddbtypes.AttributeValueMemberS{Value: `{"pipeline":{"id":"pipe-1"}}`},
+					"config": &ddbtypes.AttributeValueMemberS{Value: `{"pipeline":{"id":"pipe-1"},"schedule":{"trigger":{"key":"upstream","check":"exists","cutoff":"23:59","cutoffDayOffset":7}}}`},
 				}},
 			}, nil
 		},

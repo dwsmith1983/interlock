@@ -129,7 +129,7 @@ func removeGuardConfig() types.PipelineConfig {
 	return types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
 		Schedule: types.ScheduleConfig{
-			Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists},
+			Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7},
 		},
 		PostRun: &types.PostRunConfig{
 			Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}},
@@ -417,7 +417,7 @@ func TestHandleRecord_SensorBesideBadConfig(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			d, mem, sfnFake, _ := jobWorld(t, types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 			})
 			mem.Put("control", map[string]ddbtypes.AttributeValue{

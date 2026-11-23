@@ -43,14 +43,14 @@ func TestNamesFitAtMaxInputs(t *testing.T) {
 	seen := map[string]bool{}
 	for _, first := range []string{"a", "b"} {
 		id := first + strings.Repeat("x", validation.MaxPipelineIDLen-1)
-		require.Empty(t, validation.ValidatePipelineConfig(&types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}}))
+		require.Empty(t, validation.ValidatePipelineConfig(nameConfig(id)))
 
 		d, mem, sfnM := newNameDeps(t, id, date, time.Unix(unix, 0))
 		for attempt := 0; attempt < maxRerunAttempt; attempt++ { // earlier reruns, so this one is attempt 999
 			mem.Put("rerun", map[string]ddbtypes.AttributeValue{"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(id)},
 				"SK": &ddbtypes.AttributeValueMemberS{Value: types.RerunSK("stream", date, attempt)}})
 		}
-		require.NoError(t, lambda.StartSFN(context.Background(), d, &types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}}, id, "stream", date))
+		require.NoError(t, lambda.StartSFN(context.Background(), d, nameConfig(id), id, "stream", date))
 		requestRerun(t, d, id, date, "operator asked: reload/fix #42")
 
 		names := executionNames(sfnM)
@@ -107,6 +107,12 @@ func (n *nameSFN) StartExecution(_ context.Context, in *sfn.StartExecutionInput,
 	return &sfn.StartExecutionOutput{}, nil
 }
 
+// nameConfig is a valid config for pipeline id.
+func nameConfig(id string) *types.PipelineConfig {
+	return &types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}}}
+}
+
 // newNameDeps returns deps fixed at now, with a config and a FAILED_FINAL
 // trigger row for id and date, so a rerun request is accepted. Mem has no
 // FilterExpression, so the per-source rerun budget queries answer zero;
@@ -121,7 +127,7 @@ func newNameDeps(t *testing.T, id, date string, now time.Time) (*lambda.Deps, *s
 		}
 		return query(ctx, in)
 	}
-	cfg, err := json.Marshal(types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}})
+	cfg, err := json.Marshal(nameConfig(id))
 	require.NoError(t, err)
 	pk := &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(id)}
 	mem.Put("control", map[string]ddbtypes.AttributeValue{"PK": pk,
