@@ -42,8 +42,9 @@ func ResolveSLADate(cfg *types.PipelineConfig, date string) string {
 // runKey, in schedule.timezone (else sla.timezone, else UTC). A daily "HH:MM"
 // cutoff on a daily key is that wall time on the key's date plus
 // cutoffDayOffset days; an hourly ":MM" cutoff on an hourly key is minute MM
-// of the following hour. It is the zero time without a cutoff, for a key of
-// the other cadence, or when the key or cutoff does not parse.
+// of the following hour. It is the zero time for a key of the other cadence,
+// when the key or cutoff does not parse, or without a cutoff (validation
+// requires one, so only a config read without validation lacks it).
 func ResolveCutoffTime(cfg *types.PipelineConfig, runKey string) time.Time {
 	if cfg == nil || cfg.Schedule.Trigger == nil || cfg.Schedule.Trigger.Cutoff == "" || !IsValidExecutionDate(runKey) {
 		return time.Time{}

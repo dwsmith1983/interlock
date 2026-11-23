@@ -116,7 +116,7 @@ func TestEvaluate_Cutoff(t *testing.T) {
 		{name: "AtCutoffReady", calls: []call{{at(0, 14, 0), "cutoff", nil}}},
 		{name: "AfterCutoffNotReady", noSensor: true, calls: []call{{at(0, 14, 30), "cutoff", nil}}},
 		{name: "AfterCutoffRerun", rerun: true, calls: []call{{at(0, 14, 30), "passed", passed}}},
-		{name: "NoCutoff", tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = "" },
+		{name: "RowWithoutCutoff", tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = "" },
 			calls: []call{{at(0, 14, 30), "passed", passed}}},
 		{name: "HourlyCutoffDailyDate", tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger.Cutoff = ":15" },
 			calls: []call{{at(0, 14, 30), "passed", passed}}},

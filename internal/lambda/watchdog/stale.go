@@ -94,11 +94,6 @@ func reconcileSensorTriggers(ctx context.Context, d *lambda.Deps) error {
 	now := d.Now()
 
 	for id, cfg := range configs {
-		trigger := cfg.Schedule.Trigger
-		if trigger == nil {
-			continue
-		}
-
 		if cfg.DryRun {
 			continue
 		}
@@ -115,6 +110,7 @@ func reconcileSensorTriggers(ctx context.Context, d *lambda.Deps) error {
 		}
 
 		scheduleID := lambda.ResolveScheduleID(cfg)
+		trigger := cfg.Schedule.Trigger
 
 		for sensorKey, sensorData := range sensors {
 			if !lambda.SensorKeyMatches(sensorKey, trigger.Key) {

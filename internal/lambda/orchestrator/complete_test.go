@@ -140,6 +140,7 @@ func memDeps(t *testing.T, cfg types.PipelineConfig) (*lambda.Deps, *storetest.M
 func failCfg(maxRetries int) types.PipelineConfig {
 	return types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com"}, MaxRetries: maxRetries},
 	}
 }
@@ -250,7 +251,7 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 		{
 			name: "DryRunIsFinal", maxRetries: 2,
 			tweak: func(c *types.PipelineConfig) {
-				c.DryRun, c.Schedule.Trigger = true, &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}
+				c.DryRun, c.Schedule.Trigger = true, &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}
 			},
 			calls:   []ctCall{failCall(ctExec, final, "")},
 			wantOps: []string{toFinal}, wantTrigger: final,

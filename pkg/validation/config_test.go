@@ -23,6 +23,15 @@ func containsSubstr(ss []string, sub string) bool {
 
 func intPtr(v int) *int { return &v }
 
+// validate runs ValidatePipelineConfig after giving cfg a valid
+// schedule.trigger when it has none, so a test sees only the errors it is about.
+func validate(cfg *types.PipelineConfig) []string {
+	if cfg.Schedule.Trigger == nil {
+		cfg.Schedule.Trigger = &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:00"}
+	}
+	return ValidatePipelineConfig(cfg)
+}
+
 func TestValidatePipelineConfig(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -217,9 +226,6 @@ func TestValidatePipelineConfig(t *testing.T) {
 		{
 			name: "maxDuration valid",
 			cfg: types.PipelineConfig{
-				Schedule: types.ScheduleConfig{
-					Trigger: &types.TriggerCondition{Key: "some-sensor", Check: types.CheckExists},
-				},
 				SLA: &types.SLAConfig{MaxDuration: "2h"},
 			},
 			wantCount: 0,
@@ -227,9 +233,6 @@ func TestValidatePipelineConfig(t *testing.T) {
 		{
 			name: "maxDuration exceeds 24h",
 			cfg: types.PipelineConfig{
-				Schedule: types.ScheduleConfig{
-					Trigger: &types.TriggerCondition{Key: "some-sensor", Check: types.CheckExists},
-				},
 				SLA: &types.SLAConfig{MaxDuration: "25h"},
 			},
 			wantCount:  1,
@@ -238,28 +241,14 @@ func TestValidatePipelineConfig(t *testing.T) {
 		{
 			name: "maxDuration invalid format",
 			cfg: types.PipelineConfig{
-				Schedule: types.ScheduleConfig{
-					Trigger: &types.TriggerCondition{Key: "some-sensor", Check: types.CheckExists},
-				},
 				SLA: &types.SLAConfig{MaxDuration: "not-a-duration"},
 			},
 			wantCount:  1,
 			wantSubstr: "sla.maxDuration invalid Go duration",
 		},
 		{
-			name: "maxDuration requires trigger",
-			cfg: types.PipelineConfig{
-				SLA: &types.SLAConfig{MaxDuration: "2h"},
-			},
-			wantCount:  1,
-			wantSubstr: "sla.maxDuration requires schedule.trigger",
-		},
-		{
 			name: "maxDuration and deadline coexist",
 			cfg: types.PipelineConfig{
-				Schedule: types.ScheduleConfig{
-					Trigger: &types.TriggerCondition{Key: "some-sensor", Check: types.CheckExists},
-				},
 				SLA: &types.SLAConfig{Deadline: "08:00", ExpectedDuration: "30m", MaxDuration: "2h"},
 			},
 			wantCount: 0,
@@ -279,31 +268,19 @@ func TestValidatePipelineConfig(t *testing.T) {
 		},
 		// --- dry-run validation ---
 		{
-			name: "dryRun without job.type or trigger",
+			name: "dryRun without job.type",
 			cfg: types.PipelineConfig{
 				DryRun: true,
 				Job:    types.JobConfig{Type: ""},
 			},
-			wantCount:  2,
-			wantSubstr: "dryRun requires job.type",
-		},
-		{
-			name: "dryRun with job.type but no trigger",
-			cfg: types.PipelineConfig{
-				DryRun: true,
-				Job:    types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "etl"}},
-			},
 			wantCount:  1,
-			wantSubstr: "dryRun requires schedule.trigger",
+			wantSubstr: "dryRun requires job.type",
 		},
 		{
 			name: "dryRun fully configured",
 			cfg: types.PipelineConfig{
 				DryRun: true,
-				Schedule: types.ScheduleConfig{
-					Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists},
-				},
-				Job: types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "etl"}},
+				Job:    types.JobConfig{Type: "glue", Config: map[string]interface{}{"jobName": "etl"}},
 			},
 			wantCount: 0,
 		},
@@ -312,7 +289,7 @@ func TestValidatePipelineConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.cfg.Pipeline.ID = "orders" // the ID rule has its own test
-			errs := ValidatePipelineConfig(&tt.cfg)
+			errs := validate(&tt.cfg)
 			assert.Len(t, errs, tt.wantCount)
 			if tt.wantSubstr != "" {
 				assert.True(t, containsSubstr(errs, tt.wantSubstr),
@@ -326,11 +303,11 @@ func TestValidatePipelineConfig_PipelineID(t *testing.T) {
 	maxID := strings.Repeat("a", MaxPipelineIDLen)
 	for _, id := range []string{"orders", "Gold_Revenue-2", "0", "a-b_c", maxID} {
 		cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}}
-		assert.Empty(t, ValidatePipelineConfig(&cfg), "ID %q should be accepted", id)
+		assert.Empty(t, validate(&cfg), "ID %q should be accepted", id)
 	}
 	for _, id := range []string{"", maxID + "a", "a b", "a/b", "a#b", "a:b", "a.b", "a\nb", "orders\n", "caf\u00e9"} {
 		cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: id}}
-		errs := ValidatePipelineConfig(&cfg)
+		errs := validate(&cfg)
 		assert.Len(t, errs, 1, "ID %q should be rejected", id)
 		assert.True(t, containsSubstr(errs, "pipeline.id"), "errors %v should name pipeline.id", errs)
 	}
@@ -354,10 +331,9 @@ func TestValidate_SLADeadlineDayOffset(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "orders"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
 				SLA:      &tt.sla,
 			}
-			errs := ValidatePipelineConfig(&cfg)
+			errs := validate(&cfg)
 			if tt.wantErr == "" {
 				assert.Empty(t, errs)
 				return
@@ -383,7 +359,6 @@ func TestValidate_Cutoff(t *testing.T) {
 		{"negative offset", "02:00", -1, "schedule.trigger.cutoffDayOffset -1 out of range [0,7]"},
 		{"offset too large", "02:00", 8, "schedule.trigger.cutoffDayOffset 8 out of range [0,7]"},
 		{"offset with hourly", ":15", 1, `schedule.trigger.cutoffDayOffset is not supported with hourly ":MM" cutoffs`},
-		{"offset without cutoff", "", 1, "schedule.trigger.cutoffDayOffset is not supported without schedule.trigger.cutoff"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -393,13 +368,37 @@ func TestValidate_Cutoff(t *testing.T) {
 					Key: "upstream", Check: types.CheckExists, Cutoff: tt.cutoff, CutoffDayOffset: tt.offset,
 				}},
 			}
-			errs := ValidatePipelineConfig(&cfg)
+			errs := validate(&cfg)
 			if tt.wantErr == "" {
 				assert.Empty(t, errs)
 				return
 			}
 			assert.Equal(t, []string{tt.wantErr}, errs)
 		})
+	}
+}
+
+// TestValidate_TriggerRequired: every pipeline sets schedule.trigger with a
+// cutoff, its latest automatic start.
+func TestValidate_TriggerRequired(t *testing.T) {
+	glue := types.JobConfig{Type: types.TriggerGlue, Config: map[string]interface{}{"jobName": "etl"}}
+	noTrigger := []types.PipelineConfig{
+		{},
+		{DryRun: true, Job: glue},
+		{SLA: &types.SLAConfig{MaxDuration: "2h"}},
+	}
+	for _, cfg := range noTrigger {
+		cfg.Pipeline.ID = "orders"
+		assert.Equal(t, []string{"schedule.trigger is required"}, ValidatePipelineConfig(&cfg))
+	}
+	for _, offset := range []int{0, 1} {
+		cfg := types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "orders"},
+			Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, CutoffDayOffset: offset}},
+		}
+		assert.Equal(t, []string{"schedule.trigger.cutoff is required"}, ValidatePipelineConfig(&cfg), "cutoffDayOffset %d", offset)
+		cfg.Schedule.Trigger.Cutoff = "14:00"
+		assert.Empty(t, ValidatePipelineConfig(&cfg), "cutoffDayOffset %d", offset)
 	}
 }
 
@@ -443,7 +442,7 @@ func TestValidate_Cron(t *testing.T) {
 				Pipeline: types.PipelineIdentity{ID: "orders"},
 				Schedule: types.ScheduleConfig{Cron: tt.cron},
 			}
-			errs := ValidatePipelineConfig(&cfg)
+			errs := validate(&cfg)
 			if !tt.wantErr {
 				assert.Empty(t, errs)
 				return
@@ -458,9 +457,9 @@ func TestValidate_Cron(t *testing.T) {
 // time, so schedule.time is rejected there; an inclusion calendar still uses it.
 func TestValidate_ScheduleTimeWithCron(t *testing.T) {
 	cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "orders"}, Schedule: types.ScheduleConfig{Cron: "0 8 * * *", Time: "08:30"}}
-	assert.Equal(t, []string{"schedule.time is not used with schedule.cron; the cron time is the start-by time"}, ValidatePipelineConfig(&cfg))
+	assert.Equal(t, []string{"schedule.time is not used with schedule.cron; the cron time is the start-by time"}, validate(&cfg))
 	cfg.Schedule = types.ScheduleConfig{Time: "08:30", Include: &types.InclusionConfig{Dates: []string{"2026-03-31"}}}
-	assert.Empty(t, ValidatePipelineConfig(&cfg))
+	assert.Empty(t, validate(&cfg))
 }
 
 func TestValidate_PostRunWatchWindow(t *testing.T) {
@@ -501,7 +500,7 @@ func TestValidate_PostRunWatchWindow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "orders"}, PostRun: tt.postRun}
-			assert.Equal(t, tt.wantErrs, ValidatePipelineConfig(&cfg))
+			assert.Equal(t, tt.wantErrs, validate(&cfg))
 		})
 	}
 }
@@ -530,10 +529,9 @@ func TestValidate_RelativeSLAExpectedDuration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "orders"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
 				SLA:      &types.SLAConfig{MaxDuration: tt.maxDuration, ExpectedDuration: tt.expected},
 			}
-			assert.Equal(t, tt.wantErrs, ValidatePipelineConfig(&cfg))
+			assert.Equal(t, tt.wantErrs, validate(&cfg))
 		})
 	}
 }
@@ -583,10 +581,9 @@ func TestValidate_SLADeadline(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "orders"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
 				SLA:      &tt.sla,
 			}
-			assert.Equal(t, tt.wantErrs, ValidatePipelineConfig(&cfg))
+			assert.Equal(t, tt.wantErrs, validate(&cfg))
 			if tt.wantErrs != nil || tt.sla.Deadline == "" {
 				return
 			}
@@ -615,7 +612,7 @@ func TestValidate_SLADeadlineEveryClockTime(t *testing.T) {
 			Pipeline: types.PipelineIdentity{ID: "orders"},
 			SLA:      &types.SLAConfig{Deadline: deadline, ExpectedDuration: "30m"},
 		}
-		assert.Empty(t, ValidatePipelineConfig(&cfg), "deadline %q", deadline)
+		assert.Empty(t, validate(&cfg), "deadline %q", deadline)
 		date := "2026-03-10"
 		if strings.HasPrefix(deadline, ":") {
 			date = "2026-03-10T07"
@@ -637,17 +634,17 @@ func TestValidate_Timezone(t *testing.T) {
 	}
 	for _, tz := range valid {
 		t.Run("valid "+tz, func(t *testing.T) {
-			assert.Empty(t, ValidatePipelineConfig(withZones(tz, "")), "schedule.timezone")
-			assert.Empty(t, ValidatePipelineConfig(withZones("", tz)), "sla.timezone")
+			assert.Empty(t, validate(withZones(tz, "")), "schedule.timezone")
+			assert.Empty(t, validate(withZones("", tz)), "sla.timezone")
 		})
 	}
 	for _, tz := range invalid {
 		t.Run("invalid "+tz, func(t *testing.T) {
 			scheduleErr := fmt.Sprintf("schedule.timezone %q is not an IANA time zone name", tz)
 			slaErr := fmt.Sprintf("sla.timezone %q is not an IANA time zone name", tz)
-			assert.Equal(t, []string{scheduleErr}, ValidatePipelineConfig(withZones(tz, "")))
-			assert.Equal(t, []string{slaErr}, ValidatePipelineConfig(withZones("", tz)))
-			assert.Equal(t, []string{scheduleErr, slaErr}, ValidatePipelineConfig(withZones(tz, tz)))
+			assert.Equal(t, []string{scheduleErr}, validate(withZones(tz, "")))
+			assert.Equal(t, []string{slaErr}, validate(withZones("", tz)))
+			assert.Equal(t, []string{scheduleErr, slaErr}, validate(withZones(tz, tz)))
 		})
 	}
 }
@@ -661,22 +658,22 @@ func TestValidate_AirflowAPIVersion(t *testing.T) {
 	}
 	// YAML decodes the number as an int, JSON as a float64.
 	for _, v := range []interface{}{0, 2, 3, float64(2), float64(3), nil} {
-		assert.Empty(t, ValidatePipelineConfig(withVersion(types.TriggerAirflow, v)), "apiVersion %#v should be accepted", v)
+		assert.Empty(t, validate(withVersion(types.TriggerAirflow, v)), "apiVersion %#v should be accepted", v)
 	}
-	assert.Empty(t, ValidatePipelineConfig(&types.PipelineConfig{
+	assert.Empty(t, validate(&types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "orders"},
 		Job:      types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{"url": "https://a", "dagId": "etl"}},
 	}), "an unset apiVersion should be accepted")
 	for v, shown := range map[interface{}]string{1: "1", 4: "4", float64(4): "4", 2.5: "2.5", "3": `"3"`} {
 		assert.Equal(t, []string{"job.config.apiVersion " + shown + " must be 2 or 3"},
-			ValidatePipelineConfig(withVersion(types.TriggerAirflow, v)), "apiVersion %#v should be rejected", v)
+			validate(withVersion(types.TriggerAirflow, v)), "apiVersion %#v should be rejected", v)
 	}
 	// The trigger config decoder matches keys without regard to case.
-	assert.Equal(t, []string{"job.config.apiVersion 4 must be 2 or 3"}, ValidatePipelineConfig(&types.PipelineConfig{
+	assert.Equal(t, []string{"job.config.apiVersion 4 must be 2 or 3"}, validate(&types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "orders"},
 		Job:      types.JobConfig{Type: types.TriggerAirflow, Config: map[string]interface{}{"url": "https://a", "dagId": "etl", "apiversion": 4}},
 	}))
-	assert.Equal(t, []string{`job.config: unknown field "apiVersion"`}, ValidatePipelineConfig(withVersion(types.TriggerHTTP, 4)),
+	assert.Equal(t, []string{`job.config: unknown field "apiVersion"`}, validate(withVersion(types.TriggerHTTP, 4)),
 		"apiVersion is an airflow setting")
 }
 
@@ -711,10 +708,10 @@ func TestValidate_DatabricksJobID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, ValidatePipelineConfig(withConfig(types.TriggerDatabricks, tt.conf)))
+			assert.Equal(t, tt.want, validate(withConfig(types.TriggerDatabricks, tt.conf)))
 		})
 	}
-	assert.Equal(t, []string{`job.config: unknown field "jobId"`}, ValidatePipelineConfig(withConfig(types.TriggerHTTP, map[string]interface{}{"jobId": 1})),
+	assert.Equal(t, []string{`job.config: unknown field "jobId"`}, validate(withConfig(types.TriggerHTTP, map[string]interface{}{"jobId": 1})),
 		"jobId is a databricks setting")
 }
 
@@ -755,7 +752,7 @@ func TestValidate_TriggerRequiredFields(t *testing.T) {
 	}
 	for typ, conf := range validTriggerConfigs() {
 		t.Run(string(typ)+" valid", func(t *testing.T) {
-			assert.Empty(t, ValidatePipelineConfig(withConfig(typ, conf)))
+			assert.Empty(t, validate(withConfig(typ, conf)))
 		})
 	}
 	for typ, fields := range requiredTriggerFields {
@@ -763,7 +760,7 @@ func TestValidate_TriggerRequiredFields(t *testing.T) {
 			t.Run(string(typ)+" missing "+field, func(t *testing.T) {
 				conf := validTriggerConfigs()[typ]
 				delete(conf, field)
-				assert.Equal(t, []string{"job.config." + field + " is required"}, ValidatePipelineConfig(withConfig(typ, conf)))
+				assert.Equal(t, []string{"job.config." + field + " is required"}, validate(withConfig(typ, conf)))
 			})
 		}
 		t.Run(string(typ)+" no config", func(t *testing.T) {
@@ -771,7 +768,7 @@ func TestValidate_TriggerRequiredFields(t *testing.T) {
 			for _, field := range fields {
 				want = append(want, "job.config."+field+" is required")
 			}
-			assert.Equal(t, want, ValidatePipelineConfig(withConfig(typ, nil)))
+			assert.Equal(t, want, validate(withConfig(typ, nil)))
 		})
 	}
 
@@ -818,7 +815,7 @@ func TestValidate_TriggerRequiredFields(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, ValidatePipelineConfig(withConfig(tt.typ, tt.conf)))
+			assert.Equal(t, tt.want, validate(withConfig(tt.typ, tt.conf)))
 		})
 	}
 }
@@ -837,14 +834,14 @@ func TestValidate_EMRServerlessDateFlags(t *testing.T) {
 	noValue := func(flag string) []string {
 		return []string{"job.config.entryPointArguments has no value after " + flag}
 	}
-	assert.Empty(t, ValidatePipelineConfig(withArgs()))
-	assert.Empty(t, ValidatePipelineConfig(withArgs("--par_day", "x", "--par_hour", "y")))
-	assert.Empty(t, ValidatePipelineConfig(withArgs("--par_day=x", "--par_hour=y")), "the = form is left alone")
-	assert.Empty(t, ValidatePipelineConfig(withArgs("--input", "--par_day", "x")))
-	assert.Equal(t, noValue("--par_day"), ValidatePipelineConfig(withArgs("--input", "s3://in", "--par_day")))
-	assert.Equal(t, noValue("--par_hour"), ValidatePipelineConfig(withArgs("--par_hour", "--input", "s3://in")))
+	assert.Empty(t, validate(withArgs()))
+	assert.Empty(t, validate(withArgs("--par_day", "x", "--par_hour", "y")))
+	assert.Empty(t, validate(withArgs("--par_day=x", "--par_hour=y")), "the = form is left alone")
+	assert.Empty(t, validate(withArgs("--input", "--par_day", "x")))
+	assert.Equal(t, noValue("--par_day"), validate(withArgs("--input", "s3://in", "--par_day")))
+	assert.Equal(t, noValue("--par_hour"), validate(withArgs("--par_hour", "--input", "s3://in")))
 	assert.Equal(t, append(noValue("--par_day"), noValue("--par_hour")...),
-		ValidatePipelineConfig(withArgs("--par_day", "--par_hour")))
+		validate(withArgs("--par_day", "--par_hour")))
 }
 
 // Every job.type validation accepts must have its own config check.

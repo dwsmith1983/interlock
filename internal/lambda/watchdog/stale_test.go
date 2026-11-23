@@ -204,7 +204,7 @@ func TestReconcile_Cutoff(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d, mem, rec := slaDeps(t, "", tt.jobRow, func(c *types.PipelineConfig) {
-				c.SLA, c.Schedule.Trigger.Cutoff = nil, "14:00"
+				c.SLA, c.Schedule.Trigger.Cutoff, c.Schedule.Trigger.CutoffDayOffset = nil, "14:00", 0
 				if tt.exclude {
 					c.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{tt.date}}
 				}
@@ -276,7 +276,7 @@ func TestReconcile_RestartsAfterRelease(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
-				c.SLA, c.Schedule.Trigger.Cutoff, c.Schedule.Cron = nil, "14:00", tt.cron
+				c.SLA, c.Schedule.Trigger.Cutoff, c.Schedule.Trigger.CutoffDayOffset, c.Schedule.Cron = nil, "14:00", 0, tt.cron
 			})
 			sfnFake := &countingSFN{}
 			d.SFNClient, d.NowFunc = sfnFake, func() time.Time { return tt.now }
@@ -341,7 +341,7 @@ func TestReconcile_Gating(t *testing.T) {
 	}{
 		{name: "condition not met", sensors: map[string]map[string]interface{}{"upstream": {"status": "pending", "date": slaTestDate}},
 			tweak: func(c *types.PipelineConfig) {
-				c.Schedule.Trigger = &types.TriggerCondition{Key: "upstream", Check: types.CheckEquals, Field: "status", Value: "ready"}
+				c.Schedule.Trigger = &types.TriggerCondition{Key: "upstream", Check: types.CheckEquals, Field: "status", Value: "ready", Cutoff: "23:59", CutoffDayOffset: 7}
 			}},
 		{name: "today excluded", sensors: map[string]map[string]interface{}{"upstream": {"date": "2026-03-09"}},
 			tweak: func(c *types.PipelineConfig) {
@@ -350,7 +350,6 @@ func TestReconcile_Gating(t *testing.T) {
 		{name: "per-hour both", sensors: hourly, wantSFN: 2, wantDates: []string{"2026-03-10T10", "2026-03-10T11"}},
 		{name: "per-hour partial", sensors: hourly, running: "2026-03-10T10", wantSFN: 1, wantDates: []string{"2026-03-10T11"}},
 		{name: "other sensor shares the prefix", sensors: map[string]map[string]interface{}{"upstream-audit": {"date": slaTestDate}}},
-		{name: "nil trigger", sensors: daily, tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger = nil }},
 		{name: "SFN error", sensors: daily, sfnErr: errors.New("execution limit exceeded"), wantSFN: 1},
 		{name: "dry run", sensors: daily, tweak: dryRunHTTP},
 		{name: "exhausted launch", sensors: daily, trigger: types.TriggerStatusFailedFinal, jobRow: types.JobEventInfraTriggerExhausted},

@@ -17,6 +17,7 @@ schedule:
     check: equals
     field: status
     value: ready
+    cutoff: "12:00"
   evaluation:
     window: 1h
     interval: 5m
@@ -28,7 +29,7 @@ schedule:
 |---|---|---|---|
 | `cron` | string | no | Five-field cron expression (minute, hour, day of month, month, day of week), evaluated in `timezone` |
 | `timezone` | string | no | IANA time zone name (for example `America/New_York`) for cron and deadline interpretation. Empty means `UTC`. An unknown name, or `Local`, rejects the config as `CONFIG_INVALID` |
-| `trigger` | object | no | Condition that activates the evaluation loop (see below) |
+| `trigger` | object | yes | Condition that activates the evaluation loop, with the [cutoff](#cutoff) for its latest automatic start (see below). A config without one is rejected as `CONFIG_INVALID` |
 | `evaluation` | object | no | Window and interval settings for the evaluation loop |
 | `exclude` | object | no | Dates the pipeline does not run (see [Calendar Exclusions](#calendar-exclusions)) |
 | `include` | object | no | `dates` (`YYYY-MM-DD` list) the pipeline is expected to run on; the watchdog publishes `IRREGULAR_SCHEDULE_MISSED` for a date with no trigger row once that date has begun in `timezone` (UTC when unset). It does not stop runs on other dates. Not allowed with `cron` |
@@ -45,6 +46,7 @@ schedule:
     check: equals
     field: status
     value: ready
+    cutoff: "12:00"
 ```
 
 When the trigger condition is met (e.g., an upstream pipeline signals completion), the evaluation loop begins. The loop then evaluates the full set of `validation` rules at the configured interval.
@@ -55,13 +57,13 @@ When the trigger condition is met (e.g., an upstream pipeline signals completion
 | `check` | string | Operator, as in validation rules |
 | `field` | string | Field in the sensor's `data` map (not needed for `exists`) |
 | `value` | any | Value to compare against (not needed for `exists`) |
-| `cutoff`, `cutoffDayOffset` | | See [Cutoff](#cutoff) |
+| `cutoff`, `cutoffDayOffset` | | `cutoff` is required; see [Cutoff](#cutoff) |
 
 The trigger condition uses the same check syntax as validation rules: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`.
 
 ### Cutoff
 
-The cutoff is the latest time a run date may start. Until then Interlock keeps waiting for readiness, and the start-by check (`schedule.cron`) and the SLA warning and breach are what alert. A run that starts one minute before the cutoff made it.
+The cutoff is the latest automatic start of a run date, and every pipeline sets one: a config without `schedule.trigger.cutoff` is rejected as `CONFIG_INVALID`. Past it the date is closed with `SENSOR_DEADLINE_EXPIRED` and only a `RERUN_REQUEST` runs it, so no date starts on its own at an arbitrary age. Until then Interlock keeps waiting for readiness, and the start-by check (`schedule.cron`) and the SLA warning and breach are what alert. A run that starts one minute before the cutoff made it.
 
 ```yaml
 schedule:
@@ -77,10 +79,10 @@ schedule:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `cutoff` | string | none | `HH:MM` for daily run dates, `:MM` for hourly ones |
+| `cutoff` | string | required, no default | `HH:MM` for daily run dates, `:MM` for hourly ones |
 | `cutoffDayOffset` | int | `0` | Days after the run date a daily cutoff falls on, 0 to 7 |
 
-A daily cutoff falls on the run date plus `cutoffDayOffset` days, at that wall-clock time in `schedule.timezone` (or `sla.timezone` when that is not set, else UTC). Above, the run for 2026-03-10 must start by 2026-03-11 02:00 New York time. An hourly `:MM` cutoff falls at minute MM of the hour after the run's hour: run `2026-03-10T10` with `cutoff: ":15"` must start by 11:15. A cutoff is never earlier than its wall time: one inside a spring-forward gap falls at the end of the gap (02:30 becomes 03:00), and a time repeated at fall-back falls at its first occurrence. A non-zero offset is rejected with an hourly cutoff and without a cutoff.
+A daily cutoff falls on the run date plus `cutoffDayOffset` days, at that wall-clock time in `schedule.timezone` (or `sla.timezone` when that is not set, else UTC). Above, the run for 2026-03-10 must start by 2026-03-11 02:00 New York time. An hourly `:MM` cutoff falls at minute MM of the hour after the run's hour: run `2026-03-10T10` with `cutoff: ":15"` must start by 11:15. A cutoff is never earlier than its wall time: one inside a spring-forward gap falls at the end of the gap (02:30 becomes 03:00), and a time repeated at fall-back falls at its first occurrence. A non-zero offset is rejected with an hourly cutoff.
 
 The cutoff applies to a run date whose key matches its cadence (`YYYY-MM-DD` for `HH:MM`, `YYYY-MM-DDThh` for `:MM`). A key of the other cadence, such as a date-only sensor on a pipeline with an hourly `:MM` cutoff, has no cutoff, and its sensors start runs as before.
 
@@ -88,7 +90,7 @@ A sensor processed at or after the cutoff starts nothing (the stream-router goes
 
 A run whose evaluation began before the cutoff and has not passed readiness by then ends at its next evaluation poll, so the alert can come up to one `evaluation.interval` after the cutoff. Its trigger row becomes `FAILED_FINAL` and it publishes one `SENSOR_DEADLINE_EXPIRED` with `source: orchestrator`; the job is not launched. A run that passed readiness before the cutoff still launches. Requested reruns and failure retries are not checked: a date with a `RERUN#` row, written before any rerun or retry starts, has had a rerun accepted. If publishing the alert keeps failing through the step's retries, the execution fails with its row still `RUNNING`, and once its stale deadline (`staleAt`, `sfn_timeout_seconds` plus 30 minutes from the latest attempt) passes the watchdog closes it with `SFN_TIMEOUT` instead.
 
-An evaluation window that ends before the cutoff releases the date: the orchestrator writes an `evaluation-released` job row, deletes the trigger row and publishes `EVALUATION_RELEASED`, which is not an alert. Evaluation starts again on the next trigger sensor write, or on the next watchdog pass while the trigger sensor still passes, until the cutoff; the date then closes with one `SENSOR_DEADLINE_EXPIRED`. Each release, restart and exhaustion cycle writes one `evaluation-released` row and publishes one `EVALUATION_RELEASED` and one `JOB_TRIGGERED`, so a pipeline whose sensor keeps passing while a rule fails produces that set on every sensor write and every watchdog pass until the cutoff. Normally one execution runs at a time; in a rare case a Task retry after a lost Lambda response can delete the lock a new evaluation has just taken, letting a second one start. A cron pipeline restarts the same way, on a sensor write or a watchdog pass: its cron time is only the start-by time. A `RERUN_REQUEST` for a released date before its cutoff is refused with an `INFRA_FAILURE` alert ("lock reset failed"), since there is no trigger row to reset: write the sensor again instead. A released date without a `RUN#` row whose sensor stops passing never gets a trigger row, so it gets no final alert and cannot be rerun until a passing trigger sensor, written or found by the reconciler after the cutoff, closes it. A launch that runs out of retries is not released: the date ends `FAILED_FINAL` with `RETRY_EXHAUSTED`, and only a `RERUN_REQUEST` runs it again. If publishing `RETRY_EXHAUSTED` keeps failing through the step's retries, the row stays `RUNNING` and the execution still finishes through SLA cleanup; a `RERUN_REQUEST` is rejected as a run in progress until the watchdog closes the date with `SFN_TIMEOUT` once its stale deadline (`staleAt`) passes. A status write that fails after a successful publish is retried and can send `RETRY_EXHAUSTED` again. Without a cutoff for the date (none set, or a key of the other cadence), or for a rerun, an exhausted window ends the date: `VALIDATION_EXHAUSTED` and a `FAILED_FINAL` trigger row, and only a `RERUN_REQUEST` runs it again. If publishing `VALIDATION_EXHAUSTED` keeps failing through the step's retries, the execution fails with the row still `RUNNING`, and once its stale deadline (`staleAt`) passes the watchdog closes it with `SFN_TIMEOUT`, as on the cutoff path. A retry after a publish that succeeded but whose status write failed sends the alert twice.
+An evaluation window that ends before the cutoff releases the date: the orchestrator writes an `evaluation-released` job row, deletes the trigger row and publishes `EVALUATION_RELEASED`, which is not an alert. Evaluation starts again on the next trigger sensor write, or on the next watchdog pass while the trigger sensor still passes, until the cutoff; the date then closes with one `SENSOR_DEADLINE_EXPIRED`. Each release, restart and exhaustion cycle writes one `evaluation-released` row and publishes one `EVALUATION_RELEASED` and one `JOB_TRIGGERED`, so a pipeline whose sensor keeps passing while a rule fails produces that set on every sensor write and every watchdog pass until the cutoff. Normally one execution runs at a time; in a rare case a Task retry after a lost Lambda response can delete the lock a new evaluation has just taken, letting a second one start. A cron pipeline restarts the same way, on a sensor write or a watchdog pass: its cron time is only the start-by time. A `RERUN_REQUEST` for a released date before its cutoff is refused with an `INFRA_FAILURE` alert ("lock reset failed"), since there is no trigger row to reset: write the sensor again instead. A released date without a `RUN#` row whose sensor stops passing never gets a trigger row, so it gets no final alert and cannot be rerun until a passing trigger sensor, written or found by the reconciler after the cutoff, closes it. A launch that runs out of retries is not released: the date ends `FAILED_FINAL` with `RETRY_EXHAUSTED`, and only a `RERUN_REQUEST` runs it again. If publishing `RETRY_EXHAUSTED` keeps failing through the step's retries, the row stays `RUNNING` and the execution still finishes through SLA cleanup; a `RERUN_REQUEST` is rejected as a run in progress until the watchdog closes the date with `SFN_TIMEOUT` once its stale deadline (`staleAt`) passes. A status write that fails after a successful publish is retried and can send `RETRY_EXHAUSTED` again. For a rerun, or a key of the other cadence (which has no cutoff), an exhausted window ends the date: `VALIDATION_EXHAUSTED` and a `FAILED_FINAL` trigger row, and only a `RERUN_REQUEST` runs it again. If publishing `VALIDATION_EXHAUSTED` keeps failing through the step's retries, the execution fails with the row still `RUNNING`, and once its stale deadline (`staleAt`) passes the watchdog closes it with `SFN_TIMEOUT`, as on the cutoff path. A retry after a publish that succeeded but whose status write failed sends the alert twice.
 
 Once the date is closed, nothing more starts for it: investigate, then submit a `RERUN_REQUEST` to run it manually. The cutoff limits only the first start of a run date. A `RERUN_REQUEST`, manual or the late-data one written when a sensor changes after a `COMPLETED` run, still runs after the cutoff. The late-data one is written and run only while the date's [post-run watch window](../pipelines/#watch-window) is open.
 
@@ -108,7 +110,7 @@ schedule:
 | `window` | duration | `1h` | Maximum time to keep evaluating after activation |
 | `interval` | duration | `5m` | Time between evaluation attempts within the window |
 
-If the validation rules are not satisfied within the evaluation window, the execution ends without launching the job: before the date's cutoff the date is released (`EVALUATION_RELEASED`) and can start again, and otherwise it ends with `VALIDATION_EXHAUSTED` (see [Cutoff](#cutoff)).
+If the validation rules are not satisfied within the evaluation window, the execution ends without launching the job: before the date's cutoff a first run is released (`EVALUATION_RELEASED`) and can start again, at or after it the date closes with `SENSOR_DEADLINE_EXPIRED`, and a rerun, or a run key of the other cadence than the cutoff, which has no cutoff, ends with `VALIDATION_EXHAUSTED` (see [Cutoff](#cutoff)).
 
 ### Event-Driven Schedules
 
@@ -119,6 +121,7 @@ schedule:
   trigger:
     key: orders-landed
     check: exists
+    cutoff: "23:00"
   evaluation:
     window: 30m
     interval: 2m
@@ -149,6 +152,7 @@ schedule:
     check: equals
     field: status
     value: ready
+    cutoff: "12:00"
   evaluation:
     window: 2h
     interval: 10m
@@ -184,7 +188,7 @@ sla:
 | `deadline` | string | `HH:MM` (two-digit hour, `00:00` to `23:59`) for daily execution dates, `:MM` (two-digit minute) for hourly ones -- all validation rules must pass and the job must complete by this time. Any other form rejects the config as `CONFIG_INVALID` |
 | `deadlineDayOffset` | int | Days after the execution date on which a daily `HH:MM` deadline falls, 0 to 7. Default 0 (the same day) |
 | `expectedDuration` | duration | Expected time for the job to complete; the warning fires this long before the breach. Required with `deadline`, and must be a positive Go duration (`30m`, `1h30m`). With `maxDuration` it must be positive and below `maxDuration`. A relative SLA with no `expectedDuration` warns at 75% of `maxDuration` |
-| `maxDuration` | duration | Relative SLA: the time budget from the first sensor arrival, at most `24h`. Needs `schedule.trigger` |
+| `maxDuration` | duration | Relative SLA: the time budget from the first sensor arrival, at most `24h` |
 | `timezone` | string | IANA time zone name (for example `America/New_York`) for `deadline`. Empty means `UTC`. An unknown name, or `Local`, rejects the config as `CONFIG_INVALID` |
 | `critical` | bool | Accepted and passed into the state machine input; nothing reads it |
 

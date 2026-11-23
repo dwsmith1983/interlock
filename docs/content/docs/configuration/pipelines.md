@@ -22,6 +22,7 @@ schedule:
     check: equals
     field: status
     value: ready
+    cutoff: "12:00"
   evaluation:
     window: 1h
     interval: 5m
@@ -87,7 +88,7 @@ Enables observation-only mode. When `true`, Interlock evaluates trigger conditio
 |---|---|---|---|
 | `dryRun` | bool | `false` | Enable dry-run / shadow mode |
 
-Requires `schedule.trigger` (sensor-driven evaluation) and `job.type` to be configured. Calendar exclusions are still honored. Remove `dryRun: true` to switch to live mode — `DRY_RUN#` markers have a 7-day TTL and don't interfere with `TRIGGER#` rows.
+Requires `job.type` to be configured. Calendar exclusions are still honored. Remove `dryRun: true` to switch to live mode; `DRY_RUN#` markers have a 7-day TTL and don't interfere with `TRIGGER#` rows.
 
 See [Alerting](../../reference/alerting/) for the full dry-run event reference.
 

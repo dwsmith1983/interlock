@@ -24,7 +24,8 @@ func TestTriggerRegistryTypesPassValidation(t *testing.T) {
 		types.TriggerLambda:        {"functionName": "f"},
 	}
 	for typ := range lambda.TriggerUnmarshalers {
-		cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: types.JobConfig{Type: typ, Config: required[typ]}}
+		cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: types.JobConfig{Type: typ, Config: required[typ]},
+			Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}}}
 		if errs := validation.ValidatePipelineConfig(&cfg); len(errs) > 0 {
 			t.Errorf("job.type %q: %v", typ, errs)
 		}

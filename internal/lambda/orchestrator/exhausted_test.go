@@ -216,7 +216,8 @@ func TestTriggerExhausted(t *testing.T) {
 // TestValidationExhausted: an exhausted evaluation has four outcomes. Before
 // a cutoff that applies to the date, a first run is released: the trigger row
 // is deleted after an evaluation-released joblog row, then
-// EVALUATION_RELEASED (best effort). With no cutoff, or for a rerun, the run
+// EVALUATION_RELEASED (best effort). For a rerun, or a row read without a
+// cutoff (validation rejects one, so only an unvalidated read sees it), the run
 // ends: validation-exhausted, VALIDATION_EXHAUSTED, then FAILED_FINAL. At or
 // after the cutoff a first run ends with one SENSOR_DEADLINE_EXPIRED, published
 // before FAILED_FINAL, and no joblog row. A missing or finished trigger row is
@@ -280,7 +281,7 @@ func TestValidationExhausted(t *testing.T) {
 		{name: "TriggerAlreadyFinishedReleaseCompleted", startStatus: completed,
 			calls: []call{{now: at(0, 13, 59), wantStatus: "released", wantRow: completed}}},
 		{name: "RerunLookupFailsBeforeCutoff", failRerun: true, calls: []call{{now: at(0, 13, 59), wantErr: true, wantRow: running}}},
-		{name: "NoCutoff", tweak: noCutoff, noRerunQuery: true, calls: exhaust(at(0, 14, 30)),
+		{name: "RowWithoutCutoff", tweak: noCutoff, noRerunQuery: true, calls: exhaust(at(0, 14, 30)),
 			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
 		{name: "HourlyCutoffDailyDate", tweak: hourly, noRerunQuery: true, calls: exhaust(at(0, 13, 0)),
 			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
@@ -292,15 +293,15 @@ func TestValidationExhausted(t *testing.T) {
 			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
 		{name: "RerunAfterCutoff", rerun: true, calls: exhaust(at(0, 14, 30)),
 			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
-		{name: "ExhaustedPublishFailsThenWorks", tweak: noCutoff, calls: []call{
+		{name: "ExhaustedPublishFailsThenWorks", rerun: true, calls: []call{
 			{now: at(0, 14, 29), putErr: errors.New("eventbridge: throttled"), wantErr: true, wantRow: running},
 			{now: at(0, 14, 30), wantStatus: "exhausted", wantRow: final},
 		}, wantJoblog: []string{ve, ve}, wantOps: []string{exhausted, "status " + final}},
-		{name: "ExhaustedTaskRetry", tweak: noCutoff, calls: append(exhaust(at(0, 14, 30)), exhaust(at(0, 14, 30))...),
+		{name: "ExhaustedTaskRetry", rerun: true, calls: append(exhaust(at(0, 14, 30)), exhaust(at(0, 14, 30))...),
 			wantJoblog: []string{ve}, wantOps: []string{exhausted, "status " + final}},
-		{name: "TriggerAlreadyFinishedExhaustFailedFinal", tweak: noCutoff, startStatus: final,
+		{name: "TriggerAlreadyFinishedExhaustFailedFinal", rerun: true, startStatus: final,
 			calls: []call{{now: at(0, 14, 30), wantStatus: "exhausted", wantRow: final}}},
-		{name: "TriggerAlreadyFinishedExhaustCompleted", tweak: noCutoff, startStatus: completed,
+		{name: "TriggerAlreadyFinishedExhaustCompleted", rerun: true, startStatus: completed,
 			calls: []call{{now: at(0, 14, 30), wantStatus: "exhausted", wantRow: completed}}},
 		{name: "AtCutoffThenTaskRetry", calls: []call{
 			{now: at(0, 14, 0), wantStatus: "cutoff", wantRow: final},
@@ -313,7 +314,7 @@ func TestValidationExhausted(t *testing.T) {
 		{name: "NoTriggerRow", noRow: true, calls: []call{{now: at(0, 14, 30), wantStatus: "cutoff"}}},
 		{name: "RerunLookupFails", failRerun: true, calls: []call{{now: at(0, 14, 30), wantErr: true, wantRow: running}}},
 		{name: "ConfigReadFails", failConfig: true, calls: []call{{now: at(0, 14, 30), wantErr: true, wantRow: running}}},
-		{name: "ExhaustedJoblogWriteFails", tweak: noCutoff, joblogFails: true, calls: []call{
+		{name: "ExhaustedJoblogWriteFails", rerun: true, joblogFails: true, calls: []call{
 			{now: at(0, 14, 30), wantErr: true, wantErrSub: "write validation-exhausted joblog", wantRow: running}}},
 		{name: "ReleaseJoblogWriteFails", joblogFails: true, calls: []call{
 			{now: at(0, 13, 59), wantErr: true, wantErrSub: "write evaluation-released joblog", wantRow: running}}},

@@ -42,15 +42,17 @@ type InclusionConfig struct {
 	Dates []string `yaml:"dates" json:"dates"` // YYYY-MM-DD
 }
 
-// TriggerCondition defines which sensor write starts evaluation.
+// TriggerCondition defines which sensor write starts evaluation. Every
+// pipeline sets one, with a Cutoff.
 type TriggerCondition struct {
 	Key   string      `yaml:"key" json:"key"`
 	Check CheckOp     `yaml:"check" json:"check"`
 	Field string      `yaml:"field" json:"field"`
 	Value interface{} `yaml:"value" json:"value"`
-	// Cutoff is the latest start time, ":MM" (hourly) or "HH:MM" (daily), in
-	// schedule.timezone (falling back to sla.timezone, then UTC). A run date
-	// with a RUN# row and no trigger by then is closed with one final alert.
+	// Cutoff is the latest automatic start, ":MM" (hourly) or "HH:MM"
+	// (daily), in schedule.timezone (falling back to sla.timezone, then UTC).
+	// It is required. A run date with a RUN# row and no trigger by then is
+	// closed with one SENSOR_DEADLINE_EXPIRED; only a RERUN_REQUEST runs it.
 	Cutoff string `yaml:"cutoff,omitempty" json:"cutoff,omitempty"`
 	// CutoffDayOffset is the number of days after the run date a daily
 	// cutoff falls on; 0 means the same day.

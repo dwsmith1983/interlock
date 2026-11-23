@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -194,6 +195,7 @@ func TestEvaluate_AlwaysEmitsStatus(t *testing.T) {
 func TestTrigger_FailuresReturnLambdaError(t *testing.T) {
 	badTypeCfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job: types.JobConfig{
 			Type:   types.TriggerType("bogus"),
 			Config: map[string]interface{}{"jobName": "x"},
@@ -202,6 +204,7 @@ func TestTrigger_FailuresReturnLambdaError(t *testing.T) {
 	// A row rewritten after the run started is validated again here.
 	badMethodCfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com", "method": "get"}},
 	}
 
@@ -273,8 +276,9 @@ func TestTrigger_FailuresReturnLambdaError(t *testing.T) {
 func TestTrigger_InvalidConfigReasonIsCut(t *testing.T) {
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{Include: &types.InclusionConfig{Dates: []string{"x" + strings.Repeat("é", 600)}}},
-		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com"}},
+		Schedule: types.ScheduleConfig{Include: &types.InclusionConfig{Dates: []string{"x" + strings.Repeat("é", 600)}},
+			Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
+		Job: types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com"}},
 	}
 	full := strings.Join(validation.ValidatePipelineConfig(&cfg), "; ")
 	if len(full) <= 1024 || utf8.RuneStart(full[1024]) {
@@ -294,6 +298,39 @@ func TestTrigger_InvalidConfigReasonIsCut(t *testing.T) {
 	want := `trigger: config for pipeline "p" is invalid: ` + full[:1023]
 	if err == nil || err.Error() != want || exec.got != nil {
 		t.Fatalf("err = %v, executed %+v; want %q and nothing sent", err, exec.got, want)
+	}
+}
+
+// TestTrigger_RowWithoutCutoffIsRejected: a stored row with no
+// schedule.trigger.cutoff is invalid, so nothing is sent and the trigger row
+// is left as it was.
+func TestTrigger_RowWithoutCutoffIsRejected(t *testing.T) {
+	cfg := types.PipelineConfig{
+		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com"}},
+	}
+	fake, mem := storetest.NewMem()
+	mem.Put("control", configItem(t, cfg))
+	pk, sk := types.PipelinePK("p"), types.TriggerSK("s", "2026-03-01")
+	row := map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: sk},
+		"status": &ddbtypes.AttributeValueMemberS{Value: types.TriggerStatusRunning},
+	}
+	mem.Put("control", row)
+	d := testDeps(fake)
+	exec := &fakeExecutor{}
+	d.TriggerRunner = exec
+
+	_, err := orchestrator.HandleOrchestrator(context.Background(), d, lambda.OrchestratorInput{
+		Mode: "trigger", PipelineID: "p", ScheduleID: "s", Date: "2026-03-01",
+	})
+	if err == nil || !strings.Contains(err.Error(), "schedule.trigger.cutoff is required") || exec.got != nil {
+		t.Fatalf("err = %v, executed %+v; want the missing cutoff reported and nothing sent", err, exec.got)
+	}
+	if got := mem.Get("control", pk, sk); !reflect.DeepEqual(got, row) {
+		t.Errorf("trigger row = %v, want it unchanged %v", got, row)
 	}
 }
 
@@ -343,7 +380,8 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: tt.job}
+			cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "p"}, Job: tt.job,
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}}}
 			var jobRows []map[string]ddbtypes.AttributeValue
 			fake := &storetest.FakeDynamo{
 				GetItemFn: func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
@@ -438,6 +476,7 @@ func TestTrigger_SuccessAlwaysCarriesRunIDAndMetadata(t *testing.T) {
 func TestTrigger_InfraFailureRowCarriesRunID(t *testing.T) {
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: map[string]interface{}{"url": "https://example.com/run"}},
 	}
 	var jobRows []map[string]ddbtypes.AttributeValue
@@ -467,6 +506,7 @@ func TestTrigger_InfraFailureRowCarriesRunID(t *testing.T) {
 func TestTrigger_InfraFailureRowWriteFails(t *testing.T) {
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job:      types.JobConfig{Type: types.TriggerGlue, Config: map[string]interface{}{"jobName": "gold-etl"}},
 	}
 	fake := &storetest.FakeDynamo{
@@ -497,6 +537,7 @@ func TestTrigger_InfraFailureRowWriteFails(t *testing.T) {
 func TestTrigger_LambdaResult(t *testing.T) {
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job:      types.JobConfig{Type: types.TriggerLambda, Config: map[string]interface{}{"functionName": "f"}},
 	}
 	jobErr := &trigger.JobFailedError{Message: "lambda trigger: function error: Unhandled: boom"}
@@ -573,6 +614,7 @@ func TestTrigger_LambdaResult(t *testing.T) {
 func TestTrigger_LambdaFailRowWriteError(t *testing.T) {
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job:      types.JobConfig{Type: types.TriggerLambda, Config: map[string]interface{}{"functionName": "f"}},
 	}
 	fake := &storetest.FakeDynamo{

@@ -93,7 +93,7 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 			threshold, field := 0.0, cmp.Or(tt.field, "count")
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun: &types.PostRunConfig{
 					Rules:      []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}},
@@ -172,7 +172,7 @@ func firstWriteWorld(t *testing.T, ruleKeys ...string) (*lambda.Deps, *storetest
 	threshold := 0.0
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 		PostRun:  &types.PostRunConfig{DriftField: "count", DriftThreshold: &threshold, WatchWindow: "6h"},
 	}

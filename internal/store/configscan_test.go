@@ -32,6 +32,11 @@ func configRow(pk string, config ddbtypes.AttributeValue) map[string]ddbtypes.At
 	return item
 }
 
+// validConfig is a CONFIG attribute that passes validation for pipeline id.
+func validConfig(id string) string {
+	return `{"pipeline":{"id":"` + id + `"},"schedule":{"trigger":{"key":"upstream","check":"exists","cutoff":"23:59","cutoffDayOffset":7}}}`
+}
+
 func shortSHA(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])[:16]
@@ -57,7 +62,7 @@ func TestScanConfigs_SkipsBadRows(t *testing.T) {
 	}
 	fake, mem := storetest.NewMem()
 	for _, id := range []string{"good-a", "good-b"} {
-		mem.Put("control", configRow(types.PipelinePK(id), sAttr(`{"pipeline":{"id":"`+id+`"}}`)))
+		mem.Put("control", configRow(types.PipelinePK(id), sAttr(validConfig(id))))
 	}
 	for _, b := range bad {
 		mem.Put("control", configRow(b.pk, b.config))
@@ -94,9 +99,13 @@ func TestScanConfigs_SkipsBadRows(t *testing.T) {
 // set of pipelines.
 func TestConfigCache_RejectsInvalidConfig(t *testing.T) {
 	fake, mem := storetest.NewMem()
-	invalid := `{"pipeline":{"id":"bad"},"job":{"maxRetries":11}}`
-	mem.Put("control", configRow(types.PipelinePK("good"), sAttr(`{"pipeline":{"id":"good"}}`)))
+	invalid := strings.Replace(validConfig("bad"), `"pipeline":{"id":"bad"}`, `"pipeline":{"id":"bad"},"job":{"maxRetries":11}`, 1)
+	noCutoff := `{"pipeline":{"id":"no-cutoff"},"schedule":{"trigger":{"key":"upstream","check":"exists"}}}`
+	noTrigger := `{"pipeline":{"id":"no-trigger"}}`
+	mem.Put("control", configRow(types.PipelinePK("good"), sAttr(validConfig("good"))))
 	mem.Put("control", configRow(types.PipelinePK("bad"), sAttr(invalid)))
+	mem.Put("control", configRow(types.PipelinePK("no-cutoff"), sAttr(noCutoff)))
+	mem.Put("control", configRow(types.PipelinePK("no-trigger"), sAttr(noTrigger)))
 	cache := store.NewConfigCache(storetest.NewStore(fake), time.Minute)
 	ctx := context.Background()
 
@@ -108,8 +117,11 @@ func TestConfigCache_RejectsInvalidConfig(t *testing.T) {
 		t.Fatalf("Get(bad) = %v, %v, want nil, nil", cfg, err)
 	}
 	rejected, err := cache.Rejected(ctx)
-	want := []store.RejectedConfig{{PK: types.PipelinePK("bad"), PipelineID: "bad",
-		Reason: "job.maxRetries 11 out of range [0,10]", Hash: shortSHA(invalid)}}
+	want := []store.RejectedConfig{
+		{PK: types.PipelinePK("bad"), PipelineID: "bad", Reason: "job.maxRetries 11 out of range [0,10]", Hash: shortSHA(invalid)},
+		{PK: types.PipelinePK("no-cutoff"), PipelineID: "no-cutoff", Reason: "schedule.trigger.cutoff is required", Hash: shortSHA(noCutoff)},
+		{PK: types.PipelinePK("no-trigger"), PipelineID: "no-trigger", Reason: "schedule.trigger is required", Hash: shortSHA(noTrigger)},
+	}
 	if err != nil || !slices.Equal(rejected, want) {
 		t.Fatalf("Rejected = %+v, %v, want %+v", rejected, err, want)
 	}
@@ -160,7 +172,8 @@ func TestConfigCache_LogsRejectionsAndHoldsWithNoneAccepted(t *testing.T) {
 func TestScanConfigs_CutsLongReason(t *testing.T) {
 	cfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "long"},
-		Schedule: types.ScheduleConfig{Include: &types.InclusionConfig{Dates: []string{"x" + strings.Repeat("é", 600)}}},
+		Schedule: types.ScheduleConfig{Include: &types.InclusionConfig{Dates: []string{"x" + strings.Repeat("é", 600)}},
+			Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {

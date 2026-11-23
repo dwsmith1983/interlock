@@ -30,11 +30,7 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 		return nil
 	}
 
-	// Only process if the pipeline has a stream trigger condition.
 	trigger := cfg.Schedule.Trigger
-	if trigger == nil {
-		return nil
-	}
 
 	// Check if this sensor key matches the trigger condition: the key itself
 	// or a per-period key like "hourly-status#2026-03-03T18".

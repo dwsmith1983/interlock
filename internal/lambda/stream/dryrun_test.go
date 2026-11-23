@@ -79,7 +79,7 @@ func TestStreamDryRunRerunRequest(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				DryRun:   true,
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 			}
 			if tt.tweak != nil {
@@ -229,7 +229,7 @@ func TestStreamDryRunTrigger(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline:   types.PipelineIdentity{ID: "p"},
 				DryRun:     true,
-				Schedule:   types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule:   types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Validation: types.ValidationConfig{Trigger: "ALL", Rules: []types.ValidationRule{{Key: "upstream", Check: types.CheckExists}}},
 				Job:        types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 			}
@@ -312,7 +312,7 @@ func TestStreamDryRunPostRunSensor(t *testing.T) {
 			d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				DryRun:   true,
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun:  &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}}},
 			})
@@ -355,7 +355,7 @@ func TestStreamDryRunPostRunSensor_FirstWriteSeeds(t *testing.T) {
 	d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
 		DryRun:   true,
-		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 		PostRun:  &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "audit-result", Check: types.CheckExists}}},
 	})

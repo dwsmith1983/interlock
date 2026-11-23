@@ -117,7 +117,7 @@ func TestRerunRequest_WatchWindow(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
 			}
@@ -330,7 +330,7 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
 			}
@@ -496,7 +496,7 @@ func rerunWorld(t *testing.T, updatedAt string, now *time.Time) (*lambda.Deps, *
 	const date = "2026-03-10"
 	d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},
-		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+		Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 		Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 		PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
 	})
@@ -648,7 +648,7 @@ func TestRerunRequest_RunningDateIsRefused(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
-				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
 				PostRun:  &types.PostRunConfig{WatchWindow: "6h"},
 			}
