@@ -2,6 +2,7 @@ package validation
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/dwsmith1983/interlock/pkg/sla"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -211,6 +213,10 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		}
 	}
 
+	if msg := cutoffBeforeBreach(cfg); msg != "" {
+		errs = append(errs, msg)
+	}
+
 	if cfg.PostRun != nil {
 		errs = append(errs, validatePostRun(cfg.PostRun)...)
 	}
@@ -249,6 +255,81 @@ func validateSLADeadline(s *types.SLAConfig) []string {
 		}
 	}
 	return errs
+}
+
+// cutoffReferenceDates are the run dates on which the cutoff is compared with
+// the sla.deadline breach: a winter and a summer date, and one inside each
+// gap between the US and EU DST changes (2025-03-09 to 03-30 and 2025-10-26
+// to 11-02), so a cutoff and a deadline in zones with different DST rules
+// are compared in each season they can fall in. Fixed dates keep validation
+// off the clock.
+var cutoffReferenceDates = [...]time.Time{
+	time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC),
+	time.Date(2025, time.March, 20, 0, 0, 0, 0, time.UTC),
+	time.Date(2025, time.July, 15, 0, 0, 0, 0, time.UTC),
+	time.Date(2025, time.October, 29, 0, 0, 0, 0, time.UTC),
+}
+
+// cutoffBeforeBreach reports the run key whose cutoff falls furthest before
+// its sla.deadline breach, or returns "". Validation cannot know whether the
+// sensors send daily or hourly keys, so it checks the daily key and the
+// hourly keys T00 and T23 of each reference date, with the runtime's
+// functions: the cutoff in schedule.timezone (else sla.timezone, else UTC),
+// the breach in sla.timezone, deadlineDayOffset added to the daily key only.
+// It runs only when every input passed its own check, so one mistake gives
+// one error.
+func cutoffBeforeBreach(cfg *types.PipelineConfig) string {
+	s, tr := cfg.SLA, cfg.Schedule.Trigger
+	if s == nil || tr == nil || !clockRe.MatchString(s.Deadline) || !clockRe.MatchString(tr.Cutoff) ||
+		!dayOffsetValid(s.DeadlineDayOffset, s.Deadline) || !dayOffsetValid(tr.CutoffDayOffset, tr.Cutoff) ||
+		!isZoneName(cfg.Schedule.Timezone) || !isZoneName(s.Timezone) {
+		return ""
+	}
+	cutoffZone, slaZone := cmp.Or(cfg.Schedule.Timezone, s.Timezone, "UTC"), cmp.Or(s.Timezone, "UTC")
+	loc, err := time.LoadLocation(cutoffZone)
+	if err != nil {
+		return fmt.Sprintf("schedule.trigger.cutoff zone %q could not be loaded: %v", cutoffZone, err)
+	}
+	var worstKey string
+	var worstCutoff, worstBreach time.Time
+	for _, ref := range cutoffReferenceDates {
+		day := ref.Format("2006-01-02")
+		keys := []string{day, day + "T00", day + "T23"}
+		if strings.HasPrefix(s.Deadline, ":") {
+			keys = keys[1:] // the T23 key decides an hourly deadline
+		}
+		for _, key := range keys {
+			slaDate := key
+			if key == day {
+				slaDate = ref.AddDate(0, 0, s.DeadlineDayOffset).Format("2006-01-02")
+			}
+			// The breach does not depend on expectedDuration or, with a run date, on now.
+			breach, _, err := sla.CalculateAbsoluteDeadline(slaDate, s.Deadline, "0s", s.Timezone, ref)
+			cutoff := sla.CutoffAt(key, tr.Cutoff, tr.CutoffDayOffset, loc)
+			if err != nil || cutoff.IsZero() {
+				return fmt.Sprintf("schedule.trigger.cutoff %q and sla.deadline %q could not be computed for run key %s: %v", tr.Cutoff, s.Deadline, key, err)
+			}
+			if breach.Sub(cutoff) > worstBreach.Sub(worstCutoff) {
+				worstKey, worstCutoff, worstBreach = key, cutoff, breach
+			}
+		}
+	}
+	if worstKey == "" {
+		return ""
+	}
+	msg := fmt.Sprintf("schedule.trigger.cutoff %q (cutoffDayOffset %d, %s) is earlier than the sla.deadline %q (deadlineDayOffset %d, %s) breach time for run key %s (cutoff %s, breach %s); move the cutoff at least %s later",
+		tr.Cutoff, tr.CutoffDayOffset, cutoffZone, s.Deadline, s.DeadlineDayOffset, slaZone, worstKey,
+		worstCutoff.UTC().Format(time.RFC3339), worstBreach.UTC().Format(time.RFC3339), worstBreach.Sub(worstCutoff))
+	if strings.Contains(worstKey, "T") {
+		msg += " (the check covers hourly run keys because sensors may send them)"
+	}
+	return msg
+}
+
+// dayOffsetValid reports whether a day offset passes its own check: zero, or
+// 1 to 7 with a daily "HH:MM" clock time.
+func dayOffsetValid(off int, clock string) bool {
+	return off == 0 || (off > 0 && off <= 7 && !strings.HasPrefix(clock, ":"))
 }
 
 // triggerConfigChecks checks the job.config of each job.type: the fields its
