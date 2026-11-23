@@ -82,6 +82,14 @@ func ConvertAttributeValue(av events.DynamoDBAttributeValue) interface{} {
 	}
 }
 
+// SensorKeyMatches reports whether sensorKey is the sensor of a trigger or
+// rule key: the key itself, or the key followed by # and a period, such as
+// "orders#2026-03-10". A key that merely begins with it, such as
+// "orders-count", does not match "orders".
+func SensorKeyMatches(sensorKey, ruleKey string) bool {
+	return sensorKey == ruleKey || strings.HasPrefix(sensorKey, ruleKey+"#")
+}
+
 // RemapPerPeriodSensors adds base-key aliases for per-period sensor keys.
 // For example, sensor "hourly-status#20260303T07" becomes accessible under
 // key "hourly-status" when the execution date is "2026-03-03T07". This allows

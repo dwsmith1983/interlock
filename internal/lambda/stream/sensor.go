@@ -36,10 +36,10 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 		return nil
 	}
 
-	// Check if this sensor key matches the trigger condition (prefix match
-	// allows per-period sensor keys like "hourly-status#2026-03-03T18").
+	// Check if this sensor key matches the trigger condition: the key itself
+	// or a per-period key like "hourly-status#2026-03-03T18".
 	sensorKey := strings.TrimPrefix(sk, "SENSOR#")
-	if !strings.HasPrefix(sensorKey, trigger.Key) {
+	if !lambda.SensorKeyMatches(sensorKey, trigger.Key) {
 		// Trigger key doesn't match — check if this sensor matches a post-run rule.
 		if cfg.PostRun != nil && lambda.MatchesPostRunRule(sensorKey, cfg.PostRun.Rules) {
 			sensorData := lambda.ExtractSensorData(record.Change.NewImage)

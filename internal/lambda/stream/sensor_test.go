@@ -499,3 +499,64 @@ func mustTime(t *testing.T, s string) time.Time {
 	}
 	return v
 }
+
+// TestSensorEvent_KeyBoundary: a sensor matches the trigger key only as that
+// key or the key followed by # and a period. With trigger key orders and a
+// post-run rule on orders-count, an orders-count write is the post-run
+// sensor: it starts nothing for a date with no trigger row, and for a
+// COMPLETED date inside its window a changed value is drift, not late data.
+func TestSensorEvent_KeyBoundary(t *testing.T) {
+	const date = "2026-03-10"
+	threshold := 0.0
+	tests := []struct {
+		name       string
+		key        string
+		completed  bool // the date has a COMPLETED row and an orders-count baseline of 100
+		wantSFN    int
+		wantEvents []string
+	}{
+		{name: "post-run sensor, no trigger row", key: "orders-count"},
+		{name: "post-run sensor, completed date", key: "orders-count", completed: true,
+			wantEvents: []string{string(types.EventPostRunDrift)}},
+		{name: "per-period trigger key (guard)", key: "orders#" + date, wantSFN: 1,
+			wantEvents: []string{string(types.EventJobTriggered)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "p"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "orders", Check: types.CheckExists}},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig},
+				PostRun: &types.PostRunConfig{DriftField: "count", DriftThreshold: &threshold, WatchWindow: "6h",
+					Rules: []types.ValidationRule{{Key: "orders-count", Check: types.CheckExists}}},
+			})
+			now := mustTime(t, "2026-03-10T13:00:00Z")
+			d.NowFunc = func() time.Time { return now }
+			ctx := context.Background()
+			if tt.completed {
+				mem.Put("control", completedRow(date, "2026-03-10T12:00:00Z"))
+				if err := d.Store.WriteSensor(ctx, "p", "postrun-baseline#"+date, map[string]interface{}{
+					"orders-count": map[string]interface{}{"count": 100}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			data := map[string]events.DynamoDBAttributeValue{
+				"date": events.NewStringAttribute(date), "count": events.NewNumberAttribute("200")}
+
+			if err := handleRecord(ctx, d, sensorRecordWith(tt.key, data)); err != nil {
+				t.Fatalf("handleRecord: %v", err)
+			}
+
+			if got := eventTypes(eb.events); sfnFake.calls != tt.wantSFN || !slices.Equal(got, tt.wantEvents) {
+				t.Errorf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, got, tt.wantSFN, tt.wantEvents)
+			}
+			wantRow := tt.wantSFN == 1 || tt.completed
+			if present := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("stream", date)) != nil; present != wantRow {
+				t.Errorf("trigger row present = %v, want %v", present, wantRow)
+			}
+			if got := jobEvents(mem); len(got) != 0 {
+				t.Errorf("job rows = %v, want none", got)
+			}
+		})
+	}
+}

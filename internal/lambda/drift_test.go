@@ -75,4 +75,7 @@ func TestMatchesPostRunRule(t *testing.T) {
 	assert.False(t, MatchesPostRunRule("upstream", rules))
 	assert.False(t, MatchesPostRunRule("ord", rules), "a key shorter than the rule")
 	assert.False(t, MatchesPostRunRule("orders", nil))
+	row := []types.ValidationRule{{Key: "row"}}
+	assert.False(t, MatchesPostRunRule("row-count", row), "a longer key that only begins with the rule")
+	assert.True(t, MatchesPostRunRule("row#2026-03-10", row), "per-period key")
 }

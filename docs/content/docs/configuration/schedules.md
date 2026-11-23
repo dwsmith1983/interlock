@@ -51,7 +51,7 @@ When the trigger condition is met (e.g., an upstream pipeline signals completion
 
 | Field | Type | Description |
 |---|---|---|
-| `key` | string | Sensor key whose writes are checked (`SENSOR#<key>`) |
+| `key` | string | Sensor key whose writes are checked: `SENSOR#<key>`, or a per-period `SENSOR#<key>#<period>` such as `SENSOR#orders#2026-03-10`. A sensor whose key only begins with it, such as `SENSOR#orders-count`, is not checked |
 | `check` | string | Operator, as in validation rules |
 | `field` | string | Field in the sensor's `data` map (not needed for `exists`) |
 | `value` | any | Value to compare against (not needed for `exists`) |

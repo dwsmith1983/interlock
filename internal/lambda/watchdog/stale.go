@@ -117,7 +117,7 @@ func reconcileSensorTriggers(ctx context.Context, d *lambda.Deps) error {
 		scheduleID := lambda.ResolveScheduleID(cfg)
 
 		for sensorKey, sensorData := range sensors {
-			if !strings.HasPrefix(sensorKey, trigger.Key) {
+			if !lambda.SensorKeyMatches(sensorKey, trigger.Key) {
 				continue
 			}
 

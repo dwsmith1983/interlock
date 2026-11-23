@@ -257,7 +257,7 @@ postRun:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `rules` | list | -- | Validation rules using the same syntax as pre-trigger rules. Uses `ALL` mode. Required for drift and the post-run checks; a `postRun` block with only `watchWindow` is valid. |
+| `rules` | list | -- | Validation rules using the same syntax as pre-trigger rules. Uses `ALL` mode. A sensor belongs to a rule when its key is the rule's `key` or `<key>#<period>`. Required for drift and the post-run checks; a `postRun` block with only `watchWindow` is valid. |
 | `driftThreshold` | float* | `0` | Minimum change in `driftField` to trigger a drift rerun. Set to `0` for any change. |
 | `driftField` | string | `"sensor_count"` | Sensor field compared with the baseline for drift. |
 | `sensorTimeout` | string | `"2h"` | Grace period after job completion before the watchdog alerts on missing sensors. It must be a positive Go duration and, with `rules`, at most the post-run watch window (`postRun.watchWindow`, default `"4h"`). |
@@ -296,6 +296,8 @@ The framework reads sensor data from DynamoDB but does not write it. External pr
 | `PK` | `PIPELINE#{pipeline-id}` |
 | `SK` | `SENSOR#{key}` |
 | `data` | A map of the fields referenced by validation rules (e.g., `status`, `count`, `updatedAt`). Rules read only this map, not top-level attributes. |
+
+The sensor key decides which trigger or post-run rule a write counts for: it matches a configured `key` when it is that key or the key followed by `#` and a period, such as `orders#2026-03-10`, `orders#20260310` or `orders#2026-03-10T07`. A key that only begins with it is a different sensor: `orders-count` is not the `orders` sensor. When rules are evaluated for a run, a rule reads the sensor `<key>`, or `<key>#<period>` for the run's own date, which the write's `data` names in `date` (and `hour` for an hourly run). Don't put `#` in a configured key.
 
 `age_lt` and the rerun circuit breaker read a timestamp in `data`, such as `updatedAt`, as RFC3339 (`2026-03-10T09:00:00Z`) or as epoch seconds or milliseconds, given as a number or a string of digits. A value below 10^12 is read as seconds. `age_lt` fails on a value in none of these forms. The rerun circuit breaker, which checks manual requests only, compares each sensor's `updatedAt` with the last successful run and ignores one it cannot read; when no sensor has a readable `updatedAt`, it lets the rerun through.
 
