@@ -105,7 +105,7 @@ For each pipeline with schedule.cron that is not a dry run:
 
 ### What Counts as Started
 
-The orchestrator writes `startedAt` on the trigger row just before it launches the job, since a `lambda` job runs inside the launch call. If the launch fails and its retries run out, the trigger row is released, so the date can still be reported. A `RUNNING` row without `startedAt` is a run still evaluating its rules, so it has not started. `FAILED_FINAL` already sent its own final alert, so it is not reported again. The marker makes the alert once per run date: later passes skip that date. It is written only after the publish succeeds, so a failed publish is retried on the next pass.
+The orchestrator writes `startedAt` on the trigger row just before it launches the job, since a `lambda` job runs inside the launch call. A `RUNNING` row without `startedAt` is a run still evaluating its rules, so it has not started. `FAILED_FINAL`, including a launch whose retries ran out (`RETRY_EXHAUSTED`), already sent its own final alert, so it is not reported again. The marker makes the alert once per run date: later passes skip that date. It is written only after the publish succeeds, so a failed publish is retried on the next pass.
 
 ### Event Format
 

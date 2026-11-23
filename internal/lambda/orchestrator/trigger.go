@@ -25,7 +25,7 @@ func handleTrigger(ctx context.Context, d *lambda.Deps, input lambda.Orchestrato
 	// dereferences $.triggerResult.runId and raises an uncatchable
 	// States.Runtime while the trigger lock stays RUNNING. A Lambda error is
 	// retried by the Trigger state and then caught by TriggerRetryExhausted,
-	// which releases the lock.
+	// which ends the date FAILED_FINAL.
 	cfg, err := d.Store.GetConfig(ctx, input.PipelineID)
 	if err != nil {
 		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger get config: %w", err)

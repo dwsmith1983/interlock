@@ -196,7 +196,7 @@ InitEvalLoop → Evaluate → IsReady
 
 1. **Trigger**: invoke orchestrator with `mode=trigger`. A job that could not be started is retried up to `trigger_max_attempts` times after the first attempt (default 3, so four attempts, waiting 30s, 60s and 120s between them)
 2. **HasTriggerResult**: if a job was triggered, poll for completion; otherwise go to FailValidationExhausted
-3. **TriggerRetryExhausted**: after the Trigger retries run out, invoke orchestrator with `mode=trigger-exhausted` (records the failure and releases the trigger lock), then go to CheckCancelSLA
+3. **TriggerRetryExhausted**: after the Trigger retries run out, invoke orchestrator with `mode=trigger-exhausted` (records the failure, publishes `RETRY_EXHAUSTED` and sets the trigger row `FAILED_FINAL`; a `RERUN_REQUEST` runs the date again), then go to CheckCancelSLA
 4. **InitJobPollLoop**: initialize job poll elapsed counter
 5. **WaitForJob**: configurable delay between job status checks
 6. **CheckJob**: invoke orchestrator with `mode=check-job`

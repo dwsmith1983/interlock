@@ -12,8 +12,8 @@ import (
 // passed: it writes a FAILED_FINAL trigger row and, only when it created the
 // row, publishes SENSOR_DEADLINE_EXPIRED with the given source. It reports
 // whether it closed the date. An excluded date, a date whose job ran and a
-// date that has a trigger row are left alone; a date whose launch or
-// evaluation was exhausted never ran, so it is closed. A failed
+// date that has a trigger row are left alone; a date with only an exhausted
+// launch or evaluation job row never ran, so it is closed. A failed
 // publish deletes the row again and returns the error, so a retry closes the
 // date and alerts.
 func CloseRunAtCutoff(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, source string) (bool, error) {

@@ -142,6 +142,7 @@ var slaSiteCases = []struct {
 	{"RetryAfterTimeout", types.TriggerStatusRunning, types.JobEventTimeout, true},
 	{"RunningSuccess", types.TriggerStatusRunning, types.JobEventSuccess, false},
 	{"RunningValidationExhausted", types.TriggerStatusRunning, types.JobEventValidationExhausted, false},
+	{"RunningTriggerExhausted", types.TriggerStatusRunning, types.JobEventInfraTriggerExhausted, false},
 	{"Completed", types.TriggerStatusCompleted, types.JobEventSuccess, false},
 	{"FailedFinal", types.TriggerStatusFailedFinal, types.JobEventFail, false},
 	{"NoTriggerTerminalRow", "", types.JobEventInfraTriggerExhausted, false},

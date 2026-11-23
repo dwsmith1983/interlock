@@ -64,32 +64,56 @@ func TestJobPollExhausted_WriteErrorIsLambdaError(t *testing.T) {
 
 // TestTriggerExhausted: spent trigger retries leave an infra-trigger-exhausted
 // joblog row carrying the last error, then RETRY_EXHAUSTED, then the trigger
-// row is deleted so the date can start again. A failed row write fails the
-// state before anything else happens.
+// row is set FAILED_FINAL (no staleAt, no ttl) so nothing starts the date
+// again on its own. A failed row read, joblog write or publish fails the
+// state with the row still RUNNING, and a retry after a failed publish ends
+// the date. A missing row is created FAILED_FINAL; a finished one (a Task
+// retry after success) is left alone with nothing written.
 func TestTriggerExhausted(t *testing.T) {
 	cause := "ConcurrentRunsExceededException: Concurrent runs exceeded."
-	wantOps := []string{"event " + string(types.EventRetryExhausted), "release"}
+	final, running := types.TriggerStatusFailedFinal, types.TriggerStatusRunning
+	retryExhausted := "event " + string(types.EventRetryExhausted)
+	wantOps := []string{retryExhausted, "status " + final}
 	exhaustedRow := [2]string{types.JobEventInfraTriggerExhausted, ""}
+	throttled := errors.New("dynamodb: throttled")
 	tests := []struct {
 		name         string
 		errorInfo    map[string]interface{}
 		putErr       error
+		publishErr   error
+		updateErr    error
+		getErr       error
+		retry        bool // a first call whose publish fails runs before the checked one
+		noRow        bool
+		startStatus  string
 		triggerFirst bool // a trigger call fails to launch first; its error is the Cause
 		wantErrSub   string
 		wantJoblog   [][2]string // event, runId
 		wantError    string      // the exhausted row's error; "" for no attribute
 		wantOps      []string
-		wantRow      string
+		wantRow      string // a RUNNING row keeps its staleAt; any other has neither staleAt nor ttl
 	}{
 		{name: "withCause", errorInfo: map[string]interface{}{"Error": "States.TaskFailed", "Cause": cause},
-			wantJoblog: [][2]string{exhaustedRow}, wantError: cause, wantOps: wantOps},
-		{name: "noErrorInfo", wantJoblog: [][2]string{exhaustedRow}, wantOps: wantOps},
+			wantJoblog: [][2]string{exhaustedRow}, wantError: cause, wantOps: wantOps, wantRow: final},
+		{name: "noErrorInfo", wantJoblog: [][2]string{exhaustedRow}, wantOps: wantOps, wantRow: final},
 		{name: "joblogWriteFails", errorInfo: map[string]interface{}{"Cause": cause},
 			putErr: errors.New("dynamodb: write capacity exceeded"), wantErrSub: "write trigger-exhausted joblog",
-			wantRow: types.TriggerStatusRunning},
+			wantRow: running},
 		{name: "afterTriggerInfraFailure", triggerFirst: true,
 			wantJoblog: [][2]string{{types.JobEventInfraTriggerFailure, ctExec}, exhaustedRow},
-			wantError:  "trigger execute: connection refused", wantOps: wantOps},
+			wantError:  "trigger execute: connection refused", wantOps: wantOps, wantRow: final},
+		{name: "publishFails", errorInfo: map[string]interface{}{"Cause": cause}, publishErr: errors.New("eventbridge: throttled"),
+			wantErrSub: "publish RETRY_EXHAUSTED", wantJoblog: [][2]string{exhaustedRow}, wantError: cause, wantRow: running},
+		{name: "statusWriteFails", errorInfo: map[string]interface{}{"Cause": cause}, updateErr: throttled,
+			wantErrSub: `trigger-exhausted: set trigger status "p"/s/` + ctDate + ": dynamodb: throttled",
+			wantJoblog: [][2]string{exhaustedRow}, wantError: cause, wantOps: []string{retryExhausted}, wantRow: running},
+		{name: "triggerReadFails", errorInfo: map[string]interface{}{"Cause": cause}, getErr: throttled,
+			wantErrSub: `trigger-exhausted: get trigger "p"/s/` + ctDate + ": dynamodb: throttled", wantRow: running},
+		{name: "publishFailsThenRetried", errorInfo: map[string]interface{}{"Cause": cause}, retry: true,
+			wantJoblog: [][2]string{exhaustedRow, exhaustedRow}, wantError: cause, wantOps: wantOps, wantRow: final},
+		{name: "rowAlreadyFinal", startStatus: final, wantRow: final},
+		{name: "rowAlreadyCompleted", startStatus: types.TriggerStatusCompleted, wantRow: types.TriggerStatusCompleted},
+		{name: "rowMissing", noRow: true, wantJoblog: [][2]string{exhaustedRow}, wantOps: wantOps, wantRow: final},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -98,12 +122,30 @@ func TestTriggerExhausted(t *testing.T) {
 			now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 			d.NowFunc = func() time.Time { return now }
 			d.Store.Now = d.NowFunc // joblog rows written at different times get different keys
-			if ok, err := d.Store.AcquireTriggerLock(ctx, "p", "s", ctDate, time.Hour); err != nil || !ok {
-				t.Fatalf("acquire trigger lock = %v, %v", ok, err)
+			if !tt.noRow {
+				if ok, err := d.Store.AcquireTriggerLock(ctx, "p", "s", ctDate, time.Hour); err != nil || !ok {
+					t.Fatalf("acquire trigger lock = %v, %v", ok, err)
+				}
+			}
+			if tt.startStatus != "" {
+				if err := d.Store.SetTriggerStatus(ctx, "p", "s", ctDate, tt.startStatus); err != nil {
+					t.Fatalf("set trigger status: %v", err)
+				}
 			}
 			rec.ops = nil
 			if tt.putErr != nil {
 				failTablePut(d, "joblog", tt.putErr)
+			}
+			fake := d.Store.Client.(*storetest.FakeDynamo)
+			if tt.updateErr != nil {
+				fake.UpdateItemFn = func(context.Context, *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+					return nil, tt.updateErr
+				}
+			}
+			if tt.getErr != nil {
+				fake.GetItemFn = func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+					return nil, tt.getErr
+				}
 			}
 			errorInfo := tt.errorInfo
 			if tt.triggerFirst {
@@ -118,9 +160,18 @@ func TestTriggerExhausted(t *testing.T) {
 				now = now.Add(time.Minute)
 			}
 
-			out, err := orchestrator.HandleOrchestrator(ctx, d, lambda.OrchestratorInput{
+			exhausted := lambda.OrchestratorInput{
 				Mode: "trigger-exhausted", PipelineID: "p", ScheduleID: "s", Date: ctDate, ErrorInfo: errorInfo,
-			})
+			}
+			if tt.retry {
+				rec.putErr = errors.New("eventbridge: throttled")
+				if _, err := orchestrator.HandleOrchestrator(ctx, d, exhausted); err == nil || !strings.Contains(err.Error(), "publish RETRY_EXHAUSTED") {
+					t.Fatalf("first call err = %v, want the publish error", err)
+				}
+				now = now.Add(time.Minute)
+			}
+			rec.putErr = tt.publishErr
+			out, err := orchestrator.HandleOrchestrator(ctx, d, exhausted)
 			if tt.wantErrSub != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErrSub) {
 					t.Errorf("err = %v, want it to contain %q", err, tt.wantErrSub)
@@ -152,6 +203,11 @@ func TestTriggerExhausted(t *testing.T) {
 			row := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", ctDate))
 			if got := strAttr(t, row, "status"); got != tt.wantRow {
 				t.Errorf("trigger row status = %q, want %q", got, tt.wantRow)
+			}
+			_, hasStaleAt := row["staleAt"]
+			_, hasTTL := row["ttl"]
+			if hasStaleAt != (tt.wantRow == running) || hasTTL {
+				t.Errorf("%s trigger row has staleAt = %v, ttl = %v", tt.wantRow, hasStaleAt, hasTTL)
 			}
 		})
 	}

@@ -163,7 +163,7 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
 }
 ```
 
-The Trigger state has a dedicated retry policy for infrastructure failures. When the orchestrator cannot start the job (e.g., Glue `ConcurrentRunsExceededException`), it returns a Lambda error. Step Functions retries up to `trigger_max_attempts` times (default 3, so four attempts in all), waiting 30s, 60s and 120s. If all retries exhaust, the Catch routes to `TriggerRetryExhausted`, which records the failure and releases the trigger lock, then to `CheckCancelSLA` for SLA cleanup instead of crashing.
+The Trigger state has a dedicated retry policy for infrastructure failures. When the orchestrator cannot start the job (e.g., Glue `ConcurrentRunsExceededException`), it returns a Lambda error. Step Functions retries up to `trigger_max_attempts` times (default 3, so four attempts in all), waiting 30s, 60s and 120s. If all retries exhaust, the Catch routes to `TriggerRetryExhausted`, which records the failure, publishes `RETRY_EXHAUSTED` and sets the trigger row `FAILED_FINAL`, then to `CheckCancelSLA` for SLA cleanup instead of crashing. Nothing starts the date again on its own; submit a `RERUN_REQUEST` to run it.
 
 Once triggered, the state machine polls job status via `check-job` mode. The `IsJobDone` Choice state first checks whether the `event` field is present (missing means still running), then routes terminal events (`success`, `fail`, `timeout`) to **CompleteTrigger**, which sets `COMPLETED`, starts the next retry attempt (`status: retrying`, which skips the SLA cleanup so the retry keeps the schedules) or sets `FAILED_FINAL`. When `jobPollWindowSeconds` passes first, **JobPollExhausted** writes a `timeout` row and the run goes to CompleteTrigger as a timeout.
 
@@ -243,7 +243,7 @@ The default retry policy handles transient Lambda errors with exponential backof
 
 Catch routing varies by state:
 - **Most states**: Catch routes to `InfraFailure` (Fail state — terminates execution)
-- **Trigger**: Catch routes to `TriggerRetryExhausted`, then `CheckCancelSLA` (graceful termination with SLA cleanup)
+- **Trigger**: Catch routes to `TriggerRetryExhausted`, which ends the date `FAILED_FINAL`, then `CheckCancelSLA` (graceful termination with SLA cleanup)
 - **CompleteTrigger**: Catch routes to `CheckSLAForCompleteTriggerFailure` (SLA cleanup, then `CompleteTriggerFailed`)
 - **CancelSLASchedules**: Catch routes to `Done` (cleanup failure is non-fatal)
 

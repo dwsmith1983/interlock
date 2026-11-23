@@ -154,34 +154,40 @@ func handleJobPollExhausted(ctx context.Context, d *lambda.Deps, input lambda.Or
 	}, nil
 }
 
-// handleTriggerExhausted publishes RETRY_EXHAUSTED when trigger retries are
-// exhausted, writes a joblog entry for audit, and releases the trigger lock
-// so the pipeline can be re-triggered.
+// handleTriggerExhausted ends a date whose launch ran out of retries: it
+// writes the infra-trigger-exhausted joblog row (audit), publishes
+// RETRY_EXHAUSTED (the date's final alert, so a failed publish fails the
+// state), then sets the trigger row FAILED_FINAL, creating it when missing.
+// Nothing starts the date again on its own; a RERUN_REQUEST runs it. A
+// finished row (a Task retry after this state succeeded) is left alone. A
+// state retry after the joblog write adds a second row, which is harmless.
 func handleTriggerExhausted(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
+	pipelineID, schedule, date := input.PipelineID, input.ScheduleID, input.Date
+	out := lambda.OrchestratorOutput{Mode: "trigger-exhausted", Status: "exhausted"}
+	tr, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
+	if err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger-exhausted: %w", err)
+	}
+	if tr != nil && (tr.Status == types.TriggerStatusFailedFinal || tr.Status == types.TriggerStatusCompleted) {
+		d.Logger.InfoContext(ctx, "trigger exhausted, trigger row already finished, leaving it",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date, "status", tr.Status)
+		return out, nil
+	}
+
 	errMsg := ""
 	if cause, ok := input.ErrorInfo["Cause"].(string); ok {
 		errMsg = cause
 	}
-
-	// Dual-write: joblog entry (audit) + EventBridge event (alerting).
-	if err := d.Store.WriteJobEvent(ctx, input.PipelineID, input.ScheduleID, input.Date,
+	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 		types.JobEventInfraTriggerExhausted, "", 0, errMsg); err != nil {
 		return lambda.OrchestratorOutput{}, fmt.Errorf("write trigger-exhausted joblog: %w", err)
 	}
-
-	if err := lambda.PublishEvent(ctx, d, string(types.EventRetryExhausted), input.PipelineID, input.ScheduleID, input.Date,
-		fmt.Sprintf("trigger retries exhausted for %s: %s", input.PipelineID, errMsg)); err != nil {
-		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRetryExhausted, "error", err)
+	if err := lambda.PublishEvent(ctx, d, string(types.EventRetryExhausted), pipelineID, schedule, date,
+		fmt.Sprintf("trigger retries exhausted for %s: %s; submit a RERUN_REQUEST to run it", pipelineID, errMsg)); err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("publish %s: %w", types.EventRetryExhausted, err)
 	}
-
-	// Release lock so pipeline can be re-triggered.
-	if err := d.Store.ReleaseTriggerLock(ctx, input.PipelineID, input.ScheduleID, input.Date); err != nil {
-		d.Logger.WarnContext(ctx, "failed to release trigger lock after exhaustion",
-			"pipeline", input.PipelineID, "error", err)
+	if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, types.TriggerStatusFailedFinal); err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger-exhausted: %w", err)
 	}
-
-	return lambda.OrchestratorOutput{
-		Mode:   "trigger-exhausted",
-		Status: "exhausted",
-	}, nil
+	return out, nil
 }
