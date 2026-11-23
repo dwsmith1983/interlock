@@ -157,7 +157,7 @@
     },
     "TriggerRetryExhausted": {
       "Type": "Task",
-      "Comment": "Publish RETRY_EXHAUSTED event, write joblog entry, release trigger lock",
+      "Comment": "Write joblog entry, publish RETRY_EXHAUSTED event, set the trigger row FAILED_FINAL",
       "Resource": "${orchestrator_arn}",
       "Parameters": {
         "mode": "trigger-exhausted",

@@ -286,8 +286,16 @@ func TestSensorEvent_Cutoff(t *testing.T) {
 			c.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{yesterday}}
 		}},
 		{name: "terminal job, no row", now: at(10, 14, 30), jobRow: types.JobEventSuccess},
-		{name: "exhausted launch, no row", now: at(10, 14, 30), jobRow: types.JobEventInfraTriggerExhausted,
+		{name: "exhausted job row, no trigger row", now: at(10, 14, 30), jobRow: types.JobEventInfraTriggerExhausted,
 			wantStatus: final, wantEvents: []string{expired}, wantAt: "2026-03-10T14:00:00Z"},
+		// A launch that ran out of retries ends FAILED_FINAL: no later sensor
+		// write starts it again, before or after the cutoff or without one.
+		{name: "exhausted launch, before the cutoff", now: at(10, 13, 30), trigger: final,
+			jobRow: types.JobEventInfraTriggerExhausted, wantStatus: final},
+		{name: "exhausted launch, past the cutoff", now: at(10, 14, 30), trigger: final,
+			jobRow: types.JobEventInfraTriggerExhausted, wantStatus: final},
+		{name: "exhausted launch, no cutoff", now: at(10, 14, 30), tweak: setCutoff(""), trigger: final,
+			jobRow: types.JobEventInfraTriggerExhausted, wantStatus: final},
 		{name: "released, sensor before the cutoff", now: at(10, 13, 30), jobRow: types.JobEventEvaluationReleased,
 			wantSFN: 1, wantStatus: running, wantEvents: []string{triggered}},
 		{name: "released, late sensor", now: at(10, 14, 30), jobRow: types.JobEventEvaluationReleased, deliveries: 2,

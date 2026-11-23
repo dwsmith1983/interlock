@@ -371,7 +371,8 @@ The call's outcome is the job's result, written to the joblog under the run ID:
   `maxCodeRetries` (default 1), not `maxRetries`, like any `PERMANENT` failure.
 - The function could not be invoked (throttling, a missing function, no permission): the function never
   ran, so the orchestrator writes `infra-trigger-failure` and the Trigger state's own retry calls it again
-  (see [Error Handling](../../architecture/aws/#error-handling)).
+  (see [Error Handling](../../architecture/aws/#error-handling)). Once those retries run out it publishes
+  `RETRY_EXHAUSTED` and the date ends `FAILED_FINAL`; submit a `RERUN_REQUEST` to run it.
 - The function is still running when the orchestrator's wait runs out: the orchestrator writes a `fail`
   row with category `OUTCOME_UNKNOWN`, and CompleteTrigger sets `FAILED_FINAL` without a retry under
   either budget, since a second call could run the job twice. The row's `JOB_FAILED` alert carries the

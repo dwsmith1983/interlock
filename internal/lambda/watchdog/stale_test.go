@@ -193,7 +193,7 @@ func TestReconcile_Cutoff(t *testing.T) {
 		{name: "past the cutoff", date: slaTestDate, now: at(10, 14, 30),
 			wantStatus: types.TriggerStatusFailedFinal, wantEvent: types.EventSensorDeadlineExpired},
 		{name: "past the cutoff, excluded date", date: "2026-03-09", now: at(10, 14, 30), exclude: true},
-		{name: "past the cutoff, exhausted launch", date: slaTestDate, now: at(10, 14, 30), jobRow: types.JobEventInfraTriggerExhausted,
+		{name: "past the cutoff, exhausted job row, no trigger row", date: slaTestDate, now: at(10, 14, 30), jobRow: types.JobEventInfraTriggerExhausted,
 			wantStatus: types.TriggerStatusFailedFinal, wantEvent: types.EventSensorDeadlineExpired},
 	}
 	for _, tt := range tests {
@@ -314,7 +314,9 @@ func TestReconcile_RestartsAfterRelease(t *testing.T) {
 
 // TestReconcile_Gating: what keeps the reconciler from starting a run for a
 // sensor, and the per-hour dates it starts. No SLA and no cutoff; the
-// trigger is upstream exists unless a case says otherwise.
+// trigger is upstream exists unless a case says otherwise. A launch that ran
+// out of retries ends FAILED_FINAL, which keeps the date closed with or
+// without its job rows.
 func TestReconcile_Gating(t *testing.T) {
 	daily := map[string]map[string]interface{}{"upstream": {"date": slaTestDate}}
 	hourly := map[string]map[string]interface{}{
@@ -325,6 +327,8 @@ func TestReconcile_Gating(t *testing.T) {
 		name      string
 		sensors   map[string]map[string]interface{}
 		running   string // date of a RUNNING trigger row present before the pass
+		trigger   string // status of a trigger row for slaTestDate
+		jobRow    string // event of a job row for slaTestDate
 		tweak     func(*types.PipelineConfig)
 		sfnErr    error
 		wantSFN   int
@@ -343,10 +347,12 @@ func TestReconcile_Gating(t *testing.T) {
 		{name: "nil trigger", sensors: daily, tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger = nil }},
 		{name: "SFN error", sensors: daily, sfnErr: errors.New("execution limit exceeded"), wantSFN: 1},
 		{name: "dry run", sensors: daily, tweak: dryRunHTTP},
+		{name: "exhausted launch", sensors: daily, trigger: types.TriggerStatusFailedFinal, jobRow: types.JobEventInfraTriggerExhausted},
+		{name: "FAILED_FINAL row, no job row", sensors: daily, trigger: types.TriggerStatusFailedFinal},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+			d, mem, rec := slaDeps(t, tt.trigger, tt.jobRow, func(c *types.PipelineConfig) {
 				c.SLA = nil
 				if tt.tweak != nil {
 					tt.tweak(c)
@@ -361,6 +367,9 @@ func TestReconcile_Gating(t *testing.T) {
 				}
 			}
 			wantRows := slices.Clone(tt.wantDates)
+			if tt.trigger != "" {
+				wantRows = append(wantRows, slaTestDate)
+			}
 			if tt.running != "" {
 				mem.Put("control", sItem("PK", pk, "SK", types.TriggerSK("stream", tt.running), "status", types.TriggerStatusRunning))
 				wantRows = append(wantRows, tt.running)

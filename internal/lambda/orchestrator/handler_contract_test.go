@@ -190,7 +190,7 @@ func TestEvaluate_AlwaysEmitsStatus(t *testing.T) {
 // TestTrigger_FailuresReturnLambdaError guards HasTriggerResult/CheckJob.
 // A nil error with a partial triggerResult makes IsPresent true and CheckJob
 // dereference a missing runId; returning a Go error routes to
-// TriggerRetryExhausted instead, which releases the trigger lock.
+// TriggerRetryExhausted instead, which ends the date FAILED_FINAL.
 func TestTrigger_FailuresReturnLambdaError(t *testing.T) {
 	badTypeCfg := types.PipelineConfig{
 		Pipeline: types.PipelineIdentity{ID: "p"},

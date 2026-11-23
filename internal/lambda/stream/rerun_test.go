@@ -300,7 +300,7 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 			wantEvents: []string{string(types.EventInfraFailure)}, wantJobs: []string{fail}},
 		{name: "fail, no sensor", reason: "manual", job: fail, noSensor: true,
 			wantStarts: 1, wantEvents: accepted, wantJobs: []string{fail, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
-		{name: "infra-trigger-exhausted", reason: "manual", job: types.JobEventInfraTriggerExhausted, updatedAt: stale, wantStarts: 1, wantEvents: accepted,
+		{name: "infra-trigger-exhausted", reason: "manual", trigger: types.TriggerStatusFailedFinal, job: types.JobEventInfraTriggerExhausted, updatedAt: stale, wantStarts: 1, wantEvents: accepted,
 			wantJobs: []string{types.JobEventInfraTriggerExhausted, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
 		{name: "timeout", reason: "manual", job: types.JobEventTimeout, updatedAt: stale, wantStarts: 1, wantEvents: accepted,
 			wantJobs: []string{types.JobEventTimeout, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},

@@ -37,6 +37,7 @@ func TestDetectMissedSchedules(t *testing.T) {
 		{name: "job started", now: at(10, 8, 5), trigger: types.TriggerStatusRunning, startedAt: "2026-03-10T07:30:00Z"},
 		{name: "completed", now: at(10, 8, 5), trigger: types.TriggerStatusCompleted},
 		{name: "failed final", now: at(10, 8, 5), trigger: types.TriggerStatusFailedFinal},
+		{name: "exhausted launch", now: at(10, 8, 5), trigger: types.TriggerStatusFailedFinal, startedAt: "2026-03-10T07:30:00Z"},
 		{name: "before start-by", now: at(10, 7, 55)},
 		{name: "no RUN# row", keys: []string{}, now: at(10, 8, 5)},
 		{name: "weekday cron, Saturday row", cron: "0 8 * * 1-5", keys: []string{"2026-03-14"}, now: at(14, 9, 0)},
