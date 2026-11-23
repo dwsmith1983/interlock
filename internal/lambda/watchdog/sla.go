@@ -19,7 +19,7 @@ const (
 )
 
 // scheduleSLAAlerts proactively creates EventBridge Scheduler entries for
-// every expected run date (RUN# row) of each pipeline with an SLA config.
+// every expected run date (RUN# row) of each pipeline with an sla.deadline.
 func scheduleSLAAlerts(ctx context.Context, d *lambda.Deps) error {
 	if d.Scheduler == nil {
 		return nil
@@ -39,7 +39,8 @@ func scheduleSLAAlerts(ctx context.Context, d *lambda.Deps) error {
 	to := now.UTC().AddDate(0, 0, runKeysDaysAhead).Format("2006-01-02")
 
 	for id, cfg := range configs {
-		if cfg.SLA == nil || cfg.DryRun {
+		// A relative-only SLA (maxDuration) has no absolute deadline to schedule.
+		if cfg.SLA == nil || cfg.SLA.Deadline == "" || cfg.DryRun {
 			continue
 		}
 

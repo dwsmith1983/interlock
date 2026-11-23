@@ -27,7 +27,7 @@ func dryRunHTTP(c *types.PipelineConfig) {
 // UTC and one RUN# row for slaTestDate unless a case says otherwise.
 func TestCheckTriggerDeadlines(t *testing.T) {
 	at := func(day, hour, minute int) time.Time { return time.Date(2026, 3, day, hour, minute, 0, 0, time.UTC) }
-	tokyoSLA := func(c *types.PipelineConfig) { c.SLA = &types.SLAConfig{Timezone: "Asia/Tokyo"} }
+	tokyoSLA := func(c *types.PipelineConfig) { c.SLA = &types.SLAConfig{MaxDuration: "2h", Timezone: "Asia/Tokyo"} }
 	tests := []struct {
 		name     string
 		cutoff   string

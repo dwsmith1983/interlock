@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/dwsmith1983/interlock/pkg/sla"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -258,7 +260,7 @@ func TestValidatePipelineConfig(t *testing.T) {
 				Schedule: types.ScheduleConfig{
 					Trigger: &types.TriggerCondition{Key: "some-sensor", Check: types.CheckExists},
 				},
-				SLA: &types.SLAConfig{Deadline: "08:00", MaxDuration: "2h"},
+				SLA: &types.SLAConfig{Deadline: "08:00", ExpectedDuration: "30m", MaxDuration: "2h"},
 			},
 			wantCount: 0,
 		},
@@ -340,13 +342,13 @@ func TestValidate_SLADeadlineDayOffset(t *testing.T) {
 		sla     types.SLAConfig
 		wantErr string
 	}{
-		{"negative", types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: -1}, "sla.deadlineDayOffset -1 out of range [0,7]"},
-		{"too large", types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: 8}, "sla.deadlineDayOffset 8 out of range [0,7]"},
-		{"hourly deadline", types.SLAConfig{Deadline: ":30", DeadlineDayOffset: 1}, `sla.deadlineDayOffset is not supported with hourly ":MM" deadlines`},
+		{"negative", types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", DeadlineDayOffset: -1}, "sla.deadlineDayOffset -1 out of range [0,7]"},
+		{"too large", types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", DeadlineDayOffset: 8}, "sla.deadlineDayOffset 8 out of range [0,7]"},
+		{"hourly deadline", types.SLAConfig{Deadline: ":30", ExpectedDuration: "30m", DeadlineDayOffset: 1}, `sla.deadlineDayOffset is not supported with hourly ":MM" deadlines`},
 		{"no deadline", types.SLAConfig{MaxDuration: "2h", DeadlineDayOffset: 1}, "sla.deadlineDayOffset is not supported without sla.deadline"},
-		{"zero", types.SLAConfig{Deadline: "10:00"}, ""},
-		{"one", types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: 1}, ""},
-		{"seven", types.SLAConfig{Deadline: "10:00", DeadlineDayOffset: 7}, ""},
+		{"zero", types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m"}, ""},
+		{"one", types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", DeadlineDayOffset: 1}, ""},
+		{"seven", types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", DeadlineDayOffset: 7}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -522,7 +524,7 @@ func TestValidate_RelativeSLAExpectedDuration(t *testing.T) {
 		{"-1m", "2h", "-1m", below("-1m")},
 		{"2h", "2h", "2h", below("2h")},
 		{"3h", "2h", "3h", below("3h")},
-		{"no maxDuration", "", "3h", nil},
+		{"no maxDuration", "", "3h", []string{"sla must set deadline or maxDuration"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -536,14 +538,101 @@ func TestValidate_RelativeSLAExpectedDuration(t *testing.T) {
 	}
 }
 
+// TestValidate_SLADeadline: an sla block must be able to produce alerts. A
+// deadline needs an expectedDuration and a format the SLA Lambda can parse,
+// and an sla block needs a deadline or a maxDuration.
+func TestValidate_SLADeadline(t *testing.T) {
+	badFormat := func(v string) []string {
+		return []string{fmt.Sprintf("sla.deadline %q must be HH:MM or :MM", v)}
+	}
+	positive := func(v string) []string {
+		return []string{fmt.Sprintf("sla.expectedDuration %q must be positive", v)}
+	}
+	tests := []struct {
+		name     string
+		sla      types.SLAConfig
+		wantErrs []string
+	}{
+		{"daily", types.SLAConfig{Deadline: "08:00", ExpectedDuration: "30m"}, nil},
+		{"daily with zone", types.SLAConfig{Deadline: "23:59", ExpectedDuration: "1h", Timezone: "Asia/Tokyo"}, nil},
+		{"hourly", types.SLAConfig{Deadline: ":30", ExpectedDuration: "10m"}, nil},
+		{"maxDuration alone", types.SLAConfig{MaxDuration: "2h"}, nil},
+		{"deadline and maxDuration", types.SLAConfig{Deadline: "08:00", ExpectedDuration: "30m", MaxDuration: "2h"}, nil},
+		{"no expectedDuration", types.SLAConfig{Deadline: "08:00"}, []string{"sla.expectedDuration is required with sla.deadline"}},
+		{"8am", types.SLAConfig{Deadline: "8am", ExpectedDuration: "30m"}, badFormat("8am")},
+		{"8am, no expectedDuration", types.SLAConfig{Deadline: "8am"},
+			append(badFormat("8am"), "sla.expectedDuration is required with sla.deadline")},
+		{"deadline and maxDuration, no expectedDuration", types.SLAConfig{Deadline: "08:00", MaxDuration: "2h"},
+			[]string{"sla.expectedDuration is required with sla.deadline"}},
+		{"one-digit hour", types.SLAConfig{Deadline: "8:00", ExpectedDuration: "30m"}, badFormat("8:00")},
+		{"hour 24", types.SLAConfig{Deadline: "24:00", ExpectedDuration: "30m"}, badFormat("24:00")},
+		{"minute 60", types.SLAConfig{Deadline: "08:60", ExpectedDuration: "30m"}, badFormat("08:60")},
+		{"one-digit minute", types.SLAConfig{Deadline: ":7", ExpectedDuration: "30m"}, badFormat(":7")},
+		{"no colon", types.SLAConfig{Deadline: "0800", ExpectedDuration: "30m"}, badFormat("0800")},
+		{"expectedDuration not a duration", types.SLAConfig{Deadline: "08:00", ExpectedDuration: "30 minutes"},
+			[]string{`sla.expectedDuration invalid Go duration "30 minutes"`}},
+		{"expectedDuration zero", types.SLAConfig{Deadline: "08:00", ExpectedDuration: "0s"}, positive("0s")},
+		{"expectedDuration negative", types.SLAConfig{Deadline: "08:00", ExpectedDuration: "-5m"}, positive("-5m")},
+		{"expectedDuration above maxDuration", types.SLAConfig{Deadline: "08:00", ExpectedDuration: "3h", MaxDuration: "2h"},
+			[]string{`sla.expectedDuration "3h" must be positive and below sla.maxDuration "2h"`}},
+		{"timezone only", types.SLAConfig{Timezone: "UTC"}, []string{"sla must set deadline or maxDuration"}},
+		{"expectedDuration only", types.SLAConfig{ExpectedDuration: "30m"}, []string{"sla must set deadline or maxDuration"}},
+	}
+	fixedNow := time.Date(2026, 3, 10, 6, 0, 0, 0, time.UTC)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "orders"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists}},
+				SLA:      &tt.sla,
+			}
+			assert.Equal(t, tt.wantErrs, ValidatePipelineConfig(&cfg))
+			if tt.wantErrs != nil || tt.sla.Deadline == "" {
+				return
+			}
+			// What validation accepts, the SLA Lambda can schedule.
+			_, _, err := sla.CalculateAbsoluteDeadline("2026-03-10", tt.sla.Deadline, tt.sla.ExpectedDuration, tt.sla.Timezone, fixedNow)
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// TestValidate_SLADeadlineEveryClockTime: every HH:MM and :MM deadline is
+// accepted, and the SLA Lambda computes each one.
+func TestValidate_SLADeadlineEveryClockTime(t *testing.T) {
+	var deadlines []string
+	for h := 0; h < 24; h++ {
+		for m := 0; m < 60; m++ {
+			deadlines = append(deadlines, fmt.Sprintf("%02d:%02d", h, m))
+		}
+	}
+	for m := 0; m < 60; m++ {
+		deadlines = append(deadlines, fmt.Sprintf(":%02d", m))
+	}
+	fixedNow := time.Date(2026, 3, 10, 6, 0, 0, 0, time.UTC)
+	for _, deadline := range deadlines {
+		cfg := types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "orders"},
+			SLA:      &types.SLAConfig{Deadline: deadline, ExpectedDuration: "30m"},
+		}
+		assert.Empty(t, ValidatePipelineConfig(&cfg), "deadline %q", deadline)
+		date := "2026-03-10"
+		if strings.HasPrefix(deadline, ":") {
+			date = "2026-03-10T07"
+		}
+		_, _, err := sla.CalculateAbsoluteDeadline(date, deadline, "30m", "", fixedNow)
+		assert.NoError(t, err, "deadline %q", deadline)
+	}
+}
+
 func TestValidate_Timezone(t *testing.T) {
 	valid := []string{"", "UTC", "America/New_York", "Asia/Tokyo", "Europe/Berlin"}
 	invalid := []string{"America/NewYork", "EST5EDTX", "Mars/Olympus", "Local", "+05:00"}
-	withZones := func(schedule, sla string) *types.PipelineConfig {
+	withZones := func(schedule, slaZone string) *types.PipelineConfig {
 		return &types.PipelineConfig{
 			Pipeline: types.PipelineIdentity{ID: "orders"},
 			Schedule: types.ScheduleConfig{Timezone: schedule},
-			SLA:      &types.SLAConfig{Timezone: sla},
+			SLA:      &types.SLAConfig{Deadline: "08:00", ExpectedDuration: "30m", Timezone: slaZone},
 		}
 	}
 	for _, tz := range valid {
