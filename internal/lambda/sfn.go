@@ -144,6 +144,19 @@ func NextExecName(current string) string {
 	return fmt.Sprintf("%s-r%d", base, RetriesSoFar(current)+1)
 }
 
+// RecordFirstSensorArrival records at as the date's first sensor arrival, the
+// start of its relative SLA (sla.maxDuration), unless one is already recorded.
+// Call it after taking the trigger lock and before StartSFN, which reads it
+// into sensorArrivalAt. A failed write is logged and the run still starts.
+func RecordFirstSensorArrival(ctx context.Context, d *Deps, pipelineID, date string, at time.Time) {
+	if _, err := d.Store.WriteSensorIfAbsent(ctx, pipelineID, "first-sensor-arrival#"+date, map[string]interface{}{
+		"arrivedAt": at.UTC().Format(time.RFC3339),
+	}); err != nil {
+		d.Logger.WarnContext(ctx, "failed to write first-sensor-arrival",
+			"pipelineId", pipelineID, "date", date, "error", err)
+	}
+}
+
 // StartSFN starts a Step Function execution with a unique execution name.
 // The name includes a Unix timestamp suffix to avoid ExecutionAlreadyExists
 // errors when a previous execution for the same pipeline/schedule/date failed.

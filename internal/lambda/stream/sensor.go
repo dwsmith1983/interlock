@@ -127,15 +127,7 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 		return nil
 	}
 
-	// Record first sensor arrival time (idempotent — only writes if absent).
-	// This timestamp serves as T=0 for relative SLA calculation.
-	arrivalKey := "first-sensor-arrival#" + date
-	if _, writeErr := d.Store.WriteSensorIfAbsent(ctx, pipelineID, arrivalKey, map[string]interface{}{
-		"arrivedAt": now.UTC().Format(time.RFC3339),
-	}); writeErr != nil {
-		d.Logger.WarnContext(ctx, "failed to write first-sensor-arrival",
-			"pipelineId", pipelineID, "date", date, "error", writeErr)
-	}
+	lambda.RecordFirstSensorArrival(ctx, d, pipelineID, date, now)
 
 	// Start Step Function execution.
 	if err := lambda.StartSFN(ctx, d, cfg, pipelineID, scheduleID, date); err != nil {
