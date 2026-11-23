@@ -36,7 +36,7 @@ Published by the **sla-monitor** Lambda via EventBridge Scheduler callbacks and 
 |---|---|---|
 | `SLA_WARNING` | SLA warning threshold reached | Pipeline has not completed by the warning timestamp |
 | `SLA_BREACH` | SLA deadline exceeded | Pipeline has not completed by the breach timestamp |
-| `SLA_MET` | Run ended before its SLA breach time | Published when the run ends, if it ended before the breach time |
+| `SLA_MET` | Run completed before its SLA breach time | Published when the run ends before the breach time, only if the date's trigger row is `COMPLETED`; a run that did not complete (it ended `FAILED_FINAL`, its final status could not be recorded, or its status could not be read) gets none. A date that fails before its breach time gets its failure alert (`RETRY_EXHAUSTED`, `JOB_FAILED` and the like) and neither `SLA_MET` nor `SLA_BREACH`, because the cancel step removes the breach schedule |
 
 ### Lifecycle Events
 

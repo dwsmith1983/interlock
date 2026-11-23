@@ -207,8 +207,8 @@ SLA alerts are scheduled outside the state machine: the watchdog creates the war
 ### How it works
 
 1. **CheckCancelSLA** skips the cleanup when the pipeline has no `sla` config.
-2. **CancelSLASchedules** deletes any unfired Scheduler entries and publishes `SLA_MET` if the run ended before the breach time, `SLA_BREACH` otherwise.
-3. If CompleteTrigger itself fails after its retries, **CheckSLAForCompleteTriggerFailure** and **CancelSLAOnCompleteTriggerFailure** cancel the schedules before the execution ends in **CompleteTriggerFailed**.
+2. **CancelSLASchedules** deletes any unfired Scheduler entries and publishes `SLA_MET` if the run completed before the breach time, and `SLA_BREACH` once the breach time has passed.
+3. If CompleteTrigger itself fails after its retries, **CheckSLAForCompleteTriggerFailure** and **CancelSLAOnCompleteTriggerFailure** cancel the schedules before the execution ends in **CompleteTriggerFailed**. This path publishes no `SLA_MET` unless the trigger row was already `COMPLETED` (the failure came after the status write).
 
 ## Error Handling
 

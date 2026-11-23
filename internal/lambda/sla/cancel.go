@@ -14,7 +14,10 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// handleSLACancel deletes unfired SLA schedules and determines the final SLA outcome.
+// handleSLACancel deletes unfired SLA schedules and determines the final SLA
+// outcome. SLA_MET is published only for a COMPLETED trigger row; SLA_BREACH
+// is published once the breach time has passed, for a row in any status or
+// one that could not be read.
 func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonitorInput) (lambda.SLAMonitorOutput, error) {
 	// Schedule names need only the execution date, so delete them first: a
 	// config read error below must not leave them to fire.
@@ -84,18 +87,26 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 	}
 	if publish && d.Store != nil {
 		tr, err := d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
-		if err != nil {
-			d.Logger.WarnContext(ctx, "trigger lookup failed in cancel, proceeding with verdict",
-				"pipeline", input.PipelineID, "error", err)
-		} else if tr == nil {
-			d.Logger.InfoContext(ctx, "skipping SLA verdict — pipeline was never triggered",
+		switch {
+		case err != nil:
+			// An unknown status is not COMPLETED: withhold SLA_MET, keep SLA_BREACH.
+			d.Logger.WarnContext(ctx, "trigger lookup failed in cancel, publishing SLA_BREACH only",
+				"pipeline", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date, "error", err)
+			publish = alertType == string(types.EventSLABreach)
+		case tr == nil:
+			d.Logger.InfoContext(ctx, "skipping SLA verdict, pipeline was never triggered",
 				"pipeline", input.PipelineID, "date", input.Date, "alertType", alertType)
+			publish = false
+		case alertType == string(types.EventSLAMet) && tr.Status != types.TriggerStatusCompleted:
+			// A run that failed or never finished has not met its SLA.
+			d.Logger.InfoContext(ctx, "skipping SLA_MET, the run did not complete",
+				"pipeline", input.PipelineID, "date", input.Date, "status", tr.Status)
 			publish = false
 		}
 	}
 
 	d.Logger.InfoContext(ctx, "cancelled SLA schedules",
-		"pipeline", input.PipelineID, "alertType", alertType)
+		"pipeline", input.PipelineID, "alertType", alertType, "published", publish)
 	if publish {
 		if err := lambda.PublishEvent(ctx, d, alertType, input.PipelineID, input.ScheduleID, input.Date,
 			fmt.Sprintf("pipeline %s: %s", input.PipelineID, alertType)); err != nil {
