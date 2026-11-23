@@ -180,6 +180,15 @@ func TestMem_UnsupportedExpressionsFail(t *testing.T) {
 			_, err := fake.DeleteItem(ctx, &dynamodb.DeleteItemInput{TableName: tbl, Key: item, ConditionExpression: aws.String("attribute_exists(PK)")})
 			return err
 		},
+		"SET a.b.c = :v": func() error {
+			withMap := map[string]ddbtypes.AttributeValue{"PK": s("PIPELINE#p"), "SK": s("M"), "a": &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{}}}
+			if _, err := fake.PutItem(ctx, &dynamodb.PutItemInput{TableName: tbl, Item: withMap}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := fake.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: tbl, Key: withMap, UpdateExpression: aws.String("SET a.b.c = :v"),
+				ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{":v": s("x")}})
+			return err
+		},
 		"reason IN (:s0)": func() error {
 			_, err := fake.Query(ctx, &dynamodb.QueryInput{TableName: tbl, KeyConditionExpression: aws.String("PK = :pk"), FilterExpression: aws.String("reason IN (:s0)")})
 			return err

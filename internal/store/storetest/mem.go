@@ -118,9 +118,13 @@ func deref(s *string) string {
 	return *s
 }
 
-var compareRE = regexp.MustCompile(`^([#\w]+) (=|<>|<) (:\w+)$`)
+var (
+	compareRE   = regexp.MustCompile(`^([#\w]+) (=|<>|<) (:\w+)$`)
+	notNestedRE = regexp.MustCompile(`^attribute_not_exists\(([#\w]+)\.([#\w]+)\)$`)
+)
 
 // condition evaluates attribute_exists(PK), attribute_not_exists(PK),
+// attribute_not_exists(<map>.<field>),
 // "<name> = :value", "<name> <> :value" and, on numbers,
 // "<name> < :value" clauses joined by AND, with
 // groups of those joined by OR (AND binds tighter), against item (nil when
@@ -150,16 +154,23 @@ func condition(op string, expr *string, item map[string]ddbtypes.AttributeValue,
 
 func clauseHolds(clause string, item map[string]ddbtypes.AttributeValue,
 	names map[string]string, values map[string]ddbtypes.AttributeValue) (holds, known bool) {
+	resolve := func(n string) string {
+		if resolved, ok := names[n]; ok {
+			return resolved
+		}
+		return n
+	}
 	switch m := compareRE.FindStringSubmatch(clause); {
+	case notNestedRE.MatchString(clause):
+		path := notNestedRE.FindStringSubmatch(clause)
+		parent, _ := item[resolve(path[1])].(*ddbtypes.AttributeValueMemberM)
+		return parent == nil || parent.Value[resolve(path[2])] == nil, true
 	case clause == "attribute_exists(PK)":
 		return item != nil, true
 	case clause == "attribute_not_exists(PK)":
 		return item == nil, true
 	case len(m) == 4 && values[m[3]] != nil:
-		name := m[1]
-		if resolved, ok := names[name]; ok {
-			name = resolved
-		}
+		name := resolve(m[1])
 		if m[2] == "<" {
 			a, errA := strconv.ParseFloat(num(item[name]), 64)
 			b, errB := strconv.ParseFloat(num(values[m[3]]), 64)
@@ -203,7 +214,8 @@ var (
 )
 
 // updateItem supports "SET a = :x[, b = :y] [REMOVE c[, d]]", creating the
-// item when it is absent, as DynamoDB does.
+// item when it is absent, as DynamoDB does. A SET target may be one field of
+// an existing map attribute ("m.f"); deeper paths are unsupported.
 func (m *Mem) updateItem(_ context.Context, in *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
 	match := updateRE.FindStringSubmatch(deref(in.UpdateExpression))
 	if match == nil {
@@ -232,7 +244,21 @@ func (m *Mem) updateItem(_ context.Context, in *dynamodb.UpdateItemInput) (*dyna
 		if !ok {
 			return nil, fmt.Errorf("storetest.Mem UpdateItem: no value for %s", val)
 		}
-		next[name(attr)] = v
+		parent, field, nested := strings.Cut(attr, ".")
+		if !nested {
+			next[name(attr)] = v
+			continue
+		}
+		if strings.Contains(field, ".") {
+			return nil, unsupported("UpdateItem", "UpdateExpression", in.UpdateExpression)
+		}
+		parentMap, ok := next[name(parent)].(*ddbtypes.AttributeValueMemberM)
+		if !ok {
+			return nil, fmt.Errorf("storetest.Mem UpdateItem: %s is not a map", parent)
+		}
+		fields := clone(parentMap.Value)
+		fields[name(field)] = v
+		next[name(parent)] = &ddbtypes.AttributeValueMemberM{Value: fields}
 	}
 	if match[2] != "" {
 		for _, attr := range strings.Split(match[2], ", ") {
