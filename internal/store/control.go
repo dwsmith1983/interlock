@@ -342,6 +342,41 @@ func (s *Store) WriteSensorIfAbsent(ctx context.Context, pipelineID, sensorKey s
 	return true, nil
 }
 
+// WriteSensorFieldIfAbsent sets field to value inside the data map of an
+// existing sensor row, only while the row exists and the field is not there.
+// A missing row or a field already present is a false return with no error,
+// and nothing is written. The row's data attribute must already be a map: a
+// row without one, which WriteSensor writes for a nil map (data is
+// omitempty), or one whose data is not a map, returns an error because
+// DynamoDB rejects the document path. An empty non-nil map is stored as an
+// empty data map and takes the field.
+func (s *Store) WriteSensorFieldIfAbsent(ctx context.Context, pipelineID, sensorKey, field string, value map[string]interface{}) (bool, error) {
+	av, err := attributevalue.Marshal(value)
+	if err != nil {
+		return false, fmt.Errorf("marshal field %q of sensor %q for %q: %w", field, sensorKey, pipelineID, err)
+	}
+
+	_, err = s.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &s.ControlTable,
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK(sensorKey)},
+		},
+		UpdateExpression:          aws.String("SET #data.#field = :value"),
+		ConditionExpression:       aws.String("attribute_exists(PK) AND attribute_not_exists(#data.#field)"),
+		ExpressionAttributeNames:  map[string]string{"#data": "data", "#field": field},
+		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{":value": av},
+	})
+	if err != nil {
+		var ccfe *ddbtypes.ConditionalCheckFailedException
+		if errors.As(err, &ccfe) {
+			return false, nil
+		}
+		return false, fmt.Errorf("write field %q of sensor %q for %q: %w", field, sensorKey, pipelineID, err)
+	}
+	return true, nil
+}
+
 // DeleteSensor removes a sensor row from the control table.
 func (s *Store) DeleteSensor(ctx context.Context, pipelineID, sensorKey string) error {
 	_, err := s.Client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
