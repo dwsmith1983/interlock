@@ -52,3 +52,28 @@ func TestConvertAttributeValue(t *testing.T) {
 		})
 	}
 }
+
+func TestSensorKeyMatches(t *testing.T) {
+	tests := []struct {
+		sensorKey, ruleKey string
+		want               bool
+	}{
+		{"orders", "orders", true},
+		{"orders#2026-03-10", "orders", true},
+		{"orders#20260310", "orders", true},
+		{"orders#2026-03-10T07", "orders", true},
+		{"orders-count", "orders", false},
+		{"orders2", "orders", false},
+		{"ordersX#2026-03-10", "orders", false},
+		{"order", "orders", false},
+		{"orders", "", false},
+		{"", "", true},
+		{"orders#eu#2026-03-10", "orders#eu", true},
+		{"orders#europe", "orders#eu", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.sensorKey+"/"+tt.ruleKey, func(t *testing.T) {
+			assert.Equal(t, tt.want, SensorKeyMatches(tt.sensorKey, tt.ruleKey))
+		})
+	}
+}

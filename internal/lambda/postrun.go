@@ -1,8 +1,6 @@
 package lambda
 
 import (
-	"strings"
-
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -21,11 +19,11 @@ func ResolveDriftField(cfg *types.PostRunConfig) string {
 	return defaultDriftField
 }
 
-// MatchesPostRunRule returns true if the sensor key matches any post-run rule key
-// (prefix match to support per-period sensor keys).
+// MatchesPostRunRule returns true if the sensor key matches any post-run rule
+// key, as that key or a per-period key of it (see SensorKeyMatches).
 func MatchesPostRunRule(sensorKey string, rules []types.ValidationRule) bool {
 	for _, rule := range rules {
-		if strings.HasPrefix(sensorKey, rule.Key) {
+		if SensorKeyMatches(sensorKey, rule.Key) {
 			return true
 		}
 	}

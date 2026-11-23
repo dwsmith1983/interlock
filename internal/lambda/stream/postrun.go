@@ -60,7 +60,7 @@ func handlePostRunInflight(ctx context.Context, d *lambda.Deps, cfg *types.Pipel
 
 	var ruleBaseline map[string]interface{}
 	for _, rule := range cfg.PostRun.Rules {
-		if strings.HasPrefix(sensorKey, rule.Key) {
+		if lambda.SensorKeyMatches(sensorKey, rule.Key) {
 			if nested, ok := baseline[rule.Key].(map[string]interface{}); ok {
 				ruleBaseline = nested
 			}
@@ -176,11 +176,11 @@ func handlePostRunCompleted(ctx context.Context, d *lambda.Deps, cfg *types.Pipe
 }
 
 // postRunBaselineEntry returns the key of the first post-run rule sensorKey
-// matches by prefix, and that rule's entry in baseline, nil when it has none.
-// The key is empty when no rule matches.
+// matches (lambda.SensorKeyMatches), and that rule's entry in baseline, nil
+// when it has none. The key is empty when no rule matches.
 func postRunBaselineEntry(rules []types.ValidationRule, sensorKey string, baseline map[string]interface{}) (ruleKey string, entry map[string]interface{}) {
 	for _, rule := range rules {
-		if strings.HasPrefix(sensorKey, rule.Key) {
+		if lambda.SensorKeyMatches(sensorKey, rule.Key) {
 			entry, _ = baseline[rule.Key].(map[string]interface{})
 			return rule.Key, entry
 		}

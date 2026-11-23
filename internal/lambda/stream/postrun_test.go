@@ -398,6 +398,57 @@ func TestPostRunSensor_SeedLosesRace(t *testing.T) {
 	}
 }
 
+// TestPostRunSensor_RuleKeyBoundary: a post-run sensor is compared with its
+// own rule's baseline entry, not with an earlier rule whose key it merely
+// begins with. Rules orders and orders-count, in that order, have baseline
+// entries of 100 and 500; an unchanged orders-count write of 500 is no drift
+// on a COMPLETED date inside the window and no inflight drift on a RUNNING one.
+func TestPostRunSensor_RuleKeyBoundary(t *testing.T) {
+	const date = "2026-03-10"
+	tests := []struct {
+		name       string
+		status     string
+		wantEvents []string
+	}{
+		{name: "COMPLETED", status: types.TriggerStatusCompleted, wantEvents: []string{string(types.EventPostRunPassed)}},
+		{name: "RUNNING", status: types.TriggerStatusRunning},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, mem, eb := firstWriteWorld(t, "orders", "orders-count")
+			row := completedRow(date, "2026-03-10T12:00:00Z")
+			row["status"] = &ddbtypes.AttributeValueMemberS{Value: tt.status}
+			mem.Put("control", row)
+			ctx := context.Background()
+			for key, data := range map[string]map[string]interface{}{
+				"postrun-baseline#" + date: {
+					"orders":       map[string]interface{}{"count": 100},
+					"orders-count": map[string]interface{}{"count": 500},
+				},
+				"orders":       {"date": date},
+				"orders-count": {"date": date, "count": 500},
+			} {
+				if err := d.Store.WriteSensor(ctx, "p", key, data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			data := map[string]events.DynamoDBAttributeValue{
+				"date": events.NewStringAttribute(date), "count": events.NewNumberAttribute("500")}
+
+			if err := handleRecord(ctx, d, sensorRecordWith("orders-count", data)); err != nil {
+				t.Fatalf("handleRecord: %v", err)
+			}
+
+			if got := eventTypes(eb.events); !slices.Equal(got, tt.wantEvents) {
+				t.Errorf("events %v, want %v", got, tt.wantEvents)
+			}
+			if req := mem.Get("control", types.PipelinePK("p"), types.RerunRequestSK("stream", date)); req != nil {
+				t.Errorf("rerun request written: %v", req)
+			}
+		})
+	}
+}
+
 // eventTypes lists the detail-type of each published event, in order.
 func eventTypes(published []publishedEvent) []string {
 	var got []string

@@ -349,6 +349,7 @@ func TestReconcile_Gating(t *testing.T) {
 			}},
 		{name: "per-hour both", sensors: hourly, wantSFN: 2, wantDates: []string{"2026-03-10T10", "2026-03-10T11"}},
 		{name: "per-hour partial", sensors: hourly, running: "2026-03-10T10", wantSFN: 1, wantDates: []string{"2026-03-10T11"}},
+		{name: "other sensor shares the prefix", sensors: map[string]map[string]interface{}{"upstream-audit": {"date": slaTestDate}}},
 		{name: "nil trigger", sensors: daily, tweak: func(c *types.PipelineConfig) { c.Schedule.Trigger = nil }},
 		{name: "SFN error", sensors: daily, sfnErr: errors.New("execution limit exceeded"), wantSFN: 1},
 		{name: "dry run", sensors: daily, tweak: dryRunHTTP},
