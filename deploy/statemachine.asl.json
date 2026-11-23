@@ -90,7 +90,7 @@
     },
     "ValidationExhausted": {
       "Type": "Task",
-      "Comment": "Window closed without passing; no job ran, so the SLA cancel is skipped. For a first run before the cutoff, release the trigger lock and publish EVALUATION_RELEASED. For a rerun, or a date whose cadence (daily or hourly) differs from the cutoff's, publish VALIDATION_EXHAUSTED and set FAILED_FINAL. Past the cutoff, for a first run, publish SENSOR_DEADLINE_EXPIRED and set FAILED_FINAL",
+      "Comment": "Window closed without passing; no job ran, so the SLA cancel is skipped. For a first run before the cutoff, release the trigger lock and publish EVALUATION_RELEASED. For a rerun, or a config without a cutoff (read without validation), publish VALIDATION_EXHAUSTED and set FAILED_FINAL. Past the cutoff, for a first run, publish SENSOR_DEADLINE_EXPIRED and set FAILED_FINAL",
       "Resource": "${orchestrator_arn}",
       "Parameters": {
         "mode": "validation-exhausted",

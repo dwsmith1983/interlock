@@ -45,7 +45,7 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | Detail Type | Meaning | When |
 |---|---|---|
 | `VALIDATION_PASSED` | All validation rules passed | Readiness evaluation succeeds, before trigger |
-| `VALIDATION_EXHAUSTED` | Evaluation window closed without passing, and the date ends | The window closed for a rerun, or for a run key of the other cadence than the cutoff, which has no cutoff. The trigger row becomes `FAILED_FINAL`, so this is the date's final alert; only a `RERUN_REQUEST` runs it again |
+| `VALIDATION_EXHAUSTED` | Evaluation window closed without passing, and the date ends | The window closed for a rerun. The trigger row becomes `FAILED_FINAL`, so this is the date's final alert; only a `RERUN_REQUEST` runs it again |
 | `EVALUATION_RELEASED` | Evaluation window closed before the cutoff, and the date can start again | A first run's window closed before its cutoff: the trigger row is deleted and an `evaluation-released` job row written, so the next trigger sensor write or watchdog pass starts evaluation again. Detail carries `cutoff`, `cutoffAt` and `source: orchestrator`. Not an alert: it is recorded in the events table but is not on the alert rule |
 | `JOB_TRIGGERED` | Pipeline job was triggered | Trigger fired successfully: the stream-router started an execution, the orchestrator launched the job, or the watchdog's reconciliation restarted a date whose evaluation was released (`source: reconciliation`) |
 | `JOB_COMPLETED` | Triggered job completed successfully | The stream-router sees a `success` job log row (written by the job, by CheckJob after polling, or by the orchestrator for `lambda`), with the same gates as `JOB_FAILED` |

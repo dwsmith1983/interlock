@@ -135,7 +135,7 @@ CheckCancelSLA → CancelSLASchedules
 
 The Step Functions state machine has 28 states:
 
-1. **Evaluation loop**: evaluates validation rules at a configurable interval. When all rules pass, triggers the job. If the evaluation window expires, ValidationExhausted ends the execution without the SLA cleanup, since no job ran. Before the run date's cutoff, a first run is released: the orchestrator writes an `evaluation-released` job row, deletes the trigger row and publishes `EVALUATION_RELEASED` (not an alert), so the next trigger sensor write or watchdog pass can start evaluation again until the cutoff, and the date's SLA schedules still fire. For a rerun, or a run key of the other cadence than the cutoff, which has no cutoff, it publishes `VALIDATION_EXHAUSTED` and sets `FAILED_FINAL`, and the run's unfired SLA schedules fire and are suppressed because the run is finished. At or after the cutoff, a first run publishes `SENSOR_DEADLINE_EXPIRED` and then sets `FAILED_FINAL`. An evaluation still running at the cutoff, for a first run, ends that way too instead of launching the job.
+1. **Evaluation loop**: evaluates validation rules at a configurable interval. When all rules pass, triggers the job. If the evaluation window expires, ValidationExhausted ends the execution without the SLA cleanup, since no job ran. Before the run date's cutoff, a first run is released: the orchestrator writes an `evaluation-released` job row, deletes the trigger row and publishes `EVALUATION_RELEASED` (not an alert), so the next trigger sensor write or watchdog pass can start evaluation again until the cutoff, and the date's SLA schedules still fire. For a rerun it publishes `VALIDATION_EXHAUSTED` and sets `FAILED_FINAL`, and the run's unfired SLA schedules fire and are suppressed because the run is finished. At or after the cutoff, a first run publishes `SENSOR_DEADLINE_EXPIRED` and then sets `FAILED_FINAL`. An evaluation still running at the cutoff, for a first run, ends that way too instead of launching the job.
 
 2. **SLA scheduling**: not a state machine step. The watchdog creates one-time EventBridge Scheduler entries for the SLA warning and breach of each run date that has a `RUN#` row. The Scheduler fires alerts independently at exact timestamps.
 
@@ -150,7 +150,7 @@ All lifecycle events are published to a custom EventBridge event bus. This repla
 | Event Type | When Published |
 |---|---|
 | `VALIDATION_PASSED` | All validation rules pass |
-| `VALIDATION_EXHAUSTED` | Evaluation window closed without passing, for a rerun or a run key of the other cadence than the cutoff, which has no cutoff; the date ends `FAILED_FINAL` |
+| `VALIDATION_EXHAUSTED` | Evaluation window closed without passing, for a rerun; the date ends `FAILED_FINAL` |
 | `EVALUATION_RELEASED` | Evaluation window closed before the cutoff; the date can start again (not an alert) |
 | `JOB_TRIGGERED` | Pipeline trigger executed |
 | `JOB_COMPLETED` | Triggered job finished successfully |

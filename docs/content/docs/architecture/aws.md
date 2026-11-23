@@ -110,7 +110,7 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 | `evaluate` | Load config and sensor data, evaluate validation rules, publish `VALIDATION_PASSED` if all pass |
 | `trigger` | Build trigger config from `job` section, execute trigger (Glue, EMR, HTTP, etc.), return run ID: the job API's run ID for polled types, otherwise the Step Functions execution name |
 | `check-job` | Query joblog table for the newest `success`, `fail` or `timeout` row of this run's `runId` (rows of earlier runs are ignored); otherwise poll the job API. Return the event, or empty (still running). Propagates `FailureCategory` to the joblog when a polled failure is detected |
-| `validation-exhausted` | When the evaluation window closes: before the cutoff, release a first run (`evaluation-released` row, trigger row deleted, `EVALUATION_RELEASED`, status `released`); for a rerun or a run key of the other cadence than the cutoff, publish `VALIDATION_EXHAUSTED` and set `FAILED_FINAL` (`exhausted`); at or after the cutoff, publish `SENSOR_DEADLINE_EXPIRED` and set `FAILED_FINAL` (`cutoff`) |
+| `validation-exhausted` | When the evaluation window closes: before the cutoff, release a first run (`evaluation-released` row, trigger row deleted, `EVALUATION_RELEASED`, status `released`); for a rerun, publish `VALIDATION_EXHAUSTED` and set `FAILED_FINAL` (`exhausted`); at or after the cutoff, publish `SENSOR_DEADLINE_EXPIRED` and set `FAILED_FINAL` (`cutoff`) |
 | `job-poll-exhausted` | Write a `timeout` joblog row for the run when the job poll window expires |
 | `complete-trigger` | On success set the trigger to `COMPLETED`. On fail/timeout start the next attempt (`status: retrying`) while `maxRetries` lasts, else set `FAILED_FINAL` and publish `RETRY_EXHAUSTED` (`PIPELINE_EXCLUDED` for an excluded date, `INFRA_FAILURE` when the next execution cannot start) |
 
@@ -190,7 +190,7 @@ InitEvalLoop → Evaluate → IsReady
 4. **WaitInterval** — configurable delay between evaluation attempts
 5. **IncrementElapsed** — track total elapsed time via `States.MathAdd`
 6. **CheckWindowExhausted** — if elapsed >= window, go to ValidationExhausted
-7. **ValidationExhausted**: end the execution without SLA cleanup, since no job ran. Before the cutoff, a first run is released (`evaluation-released` joblog row, trigger row deleted, `EVALUATION_RELEASED`), so a later sensor write or watchdog pass can start it again and its SLA schedules still fire. For a rerun, or a run key of the other cadence than the cutoff, which has no cutoff, it publishes `VALIDATION_EXHAUSTED` and sets `FAILED_FINAL`, and sla-monitor suppresses the unfired SLA schedules because the run is finished. At or after the cutoff it publishes `SENSOR_DEADLINE_EXPIRED` and then sets `FAILED_FINAL`
+7. **ValidationExhausted**: end the execution without SLA cleanup, since no job ran. Before the cutoff, a first run is released (`evaluation-released` joblog row, trigger row deleted, `EVALUATION_RELEASED`), so a later sensor write or watchdog pass can start it again and its SLA schedules still fire. For a rerun it publishes `VALIDATION_EXHAUSTED` and sets `FAILED_FINAL`, and sla-monitor suppresses the unfired SLA schedules because the run is finished. At or after the cutoff it publishes `SENSOR_DEADLINE_EXPIRED` and then sets `FAILED_FINAL`
 
 ### Trigger and Job Polling (13 states)
 

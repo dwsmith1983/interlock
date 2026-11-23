@@ -57,6 +57,7 @@ func TestCheckTriggerDeadlines(t *testing.T) {
 		{name: "excluded date", keys: []string{"2026-03-14"}, now: at(14, 14, 5), tweak: func(c *types.PipelineConfig) { c.Schedule.Exclude = &types.ExclusionConfig{Weekends: true} }},
 		{name: "dry run", now: at(10, 14, 5), tweak: dryRunHTTP},
 		{name: "hourly", cutoff: ":45", keys: []string{"2026-03-10T13"}, now: at(10, 14, 50), wantDate: "2026-03-10T13", wantAt: "2026-03-10T14:45:00Z"},
+		{name: "hourly key, daily cutoff", keys: []string{"2026-03-10T10"}, now: at(10, 14, 0), wantDate: "2026-03-10T10", wantAt: "2026-03-10T14:00:00Z"},
 		{name: "schedule tz over SLA tz, before", cutoff: "09:00", tz: "America/New_York", now: at(10, 12, 30), tweak: tokyoSLA},
 		{name: "schedule tz over SLA tz, after", cutoff: "09:00", tz: "America/New_York", now: at(10, 13, 30), tweak: tokyoSLA,
 			wantDate: slaTestDate, wantAt: "2026-03-10T13:00:00Z"},

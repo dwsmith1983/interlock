@@ -17,11 +17,11 @@ const (
 )
 
 // handleValidationExhausted ends an evaluation whose window closed without
-// all rules passing. For a rerun, or when no cutoff applies to the date (a
-// key of the other cadence, or a row read without validation), the run ends
-// (failExhausted). Otherwise, at or after the cutoff the run closes
-// (failAtCutoff), and before it the date is released (releaseEvaluation) so
-// readiness can be evaluated again until the cutoff.
+// all rules passing. For a rerun, or without a cutoff (only a config read
+// without validation lacks one), the run ends (failExhausted). Otherwise, at
+// or after the cutoff the run closes (failAtCutoff), and before it the date
+// is released (releaseEvaluation) so readiness can be evaluated again until
+// the cutoff.
 func handleValidationExhausted(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
 	cfg, err := d.Store.GetConfig(ctx, input.PipelineID)
 	if err != nil {
