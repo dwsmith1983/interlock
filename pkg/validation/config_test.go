@@ -557,13 +557,36 @@ func TestValidate_Cron(t *testing.T) {
 	}
 }
 
-// TestValidate_ScheduleTimeWithCron: with cron the cron time is the start-by
-// time, so schedule.time is rejected there; an inclusion calendar still uses it.
-func TestValidate_ScheduleTimeWithCron(t *testing.T) {
-	cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "orders"}, Schedule: types.ScheduleConfig{Cron: "0 8 * * *", Time: "08:30"}}
-	assert.Equal(t, []string{"schedule.time is not used with schedule.cron; the cron time is the start-by time"}, validate(&cfg))
-	cfg.Schedule = types.ScheduleConfig{Time: "08:30", Include: &types.InclusionConfig{Dates: []string{"2026-03-31"}}}
-	assert.Empty(t, validate(&cfg))
+// TestValidate_ScheduleTime: schedule.time is a two-digit HH:MM used only by
+// an inclusion calendar. With cron the cron time is the start-by time, so only
+// that message is reported, whatever the value.
+func TestValidate_ScheduleTime(t *testing.T) {
+	const cronMsg = "schedule.time is not used with schedule.cron; the cron time is the start-by time"
+	include := &types.InclusionConfig{Dates: []string{"2026-03-31"}}
+	tests := []struct {
+		name     string
+		schedule types.ScheduleConfig
+		wantErrs []string
+	}{
+		{"include, 09:00", types.ScheduleConfig{Time: "09:00", Include: include}, nil},
+		{"include, 00:00", types.ScheduleConfig{Time: "00:00", Include: include}, nil},
+		{"include, 23:59", types.ScheduleConfig{Time: "23:59", Include: include}, nil},
+		{"include, one-digit hour", types.ScheduleConfig{Time: "9:00", Include: include}, []string{`schedule.time "9:00" must be HH:MM`}},
+		{"include, 9am", types.ScheduleConfig{Time: "9am", Include: include}, []string{`schedule.time "9am" must be HH:MM`}},
+		{"include, 24:00", types.ScheduleConfig{Time: "24:00", Include: include}, []string{`schedule.time "24:00" must be HH:MM`}},
+		{"include, minutes only", types.ScheduleConfig{Time: ":30", Include: include}, []string{`schedule.time ":30" must be HH:MM`}},
+		{"include, minute 60", types.ScheduleConfig{Time: "09:60", Include: include}, []string{`schedule.time "09:60" must be HH:MM`}},
+		{"neither include nor cron", types.ScheduleConfig{Time: "09:00"}, []string{"schedule.time is only used with schedule.include"}},
+		{"neither include nor cron, 9am", types.ScheduleConfig{Time: "9am"}, []string{`schedule.time "9am" must be HH:MM`}},
+		{"cron", types.ScheduleConfig{Cron: "0 8 * * *", Time: "08:30"}, []string{cronMsg}},
+		{"cron, 9am", types.ScheduleConfig{Cron: "0 8 * * *", Time: "9am"}, []string{cronMsg}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "orders"}, Schedule: tt.schedule}
+			assert.Equal(t, tt.wantErrs, validate(&cfg))
+		})
+	}
 }
 
 func TestValidate_PostRunWatchWindow(t *testing.T) {

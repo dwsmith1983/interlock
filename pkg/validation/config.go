@@ -38,7 +38,8 @@ const MaxPipelineIDLen = 31
 var pipelineIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // clockRe is a schedule.trigger.cutoff or an sla.deadline: "HH:MM" (daily) or
-// ":MM" (hourly).
+// ":MM" (hourly). It also checks schedule.time, where the caller rejects the
+// ":MM" form.
 var clockRe = regexp.MustCompile(`^([01]\d|2[0-3])?:[0-5]\d$`)
 
 // triggerTypes is every job.type the orchestrator can launch. Keep it in step
@@ -142,8 +143,15 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	if cfg.Schedule.Cron != "" && cfg.Schedule.Include != nil {
 		errs = append(errs, "schedule.cron and schedule.include are mutually exclusive")
 	}
-	if cfg.Schedule.Cron != "" && cfg.Schedule.Time != "" {
+	// schedule.time holds the missed-date check back on an inclusion date.
+	switch tm := cfg.Schedule.Time; {
+	case tm == "":
+	case cfg.Schedule.Cron != "":
 		errs = append(errs, "schedule.time is not used with schedule.cron; the cron time is the start-by time")
+	case !clockRe.MatchString(tm) || strings.HasPrefix(tm, ":"):
+		errs = append(errs, fmt.Sprintf("schedule.time %q must be HH:MM", tm))
+	case cfg.Schedule.Include == nil:
+		errs = append(errs, "schedule.time is only used with schedule.include")
 	}
 
 	// Inclusion calendar validation.

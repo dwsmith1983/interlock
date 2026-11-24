@@ -33,7 +33,7 @@ schedule:
 | `evaluation` | object | no | Window and interval settings for the evaluation loop |
 | `exclude` | object | no | Dates the pipeline does not run (see [Calendar Exclusions](#calendar-exclusions)) |
 | `include` | object | no | `dates` (`YYYY-MM-DD` list) the pipeline is expected to run on; the watchdog publishes `IRREGULAR_SCHEDULE_MISSED` for a date with no trigger row once that date has begun in `timezone` (UTC when unset). It does not stop runs on other dates. Not allowed with `cron` |
-| `time` | string | no | `HH:MM` in `timezone`: on an `include` date, the missed-date check waits until this time. Without it the check fires at local midnight of the date, so set `time` to avoid an alert before the run is due. Not allowed with `cron` |
+| `time` | string | no | `HH:MM` with a two-digit hour (`00:00` to `23:59`) in `timezone`: on an `include` date, the missed-date check waits until this time. Without it the check fires at local midnight of the date, so set `time` to avoid an alert before the run is due. Used only with `include`. Another format (`9:00`, `24:00`, `:30`), `time` without `include`, or `time` with `cron` rejects the config as `CONFIG_INVALID` |
 
 ### Trigger Condition
 
@@ -169,7 +169,7 @@ schedule:
     interval: 10m
 ```
 
-For a daily run date the start-by time is the cron's first fire on that local day; for an hourly run date (`YYYY-MM-DDThh`), its first fire in that local hour. A date the cron does not fire on (a Saturday for `0 8 * * 1-5`) and an excluded date get no check. `schedule.time` is for inclusion calendars only; together with `schedule.cron` it rejects the config.
+For a daily run date the start-by time is the cron's first fire on that local day; for an hourly run date (`YYYY-MM-DDThh`), its first fire in that local hour. A date the cron does not fire on (a Saturday for `0 8 * * 1-5`) and an excluded date get no check. `schedule.time` is for inclusion calendars only; together with `schedule.cron`, or without `schedule.include`, it rejects the config.
 
 The expression is validated when the config loads. It must be standard five-field cron (minute, hour, day of month, month, day of week), evaluated in `schedule.timezone`. Each field takes `*`, numbers, ranges (`1-5`), steps (`*/15`, `0-30/10`), lists (`1,15`) and, for month and day of week, names (`JAN`, `MON-FRI`). Day of week runs 0 to 6 with 0 as Sunday; `7` is not accepted. `?` means the same as `*` in the day fields. `L`, `W` and `#` are not supported. A seconds or year field, a descriptor such as `@daily` or `@every 1h`, a `TZ=` prefix, or an out-of-range value like `61 8 * * *` or `0 8 * * 1,9` rejects the config, which is reported as `CONFIG_INVALID`. When both day of month and day of week are restricted, either one matching is enough, as in standard cron. On a DST change, a cron time in the skipped local hour (spring forward) does not occur that day, so that day has no start-by time, and for a daily run date a cron time in the repeated hour (fall back) is taken at its first occurrence.
 
