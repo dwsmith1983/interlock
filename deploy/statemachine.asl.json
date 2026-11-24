@@ -25,10 +25,16 @@
       "Next": "IsReady",
       "Retry": [
         {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 7,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60
+        },
+        {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
-            "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
           "IntervalSeconds": 2,
@@ -102,10 +108,16 @@
       "Next": "Done",
       "Retry": [
         {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 7,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60
+        },
+        {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
-            "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
           "IntervalSeconds": 2,
@@ -136,10 +148,16 @@
       "Next": "HasTriggerResult",
       "Retry": [
         {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 7,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60
+        },
+        {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
-            "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
           "IntervalSeconds": 30,
@@ -170,10 +188,16 @@
       "Next": "CheckCancelSLA",
       "Retry": [
         {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 7,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60
+        },
+        {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
-            "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
           "IntervalSeconds": 2,
@@ -235,10 +259,16 @@
       "Next": "IsJobDone",
       "Retry": [
         {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 7,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60
+        },
+        {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
-            "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
           "IntervalSeconds": 2,
@@ -319,10 +349,16 @@
       "Next": "InjectTimeoutEvent",
       "Retry": [
         {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 7,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60
+        },
+        {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
-            "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
           "IntervalSeconds": 2,
@@ -362,10 +398,16 @@
       "Next": "IsRetrying",
       "Retry": [
         {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 7,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60
+        },
+        {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
-            "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
           "IntervalSeconds": 2,
@@ -424,10 +466,16 @@
       "Next": "CompleteTriggerFailed",
       "Retry": [
         {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 7,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60
+        },
+        {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
-            "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
           "IntervalSeconds": 2,
@@ -479,10 +527,16 @@
       "Next": "Done",
       "Retry": [
         {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 7,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60
+        },
+        {
           "ErrorEquals": [
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
-            "Lambda.TooManyRequestsException",
             "States.TaskFailed"
           ],
           "IntervalSeconds": 2,

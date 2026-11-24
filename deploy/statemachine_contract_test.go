@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -414,4 +416,82 @@ func TestASL_TriggerPassesExecutionName(t *testing.T) {
 	var in lambda.OrchestratorInput
 	require.NoError(t, json.Unmarshal([]byte(`{"mode":"trigger","executionName":"run-1"}`), &in))
 	require.Equal(t, "run-1", in.ExecutionName)
+}
+
+// --- throttling -------------------------------------------------------------
+
+const (
+	throttleError = "Lambda.TooManyRequestsException"
+
+	// orchestratorTimeoutSeconds is the orchestrator Lambda's timeout in
+	// deploy/terraform/lambda.tf, the longest an invocation holds its instance.
+	// The sla-monitor's is shorter.
+	orchestratorTimeoutSeconds = 120
+)
+
+// retryLadderSeconds is the total a retrier waits across all its attempts. Step
+// Functions multiplies the interval by BackoffRate after each attempt and caps
+// each wait at MaxDelaySeconds, when set.
+func retryLadderSeconds(r retryEntry) float64 {
+	total := 0.0
+	for i := range r.MaxAttempts {
+		delay := float64(r.IntervalSeconds) * math.Pow(r.BackoffRate, float64(i))
+		if r.MaxDelaySeconds > 0 {
+			delay = min(delay, float64(r.MaxDelaySeconds))
+		}
+		total += delay
+	}
+	return total
+}
+
+// TestASL_EveryTaskOutlastsThrottling: each Task retries a throttled call for
+// longer than any invocation can hold an instance. Step Functions uses the
+// first retrier that matches, and States.TaskFailed matches a throttle too, so
+// the throttle retrier has to come first.
+func TestASL_EveryTaskOutlastsThrottling(t *testing.T) {
+	tasks := 0
+	for name, raw := range loadASL(t).States {
+		var ts taskState
+		require.NoError(t, json.Unmarshal(raw, &ts), "parsing state %q", name)
+		if ts.Type != "Task" {
+			continue
+		}
+		tasks++
+		t.Run(name, func(t *testing.T) {
+			require.NotEmpty(t, ts.Retry)
+			first := ts.Retry[0]
+			require.Equal(t, []string{throttleError}, first.ErrorEquals)
+			require.Greater(t, first.BackoffRate, 1.0, "a brief throttle is retried within seconds, a long one less often")
+			// Jitter draws each wait from zero up to its delay, so the total
+			// could fall below the timeout.
+			require.Empty(t, first.JitterStrategy)
+			require.Greater(t, retryLadderSeconds(first), float64(orchestratorTimeoutSeconds))
+			for _, later := range ts.Retry[1:] {
+				require.NotContains(t, later.ErrorEquals, throttleError)
+			}
+		})
+	}
+	require.NotZero(t, tasks, "the state machine has no Task state")
+}
+
+// TestASL_TriggerThrottleDoesNotSpendLaunchAttempts: the Trigger state's launch
+// attempts stay under trigger_max_attempts and are not used up by throttling.
+// The variable is rendered to a value no default uses, so a literal fails.
+func TestASL_TriggerThrottleDoesNotSpendLaunchAttempts(t *testing.T) {
+	data, err := os.ReadFile("statemachine.asl.json")
+	require.NoError(t, err)
+	const maxAttempts = 17
+	s := strings.ReplaceAll(string(data), "${trigger_max_attempts}", strconv.Itoa(maxAttempts))
+	var asl aslDefinition
+	require.NoError(t, json.Unmarshal(renderASLTemplate([]byte(s)), &asl))
+
+	var trigger taskState
+	require.NoError(t, json.Unmarshal(asl.States["Trigger"], &trigger))
+	require.Len(t, trigger.Retry, 2)
+	throttle, launch := trigger.Retry[0], trigger.Retry[1]
+	require.NotEqual(t, maxAttempts, throttle.MaxAttempts, "throttle retries do not follow trigger_max_attempts")
+	require.Equal(t, maxAttempts, launch.MaxAttempts)
+	require.Equal(t, 30, launch.IntervalSeconds)
+	require.InDelta(t, 2, launch.BackoffRate, 0)
+	require.NotContains(t, launch.ErrorEquals, throttleError)
 }

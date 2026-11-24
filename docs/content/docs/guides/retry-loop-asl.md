@@ -99,10 +99,16 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
     "Next": "HasTriggerResult",
     "Retry": [
       {
+        "ErrorEquals": ["Lambda.TooManyRequestsException"],
+        "IntervalSeconds": 2,
+        "MaxAttempts": 7,
+        "BackoffRate": 2,
+        "MaxDelaySeconds": 60
+      },
+      {
         "ErrorEquals": [
           "Lambda.ServiceException",
           "Lambda.AWSLambdaException",
-          "Lambda.TooManyRequestsException",
           "States.TaskFailed"
         ],
         "IntervalSeconds": 30,
@@ -163,7 +169,7 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
 }
 ```
 
-The Trigger state has a dedicated retry policy for infrastructure failures. When the orchestrator cannot start the job (e.g., Glue `ConcurrentRunsExceededException`), it returns a Lambda error. Step Functions retries up to `trigger_max_attempts` times (default 3, so four attempts in all), waiting 30s, 60s and 120s. If all retries exhaust, the Catch routes to `TriggerRetryExhausted`, which records the failure, publishes `RETRY_EXHAUSTED` and sets the trigger row `FAILED_FINAL`, then to `CheckCancelSLA` for SLA cleanup instead of crashing. Nothing starts the date again on its own; submit a `RERUN_REQUEST` to run it.
+The Trigger state has a dedicated retry policy for infrastructure failures. When the orchestrator cannot start the job (e.g., Glue `ConcurrentRunsExceededException`), it returns a Lambda error. Step Functions retries up to `trigger_max_attempts` times (default 3, so four attempts in all), waiting 30s, 60s and 120s. A throttled call to the orchestrator itself uses none of these attempts (see [Error Handling](#error-handling)); a `lambda` job whose own function is throttled is a launch failure and does. If all retries exhaust, the Catch routes to `TriggerRetryExhausted`, which records the failure, publishes `RETRY_EXHAUSTED` and sets the trigger row `FAILED_FINAL`, then to `CheckCancelSLA` for SLA cleanup instead of crashing. Nothing starts the date again on its own; submit a `RERUN_REQUEST` to run it.
 
 Once triggered, the state machine polls job status via `check-job` mode. The `IsJobDone` Choice state first checks whether the `event` field is present (missing means still running), then routes terminal events (`success`, `fail`, `timeout`) to **CompleteTrigger**, which sets `COMPLETED`, starts the next retry attempt (`status: retrying`, which skips the SLA cleanup so the retry keeps the schedules) or sets `FAILED_FINAL`. When `jobPollWindowSeconds` passes first, **JobPollExhausted** writes a `timeout` row and the run goes to CompleteTrigger as a timeout.
 
@@ -218,10 +224,16 @@ All Task states include Retry and Catch blocks:
 {
   "Retry": [
     {
+      "ErrorEquals": ["Lambda.TooManyRequestsException"],
+      "IntervalSeconds": 2,
+      "MaxAttempts": 7,
+      "BackoffRate": 2,
+      "MaxDelaySeconds": 60
+    },
+    {
       "ErrorEquals": [
         "Lambda.ServiceException",
         "Lambda.AWSLambdaException",
-        "Lambda.TooManyRequestsException",
         "States.TaskFailed"
       ],
       "IntervalSeconds": 2,
@@ -239,7 +251,15 @@ All Task states include Retry and Catch blocks:
 }
 ```
 
-The default retry policy handles transient Lambda errors with exponential backoff (2s, 4s, 8s). The **Trigger** state overrides this with a longer retry (`trigger_max_attempts`, default 3: waits of 30s, 60s and 120s) because infrastructure failures like Glue concurrency limits benefit from more time between attempts.
+Step Functions uses the first retrier that matches an error, and each retrier counts its own attempts, starting again on every visit to the state. `States.TaskFailed` matches a throttle too, so the throttle retrier comes first.
+
+The first retrier handles a call refused because the function has no free instance (`Lambda.TooManyRequestsException`): seven retries, after 2, 4, 8, 16, 32, 60 and 60 seconds, on every Task state. Those 182 seconds are longer than the orchestrator's 120-second timeout, so an instance held by another call, such as a synchronous `lambda` job, is free before they run out. A throttle that outlasts them goes to the Catch; the second retrier does not retry it.
+
+The delays are not randomised (no `JitterStrategy`), so executions throttled at the same moment retry together. A random delay is drawn from zero up to the full one, so the total could fall below the orchestrator's timeout and the retries could run out while the instance is still held.
+
+The evaluation and poll loops count only their own wait intervals, not throttle retries, so a heavily throttled execution can reach `sfn_timeout_seconds` before its windows end. The run's stale deadline (`staleAt`, that timeout plus 30 minutes) still falls after the execution's own timeout.
+
+The second retrier handles transient Lambda errors with exponential backoff (2s, 4s, 8s). The **Trigger** state overrides it with a longer retry (`trigger_max_attempts`, default 3: waits of 30s, 60s and 120s) because infrastructure failures like Glue concurrency limits benefit from more time between attempts.
 
 Catch routing varies by state:
 - **Most states**: Catch routes to `InfraFailure` (Fail state — terminates execution)

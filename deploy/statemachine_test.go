@@ -39,8 +39,12 @@ type catchEntry struct {
 }
 
 type retryEntry struct {
-	ErrorEquals []string `json:"ErrorEquals"`
-	MaxAttempts int      `json:"MaxAttempts"`
+	ErrorEquals     []string `json:"ErrorEquals"`
+	IntervalSeconds int      `json:"IntervalSeconds"`
+	MaxAttempts     int      `json:"MaxAttempts"`
+	BackoffRate     float64  `json:"BackoffRate"`
+	MaxDelaySeconds int      `json:"MaxDelaySeconds"`
+	JitterStrategy  string   `json:"JitterStrategy"`
 }
 
 type taskState struct {
@@ -227,13 +231,11 @@ func TestASL_AllTaskStatesHaveRetry(t *testing.T) {
 		if err := json.Unmarshal(raw, &ts); err != nil || ts.Type != "Task" {
 			continue
 		}
-		assert.NotEmpty(t, ts.Retry, "Task state %q must have Retry", name)
+		require.Lenf(t, ts.Retry, 2, "Task state %q must have a throttle retrier and a general one", name)
 
-		require.NotEmpty(t, ts.Retry)
-		errs := ts.Retry[0].ErrorEquals
+		errs := ts.Retry[1].ErrorEquals
 		assert.Contains(t, errs, "Lambda.ServiceException")
 		assert.Contains(t, errs, "Lambda.AWSLambdaException")
-		assert.Contains(t, errs, "Lambda.TooManyRequestsException")
 		assert.Contains(t, errs, "States.TaskFailed")
 	}
 }

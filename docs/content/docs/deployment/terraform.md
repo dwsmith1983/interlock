@@ -113,7 +113,7 @@ terraform apply
 | `lambda_memory_size` | number | `128` | Memory size for Lambda functions (MB) |
 | `log_retention_days` | number | `30` | CloudWatch log retention in days |
 | `watchdog_schedule` | string | `rate(5 minutes)` | EventBridge schedule expression for the watchdog Lambda |
-| `sfn_timeout_seconds` | number | `14400` | Step Functions global execution timeout in seconds (default 4h). A pipeline whose `schedule.evaluation.window` plus `job.jobPollWindowSeconds` exceeds it is rejected as `CONFIG_INVALID`. The sum is a floor: evaluations, status polls and launch retries also take time, so leave headroom. Lowering it can reject existing pipelines on the next config refresh |
+| `sfn_timeout_seconds` | number | `14400` | Step Functions global execution timeout in seconds (default 4h). A pipeline whose `schedule.evaluation.window` plus `job.jobPollWindowSeconds` exceeds it is rejected as `CONFIG_INVALID`. The sum is a floor: evaluations, status polls, launch retries and throttle retries also take time, so leave headroom. Lowering it can reject existing pipelines on the next config refresh |
 | `trigger_max_attempts` | number | `3` | Retries the Trigger state makes after its first attempt when a job cannot be started (waits start at 30s and double: 30s, 60s, 120s at the default) |
 | `enable_glue_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Glue jobs |
 | `enable_emr_trigger` | bool | `false` | Grant orchestrator Lambda permission to submit EMR steps |
@@ -149,6 +149,8 @@ lambda_concurrency = {
 ```
 
 Set any key to `-1` to use unreserved concurrency (Lambda default).
+
+A synchronous `lambda` job holds one orchestrator instance until its function returns, up to about 100 seconds. Set `orchestrator` above the number of `lambda` jobs that can run at once across all pipelines: while every instance is taken, the state machine's other calls are throttled, and each retries [for three minutes](../../guides/retry-loop-asl/#error-handling) before its step fails, with delays that are not randomised, so calls throttled at the same moment retry together.
 
 ## Encryption
 
