@@ -5,7 +5,7 @@ weight: 10
 
 # Step Functions State Machine
 
-This guide explains the ASL patterns used in Interlock's Step Functions state machine. The state machine uses 28 states to orchestrate pipeline evaluation, job triggering, and SLA monitoring via EventBridge Scheduler.
+This guide explains the ASL patterns used in Interlock's Step Functions state machine. The state machine uses 29 states to orchestrate pipeline evaluation, job triggering, and SLA monitoring via EventBridge Scheduler.
 
 ## Architecture Overview
 
@@ -25,6 +25,9 @@ InitEvalLoop → Evaluate → IsReady
       → (window remaining) Evaluate (loop)
       → (window exhausted) ValidationExhausted (release, end or cutoff) → Done
   → (cutoff) ValidationExhausted → Done
+
+Evaluate, ValidationExhausted or CheckJob fails after its retries
+  → RecordInfraFailure → InfraFailure
 ```
 
 SLA monitoring uses EventBridge Scheduler instead of a parallel branch. The watchdog creates one-time Scheduler entries for each run date with a `RUN#` row; at their exact timestamps they invoke the sla-monitor Lambda, which fires the alert. When the job completes, unfired entries are cancelled.
@@ -218,7 +221,7 @@ SLA alerts are scheduled outside the state machine: the watchdog creates the war
 
 ## Error Handling
 
-All Task states include Retry and Catch blocks:
+All Task states include Retry and Catch blocks. Evaluate, ValidationExhausted and CheckJob use:
 
 ```json
 {
@@ -245,7 +248,7 @@ All Task states include Retry and Catch blocks:
     {
       "ErrorEquals": ["States.ALL"],
       "ResultPath": "$.errorInfo",
-      "Next": "InfraFailure"
+      "Next": "RecordInfraFailure"
     }
   ]
 }
@@ -262,10 +265,18 @@ The evaluation and poll loops count only their own wait intervals, not throttle 
 The second retrier handles transient Lambda errors with exponential backoff (2s, 4s, 8s). The **Trigger** state overrides it with a longer retry (`trigger_max_attempts`, default 3: waits of 30s, 60s and 120s) because infrastructure failures like Glue concurrency limits benefit from more time between attempts.
 
 Catch routing varies by state:
-- **Most states**: Catch routes to `InfraFailure` (Fail state — terminates execution)
+- **Evaluate, ValidationExhausted, CheckJob**: Catch routes to `RecordInfraFailure`, then `InfraFailure` (Fail state, terminates the execution)
+- **RecordInfraFailure**: Catch routes to `InfraFailure`
 - **Trigger**: Catch routes to `TriggerRetryExhausted`, which ends the date `FAILED_FINAL`, then `CheckCancelSLA` (graceful termination with SLA cleanup)
+- **TriggerRetryExhausted**: Catch routes to `CheckCancelSLA`
+- **JobPollExhausted**: Catch routes to `InjectTimeoutEvent` (the `timeout` row is best effort)
 - **CompleteTrigger**: Catch routes to `CheckSLAForCompleteTriggerFailure` (SLA cleanup, then `CompleteTriggerFailed`)
+- **CancelSLAOnCompleteTriggerFailure**: Catch routes to `CompleteTriggerFailed`
 - **CancelSLASchedules**: Catch routes to `Done` (cleanup failure is non-fatal)
+
+`RecordInfraFailure` invokes the orchestrator with `mode=infra-failure`: it publishes `INFRA_FAILURE`, whose message carries the caught error and its cause, then sets the date's `RUNNING` trigger row `FAILED_FINAL`, so a `RERUN_REQUEST` can run it at once. A job that had been launched may still be running, so check it first. There is no SLA cleanup on this path; the unfired schedules are suppressed because the run is finished. If the state fails through its own retries, the execution still ends in `InfraFailure` with the row `RUNNING`, and the watchdog closes it with `SFN_TIMEOUT`.
+
+The state also passes `$$.Execution.StartTime`. When ValidationExhausted released the lock but its response was lost, a sensor write or the watchdog may already have started another execution, and the `RUNNING` row is that one's. An `evaluation-released` job row written after this execution started, as the date's newest outcome, marks that case, and the row is left alone. The same row is there when the release failed between writing it and deleting the lock; that date stays `RUNNING` until the watchdog's `SFN_TIMEOUT`. If the other execution writes its own outcome row before this state runs, the release is no longer the newest outcome and that execution's row is closed with `INFRA_FAILURE`; both rows have to fall within the failing execution's last retries.
 
 ## Customization
 

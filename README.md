@@ -86,7 +86,7 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`.
 └───────────────────┘                                 │
                                           ┌───────────▼──────────────┐
                                           │     Step Functions       │
-                                          │  28 states:              │
+                                          │  29 states:              │
                                           │  Evaluate → Trigger →    │
                                           │  Poll → SLA → Done       │
                                           └──────────┬───────────────┘

@@ -32,7 +32,8 @@ var pathRefRE = regexp.MustCompile(`\$(?:\.[A-Za-z0-9_]+(?:\[\d+\])*)+`)
 // always supplies them; any other "$$." path fails the contract until it is
 // checked and added here.
 var contextPaths = map[string]bool{
-	"$$.Execution.Name": true,
+	"$$.Execution.Name":      true,
+	"$$.Execution.StartTime": true,
 }
 
 // resolvePath walks a reference path against a decoded JSON document and
@@ -395,10 +396,11 @@ func TestASL_EveryDereferencedPathResolves(t *testing.T) {
 
 func TestResolvePath_ContextPaths(t *testing.T) {
 	for path, want := range map[string]bool{
-		"$$.Execution.Name":     true,
-		"$$.Execution.Bogus":    false,
-		"$$.State.EnteredTime":  false,
-		"$$.Execution.Name.Sub": false,
+		"$$.Execution.Name":      true,
+		"$$.Execution.StartTime": true,
+		"$$.Execution.Bogus":     false,
+		"$$.State.EnteredTime":   false,
+		"$$.Execution.Name.Sub":  false,
 	} {
 		require.Equalf(t, want, resolvePath(map[string]interface{}{}, path), "resolvePath(%q)", path)
 	}
@@ -416,6 +418,52 @@ func TestASL_TriggerPassesExecutionName(t *testing.T) {
 	var in lambda.OrchestratorInput
 	require.NoError(t, json.Unmarshal([]byte(`{"mode":"trigger","executionName":"run-1"}`), &in))
 	require.Equal(t, "run-1", in.ExecutionName)
+}
+
+// TestASL_InfraFailureIsRecorded: an execution that dies in Evaluate,
+// ValidationExhausted or CheckJob goes through RecordInfraFailure, which gets
+// the caught error and the execution's start time, before it fails. It fails
+// the same way when RecordInfraFailure itself fails. CompleteTrigger keeps its
+// own route: a retry it started may already hold the trigger row.
+func TestASL_InfraFailureIsRecorded(t *testing.T) {
+	asl := loadASL(t)
+	type caught struct{ Next, ResultPath string }
+	type task struct {
+		Next       string
+		ResultPath string
+		Parameters map[string]string
+		Retry      []retryEntry
+		Catch      []caught
+	}
+	load := func(name string) task {
+		var st task
+		require.NoError(t, json.Unmarshal(asl.States[name], &st), "parsing state %q", name)
+		return st
+	}
+
+	for _, name := range []string{"Evaluate", "ValidationExhausted", "CheckJob"} {
+		require.Equalf(t, []caught{{Next: "RecordInfraFailure", ResultPath: "$.errorInfo"}}, load(name).Catch, "state %q", name)
+	}
+	require.Equal(t, []caught{{Next: "CheckSLAForCompleteTriggerFailure", ResultPath: "$.errorInfo"}}, load("CompleteTrigger").Catch)
+
+	record := load("RecordInfraFailure")
+	require.Equal(t, map[string]string{
+		"mode":                 "infra-failure",
+		"pipelineId.$":         "$.pipelineId",
+		"scheduleId.$":         "$.scheduleId",
+		"date.$":               "$.date",
+		"errorInfo.$":          "$.errorInfo",
+		"executionStartedAt.$": "$$.Execution.StartTime",
+	}, record.Parameters)
+	require.Equal(t, "$.infraFailureResult", record.ResultPath)
+	require.Equal(t, load("Evaluate").Retry, record.Retry)
+	require.Equal(t, "InfraFailure", record.Next)
+	require.Equal(t, []caught{{Next: "InfraFailure", ResultPath: "$.recordErrorInfo"}}, record.Catch)
+
+	var in lambda.OrchestratorInput
+	require.NoError(t, json.Unmarshal([]byte(`{"mode":"infra-failure","executionStartedAt":"2026-03-01T11:00:00.000Z","errorInfo":{"Error":"x","Cause":"y"}}`), &in))
+	require.Equal(t, map[string]interface{}{"Error": "x", "Cause": "y"}, in.ErrorInfo)
+	require.Equal(t, "2026-03-01T11:00:00.000Z", in.ExecutionStartedAt)
 }
 
 // --- throttling -------------------------------------------------------------

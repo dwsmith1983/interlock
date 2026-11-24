@@ -3,9 +3,12 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
+	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -124,7 +127,7 @@ func failAtCutoff(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig
 func triggerRunning(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (bool, error) {
 	tr, err := d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
 	if err != nil {
-		return false, fmt.Errorf("validation-exhausted: %w", err)
+		return false, fmt.Errorf("%s: %w", input.Mode, err)
 	}
 	if tr != nil && tr.Status == types.TriggerStatusRunning {
 		return true, nil
@@ -133,8 +136,8 @@ func triggerRunning(ctx context.Context, d *lambda.Deps, input lambda.Orchestrat
 	if tr != nil {
 		status = tr.Status
 	}
-	d.Logger.InfoContext(ctx, "validation exhausted, trigger row not RUNNING, leaving it",
-		"pipelineId", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date, "status", status)
+	d.Logger.InfoContext(ctx, "trigger row not RUNNING, leaving it",
+		"mode", input.Mode, "pipelineId", input.PipelineID, "schedule", input.ScheduleID, "date", input.Date, "status", status)
 	return false, nil
 }
 
@@ -191,4 +194,84 @@ func handleTriggerExhausted(ctx context.Context, d *lambda.Deps, input lambda.Or
 		return lambda.OrchestratorOutput{}, fmt.Errorf("trigger-exhausted: %w", err)
 	}
 	return out, nil
+}
+
+// handleInfraFailure ends a date whose execution failed on an infrastructure
+// error in Evaluate, ValidationExhausted or CheckJob: it publishes
+// INFRA_FAILURE (the date's final alert, so a failed publish fails the state),
+// then sets the RUNNING trigger row FAILED_FINAL. A missing or finished row, or
+// one a later execution holds (releasedOwnLock), is left alone and nothing is
+// published. A state retry after a failed status write publishes again.
+func handleInfraFailure(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
+	pipelineID, schedule, date := input.PipelineID, input.ScheduleID, input.Date
+	out := lambda.OrchestratorOutput{Mode: "infra-failure", Status: types.TriggerStatusFailedFinal}
+	running, err := triggerRunning(ctx, d, input)
+	if err != nil {
+		return lambda.OrchestratorOutput{}, err
+	}
+	if !running {
+		return out, nil
+	}
+	released, err := releasedOwnLock(ctx, d, input)
+	if err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("infra-failure: %w", err)
+	}
+	if released {
+		d.Logger.InfoContext(ctx, "execution released its trigger lock before it failed, leaving the newer run's row",
+			"pipelineId", pipelineID, "schedule", schedule, "date", date)
+		return out, nil
+	}
+
+	errName, _ := input.ErrorInfo["Error"].(string)
+	cause, _ := input.ErrorInfo["Cause"].(string)
+	cause = store.CutReason(cause)
+	// Slack shows the message and no error or cause field, so it carries both.
+	msg := fmt.Sprintf("execution for %s failed on an infrastructure error", pipelineID)
+	for _, s := range []string{errName, cause} {
+		if s != "" {
+			msg += ": " + s
+		}
+	}
+	detail := map[string]interface{}{"source": "orchestrator", "error": errName, "cause": cause,
+		"actionHint": "the job may still be running if it had been launched: check it, then submit a RERUN_REQUEST to run the date again"}
+	if err := lambda.PublishEvent(ctx, d, string(types.EventInfraFailure), pipelineID, schedule, date, msg, detail); err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("publish %s: %w", types.EventInfraFailure, err)
+	}
+	if err := d.Store.SetTriggerStatus(ctx, pipelineID, schedule, date, types.TriggerStatusFailedFinal); err != nil {
+		return lambda.OrchestratorOutput{}, fmt.Errorf("infra-failure: %w", err)
+	}
+	return out, nil
+}
+
+// releasedOwnLock reports whether this execution released its trigger lock
+// (releaseEvaluation), so that a RUNNING row belongs to a later one: the date's
+// newest outcome row is evaluation-released and was written after this
+// execution started. An execution that takes a released lock starts after that
+// row, so it never counts an earlier release as its own. A release that failed
+// between the row and the delete looks the same; its trigger row is left to the
+// watchdog's stale check. A newer outcome of a run started after the release
+// hides it, so the failing run closes that run's row; that is accepted, since
+// the later run must also write an outcome row within this one's last retries.
+// Clock skew between Lambda (the row) and Step Functions (the start) leans
+// toward staying silent, not toward closing a wrong row: a run's own release
+// normally comes at least one evaluation interval after its start, while a run
+// can start right after another's release.
+func releasedOwnLock(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (bool, error) {
+	startedAt, err := time.Parse(time.RFC3339, input.ExecutionStartedAt)
+	if err != nil {
+		return false, fmt.Errorf("parse executionStartedAt: %w", err)
+	}
+	rec, err := d.Store.GetLatestJobOutcome(ctx, input.PipelineID, input.ScheduleID, input.Date)
+	if err != nil {
+		return false, err
+	}
+	if rec == nil || rec.Event != types.JobEventEvaluationReleased {
+		return false, nil
+	}
+	// The sort key ends in the row's write time in Unix milliseconds.
+	ms, err := strconv.ParseInt(rec.SK[strings.LastIndexByte(rec.SK, '#')+1:], 10, 64)
+	if err != nil {
+		return false, fmt.Errorf("parse write time of job row %q: %w", rec.SK, err)
+	}
+	return time.UnixMilli(ms).After(startedAt), nil
 }

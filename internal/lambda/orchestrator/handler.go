@@ -11,8 +11,8 @@ import (
 )
 
 // HandleOrchestrator is the entry point for the orchestrator Lambda.
-// It dispatches to one of seven modes: evaluate, trigger, check-job,
-// validation-exhausted, trigger-exhausted, complete-trigger and
+// It dispatches to one of eight modes: evaluate, trigger, check-job,
+// validation-exhausted, trigger-exhausted, infra-failure, complete-trigger and
 // job-poll-exhausted.
 func HandleOrchestrator(ctx context.Context, d *lambda.Deps, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
 	switch input.Mode {
@@ -26,6 +26,8 @@ func HandleOrchestrator(ctx context.Context, d *lambda.Deps, input lambda.Orches
 		return handleValidationExhausted(ctx, d, input)
 	case "trigger-exhausted":
 		return handleTriggerExhausted(ctx, d, input)
+	case "infra-failure":
+		return handleInfraFailure(ctx, d, input)
 	case "complete-trigger":
 		return handleCompleteTrigger(ctx, d, input)
 	case "job-poll-exhausted":

@@ -170,6 +170,7 @@ func TestASL_TopLevelStatesExist(t *testing.T) {
 		"TriggerRetryExhausted",
 		"FailValidationExhausted",
 		"CancelSLASchedules",
+		"RecordInfraFailure",
 		"InfraFailure",
 		"Done",
 		"CheckSLAForCompleteTriggerFailure",

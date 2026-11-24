@@ -111,6 +111,7 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 | `trigger` | Build trigger config from `job` section, execute trigger (Glue, EMR, HTTP, etc.), return run ID: the job API's run ID for polled types, otherwise the Step Functions execution name |
 | `check-job` | Query joblog table for the newest `success`, `fail` or `timeout` row of this run's `runId` (rows of earlier runs are ignored); otherwise poll the job API. Return the event, or empty (still running). Propagates `FailureCategory` to the joblog when a polled failure is detected |
 | `validation-exhausted` | When the evaluation window closes: before the cutoff, release a first run (`evaluation-released` row, trigger row deleted, `EVALUATION_RELEASED`, status `released`); for a rerun, publish `VALIDATION_EXHAUSTED` and set `FAILED_FINAL` (`exhausted`); at or after the cutoff, publish `SENSOR_DEADLINE_EXPIRED` and set `FAILED_FINAL` (`cutoff`) |
+| `infra-failure` | After a failed `evaluate`, `validation-exhausted` or `check-job` step: publish `INFRA_FAILURE` and set a `RUNNING` trigger row `FAILED_FINAL`. A missing or finished row, or one a later execution holds because this one released its lock, is left alone |
 | `job-poll-exhausted` | Write a `timeout` joblog row for the run when the job poll window expires |
 | `complete-trigger` | On success set the trigger to `COMPLETED`. On fail/timeout start the next attempt (`status: retrying`) while `maxRetries` lasts, else set `FAILED_FINAL` and publish `RETRY_EXHAUSTED` (`PIPELINE_EXCLUDED` for an excluded date, `INFRA_FAILURE` when the next execution cannot start) |
 
@@ -180,6 +181,9 @@ InitEvalLoop → Evaluate → IsReady
       → (window remaining) Evaluate (loop)
       → (window exhausted) ValidationExhausted (release, end or cutoff) → Done
   → (cutoff) ValidationExhausted → Done
+
+Evaluate, ValidationExhausted or CheckJob fails after its retries
+  → RecordInfraFailure → InfraFailure
 ```
 
 ### Evaluation Loop (7 states)
@@ -215,11 +219,15 @@ InitEvalLoop → Evaluate → IsReady
 3. **CheckSLAForCompleteTriggerFailure**: if SLA was configured, go to CancelSLAOnCompleteTriggerFailure; otherwise CompleteTriggerFailed
 4. **CancelSLAOnCompleteTriggerFailure**: best-effort SLA cancellation, then CompleteTriggerFailed
 
+### Infrastructure Failures (1 state)
+
+1. **RecordInfraFailure**: after Evaluate, ValidationExhausted or CheckJob fails, invoke orchestrator with `mode=infra-failure` (publishes `INFRA_FAILURE` and sets the trigger row `FAILED_FINAL`; a `RERUN_REQUEST` runs the date again), then go to InfraFailure. It skips the SLA cleanup: sla-monitor suppresses the unfired SLA schedules because the run is finished. If it fails itself, the row stays `RUNNING` and the watchdog closes it with `SFN_TIMEOUT` once its stale deadline passes
+
 ### Terminal States (4 states)
 
 1. **InfraFailure** — Fail state for unrecoverable infrastructure errors
 2. **FailValidationExhausted**: Fail state when Trigger returned no result
-3. **CompleteTriggerFailed**: Fail state when CompleteTrigger could not set a terminal status, leaving the trigger row `RUNNING`
+3. **CompleteTriggerFailed**: Fail state when CompleteTrigger failed after its retries; the trigger row may still be `RUNNING`
 4. **Done**: Succeed state
 
 ### Error Handling
@@ -229,7 +237,7 @@ Every Task state includes Retry and Catch blocks:
 - **Throttle Retry**: `IntervalSeconds: 2`, `MaxAttempts: 7`, `BackoffRate: 2`, `MaxDelaySeconds: 60` (waits of 2, 4, 8, 16, 32, 60 and 60 seconds) for `Lambda.TooManyRequestsException`, first on every Task state and counted apart from the retries below, so a throttled orchestrator call on Trigger uses none of `trigger_max_attempts`. Its 182 seconds outlast the orchestrator's 120-second timeout. The delays are not randomised, since random ones could total less than that timeout, so executions throttled at the same moment retry together
 - **Default Retry**: `IntervalSeconds: 2`, `MaxAttempts: 3`, `BackoffRate: 2` for Lambda service errors
 - **Trigger Retry**: `IntervalSeconds: 30`, `MaxAttempts: trigger_max_attempts` (default 3), `BackoffRate: 2`: failures to start the job (e.g., Glue concurrency limits, a `lambda` job that could not be invoked) get a longer retry budget. `MaxAttempts` counts retries, so the default allows four attempts. A job that started and then failed is not retried here: CompleteTrigger applies `job.maxRetries`
-- **Catch**: unrecoverable errors route to `InfraFailure` (Fail state). Trigger exhaustion routes to `CheckCancelSLA` for graceful SLA cleanup before termination.
+- **Catch**: unrecoverable errors in Evaluate, ValidationExhausted and CheckJob route to `RecordInfraFailure`, then `InfraFailure` (Fail state). Trigger exhaustion routes to `CheckCancelSLA` for graceful SLA cleanup before termination.
 
 ### ARN Substitution
 

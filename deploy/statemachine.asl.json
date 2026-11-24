@@ -46,7 +46,7 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.errorInfo",
-          "Next": "InfraFailure"
+          "Next": "RecordInfraFailure"
         }
       ]
     },
@@ -129,7 +129,7 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.errorInfo",
-          "Next": "InfraFailure"
+          "Next": "RecordInfraFailure"
         }
       ]
     },
@@ -280,7 +280,7 @@
         {
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.errorInfo",
-          "Next": "InfraFailure"
+          "Next": "RecordInfraFailure"
         }
       ]
     },
@@ -494,7 +494,7 @@
     "CompleteTriggerFailed": {
       "Type": "Fail",
       "Error": "CompleteTriggerFailed",
-      "Cause": "Failed to set trigger to terminal status after retries"
+      "Cause": "CompleteTrigger failed after retries; the trigger row may still be RUNNING"
     },
     "CheckCancelSLA": {
       "Type": "Choice",
@@ -549,6 +549,47 @@
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.errorInfo",
           "Next": "Done"
+        }
+      ]
+    },
+    "RecordInfraFailure": {
+      "Type": "Task",
+      "Comment": "Publish INFRA_FAILURE and set a RUNNING trigger row FAILED_FINAL, unless this execution released its lock and a later one holds the row; the execution fails either way",
+      "Resource": "${orchestrator_arn}",
+      "Parameters": {
+        "mode": "infra-failure",
+        "pipelineId.$": "$.pipelineId",
+        "scheduleId.$": "$.scheduleId",
+        "date.$": "$.date",
+        "errorInfo.$": "$.errorInfo",
+        "executionStartedAt.$": "$$.Execution.StartTime"
+      },
+      "ResultPath": "$.infraFailureResult",
+      "Next": "InfraFailure",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 7,
+          "BackoffRate": 2,
+          "MaxDelaySeconds": 60
+        },
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.recordErrorInfo",
+          "Next": "InfraFailure"
         }
       ]
     },
