@@ -17,22 +17,23 @@ import (
 )
 
 // TestRunFinished covers the rule the SLA paths share: a trigger row's status
-// decides, and the job log decides only when there is no trigger row. During
-// a retry the row is RUNNING while the newest job row is the previous
-// attempt's fail, and the run is not finished.
+// decides, whatever the job log says (the newest job row of a RUNNING date is
+// often an earlier run's), and the job log decides only when there is no
+// trigger row.
 func TestRunFinished(t *testing.T) {
 	const date = "2026-03-01"
 	tests := []struct {
 		name    string
 		trigger string // "" means no trigger row
 		jobRow  string // "" means no job rows
+		newer   string // a job row newer than jobRow
 		want    bool
 	}{
 		{name: "RunningWithPreviousAttemptFail", trigger: types.TriggerStatusRunning, jobRow: types.JobEventFail, want: false},
 		{name: "RunningWithPreviousAttemptTimeout", trigger: types.TriggerStatusRunning, jobRow: types.JobEventTimeout, want: false},
-		{name: "RunningWithSuccess", trigger: types.TriggerStatusRunning, jobRow: types.JobEventSuccess, want: true},
-		{name: "RunningWithValidationExhausted", trigger: types.TriggerStatusRunning, jobRow: types.JobEventValidationExhausted, want: true},
-		{name: "RunningWithInfraTriggerExhausted", trigger: types.TriggerStatusRunning, jobRow: types.JobEventInfraTriggerExhausted, want: true},
+		{name: "RunningWithSuccess", trigger: types.TriggerStatusRunning, jobRow: types.JobEventSuccess, want: false},
+		{name: "RunningWithValidationExhausted", trigger: types.TriggerStatusRunning, jobRow: types.JobEventValidationExhausted, want: false},
+		{name: "RunningWithInfraTriggerExhausted", trigger: types.TriggerStatusRunning, jobRow: types.JobEventInfraTriggerExhausted, want: false},
 		{name: "RunningWithNonTerminalRow", trigger: types.TriggerStatusRunning, jobRow: types.JobEventInfraTriggerFailure, want: false},
 		{name: "RunningNoRows", trigger: types.TriggerStatusRunning, want: false},
 		{name: "Completed", trigger: types.TriggerStatusCompleted, want: true},
@@ -41,6 +42,7 @@ func TestRunFinished(t *testing.T) {
 		{name: "NoTriggerNoRows", want: false},
 		{name: "NoTriggerEvaluationReleased", jobRow: types.JobEventEvaluationReleased, want: false},
 		{name: "NoTriggerSuccess", jobRow: types.JobEventSuccess, want: true},
+		{name: "NoTriggerSuccessThenRerunRejected", jobRow: types.JobEventSuccess, newer: types.JobEventRerunRejected, want: true},
 		{name: "NoTriggerFail", jobRow: types.JobEventFail, want: true},
 		{name: "NoTriggerTimeout", jobRow: types.JobEventTimeout, want: true},
 		{name: "NoTriggerValidationExhausted", jobRow: types.JobEventValidationExhausted, want: true},
@@ -51,11 +53,14 @@ func TestRunFinished(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake, mem := storetest.NewMem()
-			if tt.jobRow != "" {
+			for i, event := range []string{tt.jobRow, tt.newer} {
+				if event == "" {
+					continue
+				}
 				mem.Put("joblog", map[string]ddbtypes.AttributeValue{
 					"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
-					"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("s", date, "1772366400000")},
-					"event": &ddbtypes.AttributeValueMemberS{Value: tt.jobRow},
+					"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("s", date, fmt.Sprintf("%d", 1772366400000+i))},
+					"event": &ddbtypes.AttributeValueMemberS{Value: event},
 				})
 			}
 			var tr *types.ControlRecord
@@ -76,8 +81,9 @@ func TestRunFinished(t *testing.T) {
 	}
 }
 
-// TestEvaluationReleased: only a newest evaluation-released job row means the
-// date's evaluation was released; a failed lookup is not a release.
+// TestEvaluationReleased: only a newest outcome row that is evaluation-released
+// means the date's evaluation was released; a rerun rejected after it does not
+// hide it, and a failed lookup is not a release.
 func TestEvaluationReleased(t *testing.T) {
 	const date = "2026-03-01"
 	tests := []struct {
@@ -88,6 +94,7 @@ func TestEvaluationReleased(t *testing.T) {
 	}{
 		{name: "NoRows", want: false},
 		{name: "LatestReleased", jobRows: []string{types.JobEventInfraTriggerExhausted, types.JobEventEvaluationReleased}, want: true},
+		{name: "ReleasedThenRerunRejected", jobRows: []string{types.JobEventEvaluationReleased, types.JobEventRerunRejected}, want: true},
 		{name: "ReleasedThenSuccess", jobRows: []string{types.JobEventEvaluationReleased, types.JobEventSuccess}, want: false},
 		{name: "LookupFails", jobRows: []string{types.JobEventEvaluationReleased}, failQ: true, want: false},
 	}

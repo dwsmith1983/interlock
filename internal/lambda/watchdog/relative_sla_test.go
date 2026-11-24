@@ -27,6 +27,7 @@ func TestRelativeSLA(t *testing.T) {
 		name        string
 		expected    string // sla.expectedDuration
 		trigger     string
+		jobRow      string // event of a job row for slaTestDate
 		noArrival   bool
 		arrivedAt   string // "" means 2026-03-10T10:00:00Z
 		dryRun      bool
@@ -51,6 +52,8 @@ func TestRelativeSLA(t *testing.T) {
 		{name: "expectedDuration 1h", expected: "1h", now: at(11, 0, 0), warningAt: "2026-03-10T11:00:00Z",
 			wantEvents: []string{string(types.EventRelativeSLAWarning)}, wantMarkers: []string{warnKey}},
 		{name: "finished run", expected: "30m", trigger: types.TriggerStatusCompleted, now: at(11, 30, 0)},
+		{name: "rerun of an exhausted date", expected: "30m", trigger: types.TriggerStatusRunning, jobRow: types.JobEventInfraTriggerExhausted,
+			now: at(12, 0, 0), wantEvents: []string{string(types.EventRelativeSLABreach)}, wantMarkers: []string{breachKey}},
 		{name: "warning publish fails", expected: "30m", failPublish: true, now: at(11, 30, 0)},
 		{name: "breach publish fails", expected: "30m", markers: []string{warnKey}, failPublish: true, now: at(12, 0, 0),
 			wantMarkers: []string{warnKey}},
@@ -63,7 +66,7 @@ func TestRelativeSLA(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, mem, rec := slaDeps(t, tt.trigger, "", func(c *types.PipelineConfig) {
+			d, mem, rec := slaDeps(t, tt.trigger, tt.jobRow, func(c *types.PipelineConfig) {
 				c.SLA = &types.SLAConfig{MaxDuration: "2h", ExpectedDuration: tt.expected}
 				if tt.dryRun {
 					c.DryRun, c.Job.Type, c.Job.Config = true, types.TriggerHTTP, httpJobConfig

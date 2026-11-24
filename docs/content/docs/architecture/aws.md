@@ -124,7 +124,7 @@ Publishes the SLA alerts. The watchdog creates the one-time EventBridge Schedule
 
 | When | Action |
 |---|---|
-| A Scheduler entry fires | Publishes `SLA_WARNING` or `SLA_BREACH`, unless the run has finished. Entries auto-delete after firing. |
+| A Scheduler entry fires | Publishes `SLA_WARNING` or `SLA_BREACH`, unless the run has finished (the trigger row is `COMPLETED` or `FAILED_FINAL`; without a trigger row, the date's newest job result decides). Entries auto-delete after firing. |
 | The run ends without starting a retry (state machine) | Cancels unfired Scheduler entries. Publishes `SLA_MET` if the run completed before the breach time, and `SLA_BREACH` once the breach time has passed. |
 
 

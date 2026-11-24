@@ -17,10 +17,10 @@ import (
 )
 
 // TestSLAFireAlert_RetryKeepsAlerts pins that a retry does not silence the
-// SLA: while CompleteTrigger's retry runs, the trigger row stays RUNNING and
-// the newest job row is the previous attempt's fail, and the warning and
-// breach still publish. A finished trigger row still suppresses them, and a
-// warning due at or after the breach time is dropped.
+// SLA: while the trigger row is RUNNING the warning and breach publish,
+// whatever the newest job row is (a retry's is the previous attempt's fail). A
+// finished trigger row suppresses them, as does a finished job row when there
+// is no trigger row, and a warning due at or after the breach time is dropped.
 func TestSLAFireAlert_RetryKeepsAlerts(t *testing.T) {
 	const date = "2026-03-10"
 	now := time.Date(2026, 3, 11, 9, 30, 0, 0, time.UTC)
@@ -35,8 +35,8 @@ func TestSLAFireAlert_RetryKeepsAlerts(t *testing.T) {
 		{name: "RetryRunningWarning", trigger: types.TriggerStatusRunning, jobRow: types.JobEventFail, alertType: "SLA_WARNING", wantPublish: 1},
 		{name: "RetryRunningBreach", trigger: types.TriggerStatusRunning, jobRow: types.JobEventFail, alertType: "SLA_BREACH", wantPublish: 1},
 		{name: "RetryAfterTimeoutBreach", trigger: types.TriggerStatusRunning, jobRow: types.JobEventTimeout, alertType: "SLA_BREACH", wantPublish: 1},
-		{name: "RunningSuccessSuppresses", trigger: types.TriggerStatusRunning, jobRow: types.JobEventSuccess, alertType: "SLA_BREACH", wantPublish: 0},
-		{name: "RunningValidationExhaustedSuppresses", trigger: types.TriggerStatusRunning, jobRow: types.JobEventValidationExhausted, alertType: "SLA_BREACH", wantPublish: 0},
+		{name: "RunningSuccessPublishes", trigger: types.TriggerStatusRunning, jobRow: types.JobEventSuccess, alertType: "SLA_BREACH", wantPublish: 1},
+		{name: "RunningValidationExhaustedPublishes", trigger: types.TriggerStatusRunning, jobRow: types.JobEventValidationExhausted, alertType: "SLA_BREACH", wantPublish: 1},
 		{name: "CompletedSuppresses", trigger: types.TriggerStatusCompleted, jobRow: types.JobEventSuccess, alertType: "SLA_BREACH", wantPublish: 0},
 		{name: "FailedFinalSuppresses", trigger: types.TriggerStatusFailedFinal, jobRow: types.JobEventFail, alertType: "SLA_BREACH", wantPublish: 0},
 		{name: "NoTriggerTerminalRowSuppresses", jobRow: types.JobEventInfraTriggerExhausted, alertType: "SLA_BREACH", wantPublish: 0},

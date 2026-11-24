@@ -131,8 +131,8 @@ func slaDeps(t *testing.T, trigger, jobRow string, tweak ...func(*types.Pipeline
 }
 
 // slaSiteCases are the trigger and job rows both SLA checks must agree on:
-// a retry (RUNNING with the previous attempt's fail or timeout) is not
-// finished; RUNNING with any other terminal newest row, COMPLETED and
+// RUNNING is not finished, whatever the newest job row is (a retry's is the
+// previous attempt's, a rerun's can be the exhausted run's); COMPLETED and
 // FAILED_FINAL are; without a trigger row a terminal job row is.
 var slaSiteCases = []struct {
 	name, trigger, jobRow string
@@ -140,9 +140,9 @@ var slaSiteCases = []struct {
 }{
 	{"RetryAfterFail", types.TriggerStatusRunning, types.JobEventFail, true},
 	{"RetryAfterTimeout", types.TriggerStatusRunning, types.JobEventTimeout, true},
-	{"RunningSuccess", types.TriggerStatusRunning, types.JobEventSuccess, false},
-	{"RunningValidationExhausted", types.TriggerStatusRunning, types.JobEventValidationExhausted, false},
-	{"RunningTriggerExhausted", types.TriggerStatusRunning, types.JobEventInfraTriggerExhausted, false},
+	{"RunningSuccess", types.TriggerStatusRunning, types.JobEventSuccess, true},
+	{"RunningValidationExhausted", types.TriggerStatusRunning, types.JobEventValidationExhausted, true},
+	{"RerunOfExhaustedDate", types.TriggerStatusRunning, types.JobEventInfraTriggerExhausted, true},
 	{"Completed", types.TriggerStatusCompleted, types.JobEventSuccess, false},
 	{"FailedFinal", types.TriggerStatusFailedFinal, types.JobEventFail, false},
 	{"NoTriggerTerminalRow", "", types.JobEventInfraTriggerExhausted, false},
