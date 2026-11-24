@@ -213,6 +213,9 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		}
 	}
 
+	_, _, evalErrs := EvaluationTiming(cfg.Schedule.Evaluation)
+	errs = append(errs, evalErrs...)
+
 	if msg := cutoffBeforeBreach(cfg); msg != "" {
 		errs = append(errs, msg)
 	}
@@ -565,6 +568,56 @@ func validatePostRun(pr *types.PostRunConfig) []string {
 			withDefaultMark(timeout, pr.SensorTimeout), withDefaultMark(window, pr.WatchWindow)))
 	}
 	return errs
+}
+
+// maxEvaluationPasses bounds the evaluation loop. One pass writes 13 Step
+// Functions history events and an execution holds at most 25,000, so 1000
+// passes leave room for the job poll loop.
+const maxEvaluationPasses = 1000
+
+// EvaluationTiming returns schedule.evaluation's window and interval and the
+// errors in them. An unset or rejected value comes back as its default; the
+// interval is checked against the window only when both are usable. A pair
+// that fails one of those checks (an interval over the window, or more than
+// 1000 evaluations) is returned as written.
+func EvaluationTiming(ev types.EvaluationWindow) (window, interval time.Duration, errs []string) {
+	window, windowErr := evaluationDuration("window", ev.Window, types.DefaultEvaluationWindow)
+	interval, intervalErr := evaluationDuration("interval", ev.Interval, types.DefaultEvaluationInterval)
+	for _, e := range []string{windowErr, intervalErr} {
+		if e != "" {
+			errs = append(errs, e)
+		}
+	}
+	if len(errs) > 0 {
+		return window, interval, errs
+	}
+	switch {
+	case interval > window:
+		errs = append(errs, fmt.Sprintf("schedule.evaluation.interval %s exceeds schedule.evaluation.window %s",
+			withDefaultMark(interval, ev.Interval), withDefaultMark(window, ev.Window)))
+	// The loop evaluates ceil(window/interval) times; (window-1)/interval is
+	// that count minus one, and dividing cannot overflow.
+	case (window-1)/interval >= maxEvaluationPasses:
+		errs = append(errs, fmt.Sprintf("schedule.evaluation.window %s allows more than %d evaluations at interval %s",
+			withDefaultMark(window, ev.Window), maxEvaluationPasses, withDefaultMark(interval, ev.Interval)))
+	}
+	return window, interval, errs
+}
+
+// evaluationDuration parses one schedule.evaluation setting, which must be
+// whole seconds of at least 1s. Unset or rejected, it is def.
+func evaluationDuration(field, set string, def time.Duration) (value time.Duration, errMsg string) {
+	if set == "" {
+		return def, ""
+	}
+	d, err := time.ParseDuration(set)
+	switch {
+	case err != nil:
+		return def, fmt.Sprintf("schedule.evaluation.%s invalid Go duration %q", field, set)
+	case d < time.Second || d%time.Second != 0:
+		return def, fmt.Sprintf("schedule.evaluation.%s %q must be whole seconds, at least 1s", field, set)
+	}
+	return d, ""
 }
 
 // withDefaultMark formats d, adding " (default)" when the setting was unset.

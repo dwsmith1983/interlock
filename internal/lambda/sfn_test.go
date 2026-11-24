@@ -178,6 +178,21 @@ func TestBuildSFNConfig(t *testing.T) {
 			assert.Equal(t, 120, sc.EvaluationIntervalSeconds)
 			assert.Equal(t, 1800, sc.EvaluationWindowSeconds)
 		}},
+		{"1h/5m", func(c *types.PipelineConfig) {
+			c.Schedule.Evaluation = types.EvaluationWindow{Window: "1h", Interval: "5m"}
+		}, func(t *testing.T, sc lambda.SFNConfig) {
+			assert.Equal(t, 3600, sc.EvaluationWindowSeconds)
+			assert.Equal(t, 300, sc.EvaluationIntervalSeconds)
+		}},
+		{"UnsetTimings", func(c *types.PipelineConfig) { c.Schedule.Evaluation = types.EvaluationWindow{} }, func(t *testing.T, sc lambda.SFNConfig) {
+			assert.Equal(t, 3600, sc.EvaluationWindowSeconds)
+			assert.Equal(t, 300, sc.EvaluationIntervalSeconds)
+		}},
+		// An unvalidated sub-second interval must not reach the state machine
+		// as 0, which would evaluate in a tight loop.
+		{"SubSecondInterval", func(c *types.PipelineConfig) { c.Schedule.Evaluation.Interval = "500ms" }, func(t *testing.T, sc lambda.SFNConfig) {
+			assert.Equal(t, 300, sc.EvaluationIntervalSeconds)
+		}},
 		{"PollOverride", func(c *types.PipelineConfig) { c.Job.JobPollWindowSeconds = poll(7200) }, func(t *testing.T, sc lambda.SFNConfig) {
 			assert.Equal(t, 7200, sc.JobPollWindowSeconds)
 		}},

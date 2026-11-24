@@ -609,6 +609,41 @@ func TestValidate_PostRunWatchWindow(t *testing.T) {
 	}
 }
 
+// TestValidate_Evaluation: schedule.evaluation.window and interval are whole
+// seconds of at least 1s, the interval fits in the window, and the window allows
+// at most 1000 evaluations.
+func TestValidate_Evaluation(t *testing.T) {
+	tests := []struct {
+		name, window, interval string
+		wantErrs               []string
+	}{
+		{"both unset", "", "", nil},
+		{"1h/5m", "1h", "5m", nil},
+		{"60s/5s", "60s", "5s", nil},
+		{"10s/5s", "10s", "5s", nil},
+		{"1000s/1s", "1000s", "1s", nil},
+		{"window not a duration", "1 hour", "", []string{`schedule.evaluation.window invalid Go duration "1 hour"`}},
+		{"interval 500ms", "", "500ms", []string{`schedule.evaluation.interval "500ms" must be whole seconds, at least 1s`}},
+		{"interval 1500ms", "", "1500ms", []string{`schedule.evaluation.interval "1500ms" must be whole seconds, at least 1s`}},
+		{"interval 0s", "", "0s", []string{`schedule.evaluation.interval "0s" must be whole seconds, at least 1s`}},
+		{"window -1h", "-1h", "", []string{`schedule.evaluation.window "-1h" must be whole seconds, at least 1s`}},
+		{"window 2m, default interval", "2m", "", []string{"schedule.evaluation.interval 5m0s (default) exceeds schedule.evaluation.window 2m0s"}},
+		{"6h/10s", "6h", "10s", []string{"schedule.evaluation.window 6h0m0s allows more than 1000 evaluations at interval 10s"}},
+		{"1001s/1s", "1001s", "1s", []string{"schedule.evaluation.window 16m41s allows more than 1000 evaluations at interval 1s"}},
+		{"2001s/2s", "2001s", "2s", []string{"schedule.evaluation.window 33m21s allows more than 1000 evaluations at interval 2s"}},
+		{"default window, 1s", "", "1s", []string{"schedule.evaluation.window 1h0m0s (default) allows more than 1000 evaluations at interval 1s"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "orders"},
+				Schedule: types.ScheduleConfig{Evaluation: types.EvaluationWindow{Window: tt.window, Interval: tt.interval}},
+			}
+			assert.Equal(t, tt.wantErrs, validate(&cfg))
+		})
+	}
+}
+
 // TestValidate_RelativeSLAExpectedDuration: with sla.maxDuration, the warning
 // offset sla.expectedDuration must be a positive duration below it.
 func TestValidate_RelativeSLAExpectedDuration(t *testing.T) {
