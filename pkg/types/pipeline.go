@@ -128,6 +128,14 @@ func IntOrDefault(p *int, def int) int {
 	return def
 }
 
+// DefaultEvaluationWindow is how long a run keeps evaluating its validation
+// rules when schedule.evaluation.window is unset.
+const DefaultEvaluationWindow = time.Hour
+
+// DefaultEvaluationInterval is the time between evaluations when
+// schedule.evaluation.interval is unset.
+const DefaultEvaluationInterval = 5 * time.Minute
+
 // DefaultPostRunWatchWindow is how long a completed date is watched when
 // postRun.watchWindow is unset.
 const DefaultPostRunWatchWindow = 4 * time.Hour

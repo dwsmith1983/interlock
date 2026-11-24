@@ -2,14 +2,8 @@ package lambda
 
 import "time"
 
-// Default timing constants for Step Function evaluation and job polling.
+// Default timing constants for Step Function job polling.
 const (
-	// DefaultEvalIntervalSec is the default evaluation loop interval (5 minutes).
-	DefaultEvalIntervalSec = 300
-
-	// DefaultEvalWindowSec is the default evaluation window (1 hour).
-	DefaultEvalWindowSec = 3600
-
 	// DefaultJobCheckIntervalSec is the default job status check interval (1 minute).
 	DefaultJobCheckIntervalSec = 60
 

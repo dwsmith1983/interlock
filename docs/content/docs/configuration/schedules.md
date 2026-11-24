@@ -119,6 +119,8 @@ schedule:
 | `window` | duration | `1h` | Maximum time to keep evaluating after activation |
 | `interval` | duration | `5m` | Time between evaluation attempts within the window |
 
+Both are Go durations in whole seconds of at least `1s` (`90s` and `2m` are accepted, `500ms` and `1500ms` are not). An unset value counts as its default. The interval may not exceed the window, and the window may allow at most 1000 evaluations (`6h` needs an interval of at least `22s`, and `2001s` with `2s` is rejected), since one execution's Step Functions history holds at most 25,000 events. A config that breaks a rule is rejected as `CONFIG_INVALID`.
+
 If the validation rules are not satisfied within the evaluation window, the execution ends without launching the job: before the date's cutoff a first run is released (`EVALUATION_RELEASED`) and can start again, at or after it the date closes with `SENSOR_DEADLINE_EXPIRED`, and a rerun ends with `VALIDATION_EXHAUSTED` (see [Cutoff](#cutoff)).
 
 ### Event-Driven Schedules

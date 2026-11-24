@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // JobCheckIntervalEnv names the env var that overrides
@@ -59,18 +60,15 @@ type SFNSLA struct {
 
 // BuildSFNConfig converts a PipelineConfig into the config block for the SFN input.
 func BuildSFNConfig(cfg *types.PipelineConfig) SFNConfig {
+	// A validated config has no errors here. In an unvalidated one, a value
+	// that is not whole seconds of at least 1s gets its default; a window and
+	// interval that only fail the checks between them are used as written.
+	window, interval, _ := validation.EvaluationTiming(cfg.Schedule.Evaluation)
 	sc := SFNConfig{
-		EvaluationIntervalSeconds: DefaultEvalIntervalSec,
-		EvaluationWindowSeconds:   DefaultEvalWindowSec,
+		EvaluationIntervalSeconds: int(interval / time.Second),
+		EvaluationWindowSeconds:   int(window / time.Second),
 		JobCheckIntervalSeconds:   resolveJobCheckIntervalSec(),
 		JobPollWindowSeconds:      DefaultJobPollWindowSec,
-	}
-
-	if d, err := time.ParseDuration(cfg.Schedule.Evaluation.Interval); err == nil && d > 0 {
-		sc.EvaluationIntervalSeconds = int(d.Seconds())
-	}
-	if d, err := time.ParseDuration(cfg.Schedule.Evaluation.Window); err == nil && d > 0 {
-		sc.EvaluationWindowSeconds = int(d.Seconds())
 	}
 
 	if cfg.Job.JobPollWindowSeconds != nil && *cfg.Job.JobPollWindowSeconds > 0 {
