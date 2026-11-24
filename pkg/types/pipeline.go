@@ -90,7 +90,7 @@ type ValidationConfig struct {
 
 // ValidationRule is a single declarative check against a sensor key.
 type ValidationRule struct {
-	Key   string      `yaml:"key" json:"key"`     // e.g. "SENSOR#silver-orders-complete"
+	Key   string      `yaml:"key" json:"key"`     // e.g. "silver-orders-complete", matching SENSOR#silver-orders-complete
 	Check CheckOp     `yaml:"check" json:"check"` // equals, gte, lte, gt, lt, exists, age_lt
 	Field string      `yaml:"field,omitempty" json:"field,omitempty"`
 	Value interface{} `yaml:"value,omitempty" json:"value,omitempty"`

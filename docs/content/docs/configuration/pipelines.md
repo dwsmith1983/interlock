@@ -110,29 +110,35 @@ The `validation` block replaces the old archetype/trait system with a declarativ
 
 | Mode | Description |
 |---|---|
-| `ALL` | All rules must pass (logical AND) |
-| `ANY` | At least one rule must pass (logical OR) |
+| `ALL` | All rules must pass (logical AND). The default when `trigger` is empty. With no rules, the job starts as soon as the trigger condition is met |
+| `ANY` | At least one rule must pass (logical OR). Needs at least one rule |
+
+The mode is read without regard to case (`any` is `ANY`). Any other value, or `ANY` with no rules, is rejected as `CONFIG_INVALID`.
 
 ### Rule Fields
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `key` | string | yes | Sensor key to evaluate (matches the sensor record's SK suffix) |
-| `check` | string | yes | Comparison operator (see [Supported Checks](#supported-checks)) |
+| `key` | string | yes | Sensor key to evaluate (matches the sensor record's SK suffix, or a per-period `<key>#<period>` row). It may not contain `#`, and may not be one of the names Interlock uses for its own sensor rows: `postrun-baseline`, `postrun-check`, `irregular-missed-check`, `schedule-missed-check`, `first-sensor-arrival`, `relative-sla-warning-check`, `relative-sla-breach-check` |
+| `check` | string | yes | Comparison operator, one of those in [Supported Checks](#supported-checks) |
 | `field` | string | conditional | Field within the sensor data to compare (required for all checks except `exists`) |
-| `value` | any | conditional | Expected value to compare against (required for all checks except `exists`) |
+| `value` | any | conditional | Expected value to compare against (required for all checks except `exists`; see [Supported Checks](#supported-checks) for what each check takes) |
+
+A rule that can never pass (an unknown `check` such as `eq`, a missing `key` or `field`, or a `value` its check cannot use) is rejected as `CONFIG_INVALID` when the config loads. The same applies to `schedule.trigger` and `postRun.rules`.
 
 ### Supported Checks
 
 | Check | Description | Example |
 |---|---|---|
-| `exists` | Sensor key exists (any value) | `check: exists` |
-| `equals` | Field equals the expected value | `check: equals`, `field: status`, `value: ready` |
+| `exists` | Sensor key exists (any value); `field` and `value` are ignored | `check: exists` |
+| `equals` | Field equals the expected value, compared as text; `value` is required | `check: equals`, `field: status`, `value: ready` |
 | `gt` | Field is greater than the value (numeric) | `check: gt`, `field: count`, `value: 0` |
 | `gte` | Field is greater than or equal to the value (numeric) | `check: gte`, `field: count`, `value: 1000` |
 | `lt` | Field is less than the value (numeric) | `check: lt`, `field: errorRate`, `value: 5` |
 | `lte` | Field is less than or equal to the value (numeric) | `check: lte`, `field: latency`, `value: 100` |
 | `age_lt` | Field timestamp ([forms](#pushing-sensor-data)) is newer than the duration | `check: age_lt`, `field: updatedAt`, `value: 2h` |
+
+For `gt`, `gte`, `lt` and `lte`, `value` must be a finite number or a string holding one (`1000` or `"1000"`). For `age_lt` it must be a positive Go duration such as `2h` or `90m`: `1d` and a bare number of seconds are not durations.
 
 ### Example: Event-Driven Pipeline
 
@@ -258,7 +264,7 @@ postRun:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `rules` | list | -- | Validation rules using the same syntax as pre-trigger rules. Uses `ALL` mode. A sensor belongs to a rule when its key is the rule's `key` or `<key>#<period>`. Required for drift and the post-run checks; a `postRun` block with only `watchWindow` is valid. |
+| `rules` | list | -- | Validation rules using the same syntax and [checks](#rule-fields) as pre-trigger rules; a rule that can never pass is rejected as `CONFIG_INVALID`. Uses `ALL` mode. A sensor belongs to a rule when its key is the rule's `key` or `<key>#<period>`. Required for drift and the post-run checks; a `postRun` block with only `watchWindow` is valid. |
 | `driftThreshold` | float* | `0` | Minimum change in `driftField` to trigger a drift rerun. Set to `0` for any change. |
 | `driftField` | string | `"sensor_count"` | Sensor field compared with the baseline for drift. |
 | `sensorTimeout` | string | `"2h"` | Grace period after job completion before the watchdog alerts on missing sensors. It must be a positive Go duration and, with `rules`, at most the post-run watch window (`postRun.watchWindow`, default `"4h"`). |
