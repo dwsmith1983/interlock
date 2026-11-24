@@ -355,6 +355,9 @@ func dayOffsetValid(off int, clock string) bool {
 var triggerConfigChecks = map[types.TriggerType]func(map[string]interface{}) []string{
 	types.TriggerHTTP: decodeTrigger(func(c *types.HTTPTriggerConfig) []string {
 		errs := required("url", c.URL)
+		if msg := requestURLError(c.URL); msg != "" {
+			errs = append(errs, msg)
+		}
 		if c.Method != "" && !slices.Contains(httpMethods, c.Method) {
 			errs = append(errs, fmt.Sprintf("job.config.method %q must be empty or one of %s", c.Method, strings.Join(httpMethods, ", ")))
 		}
@@ -494,13 +497,14 @@ func required(pairs ...string) []string {
 }
 
 // baseURLError says what is wrong with an airflow or databricks base URL, or
-// returns "" for an http or https URL with a host and no query, fragment or
-// user info. The trigger appends the API path to the value as written, so a
-// query or fragment would swallow the path, and it stores the value with the
-// run, so user info would be kept in the clear. A value containing ? or # is
-// reported first, then one that does not parse or has another scheme or no
-// host, then user info. An empty value is left to required. The value is
-// never quoted: user info is a credential and a query may hold a token.
+// returns "" for an https URL with a host and no query, fragment or user info.
+// The trigger appends the API path to the value as written, so a query or
+// fragment would swallow the path, and it stores the value with the run, so
+// user info would be kept in the clear. Plain http would send the bearer token
+// in the headers in clear text. A value containing ? or # is reported first,
+// then one that does not parse or has another scheme or no host, then user
+// info. An empty value is left to required. The value is never quoted: user
+// info is a credential and a query may hold a token.
 func baseURLError(field, raw string) string {
 	const notBase = " must not contain a query, a fragment or user info"
 	if raw == "" {
@@ -510,11 +514,31 @@ func baseURLError(field, raw string) string {
 		return "job.config." + field + notBase
 	}
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return "job.config." + field + " must be an http or https URL with a host"
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return "job.config." + field + " must be an https URL with a host"
 	}
 	if u.User != nil {
 		return "job.config." + field + notBase
+	}
+	return ""
+}
+
+// requestURLError says what is wrong with an http trigger url, or returns ""
+// for an http or https URL with a host and no user info. The query and
+// fragment are sent as written. User info is rejected because a failed
+// request would carry it into the job log and the execution history; send
+// credentials in headers. An empty value is left to required, and the value
+// is never quoted.
+func requestURLError(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return "job.config.url must be an http or https URL with a host"
+	}
+	if u.User != nil {
+		return "job.config.url must not contain user info"
 	}
 	return ""
 }

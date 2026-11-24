@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -197,7 +198,8 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 
 	req, err := http.NewRequestWithContext(ctx, method, cfg.URL, bodyReader)
 	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+		// The cause quotes the URL, user info and query included.
+		return errors.New("creating request: invalid url")
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -230,7 +232,7 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 		var doErr error
 		resp, doErr = httpClient.Do(req)
 		if doErr != nil {
-			return doErr // network errors are retried
+			return withoutURLSecrets(doErr) // network errors are retried
 		}
 
 		if resp.StatusCode >= 500 {
@@ -273,6 +275,32 @@ func ExecuteHTTP(ctx context.Context, cfg *types.HTTPTriggerConfig) error {
 	}
 
 	return nil
+}
+
+// withoutURLSecrets returns a *url.Error from http.Client.Do with its URL
+// stripped (see stripURL), keeping Op and Err so the text still reads as the
+// same failure. Go masks only the password, and the URL is the request's or,
+// for a redirect, the Location the server sent. Any other error is returned
+// as is.
+func withoutURLSecrets(err error) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	return &url.Error{Op: urlErr.Op, URL: stripURL(urlErr.URL), Err: urlErr.Err}
+}
+
+// stripURL returns raw without its user info, query and fragment, which may
+// hold credentials, or "<url>" when raw does not parse or is opaque (no //
+// after the scheme, as in https:user:pw@host/x), since user info there cannot
+// be told apart from the rest.
+func stripURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque != "" {
+		return "<url>"
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return u.String()
 }
 
 // safeEnvLookup only resolves environment variables with the INTERLOCK_ prefix.
