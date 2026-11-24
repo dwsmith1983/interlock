@@ -226,6 +226,7 @@ InitEvalLoop → Evaluate → IsReady
 
 Every Task state includes Retry and Catch blocks:
 
+- **Throttle Retry**: `IntervalSeconds: 30`, `MaxAttempts: 6`, `BackoffRate: 1` for `Lambda.TooManyRequestsException`, first on every Task state and counted apart from the retries below, so a throttled orchestrator call on Trigger uses none of `trigger_max_attempts`. Its 180 seconds outlast the orchestrator's 120-second timeout
 - **Default Retry**: `IntervalSeconds: 2`, `MaxAttempts: 3`, `BackoffRate: 2` for Lambda service errors
 - **Trigger Retry**: `IntervalSeconds: 30`, `MaxAttempts: trigger_max_attempts` (default 3), `BackoffRate: 2`: failures to start the job (e.g., Glue concurrency limits, a `lambda` job that could not be invoked) get a longer retry budget. `MaxAttempts` counts retries, so the default allows four attempts. A job that started and then failed is not retried here: CompleteTrigger applies `job.maxRetries`
 - **Catch**: unrecoverable errors route to `InfraFailure` (Fail state). Trigger exhaustion routes to `CheckCancelSLA` for graceful SLA cleanup before termination.
