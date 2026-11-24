@@ -43,6 +43,8 @@ type retryEntry struct {
 	IntervalSeconds int      `json:"IntervalSeconds"`
 	MaxAttempts     int      `json:"MaxAttempts"`
 	BackoffRate     float64  `json:"BackoffRate"`
+	MaxDelaySeconds int      `json:"MaxDelaySeconds"`
+	JitterStrategy  string   `json:"JitterStrategy"`
 }
 
 type taskState struct {

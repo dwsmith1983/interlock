@@ -100,9 +100,10 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
     "Retry": [
       {
         "ErrorEquals": ["Lambda.TooManyRequestsException"],
-        "IntervalSeconds": 30,
-        "MaxAttempts": 6,
-        "BackoffRate": 1
+        "IntervalSeconds": 2,
+        "MaxAttempts": 7,
+        "BackoffRate": 2,
+        "MaxDelaySeconds": 60
       },
       {
         "ErrorEquals": [
@@ -224,9 +225,10 @@ All Task states include Retry and Catch blocks:
   "Retry": [
     {
       "ErrorEquals": ["Lambda.TooManyRequestsException"],
-      "IntervalSeconds": 30,
-      "MaxAttempts": 6,
-      "BackoffRate": 1
+      "IntervalSeconds": 2,
+      "MaxAttempts": 7,
+      "BackoffRate": 2,
+      "MaxDelaySeconds": 60
     },
     {
       "ErrorEquals": [
@@ -251,7 +253,9 @@ All Task states include Retry and Catch blocks:
 
 Step Functions uses the first retrier that matches an error, and each retrier counts its own attempts, starting again on every visit to the state. `States.TaskFailed` matches a throttle too, so the throttle retrier comes first.
 
-The first retrier handles a call refused because the function has no free instance (`Lambda.TooManyRequestsException`): six retries, 30 seconds apart, on every Task state. Those three minutes are longer than the orchestrator's 120-second timeout, so an instance held by another call, such as a synchronous `lambda` job, is free before they run out. A throttle that outlasts them goes to the Catch; the second retrier does not retry it.
+The first retrier handles a call refused because the function has no free instance (`Lambda.TooManyRequestsException`): seven retries, after 2, 4, 8, 16, 32, 60 and 60 seconds, on every Task state. Those 182 seconds are longer than the orchestrator's 120-second timeout, so an instance held by another call, such as a synchronous `lambda` job, is free before they run out. A throttle that outlasts them goes to the Catch; the second retrier does not retry it.
+
+The delays are not randomised (no `JitterStrategy`), so executions throttled at the same moment retry together. A random delay is drawn from zero up to the full one, so the total could fall below the orchestrator's timeout and the retries could run out while the instance is still held.
 
 The evaluation and poll loops count only their own wait intervals, not throttle retries, so a heavily throttled execution can reach `sfn_timeout_seconds` before its windows end. The run's stale deadline (`staleAt`, that timeout plus 30 minutes) still falls after the execution's own timeout.
 

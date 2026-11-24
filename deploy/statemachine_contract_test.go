@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -428,6 +429,21 @@ const (
 	orchestratorTimeoutSeconds = 120
 )
 
+// retryLadderSeconds is the total a retrier waits across all its attempts. Step
+// Functions multiplies the interval by BackoffRate after each attempt and caps
+// each wait at MaxDelaySeconds, when set.
+func retryLadderSeconds(r retryEntry) float64 {
+	total := 0.0
+	for i := range r.MaxAttempts {
+		delay := float64(r.IntervalSeconds) * math.Pow(r.BackoffRate, float64(i))
+		if r.MaxDelaySeconds > 0 {
+			delay = min(delay, float64(r.MaxDelaySeconds))
+		}
+		total += delay
+	}
+	return total
+}
+
 // TestASL_EveryTaskOutlastsThrottling: each Task retries a throttled call for
 // longer than any invocation can hold an instance. Step Functions uses the
 // first retrier that matches, and States.TaskFailed matches a throttle too, so
@@ -445,8 +461,11 @@ func TestASL_EveryTaskOutlastsThrottling(t *testing.T) {
 			require.NotEmpty(t, ts.Retry)
 			first := ts.Retry[0]
 			require.Equal(t, []string{throttleError}, first.ErrorEquals)
-			require.InDelta(t, 1, first.BackoffRate, 0, "the total below assumes a constant interval")
-			require.Greater(t, first.IntervalSeconds*first.MaxAttempts, orchestratorTimeoutSeconds)
+			require.Greater(t, first.BackoffRate, 1.0, "a brief throttle is retried within seconds, a long one less often")
+			// Jitter draws each wait from zero up to its delay, so the total
+			// could fall below the timeout.
+			require.Empty(t, first.JitterStrategy)
+			require.Greater(t, retryLadderSeconds(first), float64(orchestratorTimeoutSeconds))
 			for _, later := range ts.Retry[1:] {
 				require.NotContains(t, later.ErrorEquals, throttleError)
 			}

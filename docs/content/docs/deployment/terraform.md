@@ -150,7 +150,7 @@ lambda_concurrency = {
 
 Set any key to `-1` to use unreserved concurrency (Lambda default).
 
-A synchronous `lambda` job holds one orchestrator instance until its function returns, up to about 100 seconds. Set `orchestrator` above the number of `lambda` jobs that can run at once across all pipelines: while every instance is taken, the state machine's other calls are throttled, and each retries [for three minutes](../../guides/retry-loop-asl/#error-handling) before its step fails.
+A synchronous `lambda` job holds one orchestrator instance until its function returns, up to about 100 seconds. Set `orchestrator` above the number of `lambda` jobs that can run at once across all pipelines: while every instance is taken, the state machine's other calls are throttled, and each retries [for three minutes](../../guides/retry-loop-asl/#error-handling) before its step fails, with delays that are not randomised, so calls throttled at the same moment retry together.
 
 ## Encryption
 
