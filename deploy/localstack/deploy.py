@@ -61,6 +61,10 @@ DIST_DIR = Path(__file__).resolve().parent / "dist"
 STATE_MACHINE_FILE = Path(__file__).resolve().parent.parent / "statemachine.asl.json"
 
 DUMMY_ACCOUNT_ID = "000000000000"
+
+# Step Functions execution timeout, as Terraform's sfn_timeout_seconds default.
+# The Lambdas read it to reject configs whose windows do not fit it.
+SFN_TIMEOUT_SECONDS = "14400"
 LAMBDA_ROLE_NAME = "lambda-role"
 LAMBDA_ROLE_ARN = f"arn:aws:iam::{DUMMY_ACCOUNT_ID}:role/{LAMBDA_ROLE_NAME}"
 SFN_ROLE_NAME = "sfn-role"
@@ -541,7 +545,7 @@ def _lambda_env(handler: str, sfn_arn: str | None, *, e2e: bool = False) -> dict
     }
     if sfn_arn:
         base["STATE_MACHINE_ARN"] = sfn_arn
-    base["SFN_TIMEOUT_SECONDS"] = "3600"
+    base["SFN_TIMEOUT_SECONDS"] = SFN_TIMEOUT_SECONDS
 
     if handler == "orchestrator":
         # Allow HTTP triggers to reach Docker-internal addresses (mock-job-server).
@@ -753,7 +757,7 @@ def _render_state_machine(orch_arn: str, sla_arn: str) -> str:
     replacements = {
         "${orchestrator_arn}": orch_arn,
         "${sla_monitor_arn}": sla_arn,
-        "${sfn_timeout_seconds}": "3600",
+        "${sfn_timeout_seconds}": SFN_TIMEOUT_SECONDS,
         "${trigger_max_attempts}": "3",
     }
     for key, value in replacements.items():

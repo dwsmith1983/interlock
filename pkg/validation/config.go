@@ -604,6 +604,27 @@ func EvaluationTiming(ev types.EvaluationWindow) (window, interval time.Duration
 	return window, interval, errs
 }
 
+// ExecutionFitErrors reports an evaluation window plus job poll window longer
+// than timeout, the Step Functions execution timeout. The sum is a floor: each
+// evaluation and status poll also takes Lambda time, and a failed launch
+// retries. It returns nothing when timeout is not positive (unknown) or the
+// evaluation values have errors, which ValidatePipelineConfig reports.
+func ExecutionFitErrors(cfg *types.PipelineConfig, timeout time.Duration) []string {
+	window, _, errs := EvaluationTiming(cfg.Schedule.Evaluation)
+	if timeout <= 0 || len(errs) > 0 {
+		return nil
+	}
+	poll, pollMark := types.DefaultJobPollWindowSeconds, " (default)"
+	if p := cfg.Job.JobPollWindowSeconds; p != nil && *p > 0 {
+		poll, pollMark = *p, ""
+	}
+	if window+time.Duration(poll)*time.Second <= timeout {
+		return nil
+	}
+	return []string{fmt.Sprintf("schedule.evaluation.window %s plus job.jobPollWindowSeconds %d%s exceeds the Step Functions execution timeout %s (sfn_timeout_seconds)",
+		withDefaultMark(window, cfg.Schedule.Evaluation.Window), poll, pollMark, timeout)}
+}
+
 // evaluationDuration parses one schedule.evaluation setting, which must be
 // whole seconds of at least 1s. Unset or rejected, it is def.
 func evaluationDuration(field, set string, def time.Duration) (value time.Duration, errMsg string) {

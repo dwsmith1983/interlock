@@ -221,7 +221,7 @@ The date is left `RUNNING` when the status restore fails, when the stream-router
 
 | Field | Type | Default | Range | Description |
 |---|---|---|---|---|
-| `jobPollWindowSeconds` | int* | `3600` (1h) | 60--86400 | Maximum time to poll for job completion before timing out |
+| `jobPollWindowSeconds` | int* | `3600` (1h) | 60--86400 | Maximum time to poll for job completion before timing out. Added to `schedule.evaluation.window`, it may not exceed `sfn_timeout_seconds` (default 14400) |
 
 When the poll window elapses without a terminal job status, the orchestrator writes a `timeout` row for the run to the joblog (published as `JOB_FAILED` with error "job poll window exhausted") and handles it like any other timeout: it retries while `maxRetries` lasts, then sets the trigger to `FAILED_FINAL` and publishes `RETRY_EXHAUSTED`. This prevents unbounded polling when external jobs hang.
 

@@ -158,8 +158,8 @@ func TestBuildSFNConfig_JobCheckIntervalEnv(t *testing.T) {
 			if got.EvaluationWindowSeconds != 3600 {
 				t.Errorf("EvaluationWindowSeconds = %d, want 3600", got.EvaluationWindowSeconds)
 			}
-			if got.JobPollWindowSeconds != lambda.DefaultJobPollWindowSec {
-				t.Errorf("JobPollWindowSeconds = %d, want %d", got.JobPollWindowSeconds, lambda.DefaultJobPollWindowSec)
+			if got.JobPollWindowSeconds != types.DefaultJobPollWindowSeconds {
+				t.Errorf("JobPollWindowSeconds = %d, want %d", got.JobPollWindowSeconds, types.DefaultJobPollWindowSeconds)
 			}
 		})
 	}

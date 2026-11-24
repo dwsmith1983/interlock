@@ -68,7 +68,7 @@ func BuildSFNConfig(cfg *types.PipelineConfig) SFNConfig {
 		EvaluationIntervalSeconds: int(interval / time.Second),
 		EvaluationWindowSeconds:   int(window / time.Second),
 		JobCheckIntervalSeconds:   resolveJobCheckIntervalSec(),
-		JobPollWindowSeconds:      DefaultJobPollWindowSec,
+		JobPollWindowSeconds:      types.DefaultJobPollWindowSeconds,
 	}
 
 	if cfg.Job.JobPollWindowSeconds != nil && *cfg.Job.JobPollWindowSeconds > 0 {
@@ -173,19 +173,6 @@ func StartSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, p
 	}
 
 	input := BuildSFNInput(cfg, pipelineID, scheduleID, date, "")
-
-	// Warn if the sum of evaluation + poll windows exceeds the SFN timeout.
-	totalWindowSec := input.Config.EvaluationWindowSeconds + input.Config.JobPollWindowSeconds
-	sfnTimeout := ResolveTriggerLockTTL() - TriggerLockBuffer // strip the buffer to get raw SFN timeout
-	if sfnTimeout > 0 && time.Duration(totalWindowSec)*time.Second > sfnTimeout {
-		d.Logger.Warn("combined pipeline windows exceed SFN timeout",
-			"pipelineId", pipelineID,
-			"evalWindowSec", input.Config.EvaluationWindowSeconds,
-			"jobPollWindowSec", input.Config.JobPollWindowSeconds,
-			"totalWindowSec", totalWindowSec,
-			"sfnTimeoutSec", int(sfnTimeout.Seconds()),
-		)
-	}
 
 	// Populate sensorArrivalAt for relative SLA passthrough.
 	if input.Config.SLA != nil && input.Config.SLA.MaxDuration != "" && d.Store != nil {

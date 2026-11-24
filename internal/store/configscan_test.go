@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -128,6 +129,52 @@ func TestConfigCache_RejectsInvalidConfig(t *testing.T) {
 	rejected[0].Reason = "mutated"
 	if again, _ := cache.Rejected(ctx); again[0].Reason == "mutated" {
 		t.Error("Rejected returned the cached slice, want a copy")
+	}
+}
+
+// TestScanConfigs_RejectsWindowsLongerThanExecutionTimeout: with
+// SFN_TIMEOUT_SECONDS set, a row whose evaluation and poll windows do not fit
+// the execution timeout is rejected and the pipeline beside it loads. Unset,
+// not a number or not positive, the timeout is unknown and the row loads.
+func TestScanConfigs_RejectsWindowsLongerThanExecutionTimeout(t *testing.T) {
+	long := strings.Replace(validConfig("long"), `"schedule":{`, `"schedule":{"evaluation":{"window":"6h"},`, 1)
+	const reason = "schedule.evaluation.window 6h0m0s plus job.jobPollWindowSeconds 3600 (default) exceeds the Step Functions execution timeout 4h0m0s (sfn_timeout_seconds)"
+	tests := []struct {
+		name, timeout string
+		unset         bool
+		wantRejected  []store.RejectedConfig
+	}{
+		{"timeout 14400", "14400", false, []store.RejectedConfig{{PK: types.PipelinePK("long"), PipelineID: "long", Reason: reason, Hash: shortSHA(long)}}},
+		{"timeout 25200 fits exactly", "25200", false, nil},
+		{"unset", "", true, nil},
+		{"empty", "", false, nil},
+		{"not a number", "4h", false, nil},
+		{"zero", "0", false, nil},
+		{"negative", "-14400", false, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("SFN_TIMEOUT_SECONDS", tt.timeout)
+			if tt.unset {
+				if err := os.Unsetenv("SFN_TIMEOUT_SECONDS"); err != nil {
+					t.Fatalf("unset SFN_TIMEOUT_SECONDS: %v", err)
+				}
+			}
+			fake, mem := storetest.NewMem()
+			mem.Put("control", configRow(types.PipelinePK("good"), sAttr(validConfig("good"))))
+			mem.Put("control", configRow(types.PipelinePK("long"), sAttr(long)))
+
+			configs, rejected, err := storetest.NewStore(fake).ScanConfigs(context.Background())
+			if err != nil {
+				t.Fatalf("ScanConfigs: %v", err)
+			}
+			if configs["good"] == nil || (configs["long"] == nil) != (tt.wantRejected != nil) {
+				t.Errorf("configs = %v, want good, and long only when not rejected", configs)
+			}
+			if !slices.Equal(rejected, tt.wantRejected) {
+				t.Errorf("rejected = %+v, want %+v", rejected, tt.wantRejected)
+			}
+		})
 	}
 }
 

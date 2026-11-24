@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,7 +100,7 @@ func loadConfigRow(item map[string]ddbtypes.AttributeValue) (*types.PipelineConf
 			// Handlers take the ID from the PK, so the rule on pipeline.id
 			// covers the PK only when the two match.
 			r.Reason = fmt.Sprintf("PK id %q does not match pipeline.id %q", r.PipelineID, cfg.Pipeline.ID)
-		} else if errs := validation.ValidatePipelineConfig(&cfg); len(errs) > 0 {
+		} else if errs := append(validation.ValidatePipelineConfig(&cfg), validation.ExecutionFitErrors(&cfg, executionTimeout())...); len(errs) > 0 {
 			r.Reason = strings.Join(errs, "; ")
 		} else {
 			return &cfg, r
@@ -106,6 +108,16 @@ func loadConfigRow(item map[string]ddbtypes.AttributeValue) (*types.PipelineConf
 	}
 	r.Reason = CutReason(r.Reason)
 	return nil, r
+}
+
+// executionTimeout is the Step Functions execution timeout from
+// SFN_TIMEOUT_SECONDS, or 0 when it is unset, not a number or not positive.
+func executionTimeout() time.Duration {
+	sec, err := strconv.Atoi(os.Getenv("SFN_TIMEOUT_SECONDS"))
+	if err != nil || sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec) * time.Second
 }
 
 // maxReasonBytes bounds a rejection reason, which can quote the config.
