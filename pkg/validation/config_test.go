@@ -1035,20 +1035,23 @@ func TestValidate_TriggerBaseURL(t *testing.T) {
 		}
 	}
 	const notBase = " must not contain a query, a fragment or user info"
-	const notHTTP = " must be an http or https URL with a host"
+	const notHTTPS = " must be an https URL with a host"
 	rejected := []struct{ raw, msg string }{
 		{"https://host/?", notBase},
 		{"https://host#", notBase},
 		{"https://host/base?x=1", notBase},
 		{"https://user:pw@host", notBase},
 		// The port does not parse, so the user info is never reached.
-		{"https://user:pw@host:badport", notHTTP},
-		{"user:pw@host", notHTTP},
-		{"https:/user:pw@host", notHTTP},
-		{"airflow.example.com", notHTTP},
-		{"https://", notHTTP},
-		{"ftp://host", notHTTP},
-		{"https://:8080", notHTTP},
+		{"https://user:pw@host:badport", notHTTPS},
+		{"user:pw@host", notHTTPS},
+		{"https:/user:pw@host", notHTTPS},
+		{"airflow.example.com", notHTTPS},
+		{"https://", notHTTPS},
+		{"ftp://host", notHTTPS},
+		{"https://:8080", notHTTPS},
+		// The bearer token in headers would cross in clear text.
+		{"http://host", notHTTPS},
+		{"HTTP://host/base/", notHTTPS},
 	}
 	bases := []struct {
 		typ   types.TriggerType
@@ -1063,14 +1066,55 @@ func TestValidate_TriggerBaseURL(t *testing.T) {
 				assert.Equal(t, []string{want}, errs)
 			})
 		}
-		for _, raw := range []string{"https://host", "https://host/base/", "HTTPS://host", "http://host"} {
+		for _, raw := range []string{"https://host", "https://host/base/", "HTTPS://host"} {
 			t.Run(string(b.typ)+" accepts "+raw, func(t *testing.T) {
 				assert.Empty(t, validate(withURL(b.typ, b.field, raw)))
 			})
 		}
 	}
-	t.Run("http url keeps its query", func(t *testing.T) {
-		assert.Empty(t, validate(withURL(types.TriggerHTTP, "url", "https://host/start?x=1#top")))
+}
+
+// An http trigger url is sent as written, query and fragment included, so
+// only user info, which would reach the job log and the execution history
+// when a request fails, and a value that is not an http or https URL with a
+// host are rejected.
+func TestValidate_TriggerRequestURL(t *testing.T) {
+	withURL := func(raw string) *types.PipelineConfig {
+		conf := validTriggerConfigs()[types.TriggerHTTP]
+		conf["url"] = raw
+		return &types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "orders"},
+			Job:      types.JobConfig{Type: types.TriggerHTTP, Config: conf},
+		}
+	}
+	const userInfo = "job.config.url must not contain user info"
+	const notHTTP = "job.config.url must be an http or https URL with a host"
+	rejected := []struct{ raw, msg string }{
+		{"https://user:pw@host/x", userInfo},
+		{"https://user@host/x", userInfo},
+		{"http://user:pw@host/x?token=abc", userInfo},
+		// The port does not parse, so the user info is never reached.
+		{"https://user:pw@host:badport/x", notHTTP},
+		{"user:pw@host", notHTTP},
+		{"https:/user:pw@host", notHTTP},
+		{"api.example.com/start", notHTTP},
+		{"ftp://host", notHTTP},
+		{"https://", notHTTP},
+		{"https://:8080/x", notHTTP},
+	}
+	for _, tc := range rejected {
+		t.Run("rejects "+tc.raw, func(t *testing.T) {
+			// The expected messages are constants, so the value can never appear in them.
+			assert.Equal(t, []string{tc.msg}, validate(withURL(tc.raw)))
+		})
+	}
+	for _, raw := range []string{"http://mock:8080/start?token=abc#frag", "https://host/start?x=1#top", "HTTPS://host"} {
+		t.Run("accepts "+raw, func(t *testing.T) {
+			assert.Empty(t, validate(withURL(raw)))
+		})
+	}
+	t.Run("empty is only required", func(t *testing.T) {
+		assert.Equal(t, []string{"job.config.url is required"}, validate(withURL("")))
 	})
 }
 

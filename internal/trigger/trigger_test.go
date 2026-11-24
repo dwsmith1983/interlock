@@ -606,6 +606,85 @@ func TestRefusedRedirectReportsTarget(t *testing.T) {
 	}
 }
 
+// failingTransport fails every request without sending it.
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("connection reset")
+}
+
+// A failed http trigger request reports its URL without the user info, query
+// or fragment, which may hold credentials, and keeps the path.
+func TestExecuteHTTP_FailedRequestOmitsURLSecrets(t *testing.T) {
+	assertNoSecrets := func(t *testing.T, err error) {
+		t.Helper()
+		require.Error(t, err)
+		for _, s := range []string{"user", "pw", "secret", "frag", "?", "#", "@"} {
+			assert.NotContains(t, err.Error(), s)
+		}
+	}
+	const raw = "https://user:pw@host.example/path?token=secret#frag"
+
+	t.Run("transport error", func(t *testing.T) {
+		useProductionClient(t, failingTransport{})
+
+		err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: raw})
+
+		assertNoSecrets(t, err)
+		assert.Equal(t, `trigger request failed: Post "https://host.example/path": connection reset`, err.Error())
+	})
+
+	// With no // after the scheme the user info sits in the opaque part, which
+	// cannot be split from the path, so the whole URL is left out.
+	t.Run("opaque url", func(t *testing.T) {
+		useProductionClient(t, failingTransport{})
+
+		err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: "https:user:pw@host/x?token=secret"})
+
+		require.Error(t, err)
+		for _, s := range []string{"user", "pw", "secret"} {
+			assert.NotContains(t, err.Error(), s)
+		}
+		assert.Equal(t, `trigger request failed: Post "<url>": connection reset`, err.Error())
+	})
+
+	t.Run("through the runner", func(t *testing.T) {
+		useProductionClient(t, failingTransport{})
+
+		_, err := NewRunner().Execute(context.Background(), &types.TriggerConfig{
+			Type: types.TriggerHTTP, HTTP: &types.HTTPTriggerConfig{URL: raw},
+		})
+
+		assertNoSecrets(t, err)
+		assert.Contains(t, err.Error(), `"https://host.example/path"`)
+	})
+
+	// The redirect rule stops a loop on the same host, and the error names
+	// the Location as the server wrote it, query included.
+	t.Run("redirect loop", func(t *testing.T) {
+		a, _ := redirectServer(t, false, map[string]string{
+			"/start":     "/elsewhere?token=secret",
+			"/elsewhere": "/elsewhere?token=secret",
+		})
+		useProductionClient(t, a.Client().Transport)
+		start := strings.Replace(a.URL, "http://", "http://user:pw@", 1) + "/start?token=secret#frag"
+
+		err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: start})
+
+		assertNoSecrets(t, err)
+		assert.Equal(t, `trigger request failed: Post "/elsewhere": stopped after 10 redirects`, err.Error())
+	})
+}
+
+// A URL that does not parse fails with fixed text: the parse error quotes the
+// value, user info included.
+func TestExecuteHTTP_UnparseableURLIsNotQuoted(t *testing.T) {
+	err := ExecuteHTTP(context.Background(), &types.HTTPTriggerConfig{URL: "https://user:pw@host:badport/x?token=secret"})
+
+	require.Error(t, err)
+	assert.Equal(t, "creating request: invalid url", err.Error())
+}
+
 // A response is read up to 1 MiB; a larger one fails with fixed text instead
 // of a truncated body that would fail to parse.
 func TestResponseBodyReadIsBounded(t *testing.T) {
