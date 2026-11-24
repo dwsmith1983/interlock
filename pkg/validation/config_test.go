@@ -1020,6 +1020,60 @@ func TestValidate_TriggerRequiredFields(t *testing.T) {
 	}
 }
 
+// The airflow and databricks triggers append the API path to the base URL as
+// written, so a query or fragment would swallow the path, and only an http or
+// https URL with a host can be requested. User info is rejected because the
+// trigger stores the base URL with the run. The message never quotes the
+// value: user info is a credential and a query may hold a token.
+func TestValidate_TriggerBaseURL(t *testing.T) {
+	withURL := func(typ types.TriggerType, field, raw string) *types.PipelineConfig {
+		conf := validTriggerConfigs()[typ]
+		conf[field] = raw
+		return &types.PipelineConfig{
+			Pipeline: types.PipelineIdentity{ID: "orders"},
+			Job:      types.JobConfig{Type: typ, Config: conf},
+		}
+	}
+	const notBase = " must not contain a query, a fragment or user info"
+	const notHTTP = " must be an http or https URL with a host"
+	rejected := []struct{ raw, msg string }{
+		{"https://host/?", notBase},
+		{"https://host#", notBase},
+		{"https://host/base?x=1", notBase},
+		{"https://user:pw@host", notBase},
+		// The port does not parse, so the user info is never reached.
+		{"https://user:pw@host:badport", notHTTP},
+		{"user:pw@host", notHTTP},
+		{"https:/user:pw@host", notHTTP},
+		{"airflow.example.com", notHTTP},
+		{"https://", notHTTP},
+		{"ftp://host", notHTTP},
+		{"https://:8080", notHTTP},
+	}
+	bases := []struct {
+		typ   types.TriggerType
+		field string
+	}{{types.TriggerAirflow, "url"}, {types.TriggerDatabricks, "workspaceUrl"}}
+	for _, b := range bases {
+		for _, tc := range rejected {
+			t.Run(string(b.typ)+" rejects "+tc.raw, func(t *testing.T) {
+				want := "job.config." + b.field + tc.msg
+				errs := validate(withURL(b.typ, b.field, tc.raw))
+				// The expected messages are constants, so the value can never appear in them.
+				assert.Equal(t, []string{want}, errs)
+			})
+		}
+		for _, raw := range []string{"https://host", "https://host/base/", "HTTPS://host", "http://host"} {
+			t.Run(string(b.typ)+" accepts "+raw, func(t *testing.T) {
+				assert.Empty(t, validate(withURL(b.typ, b.field, raw)))
+			})
+		}
+	}
+	t.Run("http url keeps its query", func(t *testing.T) {
+		assert.Empty(t, validate(withURL(types.TriggerHTTP, "url", "https://host/start?x=1#top")))
+	})
+}
+
 // The orchestrator writes the run date into the argument after --par_day and
 // --par_hour, so each must have a value after it that is not another flag.
 func TestValidate_EMRServerlessDateFlags(t *testing.T) {

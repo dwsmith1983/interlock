@@ -167,7 +167,7 @@ job:
 
 | Field | Type | Description |
 |---|---|---|
-| `url` | string | Airflow webserver URL (required) |
+| `url` | string | Airflow webserver base URL (required). It must be an `http` or `https` URL with a host, and the API path is appended to it, so it may not contain a query (`?`), a fragment (`#`) or user info; send credentials in `headers` |
 | `dagId` | string | DAG identifier (required) |
 | `headers` | map | Authentication headers |
 | `body` | string | JSON sent as the DAG run's `conf` (optional) |
@@ -314,7 +314,7 @@ job:
 
 | Field | Type | Description |
 |---|---|---|
-| `workspaceUrl` | string | Databricks workspace URL (required) |
+| `workspaceUrl` | string | Databricks workspace base URL (required). It must be an `http` or `https` URL with a host, and the API path is appended to it, so it may not contain a query (`?`), a fragment (`#`) or user info; send credentials in `headers` |
 | `jobId` | string | Numeric ID of the job to start, quoted so an ID of any size stays exact (required) |
 | `headers` | map | Authentication headers |
 | `arguments` | map | Job parameters of the run; Interlock adds `par_day` (`20260301`) and, for hourly dates, `par_hour` (`05`), replacing a configured value of the same key |

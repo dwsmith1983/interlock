@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"regexp"
 	"slices"
@@ -361,6 +362,9 @@ var triggerConfigChecks = map[types.TriggerType]func(map[string]interface{}) []s
 	}),
 	types.TriggerAirflow: decodeTrigger(func(c *airflowConfig) []string {
 		errs := required("url", c.URL, "dagId", c.DagID)
+		if msg := baseURLError("url", c.URL); msg != "" {
+			errs = append(errs, msg)
+		}
 		if v, ok := airflowAPIVersion(c.APIVersion); !ok {
 			errs = append(errs, fmt.Sprintf("job.config.apiVersion %s must be 2 or 3", v))
 		}
@@ -379,6 +383,9 @@ var triggerConfigChecks = map[types.TriggerType]func(map[string]interface{}) []s
 	}),
 	types.TriggerDatabricks: decodeTrigger(func(c *databricksConfig) []string {
 		errs := required("workspaceUrl", c.WorkspaceURL)
+		if msg := baseURLError("workspaceUrl", c.WorkspaceURL); msg != "" {
+			errs = append(errs, msg)
+		}
 		if msg := databricksJobIDError(c.JobID); msg != "" {
 			errs = append(errs, "job.config.jobId "+msg)
 		}
@@ -484,6 +491,32 @@ func required(pairs ...string) []string {
 		}
 	}
 	return errs
+}
+
+// baseURLError says what is wrong with an airflow or databricks base URL, or
+// returns "" for an http or https URL with a host and no query, fragment or
+// user info. The trigger appends the API path to the value as written, so a
+// query or fragment would swallow the path, and it stores the value with the
+// run, so user info would be kept in the clear. A value containing ? or # is
+// reported first, then one that does not parse or has another scheme or no
+// host, then user info. An empty value is left to required. The value is
+// never quoted: user info is a credential and a query may hold a token.
+func baseURLError(field, raw string) string {
+	const notBase = " must not contain a query, a fragment or user info"
+	if raw == "" {
+		return ""
+	}
+	if strings.ContainsAny(raw, "?#") {
+		return "job.config." + field + notBase
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return "job.config." + field + " must be an http or https URL with a host"
+	}
+	if u.User != nil {
+		return "job.config." + field + notBase
+	}
+	return ""
 }
 
 // dateFlagErrors reports a --par_day or --par_hour entry point argument with
