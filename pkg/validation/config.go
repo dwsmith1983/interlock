@@ -85,9 +85,9 @@ func ParseCron(expr string) (*cron.SpecSchedule, error) {
 
 // ValidatePipelineConfig checks a pipeline config before it is used: the
 // pipeline ID, required blocks such as schedule.trigger with its cutoff, the
-// job type and its config, schedule, SLA and post-run settings, and that retry
-// and timeout fields are within safe bounds. Returns a list of human-readable
-// validation errors, empty for a valid config.
+// trigger condition and rules, the job type and its config, schedule, SLA and
+// post-run settings, and that retry and timeout fields are within safe bounds.
+// Returns a list of human-readable validation errors, empty for a valid config.
 func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 	var errs []string
 
@@ -212,6 +212,12 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 			errs = append(errs, `schedule.trigger.cutoffDayOffset is not supported with hourly ":MM" cutoffs`)
 		}
 	}
+
+	// The stream-router evaluates the trigger condition as a rule.
+	if tr := cfg.Schedule.Trigger; tr != nil {
+		errs = append(errs, ruleErrors("schedule.trigger", types.ValidationRule{Key: tr.Key, Check: tr.Check, Field: tr.Field, Value: tr.Value})...)
+	}
+	errs = append(errs, validationErrors(cfg.Validation)...)
 
 	_, _, evalErrs := EvaluationTiming(cfg.Schedule.Evaluation)
 	errs = append(errs, evalErrs...)
@@ -562,6 +568,9 @@ func validatePostRun(pr *types.PostRunConfig) []string {
 		default:
 			timeout = d
 		}
+	}
+	for i, r := range pr.Rules {
+		errs = append(errs, ruleErrors(fmt.Sprintf("postRun.rules[%d]", i), r)...)
 	}
 	if len(pr.Rules) > 0 && windowOK && timeoutOK && timeout > window {
 		errs = append(errs, fmt.Sprintf("postRun.sensorTimeout %s exceeds postRun.watchWindow %s",

@@ -53,13 +53,13 @@ When the trigger condition is met (e.g., an upstream pipeline signals completion
 
 | Field | Type | Description |
 |---|---|---|
-| `key` | string | Sensor key whose writes are checked: `SENSOR#<key>`, or a per-period `SENSOR#<key>#<period>` such as `SENSOR#orders#2026-03-10`. A sensor whose key only begins with it, such as `SENSOR#orders-count`, is not checked |
-| `check` | string | Operator, as in validation rules |
-| `field` | string | Field in the sensor's `data` map (not needed for `exists`) |
-| `value` | any | Value to compare against (not needed for `exists`) |
+| `key` | string | Sensor key whose writes are checked: `SENSOR#<key>`, or a per-period `SENSOR#<key>#<period>` such as `SENSOR#orders#2026-03-10`. A sensor whose key only begins with it, such as `SENSOR#orders-count`, is not checked. Required; it may not contain `#` or be one of Interlock's own sensor row names (see [Rule Fields](../pipelines/#rule-fields)) |
+| `check` | string | Operator, as in validation rules; required |
+| `field` | string | Field in the sensor's `data` map (required for every check but `exists`) |
+| `value` | any | Value to compare against (not needed for `exists`): required for `equals`, a finite number for `gt`, `gte`, `lt` and `lte`, a positive Go duration for `age_lt` |
 | `cutoff`, `cutoffDayOffset` | | `cutoff` is required; see [Cutoff](#cutoff) |
 
-The trigger condition uses the same check syntax as validation rules: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`.
+The trigger condition uses the same check syntax as validation rules: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`. A condition that can never pass, such as `check: eq` or an `age_lt` of `1d`, is rejected as `CONFIG_INVALID`.
 
 ### Cutoff
 
