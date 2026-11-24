@@ -13,10 +13,10 @@ import (
 // sensor arrival near 10:00. A second rule never passes, so the job never
 // starts: each evaluation runs out of its 10 s (real) window and is released
 // before the 14:00 cutoff, leaving no trigger row, and each watchdog pass
-// starts evaluation again. A run left RUNNING would be failed at its stale
-// deadline (1h30m in e2e) before 12:00. The watchdog
-// publishes RELATIVE_SLA_WARNING once from 11:30 and RELATIVE_SLA_BREACH once
-// from 12:00.
+// starts evaluation again. A run left RUNNING would keep the trigger lock, so
+// the JOB_TRIGGERED and EVALUATION_RELEASED counts would stop growing. The
+// watchdog publishes RELATIVE_SLA_WARNING once from 11:30 and
+// RELATIVE_SLA_BREACH once from 12:00.
 func TestScenarioRelativeSLAWarning(t *testing.T) {
 	const id = "relative-sla"
 	start, date := startDay(t)

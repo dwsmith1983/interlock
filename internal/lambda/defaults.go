@@ -7,9 +7,6 @@ const (
 	// DefaultJobCheckIntervalSec is the default job status check interval (1 minute).
 	DefaultJobCheckIntervalSec = 60
 
-	// DefaultJobPollWindowSec is the default job poll window (1 hour).
-	DefaultJobPollWindowSec = 3600
-
 	// DefaultTriggerLockTTL is the default time from a run's latest attempt
 	// to its trigger row's stale deadline (staleAt) when SFN_TIMEOUT_SECONDS
 	// is not set.

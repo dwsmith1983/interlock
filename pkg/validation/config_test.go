@@ -644,6 +644,44 @@ func TestValidate_Evaluation(t *testing.T) {
 	}
 }
 
+// TestValidate_ExecutionFit: the evaluation window plus the job poll window
+// must fit the Step Functions execution timeout. A timeout of 0 (unknown)
+// and invalid evaluation values give nothing.
+func TestValidate_ExecutionFit(t *testing.T) {
+	const fourHours = 4 * time.Hour
+	tests := []struct {
+		name, window, interval string
+		poll                   *int
+		timeout                time.Duration
+		wantErrs               []string
+	}{
+		{"6h, default poll", "6h", "", nil, fourHours, []string{
+			"schedule.evaluation.window 6h0m0s plus job.jobPollWindowSeconds 3600 (default) exceeds the Step Functions execution timeout 4h0m0s (sfn_timeout_seconds)"}},
+		{"6h, poll 0 is the default", "6h", "", intPtr(0), fourHours, []string{
+			"schedule.evaluation.window 6h0m0s plus job.jobPollWindowSeconds 3600 (default) exceeds the Step Functions execution timeout 4h0m0s (sfn_timeout_seconds)"}},
+		{"1h, default poll", "1h", "", nil, fourHours, nil},
+		{"default window, default poll", "", "", nil, fourHours, nil},
+		{"default window, poll 10801", "", "", intPtr(10801), fourHours, []string{
+			"schedule.evaluation.window 1h0m0s (default) plus job.jobPollWindowSeconds 10801 exceeds the Step Functions execution timeout 4h0m0s (sfn_timeout_seconds)"}},
+		{"3h plus 3600 equals the timeout", "3h", "", intPtr(3600), fourHours, nil},
+		{"3h plus 3601", "3h", "", intPtr(3601), fourHours, []string{
+			"schedule.evaluation.window 3h0m0s plus job.jobPollWindowSeconds 3601 exceeds the Step Functions execution timeout 4h0m0s (sfn_timeout_seconds)"}},
+		{"timeout 0", "6h", "", nil, 0, nil},
+		{"timeout negative", "6h", "", nil, -time.Second, nil},
+		{"window does not parse", "6 hours", "", nil, time.Hour, nil},
+		{"window allows too many evaluations", "6h", "10s", nil, time.Hour, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Schedule: types.ScheduleConfig{Evaluation: types.EvaluationWindow{Window: tt.window, Interval: tt.interval}},
+				Job:      types.JobConfig{JobPollWindowSeconds: tt.poll},
+			}
+			assert.Equal(t, tt.wantErrs, ExecutionFitErrors(&cfg, tt.timeout))
+		})
+	}
+}
+
 // TestValidate_RelativeSLAExpectedDuration: with sla.maxDuration, the warning
 // offset sla.expectedDuration must be a positive duration below it.
 func TestValidate_RelativeSLAExpectedDuration(t *testing.T) {

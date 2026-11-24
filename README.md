@@ -337,7 +337,7 @@ schedule:
     value: ready
     cutoff: "23:00"
   evaluation:
-    window: 8h
+    window: 2h
     interval: 10m
 sla:
   maxDuration: 4h

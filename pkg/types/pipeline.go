@@ -136,6 +136,10 @@ const DefaultEvaluationWindow = time.Hour
 // schedule.evaluation.interval is unset.
 const DefaultEvaluationInterval = 5 * time.Minute
 
+// DefaultJobPollWindowSeconds is how long a run polls its job for completion
+// when job.jobPollWindowSeconds is unset or 0.
+const DefaultJobPollWindowSeconds = 3600
+
 // DefaultPostRunWatchWindow is how long a completed date is watched when
 // postRun.watchWindow is unset.
 const DefaultPostRunWatchWindow = 4 * time.Hour
