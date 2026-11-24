@@ -198,6 +198,7 @@ func TestScenarioSLAMet(t *testing.T) {
 	for id, offset := range map[string]int{metID: 1, sameDayID: 0, noRowID: 0} {
 		cfg := scenarioConfig(id)
 		cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, DeadlineDayOffset: offset, ExpectedDuration: slaExpected}
+		cfg.Schedule.Trigger.CutoffDayOffset = offset
 		putConfig(t, cfg)
 	}
 	putRunDate(t, metID, date)
@@ -792,6 +793,7 @@ func TestScenarioSLAWarningDuringRetry(t *testing.T) {
 	cfg := scenarioConfig(id)
 	cfg.Job.MaxRetries = 1
 	cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, DeadlineDayOffset: 1, ExpectedDuration: slaExpected}
+	cfg.Schedule.Trigger.CutoffDayOffset = 1
 	putConfig(t, cfg)
 	putRunDate(t, id, date)
 

@@ -25,9 +25,10 @@ func intPtr(v int) *int { return &v }
 
 // validate runs ValidatePipelineConfig after giving cfg a valid
 // schedule.trigger when it has none, so a test sees only the errors it is about.
+// Its cutoff is the latest there is, after any SLA breach.
 func validate(cfg *types.PipelineConfig) []string {
 	if cfg.Schedule.Trigger == nil {
-		cfg.Schedule.Trigger = &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:00"}
+		cfg.Schedule.Trigger = &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}
 	}
 	return ValidatePipelineConfig(cfg)
 }
@@ -374,6 +375,109 @@ func TestValidate_Cutoff(t *testing.T) {
 				return
 			}
 			assert.Equal(t, []string{tt.wantErr}, errs)
+		})
+	}
+}
+
+// breachErr is the error for a cutoff short of the SLA breach of key.
+func breachErr(cutoff string, cutoffOffset int, cutoffZone, deadline string, deadlineOffset int, deadlineZone, key, cutoffAt, breachAt, short string) string {
+	return fmt.Sprintf("schedule.trigger.cutoff %q (cutoffDayOffset %d, %s) is earlier than the sla.deadline %q (deadlineDayOffset %d, %s) breach time for run key %s (cutoff %s, breach %s); move the cutoff at least %s later",
+		cutoff, cutoffOffset, cutoffZone, deadline, deadlineOffset, deadlineZone, key, cutoffAt, breachAt, short)
+}
+
+// hourlyKey adds the note an error for an hourly run key ends with.
+func hourlyKey(msg string) string {
+	return msg + " (the check covers hourly run keys because sensors may send them)"
+}
+
+// TestValidate_CutoffAfterBreach: with sla.deadline, the cutoff of every run
+// key form (daily, and hourly T00 and T23) is not earlier than its breach, on
+// a winter and a summer date.
+func TestValidate_CutoffAfterBreach(t *testing.T) {
+	daily := func(deadline string, offset int) types.SLAConfig {
+		return types.SLAConfig{Deadline: deadline, DeadlineDayOffset: offset, ExpectedDuration: "30m"}
+	}
+	tests := []struct {
+		name         string
+		scheduleZone string
+		sla          types.SLAConfig
+		cutoff       string
+		cutoffOffset int
+		wantErrs     []string
+	}{
+		{name: "daily after", sla: daily("10:00", 0), cutoff: "12:00"},
+		{name: "daily equal", sla: daily("10:00", 0), cutoff: "10:00"},
+		{name: "daily before", sla: daily("10:00", 0), cutoff: "09:59", wantErrs: []string{
+			breachErr("09:59", 0, "UTC", "10:00", 0, "UTC", "2025-01-15", "2025-01-15T09:59:00Z", "2025-01-15T10:00:00Z", "1m0s")}},
+		{name: "deadline offset, cutoff same day", sla: daily("10:00", 1), cutoff: "23:00", wantErrs: []string{
+			breachErr("23:00", 0, "UTC", "10:00", 1, "UTC", "2025-01-15", "2025-01-15T23:00:00Z", "2025-01-16T10:00:00Z", "11h0m0s")}},
+		{name: "deadline offset, cutoff offset", sla: daily("10:00", 1), cutoff: "12:00", cutoffOffset: 1},
+		{name: "cutoff offset short of deadline offset", sla: daily("10:00", 2), cutoff: "12:00", cutoffOffset: 1, wantErrs: []string{
+			breachErr("12:00", 1, "UTC", "10:00", 2, "UTC", "2025-01-15", "2025-01-16T12:00:00Z", "2025-01-17T10:00:00Z", "22h0m0s")}},
+		{name: "cutoff offset only", sla: daily("10:00", 0), cutoff: "02:00", cutoffOffset: 1},
+		{name: "New York cutoff equal in winter, early in summer", scheduleZone: "America/New_York",
+			sla: types.SLAConfig{Deadline: "12:00", ExpectedDuration: "30m", Timezone: "UTC"}, cutoff: "07:00", wantErrs: []string{
+				breachErr("07:00", 0, "America/New_York", "12:00", 0, "UTC", "2025-03-20", "2025-03-20T11:00:00Z", "2025-03-20T12:00:00Z", "1h0m0s")}},
+		{name: "New York cutoff after in winter, early in summer", scheduleZone: "America/New_York",
+			sla: types.SLAConfig{Deadline: "12:00", ExpectedDuration: "30m", Timezone: "UTC"}, cutoff: "07:30", wantErrs: []string{
+				breachErr("07:30", 0, "America/New_York", "12:00", 0, "UTC", "2025-03-20", "2025-03-20T11:30:00Z", "2025-03-20T12:00:00Z", "30m0s")}},
+		{name: "New York cutoff short all year, the largest shortfall reported", scheduleZone: "America/New_York",
+			sla: types.SLAConfig{Deadline: "12:00", ExpectedDuration: "30m", Timezone: "UTC"}, cutoff: "06:30", wantErrs: []string{
+				breachErr("06:30", 0, "America/New_York", "12:00", 0, "UTC", "2025-03-20", "2025-03-20T10:30:00Z", "2025-03-20T12:00:00Z", "1h30m0s")}},
+		{name: "New York cutoff after all year", scheduleZone: "America/New_York",
+			sla: types.SLAConfig{Deadline: "12:00", ExpectedDuration: "30m", Timezone: "UTC"}, cutoff: "08:00"},
+		{name: "New York deadline, UTC cutoff early in winter only", scheduleZone: "UTC",
+			sla: types.SLAConfig{Deadline: "07:00", ExpectedDuration: "30m", Timezone: "America/New_York"}, cutoff: "11:30", wantErrs: []string{
+				breachErr("11:30", 0, "UTC", "07:00", 0, "America/New_York", "2025-01-15", "2025-01-15T11:30:00Z", "2025-01-15T12:00:00Z", "30m0s")}},
+		{name: "New York cutoff, London deadline, early between the US and EU changes", scheduleZone: "America/New_York",
+			sla: types.SLAConfig{Deadline: "12:00", ExpectedDuration: "30m", Timezone: "Europe/London"}, cutoff: "07:00", wantErrs: []string{
+				breachErr("07:00", 0, "America/New_York", "12:00", 0, "Europe/London", "2025-03-20", "2025-03-20T11:00:00Z", "2025-03-20T12:00:00Z", "1h0m0s")}},
+		{name: "cutoff in the sla zone, equal", sla: types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", Timezone: "Asia/Tokyo"}, cutoff: "10:00"},
+		{name: "cutoff in the sla zone, before", sla: types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", Timezone: "Asia/Tokyo"}, cutoff: "02:00", wantErrs: []string{
+			breachErr("02:00", 0, "Asia/Tokyo", "10:00", 0, "Asia/Tokyo", "2025-01-15", "2025-01-14T17:00:00Z", "2025-01-15T01:00:00Z", "8h0m0s")}},
+		{name: "hourly after", sla: daily(":30", 0), cutoff: ":45"},
+		{name: "hourly equal", sla: daily(":30", 0), cutoff: ":30"},
+		{name: "hourly before", sla: daily(":30", 0), cutoff: ":15", wantErrs: []string{
+			hourlyKey(breachErr(":15", 0, "UTC", ":30", 0, "UTC", "2025-01-15T00", "2025-01-15T01:15:00Z", "2025-01-15T01:30:00Z", "15m0s"))}},
+		{name: "hourly deadline, daily cutoff next day", sla: daily(":30", 0), cutoff: "02:00", cutoffOffset: 1},
+		{name: "hourly deadline in New York names the T23 key", sla: types.SLAConfig{Deadline: ":30", ExpectedDuration: "30m", Timezone: "America/New_York"}, cutoff: "19:00", wantErrs: []string{
+			hourlyKey(breachErr("19:00", 0, "America/New_York", ":30", 0, "America/New_York", "2025-01-15T23", "2025-01-16T00:00:00Z", "2025-01-16T05:30:00Z", "5h30m0s"))}},
+		{name: "hourly deadline, daily cutoff same day", sla: daily(":30", 0), cutoff: "23:00", wantErrs: []string{
+			hourlyKey(breachErr("23:00", 0, "UTC", ":30", 0, "UTC", "2025-01-15T23", "2025-01-15T23:00:00Z", "2025-01-16T00:30:00Z", "1h30m0s"))}},
+		{name: "daily deadline, hourly cutoff closes T00 first", sla: daily("10:00", 0), cutoff: ":15", wantErrs: []string{
+			hourlyKey(breachErr(":15", 0, "UTC", "10:00", 0, "UTC", "2025-01-15T00", "2025-01-15T01:15:00Z", "2025-01-15T10:00:00Z", "8h45m0s"))}},
+		{name: "daily deadline next day, hourly cutoff", sla: daily("10:00", 1), cutoff: ":15", wantErrs: []string{
+			breachErr(":15", 0, "UTC", "10:00", 1, "UTC", "2025-01-15", "2025-01-16T00:15:00Z", "2025-01-16T10:00:00Z", "9h45m0s")}},
+		{name: "maxDuration only, daily cutoff", sla: types.SLAConfig{MaxDuration: "2h"}, cutoff: "00:00"},
+		{name: "maxDuration only, hourly cutoff", sla: types.SLAConfig{MaxDuration: "2h"}, cutoff: ":00"},
+		{name: "deadline and maxDuration, after", sla: types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", MaxDuration: "2h"}, cutoff: "12:00"},
+		{name: "deadline and maxDuration, before", sla: types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", MaxDuration: "2h"}, cutoff: "09:00", wantErrs: []string{
+			breachErr("09:00", 0, "UTC", "10:00", 0, "UTC", "2025-01-15", "2025-01-15T09:00:00Z", "2025-01-15T10:00:00Z", "1h0m0s")}},
+		// The breach does not depend on expectedDuration, so each mistake gives its own error.
+		{name: "bad expectedDuration and early cutoff are two mistakes", sla: types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30 minutes"}, cutoff: "09:00", wantErrs: []string{
+			`sla.expectedDuration invalid Go duration "30 minutes"`,
+			breachErr("09:00", 0, "UTC", "10:00", 0, "UTC", "2025-01-15", "2025-01-15T09:00:00Z", "2025-01-15T10:00:00Z", "1h0m0s")}},
+		// One mistake gives one error: no comparison with an input that failed its own check.
+		{name: "bad cutoff", sla: daily("10:00", 0), cutoff: "9:00", wantErrs: []string{`schedule.trigger.cutoff "9:00" must be HH:MM or :MM`}},
+		{name: "bad deadline", sla: daily("8:00", 0), cutoff: "07:00", wantErrs: []string{`sla.deadline "8:00" must be HH:MM or :MM`}},
+		{name: "bad deadline offset", sla: daily("10:00", 8), cutoff: "12:00", wantErrs: []string{"sla.deadlineDayOffset 8 out of range [0,7]"}},
+		{name: "bad cutoff offset", sla: daily("10:00", 0), cutoff: "09:00", cutoffOffset: -1, wantErrs: []string{"schedule.trigger.cutoffDayOffset -1 out of range [0,7]"}},
+		{name: "bad schedule zone", scheduleZone: "Mars/Olympus", sla: daily("10:00", 0), cutoff: "09:00", wantErrs: []string{`schedule.timezone "Mars/Olympus" is not an IANA time zone name`}},
+		{name: "bad sla zone", sla: types.SLAConfig{Deadline: "10:00", ExpectedDuration: "30m", Timezone: "Local"}, cutoff: "09:00", wantErrs: []string{`sla.timezone "Local" is not an IANA time zone name`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "orders"},
+				Schedule: types.ScheduleConfig{Timezone: tt.scheduleZone, Trigger: &types.TriggerCondition{
+					Key: "upstream", Check: types.CheckExists, Cutoff: tt.cutoff, CutoffDayOffset: tt.cutoffOffset,
+				}},
+				SLA: &tt.sla,
+			}
+			errs := ValidatePipelineConfig(&cfg)
+			assert.Equal(t, tt.wantErrs, errs)
+			// No clock: a second call gives the same list.
+			assert.Equal(t, errs, ValidatePipelineConfig(&cfg))
 		})
 	}
 }
