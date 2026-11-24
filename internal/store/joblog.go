@@ -70,35 +70,6 @@ func (s *Store) WriteJobEvent(ctx context.Context, pipelineID, schedule, date, e
 	return nil
 }
 
-// GetLatestJobEvent retrieves the most recent job event for a pipeline,
-// schedule, and date. Returns nil, nil if no events exist.
-func (s *Store) GetLatestJobEvent(ctx context.Context, pipelineID, schedule, date string) (*types.JobLogRecord, error) {
-	prefix := "JOB#" + schedule + "#" + date + "#"
-
-	out, err := s.Client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              &s.JobLogTable,
-		KeyConditionExpression: aws.String("PK = :pk AND begins_with(SK, :prefix)"),
-		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-			":pk":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
-			":prefix": &ddbtypes.AttributeValueMemberS{Value: prefix},
-		},
-		ScanIndexForward: aws.Bool(false),
-		Limit:            aws.Int32(1),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("get latest job event %q/%s/%s: %w", pipelineID, schedule, date, err)
-	}
-	if len(out.Items) == 0 {
-		return nil, nil
-	}
-
-	var rec types.JobLogRecord
-	if err := attributevalue.UnmarshalMap(out.Items[0], &rec); err != nil {
-		return nil, fmt.Errorf("unmarshal job event %q/%s/%s: %w", pipelineID, schedule, date, err)
-	}
-	return &rec, nil
-}
-
 // GetJobResult returns the newest terminal job event (success, fail or
 // timeout) whose runId is runID for a pipeline, schedule and date, or nil, nil
 // when that run has none yet. It pages newest first and filters in Go: a

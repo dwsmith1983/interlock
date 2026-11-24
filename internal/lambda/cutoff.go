@@ -64,10 +64,10 @@ func IsRerun(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) 
 	return n > 0, nil
 }
 
-// jobRan reports whether the date's latest job row is a success, fail or
+// jobRan reports whether the date's newest outcome row is a success, fail or
 // timeout, so its job started. A failed lookup counts as not run.
 func jobRan(ctx context.Context, d *Deps, pipelineID, scheduleID, date string) bool {
-	rec, err := d.Store.GetLatestJobEvent(ctx, pipelineID, scheduleID, date)
+	rec, err := d.Store.GetLatestJobOutcome(ctx, pipelineID, scheduleID, date)
 	if err != nil {
 		d.Logger.WarnContext(ctx, "joblog lookup failed, closing the date",
 			"pipelineId", pipelineID, "schedule", scheduleID, "date", date, "error", err)

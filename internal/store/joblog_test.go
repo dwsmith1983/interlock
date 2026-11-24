@@ -103,59 +103,6 @@ func TestWriteJobEvent_WithError(t *testing.T) {
 	}
 }
 
-func TestGetLatestJobEvent_Found(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	pk := types.PipelinePK("pipe-1")
-
-	// Seed two events with different timestamps. The later one should be returned.
-	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
-		"PK":    &ddbtypes.AttributeValueMemberS{Value: pk},
-		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("daily", "2026-03-01", "1000000000000")},
-		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess},
-		"runId": &ddbtypes.AttributeValueMemberS{Value: "run-old"},
-	})
-	mock.putRaw("joblog", map[string]ddbtypes.AttributeValue{
-		"PK":    &ddbtypes.AttributeValueMemberS{Value: pk},
-		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("daily", "2026-03-01", "2000000000000")},
-		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventFail},
-		"runId": &ddbtypes.AttributeValueMemberS{Value: "run-new"},
-		"error": &ddbtypes.AttributeValueMemberS{Value: "timeout"},
-	})
-
-	rec, err := s.GetLatestJobEvent(context.Background(), "pipe-1", "daily", "2026-03-01")
-	if err != nil {
-		t.Fatalf("GetLatestJobEvent: %v", err)
-	}
-	if rec == nil {
-		t.Fatal("expected non-nil record")
-		return
-	}
-	if rec.RunID != "run-new" {
-		t.Errorf("RunID = %q, want %q", rec.RunID, "run-new")
-	}
-	if rec.Event != types.JobEventFail {
-		t.Errorf("Event = %q, want %q", rec.Event, types.JobEventFail)
-	}
-	if rec.Error != "timeout" {
-		t.Errorf("Error = %q, want %q", rec.Error, "timeout")
-	}
-}
-
-func TestGetLatestJobEvent_NotFound(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	rec, err := s.GetLatestJobEvent(context.Background(), "pipe-1", "daily", "2026-03-01")
-	if err != nil {
-		t.Fatalf("GetLatestJobEvent: %v", err)
-	}
-	if rec != nil {
-		t.Errorf("expected nil record, got %+v", rec)
-	}
-}
-
 func TestWriteJobEvent_DynamoError(t *testing.T) {
 	mock := newMockDDB()
 	s := newTestStore(mock)
@@ -234,27 +181,5 @@ func TestWriteJobEvent_WithoutCategory(t *testing.T) {
 
 	if _, ok := found["category"]; ok {
 		t.Error("expected category attribute to be absent when no option provided")
-	}
-}
-
-func TestGetLatestJobEvent_DynamoError(t *testing.T) {
-	mock := newMockDDB()
-	s := newTestStore(mock)
-
-	injected := errors.New("service unavailable")
-	mock.errFn = errOnOp("Query", injected)
-
-	rec, err := s.GetLatestJobEvent(context.Background(), "pipe-1", "daily", "2026-03-01")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if rec != nil {
-		t.Errorf("expected nil record on error, got %+v", rec)
-	}
-	if !errors.Is(err, injected) {
-		t.Errorf("expected wrapped injected error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "get latest job event") {
-		t.Errorf("expected context in error message, got: %v", err)
 	}
 }

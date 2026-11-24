@@ -184,6 +184,7 @@ func TestReconcile_Cutoff(t *testing.T) {
 		now        time.Time
 		exclude    bool   // exclude the sensor's date (not today's)
 		jobRow     string // event of a job row for slaTestDate
+		newer      string // a job row newer than jobRow
 		wantSFN    int
 		wantStatus string
 		wantEvent  types.EventDetailType
@@ -191,12 +192,14 @@ func TestReconcile_Cutoff(t *testing.T) {
 		{name: "before the cutoff", date: slaTestDate, now: at(10, 13, 0), wantSFN: 1,
 			wantStatus: types.TriggerStatusRunning, wantEvent: types.EventTriggerRecovered},
 		{name: "before the cutoff, job ran", date: slaTestDate, now: at(10, 13, 0), jobRow: types.JobEventSuccess},
+		{name: "before the cutoff, job ran, then a rejected rerun", date: slaTestDate, now: at(10, 13, 0), jobRow: types.JobEventSuccess, newer: types.JobEventRerunRejected},
 		{name: "before the cutoff, job failed", date: slaTestDate, now: at(10, 13, 0), jobRow: types.JobEventFail},
 		{name: "before the cutoff, job timed out", date: slaTestDate, now: at(10, 13, 0), jobRow: types.JobEventTimeout},
 		{name: "before the cutoff, launch failed", date: slaTestDate, now: at(10, 13, 0), jobRow: types.JobEventInfraTriggerFailure, wantSFN: 1,
 			wantStatus: types.TriggerStatusRunning, wantEvent: types.EventTriggerRecovered},
 		{name: "past the cutoff", date: slaTestDate, now: at(10, 14, 30),
 			wantStatus: types.TriggerStatusFailedFinal, wantEvent: types.EventSensorDeadlineExpired},
+		{name: "past the cutoff, job ran, then a rejected rerun", date: slaTestDate, now: at(10, 14, 30), jobRow: types.JobEventSuccess, newer: types.JobEventRerunRejected},
 		{name: "past the cutoff, excluded date", date: "2026-03-09", now: at(10, 14, 30), exclude: true},
 		{name: "past the cutoff, exhausted job row, no trigger row", date: slaTestDate, now: at(10, 14, 30), jobRow: types.JobEventInfraTriggerExhausted,
 			wantStatus: types.TriggerStatusFailedFinal, wantEvent: types.EventSensorDeadlineExpired},
@@ -212,6 +215,9 @@ func TestReconcile_Cutoff(t *testing.T) {
 			sfnFake := &countingSFN{}
 			d.SFNClient, d.NowFunc = sfnFake, func() time.Time { return tt.now }
 			pk := types.PipelinePK("p")
+			if tt.newer != "" {
+				mem.Put("joblog", sItem("PK", pk, "SK", types.JobSK("stream", slaTestDate, "1773129700000"), "event", tt.newer))
+			}
 			mem.Put("control", map[string]ddbtypes.AttributeValue{
 				"PK": &ddbtypes.AttributeValueMemberS{Value: pk}, "SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK("upstream")},
 				"data": &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{"date": &ddbtypes.AttributeValueMemberS{Value: tt.date}}},
@@ -244,9 +250,9 @@ func TestReconcile_Cutoff(t *testing.T) {
 	}
 }
 
-// TestReconcile_RestartsAfterRelease: a date whose newest job row is
+// TestReconcile_RestartsAfterRelease: a date whose newest outcome row is
 // evaluation-released was not ready within its evaluation window and had its
-// lock released. Before the cutoff the reconciler starts it again and reports
+// lock released; a rerun rejected since does not hide that. Before the cutoff the reconciler starts it again and reports
 // JOB_TRIGGERED, not TRIGGER_RECOVERED; past the cutoff it closes the date.
 // A cron pipeline is reconciled the same way (cron is only its start-by
 // time), under its own schedule ID, and one never started is recovered.
@@ -259,6 +265,7 @@ func TestReconcile_RestartsAfterRelease(t *testing.T) {
 		cron       string // schedule.cron of the pipeline
 		notStarted bool   // no evaluation-released job row
 		olderRow   string // a job row older than the evaluation-released one
+		newerRow   string // a job row newer than the evaluation-released one
 		wantSFN    int
 		wantStatus string
 		wantEvents []string
@@ -267,6 +274,8 @@ func TestReconcile_RestartsAfterRelease(t *testing.T) {
 		{name: "released, past the cutoff", now: at(14, 30), wantStatus: types.TriggerStatusFailedFinal,
 			wantEvents: []string{string(types.EventSensorDeadlineExpired)}},
 		{name: "infra-trigger-exhausted then released", now: at(13, 0), olderRow: types.JobEventInfraTriggerExhausted,
+			wantSFN: 1, wantStatus: types.TriggerStatusRunning, wantEvents: []string{triggered}},
+		{name: "released, then a rejected rerun", now: at(13, 0), newerRow: types.JobEventRerunRejected,
 			wantSFN: 1, wantStatus: types.TriggerStatusRunning, wantEvents: []string{triggered}},
 		{name: "released, cron pipeline", now: at(13, 0), cron: "0 8 * * *",
 			wantSFN: 1, wantStatus: types.TriggerStatusRunning, wantEvents: []string{triggered}},
@@ -287,6 +296,9 @@ func TestReconcile_RestartsAfterRelease(t *testing.T) {
 			}
 			if !tt.notStarted {
 				mem.Put("joblog", sItem("PK", pk, "SK", types.JobSK(schedule, slaTestDate, "1773129600000"), "event", types.JobEventEvaluationReleased))
+			}
+			if tt.newerRow != "" {
+				mem.Put("joblog", sItem("PK", pk, "SK", types.JobSK(schedule, slaTestDate, "1773129700000"), "event", tt.newerRow))
 			}
 			mem.Put("control", map[string]ddbtypes.AttributeValue{
 				"PK": &ddbtypes.AttributeValueMemberS{Value: pk}, "SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK("upstream")},
