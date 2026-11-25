@@ -57,7 +57,7 @@ type StatusResult struct {
 
 // OrchestratorInput is the input to the orchestrator Lambda from Step Functions.
 type OrchestratorInput struct {
-	Mode          string                 `json:"mode"` // evaluate, trigger, check-job, validation-exhausted, trigger-exhausted, complete-trigger, job-poll-exhausted
+	Mode          string                 `json:"mode"` // evaluate, trigger, check-job, validation-exhausted, trigger-exhausted, infra-failure, complete-trigger, job-poll-exhausted
 	PipelineID    string                 `json:"pipelineId"`
 	ScheduleID    string                 `json:"scheduleId"`
 	Date          string                 `json:"date"`
@@ -66,6 +66,8 @@ type OrchestratorInput struct {
 	Event         string                 `json:"event,omitempty"`         // job event for complete-trigger (success, fail, timeout)
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`      // trigger metadata for status polling
 	ErrorInfo     map[string]interface{} `json:"errorInfo,omitempty"`     // error details from SFN Catch
+
+	ExecutionStartedAt string `json:"executionStartedAt,omitempty"` // $$.Execution.StartTime (RFC3339), for infra-failure
 }
 
 // OrchestratorOutput is the output of the orchestrator Lambda.

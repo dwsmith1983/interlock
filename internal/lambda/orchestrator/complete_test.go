@@ -34,8 +34,9 @@ const (
 )
 
 type published struct {
-	Type   string
-	Detail map[string]interface{}
+	Type    string
+	Message string
+	Detail  map[string]interface{}
 }
 
 // recorder is the Step Functions and EventBridge double. A repeated execution
@@ -84,7 +85,7 @@ func (r *recorder) PutEvents(_ context.Context, in *eventbridge.PutEventsInput, 
 		}
 		r.log("event " + *e.DetailType)
 		r.mu.Lock()
-		r.events = append(r.events, published{Type: *e.DetailType, Detail: evt.Detail})
+		r.events = append(r.events, published{Type: *e.DetailType, Message: evt.Message, Detail: evt.Detail})
 		r.mu.Unlock()
 	}
 	return &eventbridge.PutEventsOutput{}, nil

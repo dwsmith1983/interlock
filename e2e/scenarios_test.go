@@ -913,6 +913,53 @@ func TestScenarioBadConfigIsolated(t *testing.T) {
 	assertLaunches(t, badZone, 0)
 }
 
+// An execution that fails on an infrastructure error ends its date at once. The
+// config row turns unreadable while the pipeline evaluates, so evaluations
+// report an error until the window closes, and ValidationExhausted then fails
+// through its retries. RecordInfraFailure reads the execution's start time,
+// publishes one INFRA_FAILURE and sets FAILED_FINAL, and the execution fails.
+func TestScenarioInfraFailure(t *testing.T) {
+	const id = "infra-failure"
+	_, date := startDay(t)
+	cfg := scenarioConfig(id)
+	cfg.Schedule.Evaluation.Window = "15s"
+	cfg.Validation.Rules = append(cfg.Validation.Rules, types.ValidationRule{Key: "upstream", Check: types.CheckExists})
+	putConfig(t, cfg)
+	t.Cleanup(func() { putConfig(t, cfg) }) // later watchdog passes would report the unreadable row
+
+	writeReady(t, id, date)
+	var exec string
+	waitFor(t, settleTimeout, id+" execution", func() bool {
+		if names := executionNames(t, id+"-"); len(names) == 1 {
+			exec = names[0]
+		}
+		return exec != ""
+	})
+	putItem(t, map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(id)},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.ConfigSK},
+		"config": &ddbtypes.AttributeValueMemberS{Value: "{"},
+	})
+
+	infra := string(types.EventInfraFailure)
+	waitEvents(t, id, date, map[string]int{string(types.EventJobTriggered): 1, infra: 1})
+	for _, e := range events(t, id) {
+		if e.Type == infra && (!strings.HasPrefix(e.Message, "execution for "+id+" failed on an infrastructure error: ") ||
+			!strings.Contains(e.Message, "validation-exhausted get config: unmarshal config")) {
+			t.Fatalf("INFRA_FAILURE message = %q, want it to name %s and the config error", e.Message, id)
+		}
+	}
+	waitFor(t, settleTimeout, id+" execution to fail", func() bool {
+		return executionStatus(t, exec) == sfntypes.ExecutionStatusFailed
+	})
+	if !stateExited(executionHistory(t, exec), "RecordInfraFailure") {
+		t.Fatalf("execution %s did not leave RecordInfraFailure", exec)
+	}
+	assertTriggerStatus(t, id, date, types.TriggerStatusFailedFinal)
+	waitAlerts(t, id, alert{id, date, infra})
+	assertLaunches(t, id, 0)
+}
+
 func stateExited(h []sfntypes.HistoryEvent, state string) bool {
 	for _, e := range h {
 		if d := e.StateExitedEventDetails; d != nil && aws.ToString(d.Name) == state {

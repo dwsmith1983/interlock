@@ -566,9 +566,10 @@ func invokeWatchdog(t *testing.T) {
 
 // event is one row event-sink wrote to the events table.
 type event struct {
-	Type string
-	Date string
-	At   time.Time // the publisher's (simulated) clock
+	Type    string
+	Date    string
+	Message string
+	At      time.Time // the publisher's (simulated) clock
 }
 
 // events returns the pipeline's events oldest first. event-sink keys them
@@ -583,6 +584,7 @@ func events(t *testing.T, pipeline string) []event {
 	type row struct {
 		EventType string `dynamodbav:"eventType"`
 		Date      string `dynamodbav:"date"`
+		Message   string `dynamodbav:"message"`
 		Timestamp int64  `dynamodbav:"timestamp"`
 	}
 	var out []event
@@ -604,7 +606,7 @@ func events(t *testing.T, pipeline string) []event {
 			t.Fatalf("decode events for %s: %v", pipeline, err)
 		}
 		for _, r := range rows {
-			out = append(out, event{Type: r.EventType, Date: r.Date, At: time.UnixMilli(r.Timestamp).UTC()})
+			out = append(out, event{Type: r.EventType, Date: r.Date, Message: r.Message, At: time.UnixMilli(r.Timestamp).UTC()})
 		}
 	}
 	return out

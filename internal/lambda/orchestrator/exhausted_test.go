@@ -17,6 +17,7 @@ import (
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/orchestrator"
+	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
@@ -209,6 +210,164 @@ func TestTriggerExhausted(t *testing.T) {
 			_, hasTTL := row["ttl"]
 			if hasStaleAt != (tt.wantRow == running) || hasTTL {
 				t.Errorf("%s trigger row has staleAt = %v, ttl = %v", tt.wantRow, hasStaleAt, hasTTL)
+			}
+		})
+	}
+}
+
+// TestInfraFailure: an execution that died on an infrastructure error publishes
+// one INFRA_FAILURE, then sets its RUNNING trigger row FAILED_FINAL (no staleAt,
+// no ttl) and writes no joblog row. A failed publish leaves the row RUNNING with
+// its staleAt, so the state's retry alerts. A missing or finished row is left
+// alone, and so is a RUNNING row when this execution released its own lock (an
+// evaluation-released row newer than its start): a later execution holds it. A
+// release from before the start, or any other outcome row, does not protect the
+// row. Without a readable start time, newest outcome or release time the state
+// fails. The message ends in the error and the cut cause, when there are any.
+func TestInfraFailure(t *testing.T) {
+	const infraEvent = "event " + string(types.EventInfraFailure)
+	final, running := types.TriggerStatusFailedFinal, types.TriggerStatusRunning
+	released := types.JobEventEvaluationReleased
+	started := time.Date(2026, 3, 1, 11, 0, 0, 0, time.UTC)
+	const startedAt = "2026-03-01T11:00:00.000Z" // how Step Functions writes $$.Execution.StartTime
+	const errName, cause = "Lambda.Unknown", "The cause could not be determined because Lambda did not return an error type."
+	longCause := strings.Repeat("x", 1200) + "\u00e9"
+	throttled := errors.New("dynamodb: throttled")
+	wantOps := []string{infraEvent, "status " + final}
+	const prefix = "execution for p failed on an infrastructure error"
+	jsonCause := `{"errorMessage":"validation-exhausted get config: unexpected end of JSON input","errorType":"wrapError"}`
+	tests := []struct {
+		name        string
+		startedAt   string                 // "" for startedAt, "none" for no value
+		errorInfo   map[string]interface{} // nil for errName and cause
+		wantMsg     string                 // "" for the message with errName and cause
+		outcome     string                 // a joblog row written at outcomeAt
+		outcomeAt   time.Time
+		badOutcome  bool // an evaluation-released row whose key does not end in a number
+		noRow       bool
+		startStatus string
+		publishErr  error
+		updateErr   error
+		getErr      error
+		queryErr    error
+		wantErrSub  string
+		wantOps     []string
+		wantRow     string // status after the call; unless FAILED_FINAL was written the row is unchanged
+	}{
+		{name: "running", wantOps: wantOps, wantRow: final},
+		{name: "longCause", errorInfo: map[string]interface{}{"Error": errName, "Cause": longCause},
+			wantMsg: prefix + ": " + errName + ": " + store.CutReason(longCause), wantOps: wantOps, wantRow: final},
+		{name: "jsonCause", errorInfo: map[string]interface{}{"Error": "wrapError", "Cause": jsonCause},
+			wantMsg: prefix + ": wrapError: " + jsonCause, wantOps: wantOps, wantRow: final},
+		{name: "noCause", errorInfo: map[string]interface{}{"Error": errName}, wantMsg: prefix + ": " + errName, wantOps: wantOps, wantRow: final},
+		{name: "noError", errorInfo: map[string]interface{}{"Cause": cause}, wantMsg: prefix + ": " + cause, wantOps: wantOps, wantRow: final},
+		{name: "noErrorNoCause", errorInfo: map[string]interface{}{}, wantMsg: prefix, wantOps: wantOps, wantRow: final},
+		{name: "publishFails", publishErr: errors.New("eventbridge: throttled"), wantErrSub: "publish INFRA_FAILURE", wantRow: running},
+		{name: "statusWriteFails", updateErr: throttled, wantErrSub: "infra-failure: set trigger status", wantOps: []string{infraEvent}, wantRow: running},
+		{name: "triggerReadFails", getErr: throttled, wantErrSub: "infra-failure: get trigger", wantRow: running},
+		{name: "rowMissing", noRow: true},
+		{name: "rowCompleted", startStatus: types.TriggerStatusCompleted, wantRow: types.TriggerStatusCompleted},
+		{name: "rowFailedFinal", startStatus: final, wantRow: final},
+		{name: "releasedByThisRun", outcome: released, outcomeAt: started.Add(time.Millisecond), wantRow: running},
+		{name: "releasedBeforeThisRun", outcome: released, outcomeAt: started.Add(-time.Millisecond), wantOps: wantOps, wantRow: final},
+		{name: "releasedAtTheStart", outcome: released, outcomeAt: started, wantOps: wantOps, wantRow: final},
+		{name: "otherOutcomeSinceTheStart", outcome: types.JobEventInfraTriggerFailure, outcomeAt: started.Add(time.Minute), wantOps: wantOps, wantRow: final},
+		{name: "unreadableReleaseTime", badOutcome: true, wantErrSub: "infra-failure: parse write time of job row", wantRow: running},
+		{name: "noStartTime", startedAt: "none", wantErrSub: "infra-failure: parse executionStartedAt", wantRow: running},
+		{name: "unreadableStartTime", startedAt: "1772362800", wantErrSub: "infra-failure: parse executionStartedAt", wantRow: running},
+		{name: "outcomeLookupFails", queryErr: throttled, wantErrSub: "infra-failure: get latest job outcome", wantRow: running},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, mem, rec := memDeps(t, failCfg(1))
+			now := started.Add(30 * time.Minute)
+			d.NowFunc = func() time.Time { return now }
+			d.Store.Now = d.NowFunc
+			if !tt.noRow {
+				if ok, err := d.Store.AcquireTriggerLock(ctx, "p", "s", ctDate, time.Hour); err != nil || !ok {
+					t.Fatalf("acquire trigger lock = %v, %v", ok, err)
+				}
+			}
+			if tt.startStatus != "" {
+				if err := d.Store.SetTriggerStatus(ctx, "p", "s", ctDate, tt.startStatus); err != nil {
+					t.Fatalf("set trigger status: %v", err)
+				}
+			}
+			if tt.outcome != "" {
+				now = tt.outcomeAt
+				if err := d.Store.WriteJobEvent(ctx, "p", "s", ctDate, tt.outcome, "", 0, ""); err != nil {
+					t.Fatalf("write job event: %v", err)
+				}
+				now = started.Add(30 * time.Minute)
+			}
+			if tt.badOutcome {
+				mem.Put("joblog", jobLogItem("soon", released, "", ""))
+			}
+			before, rowsBefore := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", ctDate)), len(mem.Items("joblog"))
+			rec.ops, rec.putErr = nil, tt.publishErr
+			fake := d.Store.Client.(*storetest.FakeDynamo)
+			if tt.updateErr != nil {
+				fake.UpdateItemFn = func(context.Context, *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+					return nil, tt.updateErr
+				}
+			}
+			if tt.getErr != nil {
+				fake.GetItemFn = func(context.Context, *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+					return nil, tt.getErr
+				}
+			}
+			if tt.queryErr != nil {
+				failTableQuery(d, "joblog", tt.queryErr)
+			}
+
+			errorInfo := tt.errorInfo
+			if errorInfo == nil {
+				errorInfo = map[string]interface{}{"Error": errName, "Cause": cause}
+			}
+			in := lambda.OrchestratorInput{Mode: "infra-failure", PipelineID: "p", ScheduleID: "s", Date: ctDate,
+				ExecutionStartedAt: cmp.Or(tt.startedAt, startedAt),
+				ErrorInfo:          errorInfo}
+			if tt.startedAt == "none" {
+				in.ExecutionStartedAt = ""
+			}
+			out, err := orchestrator.HandleOrchestrator(ctx, d, in)
+			if tt.wantErrSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrSub) {
+					t.Errorf("err = %v, want it to contain %q", err, tt.wantErrSub)
+				}
+			} else if err != nil || out.Mode != "infra-failure" || out.Status != final {
+				t.Errorf("infra-failure = %+v, %v, want mode infra-failure and status %s", out, err, final)
+			}
+
+			if !slices.Equal(rec.ops, tt.wantOps) {
+				t.Errorf("ops = %v, want %v", rec.ops, tt.wantOps)
+			}
+			wantErr, _ := errorInfo["Error"].(string)
+			wantCause, _ := errorInfo["Cause"].(string)
+			wantDetail := map[string]interface{}{"source": "orchestrator", "error": wantErr, "cause": store.CutReason(wantCause),
+				"actionHint": "the job may still be running if it had been launched: check it, then submit a RERUN_REQUEST to run the date again"}
+			if len(tt.wantOps) > 0 {
+				if len(rec.events) != 1 || !reflect.DeepEqual(rec.events[0].Detail, wantDetail) {
+					t.Errorf("events = %+v, want one with detail %v", rec.events, wantDetail)
+				} else if got, want := rec.events[0].Message, cmp.Or(tt.wantMsg, prefix+": "+errName+": "+cause); got != want {
+					t.Errorf("message = %q, want %q", got, want)
+				}
+			}
+			row := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", ctDate))
+			if got := strAttr(t, row, "status"); got != tt.wantRow {
+				t.Errorf("trigger row status = %q, want %q", got, tt.wantRow)
+			}
+			_, hasStaleAt := row["staleAt"]
+			_, hasTTL := row["ttl"]
+			if hasStaleAt != (tt.wantRow == running) || hasTTL {
+				t.Errorf("%s trigger row has staleAt = %v, ttl = %v", tt.wantRow, hasStaleAt, hasTTL)
+			}
+			if len(tt.wantOps) < 2 && !reflect.DeepEqual(row, before) {
+				t.Errorf("trigger row = %v, want it unchanged from %v", row, before)
+			}
+			if got := len(mem.Items("joblog")); got != rowsBefore {
+				t.Errorf("joblog rows = %d, want %d", got, rowsBefore)
 			}
 		})
 	}
