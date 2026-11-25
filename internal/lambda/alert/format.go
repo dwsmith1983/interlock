@@ -3,6 +3,7 @@ package alert
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -12,12 +13,14 @@ import (
 // a value can neither mention (<!channel>) nor link.
 var mrkdwn = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
-// esc makes v safe for Slack text: every control character (newline, CR,
-// tab, the rest of C0 and DEL) becomes a space, so a value cannot start a
-// line that looks like another alert, then mrkdwn is escaped.
+// esc makes v safe for Slack text: every control character (C0, DEL and C1,
+// so newline, CR and tab too), line or paragraph separator and bidirectional
+// control becomes a space, so a value can neither start a line that looks like
+// another alert nor override the direction of the text after it, then mrkdwn is
+// escaped. Other invisible characters, such as the zero-width joiner, are kept.
 func esc(v interface{}) string {
 	return mrkdwn.Replace(strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp, unicode.Bidi_Control) {
 			return ' '
 		}
 		return r
@@ -89,9 +92,12 @@ func alertEmoji(detailType string) string {
 		string(types.EventValidationExhausted), string(types.EventRetryExhausted),
 		string(types.EventInfraFailure), string(types.EventSFNTimeout),
 		string(types.EventScheduleMissed), string(types.EventDataDrift),
-		string(types.EventConfigInvalid), string(types.EventSensorDeadlineExpired):
+		string(types.EventConfigInvalid), string(types.EventSensorDeadlineExpired),
+		string(types.EventRelativeSLABreach), string(types.EventIrregularScheduleMissed),
+		string(types.EventPostRunFailed), string(types.EventPostRunDrift),
+		string(types.EventBaselineCaptureFailed), string(types.EventInfraAlarm):
 		return "\xf0\x9f\x94\xb4" // red circle
-	case string(types.EventSLAWarning):
+	case string(types.EventSLAWarning), string(types.EventRelativeSLAWarning):
 		return "\xf0\x9f\x9f\xa1" // yellow circle
 	case string(types.EventSLAMet):
 		return "\xe2\x9c\x85" // check mark
