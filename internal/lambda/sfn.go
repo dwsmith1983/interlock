@@ -20,6 +20,11 @@ import (
 // loop. Only an integer >= 1 takes effect; anything else keeps the default.
 const JobCheckIntervalEnv = "JOB_CHECK_INTERVAL_SECONDS"
 
+// RetryDelayMaxEnv names the env var that lowers the cap on the wait before a
+// job-failure retry. Only an integer in [1, types.RetryDelayCapSeconds] takes
+// effect; a larger one caps nothing.
+const RetryDelayMaxEnv = "RETRY_DELAY_MAX_SECONDS"
+
 // SFNInput is the top-level input for the Step Function state machine.
 //
 // The state machine runs in JSONPath mode: a Parameters reference to a missing
@@ -30,11 +35,12 @@ const JobCheckIntervalEnv = "JOB_CHECK_INTERVAL_SECONDS"
 // Choice states use IsPresent on $.config.sla to decide whether to run the
 // SLA branch at all.
 type SFNInput struct {
-	PipelineID      string    `json:"pipelineId"`
-	ScheduleID      string    `json:"scheduleId"`
-	Date            string    `json:"date"`
-	SensorArrivalAt string    `json:"sensorArrivalAt"` // RFC3339; empty when unknown
-	Config          SFNConfig `json:"config"`
+	PipelineID        string    `json:"pipelineId"`
+	ScheduleID        string    `json:"scheduleId"`
+	Date              string    `json:"date"`
+	SensorArrivalAt   string    `json:"sensorArrivalAt"`   // RFC3339; empty when unknown
+	RetryDelaySeconds int       `json:"retryDelaySeconds"` // 0 unless the execution is a failure retry
+	Config            SFNConfig `json:"config"`
 }
 
 // SFNConfig holds timing parameters for the SFN evaluation loop and SLA branch.
@@ -142,6 +148,18 @@ func NextExecName(current string) string {
 	return fmt.Sprintf("%s-r%d", base, RetriesSoFar(current)+1)
 }
 
+// ExecRetryDelaySeconds is how long the execution named name waits before it
+// evaluates: types.RetryDelaySeconds of its retry number, at most
+// RetryDelayMaxEnv.
+func ExecRetryDelaySeconds(name string) int {
+	delay := types.RetryDelaySeconds(RetriesSoFar(name))
+	limit, err := strconv.Atoi(os.Getenv(RetryDelayMaxEnv))
+	if err != nil || limit < 1 {
+		return delay
+	}
+	return min(delay, limit)
+}
+
 // RecordFirstSensorArrival records at as the date's first sensor arrival, the
 // start of its relative SLA (sla.maxDuration), unless one is already recorded.
 // Call it after taking the trigger lock and before StartSFN, which reads it
@@ -163,7 +181,8 @@ func StartSFN(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineI
 	return StartSFNWithName(ctx, d, cfg, pipelineID, scheduleID, date, name)
 }
 
-// StartSFNWithName starts a Step Function execution with a custom execution name.
+// StartSFNWithName starts a Step Function execution with a custom execution
+// name, which also decides how long a failure retry waits.
 // Defense-in-depth: refuses to start if the pipeline is in dry-run mode.
 func StartSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, name string) error {
 	if cfg.DryRun {
@@ -173,6 +192,7 @@ func StartSFNWithName(ctx context.Context, d *Deps, cfg *types.PipelineConfig, p
 	}
 
 	input := BuildSFNInput(cfg, pipelineID, scheduleID, date, "")
+	input.RetryDelaySeconds = ExecRetryDelaySeconds(name)
 
 	// Populate sensorArrivalAt for relative SLA passthrough.
 	if input.Config.SLA != nil && input.Config.SLA.MaxDuration != "" && d.Store != nil {

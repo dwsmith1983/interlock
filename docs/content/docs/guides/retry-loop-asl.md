@@ -5,13 +5,17 @@ weight: 10
 
 # Step Functions State Machine
 
-This guide explains the ASL patterns used in Interlock's Step Functions state machine. The state machine uses 29 states to orchestrate pipeline evaluation, job triggering, and SLA monitoring via EventBridge Scheduler.
+This guide explains the ASL patterns used in Interlock's Step Functions state machine. The state machine uses 31 states to orchestrate pipeline evaluation, job triggering, and SLA monitoring via EventBridge Scheduler.
 
 ## Architecture Overview
 
 The state machine is defined in `deploy/statemachine.asl.json`. The Terraform module provisions it automatically with Lambda ARN substitution.
 
 ```
+CheckRetryBackoff
+  → (retry) RetryBackoff → InitEvalLoop
+  → (any other run) InitEvalLoop
+
 InitEvalLoop → Evaluate → IsReady
   → (passed) Trigger → HasTriggerResult
       → InitJobPollLoop → WaitForJob → CheckJob → IsJobDone
@@ -31,6 +35,35 @@ Evaluate, ValidationExhausted or CheckJob fails after its retries
 ```
 
 SLA monitoring uses EventBridge Scheduler instead of a parallel branch. The watchdog creates one-time Scheduler entries for each run date with a `RUN#` row; at their exact timestamps they invoke the sla-monitor Lambda, which fires the alert. When the job completes, unfired entries are cancelled.
+
+## Retry Backoff
+
+A retry after a job failure runs as its own execution and waits before anything else:
+
+```json
+{
+  "CheckRetryBackoff": {
+    "Type": "Choice",
+    "Choices": [
+      {
+        "Variable": "$.retryDelaySeconds",
+        "NumericGreaterThan": 0,
+        "Next": "RetryBackoff"
+      }
+    ],
+    "Default": "InitEvalLoop"
+  },
+  "RetryBackoff": {
+    "Type": "Wait",
+    "SecondsPath": "$.retryDelaySeconds",
+    "Next": "InitEvalLoop"
+  }
+}
+```
+
+The execution's input carries `retryDelaySeconds`, set when the execution starts from the `-r<N>` suffix of its name: 60 seconds doubling per retry, at most 900 (60, 120, 240, 480, 900, 900, ...). A first run, a requested rerun and a watchdog start have no suffix and get 0, so they go straight to the evaluation loop.
+
+The wait comes before `InitEvalLoop` sets the evaluation counter, so it takes nothing from the evaluation window. It does count against the execution's own timeout, which is why the config check adds the longest delay the pipeline can reach. Each retry is a new execution, so the delays do not add up there. The delays are not randomised: failed jobs end at different moments, and a random delay could be close to zero.
 
 ## Evaluation Loop
 

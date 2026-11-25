@@ -466,6 +466,38 @@ func TestASL_InfraFailureIsRecorded(t *testing.T) {
 	require.Equal(t, "2026-03-01T11:00:00.000Z", in.ExecutionStartedAt)
 }
 
+// TestASL_RetryBacksOffBeforeEvaluating: an execution starts at the Choice that
+// sends a retry through the Wait, and any other run straight to the evaluation
+// loop. Nothing else leads to these states, so the wait happens once and is not
+// part of the evaluation window.
+func TestASL_RetryBacksOffBeforeEvaluating(t *testing.T) {
+	asl := loadASL(t)
+	require.Equal(t, "CheckRetryBackoff", asl.StartAt)
+
+	type state struct {
+		Type, Default, SecondsPath, Next string
+		Choices                          []map[string]interface{}
+	}
+	load := func(name string) (st state) {
+		require.NoError(t, json.Unmarshal(asl.States[name], &st), "parsing state %q", name)
+		return st
+	}
+	require.Equal(t, state{Type: "Choice", Default: "InitEvalLoop", Choices: []map[string]interface{}{
+		{"Variable": "$.retryDelaySeconds", "NumericGreaterThan": float64(0), "Next": "RetryBackoff"},
+	}}, load("CheckRetryBackoff"))
+	require.Equal(t, state{Type: "Wait", SecondsPath: "$.retryDelaySeconds", Next: "InitEvalLoop"}, load("RetryBackoff"))
+
+	sources := map[string][]string{}
+	for name, raw := range asl.States {
+		for target := range allTransitionTargets(t, map[string]json.RawMessage{name: raw}) {
+			sources[target] = append(sources[target], name)
+		}
+	}
+	require.Empty(t, sources["CheckRetryBackoff"])
+	require.Equal(t, []string{"CheckRetryBackoff"}, sources["RetryBackoff"])
+	require.ElementsMatch(t, []string{"CheckRetryBackoff", "RetryBackoff"}, sources["InitEvalLoop"])
+}
+
 // --- throttling -------------------------------------------------------------
 
 const (

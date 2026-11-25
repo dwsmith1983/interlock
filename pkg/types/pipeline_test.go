@@ -1,6 +1,7 @@
 package types_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -418,4 +419,16 @@ func TestPipelineConfig_DeepCopy(t *testing.T) {
 		assert.Equal(t, "bronze-ingest", cp.Pipeline.ID)
 		assert.Len(t, cp.Validation.Rules, 1)
 	})
+}
+
+// TestRetryDelaySeconds: the delay doubles from one minute per retry and stays
+// at 15 minutes, however large the retry number.
+func TestRetryDelaySeconds(t *testing.T) {
+	for retry, want := range map[int]int{
+		math.MinInt: 0, -1: 0, 0: 0,
+		1: 60, 2: 120, 3: 240, 4: 480,
+		5: 900, 10: 900, 64: 900, math.MaxInt: 900,
+	} {
+		assert.Equal(t, want, types.RetryDelaySeconds(retry), "retry %d", retry)
+	}
 }

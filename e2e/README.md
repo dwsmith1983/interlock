@@ -101,6 +101,8 @@ code path first and assert the exact values it produces.
   failure: a `lambda` function error writes a `PERMANENT` `fail` row, the
   Trigger state does not retry it, and `maxCodeRetries: 0` (with
   `maxRetries: 1`) ends the run with `RETRY_EXHAUSTED`. Not run:
+  - the full wait before a retry (60 s): `RETRY_DELAY_MAX_SECONDS` cuts it to
+    5 s;
   - a `PERMANENT` failure that is retried under `maxCodeRetries`;
   - a retry after the job poll window closes (the `timeout` row): the window
     is at least 60 s and the e2e job check interval is 5 s, so one exhausted

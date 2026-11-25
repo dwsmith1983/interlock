@@ -111,6 +111,10 @@ Sensor data arrives
 stream-router starts SFN
         │
         ▼
+   CheckRetryBackoff
+   (a failure retry waits first)
+        │
+        ▼
    Evaluation Loop
    (Evaluate → Wait → Re-evaluate)
         │
@@ -133,7 +137,7 @@ CheckCancelSLA → CancelSLASchedules
 
 ### State Summary
 
-The Step Functions state machine has 29 states:
+The Step Functions state machine has 31 states:
 
 1. **Evaluation loop**: evaluates validation rules at a configurable interval. When all rules pass, triggers the job. If the evaluation window expires, ValidationExhausted ends the execution without the SLA cleanup, since no job ran. Before the run date's cutoff, a first run is released: the orchestrator writes an `evaluation-released` job row, deletes the trigger row and publishes `EVALUATION_RELEASED` (not an alert), so the next trigger sensor write or watchdog pass can start evaluation again until the cutoff, and the date's SLA schedules still fire. For a rerun it publishes `VALIDATION_EXHAUSTED` and sets `FAILED_FINAL`, and the run's unfired SLA schedules fire and are suppressed because the run is finished. At or after the cutoff, a first run publishes `SENSOR_DEADLINE_EXPIRED` and then sets `FAILED_FINAL`. An evaluation still running at the cutoff, for a first run, ends that way too instead of launching the job.
 
@@ -200,7 +204,7 @@ When a triggered job fails or times out (including a closed job poll window), th
 1. If the date is excluded by the calendar, publish `PIPELINE_EXCLUDED` and mark the trigger as `FAILED_FINAL`; an excluded date is never retried
 2. Read the number of retries so far from the execution name's `-r{N}` suffix (none means 0), and the failure category from the run's own job log row (`PERMANENT` uses `job.maxCodeRetries`, default 1; anything else, or no row, uses `job.maxRetries`)
 3. If at the limit, mark the trigger as `FAILED_FINAL` and publish a `RETRY_EXHAUSTED` event
-4. Otherwise write a re-run record, start the next execution (which keeps the SLA schedules) and give the trigger row a fresh stale deadline (`staleAt`) while it is still `RUNNING`. If the execution cannot be started, mark the trigger as `FAILED_FINAL` and publish `INFRA_FAILURE`
+4. Otherwise write a re-run record, start the next execution (which keeps the SLA schedules and [waits](../../configuration/pipelines/#retry-budgets) 60 seconds, doubled per retry, at most 15 minutes, before it evaluates) and give the trigger row a fresh stale deadline (`staleAt`) while it is still `RUNNING`. If the execution cannot be started, mark the trigger as `FAILED_FINAL` and publish `INFRA_FAILURE`
 
 A dry-run pipeline, or one without a valid config, is never retried: the trigger goes to `FAILED_FINAL`.
 

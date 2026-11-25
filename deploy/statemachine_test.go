@@ -147,6 +147,8 @@ func TestASL_StartAtExists(t *testing.T) {
 func TestASL_TopLevelStatesExist(t *testing.T) {
 	asl := loadASL(t)
 	expected := []string{
+		"CheckRetryBackoff",
+		"RetryBackoff",
 		"InitEvalLoop",
 		"Evaluate",
 		"IsReady",

@@ -26,6 +26,7 @@ class LambdaEnvTest(unittest.TestCase):
                 env = deploy._lambda_env(handler, SFN_ARN)
                 self.assertEqual([k for k in env if k.startswith("E2E_")], [])
                 self.assertNotIn("JOB_CHECK_INTERVAL_SECONDS", env)
+                self.assertNotIn("RETRY_DELAY_MAX_SECONDS", env)
         self.assertEqual(deploy._lambda_env("sla-monitor", SFN_ARN)["SKIP_SCHEDULER"], "true")
         watchdog = deploy._lambda_env("watchdog", SFN_ARN)
         self.assertEqual([v for v in SCHEDULER_VARS if v in watchdog], [])
@@ -37,6 +38,7 @@ class LambdaEnvTest(unittest.TestCase):
                 self.assertEqual(env["E2E_CLOCK_URL"], CLOCK_URL)
                 self.assertEqual(env["E2E_SCHEDULE_TABLE"], deploy.TABLE_SCHEDULES)
                 self.assertEqual(env["JOB_CHECK_INTERVAL_SECONDS"], "5")
+                self.assertEqual(env["RETRY_DELAY_MAX_SECONDS"], "5")
                 self.assertNotIn("SKIP_SCHEDULER", env)
 
     def test_lambda_env_e2e_scheduler_env(self) -> None:

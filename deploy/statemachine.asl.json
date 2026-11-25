@@ -1,8 +1,26 @@
 {
   "Comment": "Interlock v2 pipeline lifecycle: evaluation, trigger, job polling, SLA monitoring via EventBridge Scheduler",
-  "StartAt": "InitEvalLoop",
+  "StartAt": "CheckRetryBackoff",
   "TimeoutSeconds": ${sfn_timeout_seconds},
   "States": {
+    "CheckRetryBackoff": {
+      "Type": "Choice",
+      "Comment": "A job-failure retry waits before it evaluates; any other run starts at once",
+      "Choices": [
+        {
+          "Variable": "$.retryDelaySeconds",
+          "NumericGreaterThan": 0,
+          "Next": "RetryBackoff"
+        }
+      ],
+      "Default": "InitEvalLoop"
+    },
+    "RetryBackoff": {
+      "Type": "Wait",
+      "Comment": "Back off before retrying a failed job: 60s doubling per retry, at most 900s",
+      "SecondsPath": "$.retryDelaySeconds",
+      "Next": "InitEvalLoop"
+    },
     "InitEvalLoop": {
       "Type": "Pass",
       "Comment": "Initialize elapsed-seconds counter for the evaluation window",

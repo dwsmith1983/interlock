@@ -200,14 +200,18 @@ Interlock maintains separate retry budgets by failure source, preventing one cat
 
 | Field | Type | Default | Range | Description |
 |---|---|---|---|---|
-| `maxRetries` | int | `0` | 0--10 | Retry attempts for transient/unknown job failures |
-| `maxCodeRetries` | int* | `1` | 0--3 | Retry attempts for permanent (code/logic) failures. Only used when the trigger runner reports `FailureCategory: PERMANENT` |
+| `maxRetries` | int | `0` | 0--10 | Retry attempts for transient/unknown job failures. Each waits before it starts (see Retry delay) |
+| `maxCodeRetries` | int* | `1` | 0--3 | Retry attempts for permanent (code/logic) failures. Only used when the trigger runner reports `FailureCategory: PERMANENT`. Each waits before it starts (see Retry delay) |
 | `maxDriftReruns` | int* | `1` | 0--5 | Rerun budget for automatic drift and late-data reruns |
 | `maxManualReruns` | int* | `1` | 0--5 | Rerun budget for manual rerun requests |
 
 Fields marked `int*` use pointer semantics: omit to use the default, set to `0` to explicitly disable.
 
 **Failure classification**: when a job fails, the trigger runner may report a `FailureCategory` (`PERMANENT`, `TRANSIENT`, or `TIMEOUT`). Permanent failures (e.g., application code bugs, schema mismatches) use the `maxCodeRetries` budget. Transient failures (e.g., service throttling, temporary network issues) and unclassified failures use the `maxRetries` budget.
+
+**Retry delay**: a retry does not start at once. The execution for retry N waits before it evaluates: 60 seconds, doubling each time, to at most 15 minutes (1, 2, 4, 8, 15, 15, ... minutes). N counts every retry since the chain's first execution (a first run, a requested rerun or a watchdog start), whichever budget allowed it, so a permanent failure waits the same way. The date stays `RUNNING` during the wait: SLA alerts due then go out, and a `RERUN_REQUEST` is rejected as in progress. The delays are not randomised. Ten retries wait 105 minutes in total, on top of each attempt's own run time, so check `sla.deadline` against the budget you set.
+
+A pipeline switched to dry-run, or a date added to the exclusions, during the wait does not stop the retry: it still launches the job, as during the evaluation window. A config deleted during the wait ends the date with `VALIDATION_EXHAUSTED` once the evaluation window closes.
 
 **Launch failures**: a job that could not be started at all (for example Glue `ConcurrentRunsExceededException`) is retried by the Trigger state (`trigger_max_attempts`), not under these budgets. When those retries run out the orchestrator publishes `RETRY_EXHAUSTED` and the date ends `FAILED_FINAL`. Nothing starts it again on its own: submit a `RERUN_REQUEST` to run it, which spends `maxManualReruns`. A rerun of a `COMPLETED` date whose launch runs out of retries ends the date `FAILED_FINAL` the same way, so its post-run monitoring stops; the earlier run's output stands.
 
@@ -227,7 +231,7 @@ The date is left `RUNNING` when the status restore fails, when the stream-router
 
 | Field | Type | Default | Range | Description |
 |---|---|---|---|---|
-| `jobPollWindowSeconds` | int* | `3600` (1h) | 60--86400 | Maximum time to poll for job completion before timing out. Added to `schedule.evaluation.window`, it may not exceed `sfn_timeout_seconds` (default 14400) |
+| `jobPollWindowSeconds` | int* | `3600` (1h) | 60--86400 | Maximum time to poll for job completion before timing out. It plus `schedule.evaluation.window` plus the longest [retry delay](#retry-budgets) the pipeline can reach (by the larger of `maxRetries` and `maxCodeRetries`, default 1: 1, 2, 4 or 8 minutes for 1 to 4 retries, 15 minutes from 5 up, nothing when both are 0) may not exceed `sfn_timeout_seconds` (default 14400) |
 
 When the poll window elapses without a terminal job status, the orchestrator writes a `timeout` row for the run to the joblog (published as `JOB_FAILED` with error "job poll window exhausted") and handles it like any other timeout: it retries while `maxRetries` lasts, then sets the trigger to `FAILED_FINAL` and publishes `RETRY_EXHAUSTED`. This prevents unbounded polling when external jobs hang.
 

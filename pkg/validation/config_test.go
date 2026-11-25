@@ -668,37 +668,52 @@ func TestValidate_Evaluation(t *testing.T) {
 }
 
 // TestValidate_ExecutionFit: the evaluation window plus the job poll window
-// must fit the Step Functions execution timeout. A timeout of 0 (unknown)
-// and invalid evaluation values give nothing.
+// plus the longest delay one retry can have must fit the Step Functions
+// execution timeout. A timeout of 0 (unknown) and invalid evaluation values
+// give nothing.
 func TestValidate_ExecutionFit(t *testing.T) {
 	const fourHours = 4 * time.Hour
+	exceeds := func(sum string) []string {
+		return []string{"schedule.evaluation.window " + sum + " exceeds the Step Functions execution timeout 4h0m0s (sfn_timeout_seconds)"}
+	}
 	tests := []struct {
 		name, window, interval string
 		poll                   *int
+		maxRetries             int
+		codeRetries            *int
 		timeout                time.Duration
 		wantErrs               []string
 	}{
-		{"6h, default poll", "6h", "", nil, fourHours, []string{
-			"schedule.evaluation.window 6h0m0s plus job.jobPollWindowSeconds 3600 (default) exceeds the Step Functions execution timeout 4h0m0s (sfn_timeout_seconds)"}},
-		{"6h, poll 0 is the default", "6h", "", intPtr(0), fourHours, []string{
-			"schedule.evaluation.window 6h0m0s plus job.jobPollWindowSeconds 3600 (default) exceeds the Step Functions execution timeout 4h0m0s (sfn_timeout_seconds)"}},
-		{"1h, default poll", "1h", "", nil, fourHours, nil},
-		{"default window, default poll", "", "", nil, fourHours, nil},
-		{"default window, poll 10801", "", "", intPtr(10801), fourHours, []string{
-			"schedule.evaluation.window 1h0m0s (default) plus job.jobPollWindowSeconds 10801 exceeds the Step Functions execution timeout 4h0m0s (sfn_timeout_seconds)"}},
-		{"3h plus 3600 equals the timeout", "3h", "", intPtr(3600), fourHours, nil},
-		{"3h plus 3601", "3h", "", intPtr(3601), fourHours, []string{
-			"schedule.evaluation.window 3h0m0s plus job.jobPollWindowSeconds 3601 exceeds the Step Functions execution timeout 4h0m0s (sfn_timeout_seconds)"}},
-		{"timeout 0", "6h", "", nil, 0, nil},
-		{"timeout negative", "6h", "", nil, -time.Second, nil},
-		{"window does not parse", "6 hours", "", nil, time.Hour, nil},
-		{"window allows too many evaluations", "6h", "10s", nil, time.Hour, nil},
+		{"6h, default poll", "6h", "", nil, 0, nil, fourHours,
+			exceeds("6h0m0s plus job.jobPollWindowSeconds 3600 (default) plus the longest retry delay 1m0s")},
+		{"6h, poll 0 is the default", "6h", "", intPtr(0), 0, nil, fourHours,
+			exceeds("6h0m0s plus job.jobPollWindowSeconds 3600 (default) plus the longest retry delay 1m0s")},
+		{"1h, default poll", "1h", "", nil, 0, nil, fourHours, nil},
+		{"default window, default poll", "", "", nil, 0, nil, fourHours, nil},
+		{"default window, poll 10801", "", "", intPtr(10801), 0, nil, fourHours,
+			exceeds("1h0m0s (default) plus job.jobPollWindowSeconds 10801 plus the longest retry delay 1m0s")},
+		{"no retries equals the timeout", "3h", "", intPtr(3600), 0, intPtr(0), fourHours, nil},
+		{"no retries, 1s over", "3h", "", intPtr(3601), 0, intPtr(0), fourHours,
+			exceeds("3h0m0s plus job.jobPollWindowSeconds 3601")},
+		{"default code retry equals the timeout", "3h", "", intPtr(3540), 0, nil, fourHours, nil},
+		{"default code retry, 1s over", "3h", "", intPtr(3541), 0, nil, fourHours,
+			exceeds("3h0m0s plus job.jobPollWindowSeconds 3541 plus the longest retry delay 1m0s")},
+		{"maxRetries 5 equals the timeout", "3h", "", intPtr(2700), 5, nil, fourHours, nil},
+		{"maxRetries 5, 1s over", "3h", "", intPtr(2701), 5, nil, fourHours,
+			exceeds("3h0m0s plus job.jobPollWindowSeconds 2701 plus the longest retry delay 15m0s")},
+		{"maxRetries 2, maxCodeRetries 3 equals the timeout", "3h", "", intPtr(3360), 2, intPtr(3), fourHours, nil},
+		{"maxCodeRetries 3, 1s over", "3h", "", intPtr(3361), 0, intPtr(3), fourHours,
+			exceeds("3h0m0s plus job.jobPollWindowSeconds 3361 plus the longest retry delay 4m0s")},
+		{"timeout 0", "6h", "", nil, 0, nil, 0, nil},
+		{"timeout negative", "6h", "", nil, 0, nil, -time.Second, nil},
+		{"window does not parse", "6 hours", "", nil, 0, nil, time.Hour, nil},
+		{"window allows too many evaluations", "6h", "10s", nil, 0, nil, time.Hour, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := types.PipelineConfig{
 				Schedule: types.ScheduleConfig{Evaluation: types.EvaluationWindow{Window: tt.window, Interval: tt.interval}},
-				Job:      types.JobConfig{JobPollWindowSeconds: tt.poll},
+				Job:      types.JobConfig{JobPollWindowSeconds: tt.poll, MaxRetries: tt.maxRetries, MaxCodeRetries: tt.codeRetries},
 			}
 			assert.Equal(t, tt.wantErrs, ExecutionFitErrors(&cfg, tt.timeout))
 		})
