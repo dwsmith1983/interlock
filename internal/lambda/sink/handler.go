@@ -1,13 +1,16 @@
 // Package sink implements the event-sink Lambda handler.
-// It writes EventBridge events to DynamoDB for audit trail.
+// It writes EventBridge events, details included, to DynamoDB for audit trail.
 package sink
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
@@ -15,7 +18,15 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// HandleEventSink writes an EventBridge event to the centralized events table.
+// contentHashBytes is how much of the event's SHA-256 goes into its sort key.
+const contentHashBytes = 8
+
+// HandleEventSink writes an EventBridge event to the centralized events table
+// under SK {tsMillis}#{detailType}#{content hash}. The hash covers the decoded
+// event, so events that differ in content get their own rows, and two equal in
+// every field, the time to the nanosecond included, are one row. An event
+// without a timestamp is keyed on the time of the write instead, so delivering
+// it again can add a row.
 func HandleEventSink(ctx context.Context, d *lambda.Deps, input lambda.EventBridgeInput) error {
 	var detail types.InterlockEvent
 	if err := json.Unmarshal(input.Detail, &detail); err != nil {
@@ -35,7 +46,14 @@ func HandleEventSink(ctx context.Context, d *lambda.Deps, input lambda.EventBrid
 		ttlDays = 90
 	}
 	ttl := now.Add(time.Duration(ttlDays) * 24 * time.Hour).Unix()
-	sk := fmt.Sprintf("%d#%s", tsMillis, input.DetailType)
+
+	// Hash the decoded event, so the layout of its JSON does not matter.
+	canonical, err := json.Marshal(detail)
+	if err != nil {
+		return fmt.Errorf("marshal event (pipeline=%s type=%s): %w", detail.PipelineID, input.DetailType, err)
+	}
+	sum := sha256.Sum256(canonical)
+	sk := fmt.Sprintf("%d#%s#%s", tsMillis, input.DetailType, hex.EncodeToString(sum[:contentHashBytes]))
 
 	item := map[string]ddbtypes.AttributeValue{
 		"PK":         &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(detail.PipelineID)},
@@ -49,7 +67,14 @@ func HandleEventSink(ctx context.Context, d *lambda.Deps, input lambda.EventBrid
 		"ttl":        &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttl)},
 	}
 
-	_, err := d.Store.Client.PutItem(ctx, &dynamodb.PutItemInput{
+	if len(detail.Detail) > 0 {
+		item["detail"], err = attributevalue.Marshal(detail.Detail)
+		if err != nil {
+			return fmt.Errorf("marshal event detail (pipeline=%s type=%s): %w", detail.PipelineID, input.DetailType, err)
+		}
+	}
+
+	_, err = d.Store.Client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &d.Store.EventsTable,
 		Item:      item,
 	})

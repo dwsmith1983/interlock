@@ -74,7 +74,7 @@ Centralized log of all EventBridge events. The event-sink Lambda writes every ev
 
 | Entity | PK | SK | Purpose |
 |---|---|---|---|
-| Event | `PIPELINE#{id}` | `{tsMillis}#{eventType}` | Timestamped event record |
+| Event | `PIPELINE#{id}` | `{tsMillis}#{eventType}#{hash}` | Event record with its details, see [Event Sink](../../reference/alerting/#event-sink) |
 | Thread | `PIPELINE#{id}` | `THREAD#{schedule}#{date}`, or `THREADDAY#{YYYY-MM-DD}` (UTC) for alerts without a run date | Slack thread storage for alert-dispatcher |
 
 GSI1 (`eventType` → `timestamp`) enables querying all events of a specific type across pipelines.
@@ -149,7 +149,7 @@ See [Watchdog](../watchdog) for the full algorithm.
 
 ### event-sink
 
-Receives EventBridge events via a rule that matches all `source: "interlock"` events. Writes each event to the events table with the pipeline ID as PK and a composite `{tsMillis}#{eventType}` as SK. TTL is set based on `EVENTS_TTL_DAYS` (default: 90).
+Receives EventBridge events via a rule that matches all `source: "interlock"` events. Writes each event to the events table with the pipeline ID as PK and a composite `{tsMillis}#{eventType}#{hash}` as SK, where `hash` is taken from the event's content, and keeps the event's details in the `detail` map. TTL is set based on `EVENTS_TTL_DAYS` (default: 90).
 
 ### alert-dispatcher
 

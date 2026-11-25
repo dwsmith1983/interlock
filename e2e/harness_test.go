@@ -569,23 +569,25 @@ type event struct {
 	Type    string
 	Date    string
 	Message string
+	Detail  map[string]any
 	At      time.Time // the publisher's (simulated) clock
 }
 
 // events returns the pipeline's events oldest first. event-sink keys them
-// PK=PIPELINE#<id>, SK=<unix millis>#<detail type>, so events stamped in the
-// same simulated millisecond sort by type, and two of the same type in the
-// same millisecond overwrite each other. Assert order only between events
-// that are causally ordered.
+// PK=PIPELINE#<id>, SK=<unix millis>#<detail type>#<content hash>, so events
+// stamped in the same simulated millisecond sort by type, and two of the same
+// type in no useful order. An event that repeats another one exactly is the
+// same row. Assert order only between events that are causally ordered.
 func events(t *testing.T, pipeline string) []event {
 	t.Helper()
 	ctx, cancel := callCtx()
 	defer cancel()
 	type row struct {
-		EventType string `dynamodbav:"eventType"`
-		Date      string `dynamodbav:"date"`
-		Message   string `dynamodbav:"message"`
-		Timestamp int64  `dynamodbav:"timestamp"`
+		EventType string         `dynamodbav:"eventType"`
+		Date      string         `dynamodbav:"date"`
+		Message   string         `dynamodbav:"message"`
+		Detail    map[string]any `dynamodbav:"detail"`
+		Timestamp int64          `dynamodbav:"timestamp"`
 	}
 	var out []event
 	p := dynamodb.NewQueryPaginator(ddb, &dynamodb.QueryInput{
@@ -606,7 +608,7 @@ func events(t *testing.T, pipeline string) []event {
 			t.Fatalf("decode events for %s: %v", pipeline, err)
 		}
 		for _, r := range rows {
-			out = append(out, event{Type: r.EventType, Date: r.Date, Message: r.Message, At: time.UnixMilli(r.Timestamp).UTC()})
+			out = append(out, event{Type: r.EventType, Date: r.Date, Message: r.Message, Detail: r.Detail, At: time.UnixMilli(r.Timestamp).UTC()})
 		}
 	}
 	return out

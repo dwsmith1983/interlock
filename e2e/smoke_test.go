@@ -99,6 +99,9 @@ func TestHarnessSmoke(t *testing.T) {
 		t.Fatalf("last event = %+v, want %s for %s stamped in [%s, %s]", expired, types.EventSensorDeadlineExpired,
 			nextDate, next.Format(time.RFC3339), simNow.Format(time.RFC3339))
 	}
+	if got := expired.Detail["cutoff"]; got != smokeCutoff {
+		t.Fatalf("SENSOR_DEADLINE_EXPIRED detail.cutoff = %v, want %s (detail: %v)", got, smokeCutoff, expired.Detail)
+	}
 	// A later pass finds the FAILED_FINAL row and alerts nothing more; the
 	// alerts drain below gives a second publish time to arrive.
 	invokeWatchdog(t)
