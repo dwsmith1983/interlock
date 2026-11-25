@@ -121,7 +121,7 @@ Supported trigger types: `http`, `airflow`, `glue`, `emr`, `emr-serverless`, `st
 
 ### sla-monitor
 
-Publishes the SLA alerts. The watchdog creates the one-time EventBridge Scheduler entries (warning and breach) for each `RUN#` date; sla-monitor is invoked:
+Publishes the SLA alerts. The watchdog creates the one-time EventBridge Scheduler entries (warning and breach) for each `RUN#` date, at most 6 hours before its warning; sla-monitor is invoked:
 
 | When | Action |
 |---|---|
@@ -137,7 +137,7 @@ Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs nine i
 2. **Missed schedules** -- for each `RUN#` date of a cron pipeline whose start-by time (the cron time) has passed, checks the trigger row for the job-started mark. Publishes `SCHEDULE_MISSED` once per date when the job has not started.
 3. **Missed inclusion schedules** -- checks pipelines with inclusion calendar config for missing triggers on scheduled dates. Publishes `IRREGULAR_SCHEDULE_MISSED` once per date, deduplicated by a marker written only after a successful publish, so a failed publish is retried on the next pass.
 4. **Sensor-trigger reconciliation** -- re-evaluates trigger conditions for sensor-triggered pipelines, cron ones included. Self-heals missed triggers caused by silent completion-write failures. Past the date's `schedule.trigger.cutoff` it starts nothing and closes the date with `FAILED_FINAL` and one `SENSOR_DEADLINE_EXPIRED`.
-5. **SLA scheduling** -- proactively creates EventBridge Scheduler entries for each expected run date (`RUN#<runKey>` row, written by the user) of a pipeline with an SLA config, ensuring warnings and breaches fire even when data never arrives. A pipeline with no `RUN#` rows gets none.
+5. **SLA scheduling** -- proactively creates EventBridge Scheduler entries for each expected run date (`RUN#<runKey>` row, written by the user) of a pipeline with an `sla.deadline` once its warning is at most 6 hours away, ensuring warnings and breaches fire even when data never arrives. A pipeline with no `RUN#` rows gets none.
 6. **Cutoffs** -- for each expected run date (`RUN#` row) whose `schedule.trigger.cutoff` passed with no trigger row, writes `FAILED_FINAL` and publishes `SENSOR_DEADLINE_EXPIRED` once.
 7. **Missing post-run sensors** -- for pipelines with `postRun` config and a completed trigger, checks whether post-run sensors have arrived within the `sensorTimeout` grace period, counted from the trigger row's `completedAt`. Publishes `POST_RUN_SENSOR_MISSING` once per date, deduplicated by a marker written only after a successful publish, so a failed publish is retried on the next pass.
 8. **Relative SLA** -- for pipelines with `maxDuration` SLA config, checks each run date (daily or hourly) with a first sensor arrival, from 8 days before to 2 days after the current UTC date. While the run has not finished, publishes `RELATIVE_SLA_WARNING` once at first sensor arrival + `maxDuration` - `expectedDuration` (75% of `maxDuration` without `expectedDuration`), then `RELATIVE_SLA_BREACH` once at arrival + `maxDuration`. Each is deduplicated per date by a marker written only after a successful publish, so a failed publish is retried on the next pass. Nothing is sent once the breach time is more than 24 hours past, so a date whose breach was not published by then (a watchdog outage that long, say) never gets its `RELATIVE_SLA_BREACH`.

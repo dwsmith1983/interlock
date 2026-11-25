@@ -38,7 +38,7 @@ variable "log_retention_days" {
 }
 
 variable "watchdog_schedule" {
-  description = "EventBridge schedule expression for watchdog (e.g., rate(5 minutes))"
+  description = "EventBridge schedule expression for the watchdog (e.g., rate(5 minutes)). Keep the interval well under 6 hours, or SLA alerts can be missed"
   type        = string
   default     = "rate(5 minutes)"
 }

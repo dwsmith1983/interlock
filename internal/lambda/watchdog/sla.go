@@ -17,8 +17,14 @@ const (
 	runKeysDaysAhead = 2
 )
 
+// slaScheduleLead is how long before a run date's warning its schedules are
+// created. It bounds the CreateSchedule calls per pass, and a config change
+// reaches every date whose schedules do not exist yet.
+const slaScheduleLead = 6 * time.Hour
+
 // scheduleSLAAlerts proactively creates EventBridge Scheduler entries for
-// every expected run date (RUN# row) of each pipeline with an sla.deadline.
+// every expected run date (RUN# row) of each pipeline with an sla.deadline,
+// once the date's warning is at most slaScheduleLead away.
 func scheduleSLAAlerts(ctx context.Context, d *lambda.Deps) error {
 	if d.Scheduler == nil {
 		return nil
@@ -68,7 +74,8 @@ func scheduleSLAAlerts(ctx context.Context, d *lambda.Deps) error {
 }
 
 // scheduleSLAForDate ensures the warning and breach schedules for one run
-// date, unless the run has finished or its breach has passed.
+// date, unless its warning is more than slaScheduleLead away, the run has
+// finished or its breach has passed.
 func scheduleSLAForDate(ctx context.Context, d *lambda.Deps, id string, cfg *types.PipelineConfig, date string, now time.Time) {
 	scheduleID := lambda.ResolveScheduleID(cfg)
 	calc, err := lambda.HandleSLACalculate(lambda.SLAMonitorInput{
@@ -88,6 +95,12 @@ func scheduleSLAForDate(ctx context.Context, d *lambda.Deps, id string, cfg *typ
 	if !breachAt.IsZero() && !breachAt.After(now) {
 		return
 	}
+	// Not due yet, so no reads either. A warning that does not parse is not
+	// held back: CreateSchedule rejects it and the error is logged.
+	warningAt, warnErr := time.Parse(time.RFC3339, calc.WarningAt)
+	if warnErr == nil && warningAt.After(now.Add(slaScheduleLead)) {
+		return
+	}
 
 	tr, err := d.Store.GetTrigger(ctx, id, scheduleID, date)
 	if err != nil {
@@ -101,7 +114,7 @@ func scheduleSLAForDate(ctx context.Context, d *lambda.Deps, id string, cfg *typ
 	// A warning at or before now has fired already (or is due): a
 	// schedule with a past at() would fire it again.
 	toCreate := calc
-	if warningAt, err := time.Parse(time.RFC3339, calc.WarningAt); err == nil && !warningAt.After(now) {
+	if warnErr == nil && !warningAt.After(now) {
 		toCreate.WarningAt = ""
 	}
 	if err := lambda.CreateSLASchedules(ctx, d, id, scheduleID, date, toCreate, true); err != nil {

@@ -33,7 +33,7 @@ const (
 	dayStartHour   = 6       // each scenario starts at 06:00 UTC on its day
 	slaDeadline    = "08:00" // 08:00 UTC, deadlineDayOffset days after the run's date
 	slaExpected    = "1h"    // the warning fires an hour before the breach
-	slaRunHour     = 9       // after a same-day 08:00, before the next day's
+	slaRunHour     = 9       // after a same-day 08:00
 )
 
 // scenarioConfig is a sensor-triggered pipeline whose http job is the mock,
@@ -179,16 +179,16 @@ func assertNothingFires(t *testing.T, pipeline string, at time.Time) {
 	}
 }
 
-// Two pipelines share the 08:00 deadline and run at 09:00 on their date; the
-// watchdog schedules their SLA alerts at 06:00. With deadlineDayOffset 1
-// ("sla-met") the deadline is 08:00 the next day: the run finishes before
-// the warning, and CancelSLASchedules deletes both schedules and publishes
-// SLA_MET, so nothing is left to fire. With offset 0 ("sla-same-day") the
-// deadline is 08:00 the same day: the warning fires at 07:00 and the breach at
-// 08:00 while the pipeline has not started, and the 09:00 run's cancel
-// publishes its own SLA_BREACH verdict. Both have a RUN# row for the date;
-// a third ("sla-no-row") has the same-day SLA and no row, so the watchdog
-// schedules nothing for it and it gets no alerts.
+// Two pipelines share the 08:00 deadline and have a RUN# row for the date.
+// With deadlineDayOffset 0 ("sla-same-day") the 06:00 watchdog pass schedules
+// the SLA alerts: the warning fires at 07:00 and the breach at 08:00 while the
+// pipeline has not started, and the 09:00 run's cancel publishes its own
+// SLA_BREACH verdict. With offset 1 ("sla-met") the deadline is 08:00 the next
+// day, so the 06:00 pass schedules nothing (the warning is 25h away) and the
+// next day's 02:00 pass does. The 03:00 run finishes before the warning:
+// CancelSLASchedules deletes both schedules and publishes SLA_MET, so nothing
+// is left to fire. A third ("sla-no-row") has the same-day SLA and no row, so
+// the watchdog schedules nothing for it and it gets no alerts.
 func TestScenarioSLAMet(t *testing.T) {
 	const metID, sameDayID, noRowID = "sla-met", "sla-same-day", "sla-no-row"
 	start, date := startDay(t)
@@ -208,8 +208,9 @@ func TestScenarioSLAMet(t *testing.T) {
 	if _, scanned := dueSchedules(t, noRowID, at(1, 8)); scanned != 0 {
 		t.Fatalf("%s schedules after the watchdog = %d, want 0 without a RUN# row", noRowID, scanned)
 	}
-	for id, breachAt := range map[string]time.Time{metID: at(1, 8), sameDayID: at(0, 8)} {
-		all, scanned := dueSchedules(t, id, at(1, 8))
+	assertScheduled := func(id string, breachAt time.Time) {
+		t.Helper()
+		all, scanned := dueSchedules(t, id, breachAt)
 		got := map[string]time.Time{}
 		for _, s := range all {
 			got[s.Name] = s.at
@@ -222,6 +223,10 @@ func TestScenarioSLAMet(t *testing.T) {
 			t.Fatalf("%s schedules after the watchdog = %v (scanned %d), want %v", id, got, scanned, want)
 		}
 	}
+	assertScheduled(sameDayID, at(0, 8))
+	if _, scanned := dueSchedules(t, metID, at(1, 8)); scanned != 0 {
+		t.Fatalf("%s schedules 25h before the warning = %d, want 0", metID, scanned)
+	}
 
 	warn, breach := string(types.EventSLAWarning), string(types.EventSLABreach)
 	for i, hour := range []int{7, 8} {
@@ -232,17 +237,25 @@ func TestScenarioSLAMet(t *testing.T) {
 	}
 	waitEvents(t, sameDayID, date, map[string]int{warn: 1, breach: 1}, []string{warn, breach})
 
-	advanceTo(t, at(0, slaRunHour))
-	vp, jc, met := string(types.EventValidationPassed), string(types.EventJobCompleted), string(types.EventSLAMet)
-	for _, id := range []string{metID, sameDayID} {
+	run := func(id string) {
+		t.Helper()
 		writeReady(t, id, date)
 		reportJob(t, id, date, waitLaunch(t, id, 1), types.JobEventSuccess)
 		waitCompleted(t, id, date)
 	}
+	advanceTo(t, at(0, slaRunHour))
+	run(sameDayID)
+	vp, jc, met := string(types.EventValidationPassed), string(types.EventJobCompleted), string(types.EventSLAMet)
 	jt := string(types.EventJobTriggered)
-	waitEvents(t, metID, date, map[string]int{jt: 2, vp: 1, jc: 1, met: 1}, []string{vp, jc}, []string{vp, met})
 	waitEvents(t, sameDayID, date, map[string]int{jt: 2, vp: 1, jc: 1, warn: 1, breach: 2},
 		[]string{warn, breach, vp, jc}, []string{vp, breach})
+
+	advanceTo(t, at(1, 2))
+	invokeWatchdog(t)
+	assertScheduled(metID, at(1, 8))
+	advanceTo(t, at(1, 3))
+	run(metID)
+	waitEvents(t, metID, date, map[string]int{jt: 2, vp: 1, jc: 1, met: 1}, []string{vp, jc}, []string{vp, met})
 
 	assertNothingFires(t, metID, at(1, 7))
 	assertNothingFires(t, metID, at(1, 8))
@@ -785,27 +798,25 @@ func TestScenarioStepFunctionRunDate(t *testing.T) {
 	}
 }
 
-// The SLA stays live through a CompleteTrigger retry. Run A fails, A's
-// CompleteTrigger starts <A>-r1 and keeps the trigger row RUNNING, so the
-// newest job row is A's fail while B polls. The warning the watchdog
-// scheduled fires then and must publish SLA_WARNING. B succeeds before the
-// breach, and its CancelSLASchedules deletes the breach schedule and
-// publishes SLA_MET.
+// The SLA stays live through a CompleteTrigger retry. At 06:00, two hours
+// before the breach, the watchdog schedules the alerts and run A starts. A
+// fails, and its CompleteTrigger starts <A>-r1 and keeps the trigger row
+// RUNNING, so the newest job row is A's fail while B polls. The warning fires
+// at 07:00 and must publish SLA_WARNING. B succeeds before the breach, and its
+// CancelSLASchedules deletes the breach schedule and publishes SLA_MET.
 func TestScenarioSLAWarningDuringRetry(t *testing.T) {
 	const id = "sla-warn-retry"
 	start, date := startDay(t)
 	cfg := scenarioConfig(id)
 	cfg.Job.MaxRetries = 1
-	cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, DeadlineDayOffset: 1, ExpectedDuration: slaExpected}
-	cfg.Schedule.Trigger.CutoffDayOffset = 1
+	cfg.SLA = &types.SLAConfig{Deadline: slaDeadline, ExpectedDuration: slaExpected}
 	putConfig(t, cfg)
 	putRunDate(t, id, date)
 
 	invokeWatchdog(t)
-	breachAt := time.Date(start.Year(), start.Month(), start.Day()+1, 8, 0, 0, 0, time.UTC)
+	breachAt := time.Date(start.Year(), start.Month(), start.Day(), 8, 0, 0, 0, time.UTC)
 	warnAt := breachAt.Add(-time.Hour)
 
-	advanceTo(t, time.Date(start.Year(), start.Month(), start.Day(), slaRunHour, 0, 0, 0, time.UTC))
 	writeReady(t, id, date)
 	runA := waitLaunch(t, id, 1)
 	reportJob(t, id, date, runA, types.JobEventFail)
