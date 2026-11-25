@@ -233,9 +233,97 @@ func TestScheduleSLAAlerts_SkipsDueWarning(t *testing.T) {
 	}
 }
 
+// TestScheduleSLAAlerts_Lead pins that a date gets its schedules once its
+// warning is at most 6h away, whatever the cadence and however far its breach
+// is, and that a date that is not due yet costs no trigger or job log read.
+func TestScheduleSLAAlerts_Lead(t *testing.T) {
+	tests := []struct {
+		name               string
+		key                string // "" means slaTestDate, whose row slaDeps stores
+		deadline, expected string // warning = deadline - expected; the clock is 09:00
+		want               []string
+	}{
+		{name: "PastLead", deadline: "15:30", expected: "29m59s"},
+		{name: "AtLead", deadline: "15:30", expected: "30m", want: []string{"at(2026-03-10T15:00:00)", "at(2026-03-10T15:30:00)"}},
+		{name: "LongDurationPastLead", deadline: "23:30", expected: "8h29m59s"},
+		{name: "LongDurationAtLead", deadline: "23:30", expected: "8h30m", want: []string{"at(2026-03-10T15:00:00)", "at(2026-03-10T23:30:00)"}},
+		{name: "HourlyPastLead", key: "2026-03-10T14", deadline: ":30", expected: "29m59s"},
+		{name: "HourlyAtLead", key: "2026-03-10T14", deadline: ":30", expected: "30m", want: []string{"at(2026-03-10T15:00:00)", "at(2026-03-10T15:30:00)"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+				c.SLA = &types.SLAConfig{Deadline: tt.deadline, ExpectedDuration: tt.expected}
+			})
+			if tt.key != "" {
+				mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.RunSK(tt.key)))
+			}
+			reads := countRunReads(d)
+
+			if err := scheduleSLAAlerts(context.Background(), d); err != nil {
+				t.Fatalf("scheduleSLAAlerts: %v", err)
+			}
+
+			if !slices.Equal(rec.exprs, tt.want) {
+				t.Fatalf("schedule expressions = %v, want %v", rec.exprs, tt.want)
+			}
+			wantReads := 0
+			if tt.want != nil {
+				wantReads = 2 // the trigger row, and the job log as there is none
+			}
+			if *reads != wantReads {
+				t.Fatalf("trigger and job log reads = %d, want %d", *reads, wantReads)
+			}
+		})
+	}
+}
+
+// TestScheduleSLAAlerts_LeadReached: a later pass schedules the date an
+// earlier one left alone.
+func TestScheduleSLAAlerts_LeadReached(t *testing.T) {
+	d, _, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+		c.SLA = &types.SLAConfig{Deadline: "15:30", ExpectedDuration: "29m59s"}
+	})
+	now := d.Now()
+	d.NowFunc = func() time.Time { return now }
+	pass := func(want ...string) {
+		t.Helper()
+		if err := scheduleSLAAlerts(context.Background(), d); err != nil {
+			t.Fatalf("scheduleSLAAlerts: %v", err)
+		}
+		if !slices.Equal(rec.exprs, want) {
+			t.Fatalf("at %s: schedule expressions = %v, want %v", now.Format(time.TimeOnly), rec.exprs, want)
+		}
+	}
+
+	pass()
+	now = now.Add(time.Second)
+	pass("at(2026-03-10T15:00:01)", "at(2026-03-10T15:30:00)")
+}
+
+// countRunReads counts the trigger row reads (the watchdog's SLA scheduling
+// makes no other GetItem call) and job log queries d's store makes from now on.
+func countRunReads(d *lambda.Deps) *int {
+	n := new(int)
+	fake := d.Store.Client.(*storetest.FakeDynamo)
+	get, query := fake.GetItemFn, fake.QueryFn
+	fake.GetItemFn = func(ctx context.Context, in *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+		*n++
+		return get(ctx, in)
+	}
+	fake.QueryFn = func(ctx context.Context, in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if aws.ToString(in.TableName) == "joblog" {
+			*n++
+		}
+		return query(ctx, in)
+	}
+	return n
+}
+
 // TestScheduleSLAAlerts_DeadlineDayOffset pins that the breach schedule
 // fires sla.deadlineDayOffset days after the execution date and is named for
-// the execution date, and that offset 0 keeps the deadline on the same day.
+// the execution date, that offset 0 keeps the deadline on the same day, and
+// that the 6h lead counts from the offset day's warning.
 func TestScheduleSLAAlerts_DeadlineDayOffset(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -247,12 +335,17 @@ func TestScheduleSLAAlerts_DeadlineDayOffset(t *testing.T) {
 		{
 			name:   "Offset1",
 			offset: 1,
-			now:    time.Date(2026, 3, 10, 0, 5, 0, 0, time.UTC),
+			now:    time.Date(2026, 3, 10, 20, 0, 0, 0, time.UTC),
 			want: []string{
 				lambda.SLAScheduleName("p", "stream", slaTestDate, "warning"),
 				lambda.SLAScheduleName("p", "stream", slaTestDate, "breach"),
 			},
 			wantExprs: []string{"at(2026-03-11T01:30:00)", "at(2026-03-11T02:00:00)"},
+		},
+		{
+			name:   "Offset1PastLead",
+			offset: 1,
+			now:    time.Date(2026, 3, 10, 0, 5, 0, 0, time.UTC),
 		},
 		{
 			name: "Offset0PastDeadline",
@@ -284,7 +377,8 @@ func TestScheduleSLAAlerts_DeadlineDayOffset(t *testing.T) {
 
 // TestScheduleSLAAlerts_RunRows pins that proactive SLA schedules come from
 // the pipeline's RUN# rows: one pair per due key of the deadline's cadence,
-// none without a row. Each case replaces slaDeps' row with its keys. The
+// none without a row. A key is due while its warning is at most 6h away and
+// its breach ahead. Each case replaces slaDeps' row with its keys. The
 // deadline is 10:00 (warning 09:30) and the clock 08:00 on slaTestDate.
 // A run that finished is covered by TestScheduleSLAAlerts_RetryKeepsSchedules.
 func TestScheduleSLAAlerts_RunRows(t *testing.T) {
@@ -310,17 +404,20 @@ func TestScheduleSLAAlerts_RunRows(t *testing.T) {
 		{name: "RowForDate", keys: []string{slaTestDate}, want: names(slaTestDate),
 			wantExprs: []string{"at(2026-03-10T09:30:00)", "at(2026-03-10T10:00:00)"}},
 		{name: "NoRows"},
-		{name: "TwoDates", keys: []string{slaTestDate, "2026-03-11"}, want: names(slaTestDate, "2026-03-11")},
+		{name: "OnlyTheDateInsideTheLead", keys: []string{slaTestDate, "2026-03-11", "2026-03-12"}, want: names(slaTestDate)},
 		{name: "BreachPassed", keys: []string{"2026-03-09"}},
 		{name: "MalformedKeys", keys: []string{"2026-3-10", "2026-03-10x", slaTestDate}, want: names(slaTestDate),
 			wantLog: "runKey=2026-03-10x"},
-		{name: "HourlyDeadline", keys: []string{slaTestDate, "2026-03-10T07"}, want: names("2026-03-10T07"),
-			wantExprs: []string{"at(2026-03-10T08:15:00)", "at(2026-03-10T08:30:00)"},
+		{name: "HourlyDeadline", keys: []string{slaTestDate, "2026-03-10T07", "2026-03-10T08", "2026-03-10T13"}, want: names("2026-03-10T07", "2026-03-10T08"),
+			wantExprs: []string{"at(2026-03-10T08:15:00)", "at(2026-03-10T08:30:00)", "at(2026-03-10T09:15:00)", "at(2026-03-10T09:30:00)"},
 			tweak:     func(c *types.PipelineConfig) { c.SLA.Deadline, c.SLA.ExpectedDuration = ":30", "15m" }},
 		{name: "DailyDeadlineSkipsHourlyKey", keys: []string{"2026-03-10T07"}},
-		{name: "ExcludedWeekend", keys: []string{"2026-03-13", "2026-03-14"}, want: names("2026-03-13"),
-			now:   time.Date(2026, 3, 13, 8, 0, 0, 0, time.UTC),
-			tweak: func(c *types.PipelineConfig) { c.Schedule.Exclude = &types.ExclusionConfig{Weekends: true} }},
+		{name: "ExcludedWeekend", keys: []string{"2026-03-13T23", "2026-03-14T00"}, want: names("2026-03-13T23"),
+			now: time.Date(2026, 3, 13, 22, 0, 0, 0, time.UTC),
+			tweak: func(c *types.PipelineConfig) {
+				c.SLA.Deadline, c.SLA.ExpectedDuration = ":30", "15m"
+				c.Schedule.Exclude = &types.ExclusionConfig{Weekends: true}
+			}},
 		{name: "DeadlineDayOffset", keys: []string{"2026-03-09"}, want: names("2026-03-09"),
 			wantExprs: []string{"at(2026-03-10T09:30:00)", "at(2026-03-10T10:00:00)"},
 			tweak:     func(c *types.PipelineConfig) { c.SLA.DeadlineDayOffset = 1 }},
@@ -382,8 +479,12 @@ func TestScheduleSLAAlerts_RunRows(t *testing.T) {
 // logged as an error, ends that date's schedules at the warning, and the
 // pass moves on to the next date.
 func TestScheduleSLAAlerts_CreateErrorContinues(t *testing.T) {
-	d, mem, rec := slaDeps(t, "", "")
-	mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.RunSK("2026-03-11")))
+	d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+		c.SLA.Deadline, c.SLA.ExpectedDuration = ":30", "15m"
+	})
+	for _, key := range []string{"2026-03-10T07", "2026-03-10T08"} {
+		mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.RunSK(key)))
+	}
 	now := time.Date(2026, 3, 10, 8, 0, 0, 0, time.UTC)
 	d.NowFunc = func() time.Time { return now }
 	rec.createErr = errors.New("service unavailable")
@@ -395,8 +496,8 @@ func TestScheduleSLAAlerts_CreateErrorContinues(t *testing.T) {
 	}
 
 	want := []string{
-		lambda.SLAScheduleName("p", "stream", slaTestDate, "warning"),
-		lambda.SLAScheduleName("p", "stream", "2026-03-11", "warning"),
+		lambda.SLAScheduleName("p", "stream", "2026-03-10T07", "warning"),
+		lambda.SLAScheduleName("p", "stream", "2026-03-10T08", "warning"),
 	}
 	if !slices.Equal(rec.schedules, want) {
 		t.Fatalf("schedules attempted = %v, want %v", rec.schedules, want)

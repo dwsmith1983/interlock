@@ -236,20 +236,33 @@ aws dynamodb put-item --table-name production-interlock-control --item '{
 }'
 ```
 
-The control table's TTL attribute is `ttl`; setting it (above, 2026-04-09, the run date plus 30 days) keeps old rows from piling up. Each pass the watchdog reads the rows from 8 days before to 2 days after the current UTC date and schedules alerts for every row whose breach is still ahead and whose run has not finished. That window covers any timezone and `deadlineDayOffset` up to 7, the most validation allows.
+The control table's TTL attribute is `ttl`; setting it (above, 2026-04-09, the run date plus 30 days) keeps old rows from piling up. Each pass the watchdog reads the rows from 8 days before to 2 days after the current UTC date and schedules alerts for every row whose warning is at most 6 hours away, whose breach is still ahead and whose run has not finished (see [Deadline Evaluation](#deadline-evaluation)). That window covers any timezone and `deadlineDayOffset` up to 7, the most validation allows.
 
-A run has finished when its trigger row is `COMPLETED` or `FAILED_FINAL`; the job log is read only for a date with no trigger row, where a newest result of `success`, `fail`, `timeout`, `infra-trigger-exhausted` or `validation-exhausted` counts as finished (rows about rerun requests and late data are skipped). So a retry or a rerun keeps its alerts while its row is `RUNNING`, and a job that reported success can still get an alert due before CompleteTrigger sets `COMPLETED`, normally within one job check interval (60s by default). If the final status cannot be recorded, or the step that ends a date after a failed launch fails after writing its job row, the row stays `RUNNING` and alerts due meanwhile go out until the watchdog closes the stale row with `SFN_TIMEOUT` (by default 4.5h after the latest attempt started). Where the cancel step ran, the watchdog has to schedule `SLA_WARNING` and `SLA_BREACH` again, so one due before its next pass is not sent.
+A run has finished when its trigger row is `COMPLETED` or `FAILED_FINAL`; the job log is read only for a date with no trigger row, where a newest result of `success`, `fail`, `timeout`, `infra-trigger-exhausted` or `validation-exhausted` counts as finished (rows about rerun requests and late data are skipped). So a retry or a rerun keeps its alerts while its row is `RUNNING`, and a job that reported success can still get an alert due before CompleteTrigger sets `COMPLETED`, normally within one job check interval (60s by default). If the final status cannot be recorded, or the step that ends a date after a failed launch fails after writing its job row, the row stays `RUNNING` and alerts due meanwhile go out until the watchdog closes the stale row with `SFN_TIMEOUT` (by default 4.5h after the latest attempt started). Where the cancel step ran, or a rerun starts a date that finished before its schedules were created, the watchdog has to schedule `SLA_WARNING` and `SLA_BREACH`, so one due before its next pass is not sent.
 
 ### Deadline Evaluation
 
-The watchdog creates two one-time EventBridge Scheduler entries for each expected run date (a `RUN#` row) of a pipeline with an SLA:
+The watchdog creates two one-time EventBridge Scheduler entries for each expected run date (a `RUN#` row) of a pipeline with a `deadline`, on its first pass once the date's warning is at most 6 hours away:
 
 - **Warning**: fires at `deadline - expectedDuration`
 - **Breach**: fires at `deadline`
 
 A config with a `deadline` must also set an `expectedDuration`; a `deadline` that is not `HH:MM` or `:MM`, or an `expectedDuration` that is missing, not a Go duration, zero or negative, rejects the config when it loads, instead of leaving the pipeline with no `SLA_WARNING`, `SLA_BREACH` or `SLA_MET`. A pipeline with only `maxDuration` gets no warning or breach schedules; its relative SLA is checked by the watchdog (see below).
 
-Each Scheduler entry invokes the sla-monitor Lambda at the exact timestamp to publish the corresponding event. Entries auto-delete after firing.
+Before that the date has no entries in the `<environment>-interlock-sla` schedule group. The 6 hours count from the warning, so a long `expectedDuration` moves the entries earlier: with a 10:00 deadline and an `expectedDuration` of 8h (warning at 02:00), they are created from 20:00 the day before. A pass at or after the warning time creates only the breach, and one at or after the breach time neither.
+
+Each Scheduler entry invokes the sla-monitor Lambda at the exact timestamp to publish the corresponding event, whether or not the watchdog is running by then. Entries auto-delete after firing.
+
+A pass that fails to create an entry is made up by the next one. `SLA_WARNING` is lost when no pass creates its entry between 6 hours before the warning and the warning itself, and `SLA_BREACH` when no pass from the same point up to the breach does: a watchdog outage, a `watchdog_schedule` slower than 6 hours, a config that stays rejected (`CONFIG_INVALID`) or in dry run, Scheduler throttling, or a missing `RUN#` row (keep its `ttl` past the breach). Neither the verdict when a run ends (below) nor the [cutoff](#cutoff) depends on the entries.
+
+An entry keeps the time it was created with. A change to the SLA's `deadline`, `expectedDuration`, `timezone` or `deadlineDayOffset` reaches every date that has no entries yet and leaves existing entries alone. To move those, wait 5 minutes for the watchdog's cached configs to expire, then delete both:
+
+```sh
+aws scheduler delete-schedule --group-name production-interlock-sla --name gold-revenue-stream-2026-03-10-sla-warning
+aws scheduler delete-schedule --group-name production-interlock-sla --name gold-revenue-stream-2026-03-10-sla-breach
+```
+
+The names are `<pipeline>-stream-<runKey>-sla-warning` and `-sla-breach`, with `cron` in place of `stream` for a pipeline that sets `schedule.cron`. The watchdog creates them again at the new times, by the rules above. A warning that already fired is sent again if its new time is still ahead.
 
 When the pipeline job completes (or all retries are exhausted), the state machine cancels any unfired Scheduler entries. `SLA_MET` is published only when the run ends before the breach time and the date's trigger row is `COMPLETED`. A run that did not complete (it ended `FAILED_FINAL`, its final status could not be recorded, or its status could not be read) gets no `SLA_MET`; `SLA_BREACH` is still published when the breach time has passed. Besides the cancel step's verdict, a run whose final status could not be recorded keeps its SLA alerts while its row is `RUNNING` (see [Expected Run Dates](#expected-run-dates)). A date that fails before its breach time gets its failure alert (`RETRY_EXHAUSTED`, `JOB_FAILED` and the like) and neither `SLA_MET` nor `SLA_BREACH`, because the cancel step removes the breach schedule.
 

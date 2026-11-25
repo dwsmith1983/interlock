@@ -54,6 +54,9 @@ without repository activity.
 - The watchdog scans every pipeline, so a watchdog call also acts on the
   other scenarios' pipelines. `fireDueSchedules(t, pipeline)` fires only the
   given pipeline's schedules.
+- The watchdog creates a date's SLA schedules once its warning is at most 6
+  hours away on the simulated clock, so move the clock there before the
+  `invokeWatchdog` that should create them.
 
 ## Adding a scenario
 

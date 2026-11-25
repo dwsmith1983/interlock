@@ -141,7 +141,7 @@ The Step Functions state machine has 31 states:
 
 1. **Evaluation loop**: evaluates validation rules at a configurable interval. When all rules pass, triggers the job. If the evaluation window expires, ValidationExhausted ends the execution without the SLA cleanup, since no job ran. Before the run date's cutoff, a first run is released: the orchestrator writes an `evaluation-released` job row, deletes the trigger row and publishes `EVALUATION_RELEASED` (not an alert), so the next trigger sensor write or watchdog pass can start evaluation again until the cutoff, and the date's SLA schedules still fire. For a rerun it publishes `VALIDATION_EXHAUSTED` and sets `FAILED_FINAL`, and the run's unfired SLA schedules fire and are suppressed because the run is finished. At or after the cutoff, a first run publishes `SENSOR_DEADLINE_EXPIRED` and then sets `FAILED_FINAL`. An evaluation still running at the cutoff, for a first run, ends that way too instead of launching the job.
 
-2. **SLA scheduling**: not a state machine step. The watchdog creates one-time EventBridge Scheduler entries for the SLA warning and breach of each run date that has a `RUN#` row. The Scheduler fires alerts independently at exact timestamps.
+2. **SLA scheduling**: not a state machine step. The watchdog creates one-time EventBridge Scheduler entries for the SLA warning and breach of each run date that has a `RUN#` row, at most 6 hours before the warning. The Scheduler fires alerts independently at exact timestamps.
 
 3. **Job polling** — polls the triggered job for completion via `check-job` mode. Terminal events (success, fail, timeout) proceed to SLA cleanup.
 

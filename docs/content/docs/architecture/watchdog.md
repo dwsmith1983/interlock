@@ -10,7 +10,7 @@ The watchdog is one of six Lambda functions in the Interlock framework. It runs 
 2. **Missed schedules** -- a cron pipeline's job has not started by the cron start-by time for a `RUN#` date
 3. **Missed inclusion schedules** -- a pipeline with an inclusion calendar has no trigger on a scheduled date. The check starts when the date begins in `schedule.timezone` (UTC when unset), or at `schedule.time` on that date when it is set; without `schedule.time` it fires at local midnight of the date, so set `time` to avoid an alert before the run is due. A date whose evaluation was released before its cutoff has no trigger row either, so `IRREGULAR_SCHEDULE_MISSED` fires once for it, as for a date that never started. The once-per-date marker (`SENSOR#irregular-missed-check#<date>`) is written only after the publish succeeds, so a failed publish is retried on the next pass
 4. **Sensor-trigger reconciliation** -- a sensor-triggered pipeline's conditions (with or without `schedule.cron`) are met but no trigger exists (self-heals missed triggers); past the date's `schedule.trigger.cutoff` it closes the date with `FAILED_FINAL` and one `SENSOR_DEADLINE_EXPIRED` instead of starting it. A run it starts records the date's first sensor arrival at that start, unless one is already recorded, so its SLA verdict counts `maxDuration` from it
-5. **SLA scheduling** -- proactively ensures EventBridge Scheduler entries exist for each expected run date (`RUN#` row) of a pipeline with an SLA config
+5. **SLA scheduling** -- proactively ensures EventBridge Scheduler entries exist for each expected run date (`RUN#` row) of a pipeline with an `sla.deadline`, once its warning is at most 6 hours away (see [Deadline Evaluation](../../configuration/schedules/#deadline-evaluation))
 6. **Cutoffs** -- an expected run date (`RUN#` row) passed its `schedule.trigger.cutoff` without starting; it is closed with `FAILED_FINAL` and one `SENSOR_DEADLINE_EXPIRED`
 7. **Missing post-run sensors** -- a pipeline completed but the expected post-run sensor never arrived
 8. **Relative SLA** -- a pipeline with `maxDuration` SLA whose run has not finished: `RELATIVE_SLA_WARNING` once at first sensor arrival + `maxDuration` - `expectedDuration` (75% of `maxDuration` without `expectedDuration`), then `RELATIVE_SLA_BREACH` once at arrival + `maxDuration`. Run dates with a first sensor arrival, daily and hourly, are checked from 8 days before to 2 days after today (UTC). Nothing is sent once a breach time is more than 24 hours past, so an alert the watchdog could not send by then (an outage, say) is lost. For a run the watchdog started itself, the arrival is the time it started it
@@ -221,6 +221,8 @@ variable "watchdog_schedule" {
   default     = "rate(5 minutes)"
 }
 ```
+
+Keep the interval well under 6 hours. SLA schedules are created at most 6 hours before a run date's warning, so passes further apart than that can miss `SLA_WARNING` and `SLA_BREACH`; nothing checks the value (see [Deadline Evaluation](../../configuration/schedules/#deadline-evaluation)).
 
 ## Error Handling
 

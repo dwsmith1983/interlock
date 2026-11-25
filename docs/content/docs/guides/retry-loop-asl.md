@@ -34,7 +34,7 @@ Evaluate, ValidationExhausted or CheckJob fails after its retries
   → RecordInfraFailure → InfraFailure
 ```
 
-SLA monitoring uses EventBridge Scheduler instead of a parallel branch. The watchdog creates one-time Scheduler entries for each run date with a `RUN#` row; at their exact timestamps they invoke the sla-monitor Lambda, which fires the alert. When the job completes, unfired entries are cancelled.
+SLA monitoring uses EventBridge Scheduler instead of a parallel branch. The watchdog creates one-time Scheduler entries for each run date with a `RUN#` row, at most 6 hours before its warning; at their exact timestamps they invoke the sla-monitor Lambda, which fires the alert. When the job completes, unfired entries are cancelled.
 
 ## Retry Backoff
 
@@ -211,7 +211,7 @@ Once triggered, the state machine polls job status via `check-job` mode. The `Is
 
 ## SLA Cleanup
 
-SLA alerts are scheduled outside the state machine: the watchdog creates the warning and breach Scheduler entries for each `RUN#` date, and each entry invokes the sla-monitor Lambda with `mode=fire-alert` at its time. The state machine only cleans up when the run ends.
+SLA alerts are scheduled outside the state machine: the watchdog creates the warning and breach Scheduler entries for each `RUN#` date at most 6 hours before its warning, and each entry invokes the sla-monitor Lambda with `mode=fire-alert` at its time. The state machine only cleans up when the run ends.
 
 ```json
 {

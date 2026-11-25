@@ -112,7 +112,7 @@ terraform apply
 | `tags` | map(string) | `{}` | Tags to apply to all resources |
 | `lambda_memory_size` | number | `128` | Memory size for Lambda functions (MB) |
 | `log_retention_days` | number | `30` | CloudWatch log retention in days |
-| `watchdog_schedule` | string | `rate(5 minutes)` | EventBridge schedule expression for the watchdog Lambda |
+| `watchdog_schedule` | string | `rate(5 minutes)` | EventBridge schedule expression for the watchdog Lambda. Keep the interval well under 6 hours: SLA schedules are created at most that long before a date's warning, and passes further apart can miss `SLA_WARNING` and `SLA_BREACH` (see [Deadline Evaluation](../../configuration/schedules/#deadline-evaluation)). The value is not checked |
 | `sfn_timeout_seconds` | number | `14400` | Step Functions global execution timeout in seconds (default 4h). A pipeline whose `schedule.evaluation.window` plus `job.jobPollWindowSeconds` plus the longest [retry delay](../../configuration/pipelines/#retry-budgets) it can reach (by the larger of `maxRetries` and `maxCodeRetries`, default 1: 1, 2, 4 or 8 minutes for 1 to 4 retries, 15 minutes from 5 up, nothing when both are 0) exceeds it is rejected as `CONFIG_INVALID`. The sum is a floor: evaluations, status polls, launch retries and throttle retries also take time, so leave headroom. Lowering it can reject existing pipelines on the next config refresh |
 | `trigger_max_attempts` | number | `3` | Retries the Trigger state makes after its first attempt when a job cannot be started (waits start at 30s and double: 30s, 60s, 120s at the default) |
 | `enable_glue_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Glue jobs |
