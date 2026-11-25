@@ -128,7 +128,7 @@ terraform apply
 | `slack_secret_arn` | string | `""` | AWS Secrets Manager ARN containing the Slack bot token. When set, alert-dispatcher reads the token from Secrets Manager instead of the `slack_bot_token` environment variable |
 | `trigger_secrets_arn` | string | `""` | Full Secrets Manager secret ARN, including its random 6-character suffix, in the deployment's region (no wildcards), holding a JSON object of `INTERLOCK_` variables for trigger auth. The orchestrator loads it at cold start and is granted `secretsmanager:GetSecretValue` on it; see [Setting `INTERLOCK_` values](../../configuration/triggers/#setting-interlock_-values) |
 | `orchestrator_env` | map(string) | `{}` | Extra orchestrator environment variables; every key must match `^INTERLOCK_[A-Z0-9_]+$`. Values are stored in Terraform state and shown in plans and the Lambda console, so put tokens in `trigger_secrets_arn` |
-| `events_table_ttl_days` | number | `90` | TTL in days for events table records |
+| `events_table_ttl_days` | number | `90` | TTL in days for events table records; must be at least 1 |
 | `lambda_concurrency` | object | See below | Reserved concurrent executions per Lambda function |
 | `sns_alarm_topic_arn` | string | `""` | SNS topic ARN for CloudWatch alarm notifications. When set, all alarms send to this topic |
 | `kms_key_arn` | string | `""` | Customer managed KMS key for the DynamoDB tables and SQS queues. Empty = AWS managed keys for the tables and stream-router DLQs, SQS-managed encryption for the alert queues. When set, the key policy must let EventBridge use the key; see [Encryption](#encryption) |

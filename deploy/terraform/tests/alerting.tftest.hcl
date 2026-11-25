@@ -53,3 +53,26 @@ run "cmk_alert_queues_use_the_key" {
     error_message = "The alert DLQ must use the given KMS key."
   }
 }
+
+run "events_table_ttl_days_rejects_zero" {
+  command = plan
+
+  variables {
+    events_table_ttl_days = 0
+  }
+
+  expect_failures = [var.events_table_ttl_days]
+}
+
+run "events_table_ttl_days_accepts_one" {
+  command = plan
+
+  variables {
+    events_table_ttl_days = 1
+  }
+
+  assert {
+    condition     = aws_lambda_function.alert_dispatcher.environment[0].variables["EVENTS_TTL_DAYS"] == "1"
+    error_message = "The alert-dispatcher must get events_table_ttl_days as EVENTS_TTL_DAYS."
+  }
+}
