@@ -1,6 +1,7 @@
 package alert_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -114,6 +115,39 @@ func TestFormatAlertText_ControlCharacters(t *testing.T) {
 	}
 }
 
+// TestFormatAlertText_UnicodeControls: characters that may break a line or
+// reorder the text after them become one space each; other text is unchanged.
+func TestFormatAlertText_UnicodeControls(t *testing.T) {
+	message := func(msg string) string {
+		text := alert.FormatAlertText("JOB_FAILED", types.InterlockEvent{PipelineID: "p", Date: "2026-03-01", Message: msg})
+		_, line, _ := strings.Cut(text, "\n")
+		return line
+	}
+	for _, r := range []rune{
+		'\u0080', '\u0085', '\u009f', // C1 controls
+		'\u2028', '\u2029', // line and paragraph separators
+		'\u061c', '\u200e', '\u200f', '\u202a', '\u202e', '\u2066', '\u2069', // bidi controls
+	} {
+		t.Run(fmt.Sprintf("replaced %U", r), func(t *testing.T) {
+			if got, want := message("a"+string(r)+"b"), "a b"; got != want {
+				t.Errorf("message = %q, want %q", got, want)
+			}
+		})
+	}
+	for name, msg := range map[string]string{
+		"zero-width joiner emoji": "\U0001f468\u200d\U0001f469\u200d\U0001f467",
+		"accented letter":         "caf\u00e9",
+		"non-breaking space":      "a\u00a0b",
+		"formatting marks":        "*a* _b_ ~c~ `d`",
+	} {
+		t.Run("kept "+name, func(t *testing.T) {
+			if got := message(msg); got != msg {
+				t.Errorf("message = %q, want %q", got, msg)
+			}
+		})
+	}
+}
+
 // TestFormatAlertText_CutoffPassed: a run date closed at its cutoff is a
 // final failure, so the alert is red and shows the cutoff and when it fell.
 func TestFormatAlertText_CutoffPassed(t *testing.T) {
@@ -127,15 +161,18 @@ func TestFormatAlertText_CutoffPassed(t *testing.T) {
 	}
 }
 
-// TestAlertEmoji: failures are red, a warning yellow, a met SLA a check mark
+// TestAlertEmoji: failures are red, warnings yellow, a met SLA a check mark
 // and everything else info, and the emoji leads the header.
 func TestAlertEmoji(t *testing.T) {
 	for emoji, detailTypes := range map[string][]string{
 		"\xf0\x9f\x94\xb4": {"SLA_BREACH", "JOB_FAILED", "VALIDATION_EXHAUSTED", "RETRY_EXHAUSTED", "INFRA_FAILURE",
-			"SFN_TIMEOUT", "SCHEDULE_MISSED", "DATA_DRIFT", "CONFIG_INVALID", "SENSOR_DEADLINE_EXPIRED"},
-		"\xf0\x9f\x9f\xa1":         {"SLA_WARNING"},
-		"\xe2\x9c\x85":             {"SLA_MET"},
-		"\xe2\x84\xb9\xef\xb8\x8f": {"UNKNOWN_TYPE", "JOB_TRIGGERED", "JOB_COMPLETED", "TRIGGER_RECOVERED"},
+			"SFN_TIMEOUT", "SCHEDULE_MISSED", "DATA_DRIFT", "CONFIG_INVALID", "SENSOR_DEADLINE_EXPIRED",
+			"RELATIVE_SLA_BREACH", "IRREGULAR_SCHEDULE_MISSED", "POST_RUN_FAILED", "POST_RUN_DRIFT",
+			"BASELINE_CAPTURE_FAILED", "INFRA_ALARM"},
+		"\xf0\x9f\x9f\xa1": {"SLA_WARNING", "RELATIVE_SLA_WARNING"},
+		"\xe2\x9c\x85":     {"SLA_MET"},
+		"\xe2\x84\xb9\xef\xb8\x8f": {"UNKNOWN_TYPE", "JOB_TRIGGERED", "JOB_COMPLETED", "TRIGGER_RECOVERED",
+			"POST_RUN_DRIFT_INFLIGHT", "POST_RUN_SENSOR_MISSING", "RERUN_REJECTED", "DRY_RUN_DRIFT"},
 	} {
 		for _, detailType := range detailTypes {
 			t.Run(detailType, func(t *testing.T) {

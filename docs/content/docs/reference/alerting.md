@@ -238,6 +238,8 @@ The module deploys an `alert-dispatcher` Lambda that reads from an SQS alert que
 
 With `slack_bot_token`, `slack_secret_arn` and `slack_channel_id` all empty, the dispatcher runs in logging-only mode and writes each alert to its log; once a token or secret is set, `slack_channel_id` is required, and `slack_secret_arn` (a Secrets Manager secret holding the token) is the preferred way to pass the token.
 
+**Message text**: each message starts with an icon. A red circle marks failures, timeouts, SLA breaches, missed schedules and cutoffs, post-run drift, `CONFIG_INVALID` and `INFRA_ALARM`; a yellow circle marks `SLA_WARNING` and `RELATIVE_SLA_WARNING`; a check mark marks `SLA_MET`. Every other event gets an info icon, among them `POST_RUN_SENSOR_MISSING`, `POST_RUN_DRIFT_INFLIGHT`, `RERUN_REJECTED` and the dry-run events. In event values, control characters (newlines and tabs too), line and paragraph separators and bidirectional controls become spaces, and `&`, `<` and `>` are escaped.
+
 **Message threading**: alerts for the same pipeline, schedule, and date are grouped into a single Slack thread. The first alert creates the thread; subsequent alerts reply in-thread. Thread records are stored in the events table and expire with the same TTL.
 
 **SLA warning suppression**: when an SLA breach has already occurred, the `fire-alert` handler suppresses the corresponding `SLA_WARNING` to prevent duplicate notifications.
