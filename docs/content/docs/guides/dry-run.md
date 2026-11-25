@@ -86,7 +86,7 @@ Dry-run pipelines emit these event types to EventBridge:
 | Event | Meaning |
 |---|---|
 | `DRY_RUN_WOULD_TRIGGER` | All validation rules passed — Interlock would have triggered the job |
-| `DRY_RUN_SLA_PROJECTION` | Estimated completion time vs. deadline — `met` or `breach` status |
+| `DRY_RUN_SLA_PROJECTION` | Estimated completion time vs. deadline, with status `met`, `breach`, or `n/a` |
 | `DRY_RUN_COMPLETED` | Observation loop closed — carries the SLA verdict (`met`, `breach`, or `n/a`) |
 | `DRY_RUN_LATE_DATA` | Sensor data arrived after the trigger point was already recorded |
 | `DRY_RUN_DRIFT` | Post-run sensor data changed from its baseline |
@@ -114,7 +114,7 @@ The `DRY_RUN_SLA_PROJECTION` event includes:
 
 | Field | Description |
 |---|---|
-| `status` | `"met"` or `"breach"` |
+| `status` | `"met"`, `"breach"`, or `"n/a"` for a run date of the other form than the deadline (a daily date under `:MM`, or an hourly one under `HH:MM`), which has no `deadline` or `marginSeconds` |
 | `estimatedCompletion` | Trigger time + `expectedDuration` |
 | `deadline` | Resolved breach deadline |
 | `marginSeconds` | Seconds between estimated completion and deadline (negative = breach) |

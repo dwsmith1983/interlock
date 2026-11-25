@@ -3,7 +3,6 @@ package watchdog
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
@@ -54,13 +53,12 @@ func scheduleSLAAlerts(ctx context.Context, d *lambda.Deps) error {
 			continue
 		}
 
-		hourly := strings.HasPrefix(cfg.SLA.Deadline, ":")
 		for _, key := range keys {
 			if !lambda.IsValidExecutionDate(key) {
 				d.Logger.Warn("skipping malformed RUN# key", "pipelineId", id, "runKey", key)
 				continue
 			}
-			if strings.Contains(key, "T") != hourly || lambda.IsExcludedDate(cfg, key) {
+			if !lambda.SLADeadlineFitsDate(cfg.SLA.Deadline, key) || lambda.IsExcludedDate(cfg, key) {
 				continue
 			}
 			scheduleSLAForDate(ctx, d, id, cfg, key, now)

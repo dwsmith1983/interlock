@@ -1,6 +1,7 @@
 package sla_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -296,8 +297,9 @@ func TestSLACancel_NoDeadlineSkipsVerdict(t *testing.T) {
 // TestSLACancel_Verdict pins the verdict cancel publishes when a run ends:
 // SLA_MET before the breach time, SLA_BREACH at or after it, from the times
 // given or recalculated from the deadline, and none for a run that never
-// triggered. SLA_MET needs a COMPLETED trigger row; a FAILED_FINAL or RUNNING
-// row, or a trigger read that fails, still gets SLA_BREACH. Both schedules
+// triggered or whose date is of the other cadence than its deadline (a relative
+// SLA still gives one). SLA_MET needs a COMPLETED trigger row; a FAILED_FINAL or
+// RUNNING row, or a trigger read that fails, still gets SLA_BREACH. Both schedules
 // are deleted first, whatever the deletes return, and the output is the same
 // whether or not a verdict is published.
 func TestSLACancel_Verdict(t *testing.T) {
@@ -311,6 +313,14 @@ func TestSLACancel_Verdict(t *testing.T) {
 	}
 	metIn := in{WarningAt: "2026-03-10T11:45:00Z", BreachAt: "2026-03-10T11:59:00Z"}
 	metOut := verdict(met, "2026-03-10T11:45:00Z", "2026-03-10T11:59:00Z")
+	// deadlineRun ends a run of date whose stored config has the same deadline.
+	deadlineRun := func(deadline, date string) in {
+		return in{PipelineID: "p", Date: date, Deadline: deadline, ExpectedDuration: "30m"}
+	}
+	offsetRun := deadlineRun("10:00", "2026-03-10")
+	offsetRun.Timezone = "America/New_York"
+	relativeRun := deadlineRun(":30", "2026-03-10")
+	relativeRun.MaxDuration, relativeRun.SensorArrivalAt = "2h", "2026-03-10T08:00:00Z"
 
 	tests := []struct {
 		name        string
@@ -324,6 +334,8 @@ func TestSLACancel_Verdict(t *testing.T) {
 		wantErr     string
 		want        lambda.SLAMonitorOutput
 		wantTypes   []string
+		now         time.Time // zero means 11:00
+		offset      int       // the stored config's deadlineDayOffset
 	}{
 		{name: "met", in: metIn, want: metOut, wantTypes: []string{met}},
 		{name: "past breach", in: in{BreachAt: "2026-03-10T10:00:00Z"}, want: verdict(breach, "", "2026-03-10T10:00:00Z"), wantTypes: []string{breach}},
@@ -374,11 +386,35 @@ func TestSLACancel_Verdict(t *testing.T) {
 			name: "trigger read fails past the breach", triggerErr: errors.New("throttled"), in: in{BreachAt: "2026-03-10T10:00:00Z"},
 			want: verdict(breach, "", "2026-03-10T10:00:00Z"), wantTypes: []string{breach},
 		},
+		{name: "hourly deadline, daily date", in: deadlineRun(":30", "2026-03-10"), want: verdict(met, "", "")},
+		{name: "daily deadline, hourly date", in: deadlineRun("10:00", "2026-03-10T07"), want: verdict(met, "", "")},
+		{
+			name: "hourly deadline, hourly date", in: deadlineRun(":30", "2026-03-10T07"), now: time.Date(2026, 3, 10, 7, 45, 0, 0, time.UTC),
+			want:      lambda.SLAMonitorOutput{AlertType: met, WarningAt: "2026-03-10T08:00:00Z", BreachAt: "2026-03-10T08:30:00Z", FiredAt: "2026-03-10T07:45:00Z"},
+			wantTypes: []string{met},
+		},
+		{
+			name: "daily deadline a day later, daily date", in: offsetRun, offset: 1, now: time.Date(2026, 3, 10, 15, 0, 0, 0, time.UTC),
+			want:      lambda.SLAMonitorOutput{AlertType: met, WarningAt: "2026-03-11T13:30:00Z", BreachAt: "2026-03-11T14:00:00Z", FiredAt: "2026-03-10T15:00:00Z"},
+			wantTypes: []string{met},
+		},
+		{
+			name: "hourly deadline, daily date, relative SLA", in: relativeRun,
+			want: verdict(breach, "2026-03-10T09:30:00Z", "2026-03-10T10:00:00Z"), wantTypes: []string{breach},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fake := newFakeDynamo(t, types.PipelineConfig{}, nil)
+			var cfg types.PipelineConfig
+			if tt.in.Deadline != "" {
+				cfg = types.PipelineConfig{
+					Pipeline: types.PipelineIdentity{ID: "p"},
+					SLA: &types.SLAConfig{Deadline: tt.in.Deadline, DeadlineDayOffset: tt.offset,
+						ExpectedDuration: tt.in.ExpectedDuration, MaxDuration: tt.in.MaxDuration, Timezone: tt.in.Timezone},
+				}
+			}
+			fake := newFakeDynamo(t, cfg, nil)
 			if tt.neverRan || tt.status != "" {
 				var mem *storetest.Mem
 				fake, mem = storetest.NewMem()
@@ -391,7 +427,7 @@ func TestSLACancel_Verdict(t *testing.T) {
 					return nil, tt.triggerErr
 				}}
 			}
-			d := testDeps(fake, now)
+			d := testDeps(fake, cmp.Or(tt.now, now))
 			sched := &deletingScheduler{deleteErr: tt.deleteErr}
 			if !tt.noScheduler {
 				d.Scheduler = sched

@@ -36,7 +36,7 @@ Published by the **sla-monitor** Lambda via EventBridge Scheduler callbacks and 
 |---|---|---|
 | `SLA_WARNING` | SLA warning threshold reached | The run has not finished by the warning timestamp: its trigger row is not `COMPLETED` or `FAILED_FINAL` (without a trigger row, its job log has no final result) |
 | `SLA_BREACH` | SLA deadline exceeded | The run has not finished by the breach timestamp, by the same rule. A date that fails after its breach time, including a launch that runs out of retries, also gets one from the cancel step, which can follow the scheduled `SLA_BREACH` |
-| `SLA_MET` | Run completed before its SLA breach time | Published when the run ends before the breach time, only if the date's trigger row is `COMPLETED`; a run that did not complete (it ended `FAILED_FINAL`, its final status could not be recorded, or its status could not be read) gets none. A run whose final status could not be recorded keeps its SLA alerts while its row is `RUNNING`, besides the cancel step's verdict. A date that fails before its breach time gets its failure alert (`RETRY_EXHAUSTED`, `JOB_FAILED` and the like) and neither `SLA_MET` nor `SLA_BREACH`, because the cancel step removes the breach schedule |
+| `SLA_MET` | Run completed before its SLA breach time | Published when the run ends before the breach time, only if the date's trigger row is `COMPLETED`; a run that did not complete (it ended `FAILED_FINAL`, its final status could not be recorded, or its status could not be read) gets none. A run date of the other form than `sla.deadline` (a daily date under `:MM`, or an hourly one under `HH:MM`) gets neither `SLA_MET` nor `SLA_BREACH`, unless it has a relative SLA. A run whose final status could not be recorded keeps its SLA alerts while its row is `RUNNING`, besides the cancel step's verdict. A date that fails before its breach time gets its failure alert (`RETRY_EXHAUSTED`, `JOB_FAILED` and the like) and neither `SLA_MET` nor `SLA_BREACH`, because the cancel step removes the breach schedule |
 
 ### Lifecycle Events
 
@@ -90,7 +90,7 @@ Published by the **stream-router** Lambda for pipelines with `dryRun: true`. The
 | `DRY_RUN_WOULD_RETRY` | A job failure would be retried | A `fail` or `timeout` row for a dry-run pipeline with retry budget left (`retries: 0`) |
 | `DRY_RUN_RETRY_EXHAUSTED` | A job failure would end the date | As `DRY_RUN_WOULD_RETRY`, when the budget is zero or the date is excluded |
 
-The `DRY_RUN_SLA_PROJECTION` detail includes `status` (`"met"` or `"breach"`), `estimatedCompletion`, `deadline`, and `marginSeconds` fields.
+The `DRY_RUN_SLA_PROJECTION` detail includes `status` (`"met"`, `"breach"`, or `"n/a"`), `estimatedCompletion`, `deadline`, and `marginSeconds` fields. A run date of the other form than `sla.deadline` has the status `"n/a"` and no `deadline` or `marginSeconds`.
 
 The `DRY_RUN_COMPLETED` detail includes `triggeredAt`, `slaStatus` (`"met"`, `"breach"`, or `"n/a"`), and optionally `estimatedCompletion` and `deadline` when SLA is configured.
 
