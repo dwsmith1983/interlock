@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	"github.com/dwsmith1983/interlock/internal/client"
 	ilambda "github.com/dwsmith1983/interlock/internal/lambda"
@@ -43,6 +44,8 @@ func main() {
 			Client:      dynamodb.NewFromConfig(cfg),
 			EventsTable: os.Getenv("EVENTS_TABLE"),
 		},
+		SQS:            sqs.NewFromConfig(cfg),
+		AlertQueueURL:  os.Getenv("ALERT_QUEUE_URL"),
 		SlackBotToken:  os.Getenv("SLACK_BOT_TOKEN"),
 		SlackChannelID: os.Getenv("SLACK_CHANNEL_ID"),
 		EventsTTLDays:  eventsTTLDays(os.Getenv("EVENTS_TTL_DAYS")),

@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -30,7 +33,22 @@ type slackPayload struct {
 	ReplyBroadcast bool                     `json:"reply_broadcast,omitempty"`
 }
 
-// HandleAlertDispatcher processes SQS messages containing EventBridge alert events.
+// slackError is a Slack response that refused the message. retryAfter is the
+// wait in seconds the response asked for, or 0.
+type slackError struct {
+	msg        string
+	retryAfter int
+}
+
+func newSlackError(resp *http.Response, msg string) *slackError {
+	return &slackError{msg: msg, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
+}
+
+func (e *slackError) Error() string { return e.msg }
+
+// HandleAlertDispatcher processes SQS messages containing EventBridge alert
+// events. A message that fails is reported to SQS, which delivers it again
+// after the delay set here.
 func HandleAlertDispatcher(ctx context.Context, d *lambda.Deps, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
 	var failures []events.SQSBatchItemFailure
 
@@ -41,10 +59,39 @@ func HandleAlertDispatcher(ctx context.Context, d *lambda.Deps, sqsEvent events.
 			failures = append(failures, events.SQSBatchItemFailure{
 				ItemIdentifier: record.MessageId,
 			})
+			delayRetry(ctx, d, record, err)
 		}
 	}
 
 	return events.SQSEventResponse{BatchItemFailures: failures}, nil
+}
+
+// delayRetry hides record, which failed with cause, until its next try. If that
+// fails, the message returns after the queue's own visibility timeout.
+func delayRetry(ctx context.Context, d *lambda.Deps, record events.SQSMessage, cause error) {
+	receiveCount, err := strconv.Atoi(record.Attributes["ApproximateReceiveCount"])
+	if err != nil {
+		receiveCount = 1
+	}
+	retryAfter := 0
+	var refused *slackError
+	if errors.As(cause, &refused) {
+		retryAfter = refused.retryAfter
+	}
+	if retryAfter > maxRetryAfterSeconds {
+		d.Logger.WarnContext(ctx, "Slack asked for a longer wait than the limit",
+			"retryAfterSeconds", retryAfter, "limitSeconds", maxRetryAfterSeconds)
+	}
+
+	_, err = d.SQS.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
+		QueueUrl:          &d.AlertQueueURL,
+		ReceiptHandle:     &record.ReceiptHandle,
+		VisibilityTimeout: retryDelaySeconds(receiveCount, retryAfter, rand.Float64()),
+	})
+	if err != nil {
+		d.Logger.WarnContext(ctx, "could not set the retry delay of an alert message",
+			"messageId", record.MessageId, "error", err)
+	}
 }
 
 func processAlertMessage(ctx context.Context, d *lambda.Deps, record events.SQSMessage) error {
@@ -122,7 +169,7 @@ func postToSlack(ctx context.Context, d *lambda.Deps, payload slackPayload) (str
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("slack returned status %d", resp.StatusCode)
+		return "", newSlackError(resp, fmt.Sprintf("slack returned status %d", resp.StatusCode))
 	}
 
 	var slackResp struct {
@@ -135,7 +182,7 @@ func postToSlack(ctx context.Context, d *lambda.Deps, payload slackPayload) (str
 		return "", fmt.Errorf("decode slack response: %w", err)
 	}
 	if !slackResp.OK {
-		return "", fmt.Errorf("slack API error: %s", slackResp.Error)
+		return "", newSlackError(resp, "slack API error: "+slackResp.Error)
 	}
 	return slackResp.TS, nil
 }

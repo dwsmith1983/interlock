@@ -12,6 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from botocore.exceptions import ClientError
+
 import deploy
 
 SFN_ARN = f"arn:aws:states:{deploy.REGION}:{deploy.DUMMY_ACCOUNT_ID}:stateMachine:{deploy.STATE_MACHINE_NAME}"
@@ -40,6 +42,14 @@ class LambdaEnvTest(unittest.TestCase):
                 self.assertEqual(env["JOB_CHECK_INTERVAL_SECONDS"], "5")
                 self.assertEqual(env["RETRY_DELAY_MAX_SECONDS"], "5")
                 self.assertNotIn("SKIP_SCHEDULER", env)
+
+    def test_lambda_env_alert_queue_url(self) -> None:
+        for handler in deploy.LAMBDA_HANDLERS:
+            for e2e in (False, True):
+                with self.subTest(handler=handler, e2e=e2e):
+                    env = deploy._lambda_env(handler, SFN_ARN, alert_queue_url="queue-url", e2e=e2e)
+                    want = "queue-url" if handler == "alert-dispatcher" else None
+                    self.assertEqual(env.get("ALERT_QUEUE_URL"), want)
 
     def test_lambda_env_e2e_scheduler_env(self) -> None:
         for handler in ("watchdog", "sla-monitor"):
@@ -95,13 +105,17 @@ class CmdDeployTest(unittest.TestCase):
         mocks["ensure_watchdog_schedule"].assert_not_called()
         mocks["ensure_sqs_mapping"].assert_not_called()
         mocks["ensure_schedules_table"].assert_called_once_with()
-        mocks["ensure_lambdas"].assert_called_once_with(sfn_arn=SFN_ARN, e2e=True)
+        mocks["ensure_lambdas"].assert_called_once_with(
+            sfn_arn=SFN_ARN, alert_queue_url="queue-url", e2e=True
+        )
 
         mocks, _ = self._run_deploy(e2e=False)
         mocks["ensure_watchdog_schedule"].assert_called_once()
         mocks["ensure_sqs_mapping"].assert_called_once()
         mocks["ensure_schedules_table"].assert_not_called()
-        mocks["ensure_lambdas"].assert_called_once_with(sfn_arn=SFN_ARN, e2e=False)
+        mocks["ensure_lambdas"].assert_called_once_with(
+            sfn_arn=SFN_ARN, alert_queue_url="queue-url", e2e=False
+        )
 
     def test_deploy_e2e_sfn_starters_env_update_keeps_hooks(self) -> None:
         _, client = self._run_deploy(e2e=True, sfn_arn="arn:other")
@@ -131,7 +145,7 @@ class CmdDeployTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(deploy, "_zip_bytes", return_value=b""))
             stack.enter_context(mock.patch.object(deploy.time, "sleep"))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-            deploy.ensure_lambdas(SFN_ARN, e2e=True)
+            deploy.ensure_lambdas(SFN_ARN, alert_queue_url="queue-url", e2e=True)
         calls = client.create_function.call_args_list
         self.assertEqual(len(calls), len(deploy.LAMBDA_HANDLERS))
         for c in calls:
@@ -139,6 +153,34 @@ class CmdDeployTest(unittest.TestCase):
             with self.subTest(function=c.kwargs["FunctionName"]):
                 self.assertEqual(env["E2E_CLOCK_URL"], CLOCK_URL)
                 self.assertEqual(env["E2E_SCHEDULE_TABLE"], deploy.TABLE_SCHEDULES)
+        dispatcher = next(c for c in calls if c.kwargs["FunctionName"].endswith("alert-dispatcher"))
+        self.assertEqual(dispatcher.kwargs["Environment"]["Variables"]["ALERT_QUEUE_URL"], "queue-url")
+
+
+class AlertQueueTest(unittest.TestCase):
+    def _ensure(self, client: mock.MagicMock) -> None:
+        with mock.patch.object(deploy, "_client", return_value=client), \
+                contextlib.redirect_stdout(io.StringIO()):
+            deploy.ensure_alert_queue()
+        client.set_queue_attributes.assert_called_once()
+        kwargs = client.set_queue_attributes.call_args.kwargs
+        self.assertEqual(kwargs["QueueUrl"], "queue-url")
+        self.assertEqual(kwargs["Attributes"]["VisibilityTimeout"], "180")
+
+    def test_new_alert_queue_visibility(self) -> None:
+        client = mock.MagicMock()
+        client.create_queue.return_value = {"QueueUrl": "queue-url"}
+        self._ensure(client)
+        attributes = client.create_queue.call_args.kwargs["Attributes"]
+        self.assertEqual(attributes["VisibilityTimeout"], "180")
+
+    def test_existing_alert_queue_visibility(self) -> None:
+        client = mock.MagicMock()
+        client.create_queue.side_effect = ClientError(
+            {"Error": {"Code": "QueueAlreadyExists"}}, "CreateQueue"
+        )
+        client.get_queue_url.return_value = {"QueueUrl": "queue-url"}
+        self._ensure(client)
 
 
 class AlertAllowlistTest(unittest.TestCase):

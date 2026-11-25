@@ -43,7 +43,7 @@ guards:
 audit: lint test e2e-check guards
 
 # Plans the Terraform module against a mocked AWS provider; no credentials or
-# account needed. Needs Terraform 1.7 or later, the first with mock providers.
+# account needed. Needs Terraform 1.11 or later, the first with override_during.
 # Set TF_PLUGIN_CACHE_DIR to reuse the downloaded provider.
 # The module keeps no lock file, and without one init skips the cache unless
 # TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE is set.

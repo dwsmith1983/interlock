@@ -41,15 +41,17 @@ func TestValidateEnv_AlertDispatcherAllPresent(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestValidateEnv_AlertDispatcherMissingEventsVars(t *testing.T) {
+func TestValidateEnv_AlertDispatcherMissingVars(t *testing.T) {
 	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
 	t.Setenv("SLACK_CHANNEL_ID", "C12345")
 	t.Setenv("EVENTS_TABLE", "")
 	t.Setenv("EVENTS_TTL_DAYS", "")
+	t.Setenv("ALERT_QUEUE_URL", "")
 	err := ValidateEnv("alert-dispatcher")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "EVENTS_TABLE")
 	assert.Contains(t, err.Error(), "EVENTS_TTL_DAYS")
+	assert.Contains(t, err.Error(), "ALERT_QUEUE_URL")
 }
 
 func TestValidateEnv_AlertDispatcherWithoutSlack(t *testing.T) {
@@ -57,6 +59,7 @@ func TestValidateEnv_AlertDispatcherWithoutSlack(t *testing.T) {
 	// dispatcher then runs in logging-only mode.
 	t.Setenv("EVENTS_TABLE", "events")
 	t.Setenv("EVENTS_TTL_DAYS", "90")
+	t.Setenv("ALERT_QUEUE_URL", "https://sqs.example/alerts")
 	t.Setenv("SLACK_CHANNEL_ID", "")
 	err := ValidateEnv("alert-dispatcher")
 	require.NoError(t, err)
