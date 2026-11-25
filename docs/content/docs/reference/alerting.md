@@ -90,7 +90,7 @@ Published by the **stream-router** Lambda for pipelines with `dryRun: true`. The
 | `DRY_RUN_WOULD_RETRY` | A job failure would be retried | A `fail` or `timeout` row for a dry-run pipeline with retry budget left (`retries: 0`) |
 | `DRY_RUN_RETRY_EXHAUSTED` | A job failure would end the date | As `DRY_RUN_WOULD_RETRY`, when the budget is zero or the date is excluded |
 
-The `DRY_RUN_SLA_PROJECTION` detail includes `status` (`"met"`, `"breach"`, or `"n/a"`), `estimatedCompletion`, `deadline`, and `marginSeconds` fields. A run date of the other form than `sla.deadline` has the status `"n/a"` and no `deadline` or `marginSeconds`.
+The `DRY_RUN_SLA_PROJECTION` detail includes `status` (`"met"`, `"breach"`, or `"n/a"`), `estimatedCompletion`, `deadline`, and `marginSeconds` fields. In dry-run events `deadline` is the breach time (RFC 3339, UTC), not the configured deadline. A run date of the other form than `sla.deadline` has the status `"n/a"` and no `deadline` or `marginSeconds`.
 
 The `DRY_RUN_COMPLETED` detail includes `triggeredAt`, `slaStatus` (`"met"`, `"breach"`, or `"n/a"`), and optionally `estimatedCompletion` and `deadline` when SLA is configured.
 
@@ -123,14 +123,23 @@ Events follow the standard EventBridge envelope format:
   "resources": [],
   "detail": {
     "pipelineId": "gold-revenue",
-    "scheduleId": "daily",
+    "scheduleId": "stream",
     "date": "2026-03-01",
-    "message": "Pipeline gold-revenue has not completed by warning deadline 10:00 UTC"
+    "message": "pipeline gold-revenue: SLA_WARNING",
+    "timestamp": "2026-03-01T10:00:00.482913Z",
+    "detail": {
+      "status": "RUNNING",
+      "source": "schedule",
+      "actionHint": "pipeline running \u2014 may complete before breach",
+      "deadline": "10:30",
+      "timezone": "UTC",
+      "breachAt": "2026-03-01T10:30:00Z"
+    }
   }
 }
 ```
 
-The `detail` object contains pipeline-specific context. The exact fields vary by detail type but always include `pipelineId`.
+The outer `detail` object always includes `pipelineId`. The inner `detail` map holds the fields of that event type; an event without any has none.
 
 ## Creating EventBridge Rules
 
@@ -240,7 +249,13 @@ The table is named `{env}-interlock-events`. Each event row also holds `eventTyp
 }
 ```
 
-A scheduled `SLA_WARNING` row's details are `status`, `source`, `actionHint` and `breachAt`, and a scheduled `SLA_BREACH` row's are `status`, `source` and `actionHint`. `SLA_MET` and the `SLA_BREACH` sent when the run ends have none.
+The details of a scheduled `SLA_WARNING` or `SLA_BREACH` row are `status` (the trigger row's, or `not started`), `source` (`schedule`), `actionHint`, `deadline`, `timezone` and `breachAt`. Those of `SLA_MET` and of the `SLA_BREACH` sent when the run ends are:
+
+- `source` (`cancel`), `breachAt` and `status` (the trigger row's). An `SLA_BREACH` whose row could not be read has no `status`.
+- `deadline` and `timezone` when the verdict is against `sla.deadline`.
+- `maxDuration` and `sensorArrivalAt` instead when it is against a relative SLA. With both a `deadline` and a `maxDuration`, the relative SLA decides once the first sensor arrival is known.
+
+`deadline` is the configured `HH:MM` or `:MM`. `timezone` is `sla.timezone`, or `UTC` when unset. `breachAt` is the breach time in UTC (RFC 3339). SLA schedules created by v0.11.0 or earlier keep their old payload after an upgrade. Their `SLA_WARNING` has `breachAt` but no `deadline` or `timezone`; their `SLA_BREACH` has none of the three.
 
 `INFRA_ALARM` rows are under `PIPELINE#INFRASTRUCTURE` and carry the time of the alarm's state change.
 
@@ -304,7 +319,7 @@ The module deploys an `alert-dispatcher` Lambda that reads from an SQS alert que
 
 With `slack_bot_token`, `slack_secret_arn` and `slack_channel_id` all empty, the dispatcher runs in logging-only mode and writes each alert to its log; once a token or secret is set, `slack_channel_id` is required, and `slack_secret_arn` (a Secrets Manager secret holding the token) is the preferred way to pass the token.
 
-**Message text**: each message starts with an icon. A red circle marks failures, timeouts, SLA breaches, missed schedules and cutoffs, post-run drift, `CONFIG_INVALID` and `INFRA_ALARM`; a yellow circle marks `SLA_WARNING` and `RELATIVE_SLA_WARNING`; a check mark marks `SLA_MET`. Every other event gets an info icon, among them `POST_RUN_SENSOR_MISSING`, `POST_RUN_DRIFT_INFLIGHT`, `RERUN_REJECTED` and the dry-run events. In event values, control characters (newlines and tabs too), line and paragraph separators and bidirectional controls become spaces, and `&`, `<` and `>` are escaped.
+**Message text**: each message starts with an icon. A red circle marks failures, timeouts, SLA breaches, missed schedules and cutoffs, post-run drift, `CONFIG_INVALID` and `INFRA_ALARM`; a yellow circle marks `SLA_WARNING` and `RELATIVE_SLA_WARNING`; a check mark marks `SLA_MET`. Every other event gets an info icon, among them `POST_RUN_SENSOR_MISSING`, `POST_RUN_DRIFT_INFLIGHT`, `RERUN_REJECTED` and the dry-run events. In event values, control characters (newlines and tabs too), line and paragraph separators and bidirectional controls become spaces, and `&`, `<` and `>` are escaped. An SLA alert with a `deadline` shows it as `Deadline 06:00 America/New_York (2026-03-01T11:00:00Z)`: the configured deadline, its time zone and the breach time in UTC.
 
 **Message threading**: alerts with a run date share one Slack thread per pipeline, schedule and date. Alerts without one (`CONFIG_INVALID` and `INFRA_ALARM`) share one thread per pipeline and UTC day. The day is the one on which the alert was queued for Slack, not the one on which it was delivered. Every `INFRA_ALARM` has the pipeline `INFRASTRUCTURE`, so a day's alarms share a thread. The first alert starts the thread and later ones reply in it. Replies in a day thread also show in the channel; replies in a run date's thread do not. A thread belongs to its channel: after `slack_channel_id` changes, the next alert of each thread starts it again in the new channel. Thread records are stored in the events table and expire with the same TTL.
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/sla"
+	"github.com/dwsmith1983/interlock/pkg/types"
 	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
@@ -71,12 +72,14 @@ var testSLACalc = lambda.SLAMonitorOutput{
 	BreachAt:  "2026-03-03T12:00:00Z",
 }
 
+var testSLAConfig = &types.SLAConfig{Deadline: ":00", Timezone: "America/New_York", ExpectedDuration: "15m", MaxDuration: "2h", Critical: true}
+
 func TestCreateSLASchedules_NameShape(t *testing.T) {
 	t.Setenv("SKIP_SCHEDULER", "")
 	sched := &recordingScheduler{}
 	d := newSchedulerDeps(sched)
 
-	err := lambda.CreateSLASchedules(context.Background(), d, maxPipelineID, "stream", "2026-03-03T10", testSLACalc, false)
+	err := lambda.CreateSLASchedules(context.Background(), d, maxPipelineID, "stream", "2026-03-03T10", testSLAConfig, testSLACalc, false)
 	require.NoError(t, err)
 	require.Len(t, sched.created, 2)
 
@@ -87,21 +90,21 @@ func TestCreateSLASchedules_NameShape(t *testing.T) {
 }
 
 // TestCreateSLASchedules_Payload pins each one-time schedule the SLA monitor
-// creates: its name, its at() time in UTC, the alert it fires, and that it
-// deletes itself after firing. Only the warning carries the breach time.
+// creates: its name, its at() time in UTC, the alert it fires with its
+// deadline, time zone and breach time, and that it deletes itself after firing.
 func TestCreateSLASchedules_Payload(t *testing.T) {
 	t.Setenv("SKIP_SCHEDULER", "")
 	s := &recordingScheduler{}
 
-	err := lambda.CreateSLASchedules(context.Background(), newSchedulerDeps(s), "orders", "stream", "2026-03-03T10", testSLACalc, false)
+	err := lambda.CreateSLASchedules(context.Background(), newSchedulerDeps(s), "orders", "stream", "2026-03-03T10", testSLAConfig, testSLACalc, false)
 	require.NoError(t, err)
 
 	require.Len(t, s.created, 2)
 	for i, want := range []struct{ name, expr, input string }{
 		{"orders-stream-2026-03-03T10-sla-warning", "at(2026-03-03T11:45:00)",
-			`{"mode":"fire-alert","pipelineId":"orders","scheduleId":"stream","date":"2026-03-03T10","alertType":"SLA_WARNING","breachAt":"2026-03-03T12:00:00Z"}`},
+			`{"mode":"fire-alert","pipelineId":"orders","scheduleId":"stream","date":"2026-03-03T10","alertType":"SLA_WARNING","deadline":":00","timezone":"America/New_York","breachAt":"2026-03-03T12:00:00Z"}`},
 		{"orders-stream-2026-03-03T10-sla-breach", "at(2026-03-03T12:00:00)",
-			`{"mode":"fire-alert","pipelineId":"orders","scheduleId":"stream","date":"2026-03-03T10","alertType":"SLA_BREACH"}`},
+			`{"mode":"fire-alert","pipelineId":"orders","scheduleId":"stream","date":"2026-03-03T10","alertType":"SLA_BREACH","deadline":":00","timezone":"America/New_York","breachAt":"2026-03-03T12:00:00Z"}`},
 	} {
 		in := s.created[i]
 		require.NotNil(t, in.Name)
@@ -133,7 +136,7 @@ func TestCreateSLASchedules_ErrorsAndSkip(t *testing.T) {
 		t.Setenv("SKIP_SCHEDULER", "")
 		s := &recordingScheduler{createErr: errors.New("throttling exception")}
 
-		err := lambda.CreateSLASchedules(context.Background(), newSchedulerDeps(s), "orders", "stream", "2026-03-03T10", testSLACalc, false)
+		err := lambda.CreateSLASchedules(context.Background(), newSchedulerDeps(s), "orders", "stream", "2026-03-03T10", testSLAConfig, testSLACalc, false)
 
 		require.EqualError(t, err, `create warning schedule: create one-time schedule "orders-stream-2026-03-03T10-sla-warning": throttling exception`)
 		assert.Len(t, s.created, 1, "no breach create after the warning fails")
@@ -142,7 +145,7 @@ func TestCreateSLASchedules_ErrorsAndSkip(t *testing.T) {
 		t.Setenv("SKIP_SCHEDULER", "true")
 		s := &recordingScheduler{}
 
-		err := lambda.CreateSLASchedules(context.Background(), newSchedulerDeps(s), "orders", "stream", "2026-03-03T10", testSLACalc, false)
+		err := lambda.CreateSLASchedules(context.Background(), newSchedulerDeps(s), "orders", "stream", "2026-03-03T10", testSLAConfig, testSLACalc, false)
 
 		require.NoError(t, err)
 		assert.Empty(t, s.created)
@@ -157,7 +160,7 @@ func TestSLACancel_DeletesTheCreatedScheduleNames(t *testing.T) {
 			sched := &recordingScheduler{}
 			d := newSchedulerDeps(sched)
 
-			err := lambda.CreateSLASchedules(context.Background(), d, pipelineID, "stream", "2026-03-03T10", testSLACalc, false)
+			err := lambda.CreateSLASchedules(context.Background(), d, pipelineID, "stream", "2026-03-03T10", testSLAConfig, testSLACalc, false)
 			require.NoError(t, err)
 
 			_, err = sla.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{

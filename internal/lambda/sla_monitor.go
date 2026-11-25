@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	schedulerTypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 	pkgsla "github.com/dwsmith1983/interlock/pkg/sla"
+	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
 // SkipScheduler reports whether the EventBridge Scheduler integration is
@@ -116,16 +117,17 @@ func createOneTimeSchedule(ctx context.Context, d *Deps, name, timestamp string,
 
 // CreateSLASchedules is the exported entry point for creating SLA schedules.
 // Used by the watchdog sub-package for proactive SLA scheduling.
-func CreateSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, date string, calc SLAMonitorOutput, onConflictSkip bool) error {
-	return createSLASchedules(ctx, d, pipelineID, scheduleID, date, calc, onConflictSkip)
+func CreateSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, date string, slaCfg *types.SLAConfig, calc SLAMonitorOutput, onConflictSkip bool) error {
+	return createSLASchedules(ctx, d, pipelineID, scheduleID, date, slaCfg, calc, onConflictSkip)
 }
 
 // createSLASchedules creates warning and breach one-time schedules, skipping
 // one whose time in calc is empty (the watchdog clears a warning that is
-// already due). Returns an error on the first schedule creation failure. If
+// already due). Both alerts carry slaCfg's deadline and timezone and the breach
+// time. Returns an error on the first schedule creation failure. If
 // onConflictSkip is true, ConflictException errors are silently skipped
 // (idempotent retries).
-func createSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, date string, calc SLAMonitorOutput, onConflictSkip bool) error {
+func createSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, date string, slaCfg *types.SLAConfig, calc SLAMonitorOutput, onConflictSkip bool) error {
 	for _, alert := range []struct {
 		suffix    string
 		alertType string
@@ -144,9 +146,9 @@ func createSLASchedules(ctx context.Context, d *Deps, pipelineID, scheduleID, da
 			ScheduleID: scheduleID,
 			Date:       date,
 			AlertType:  alert.alertType,
-		}
-		if alert.alertType == "SLA_WARNING" {
-			payload.BreachAt = calc.BreachAt
+			Deadline:   slaCfg.Deadline,
+			Timezone:   slaCfg.Timezone,
+			BreachAt:   calc.BreachAt,
 		}
 		if err := createOneTimeSchedule(ctx, d, name, alert.timestamp, payload); err != nil {
 			if onConflictSkip {

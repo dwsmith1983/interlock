@@ -301,12 +301,14 @@ Example event:
   "detail-type": "SLA_BREACH",
   "detail": {
     "pipelineId": "gold-revenue",
-    "scheduleId": "daily",
+    "scheduleId": "stream",
     "date": "2026-03-01",
-    "message": "Pipeline gold-revenue: SLA_BREACH"
+    "message": "pipeline gold-revenue: SLA_BREACH"
   }
 }
 ```
+
+The event's details (deadline, time zone, breach time) are listed under [Event Sink](../../reference/alerting/#event-sink).
 
 ## Calendar Exclusions
 

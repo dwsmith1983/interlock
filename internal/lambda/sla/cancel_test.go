@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -466,6 +467,98 @@ func TestSLACancel_Verdict(t *testing.T) {
 			}
 			if !slices.Equal(eb.detailTypes, tt.wantTypes) {
 				t.Errorf("published %v, want %v", eb.detailTypes, tt.wantTypes)
+			}
+		})
+	}
+}
+
+// TestSLACancel_EventDetail pins the details of the verdict cancel publishes:
+// the trigger row's status when it was read, the breach time, and what that
+// time was measured from. That is the deadline and its time zone, or the
+// maxDuration and first sensor arrival of a relative SLA, which decides when a
+// pipeline has both. A skipped verdict publishes nothing.
+func TestSLACancel_EventDetail(t *testing.T) {
+	const day = "2026-03-10"
+	type in = lambda.SLAMonitorInput
+	type m = map[string]interface{}
+	met, breach := string(types.EventSLAMet), string(types.EventSLABreach)
+	completed, failed := types.TriggerStatusCompleted, types.TriggerStatusFailedFinal
+	// Breach times: absolute and relative 12:00, both 10:00 in New York (14:00
+	// UTC) by its deadline and 12:00 by its relative SLA.
+	absolute := in{Date: day, Deadline: "12:00", ExpectedDuration: "30m", Timezone: "UTC"}
+	relative := in{Date: day, MaxDuration: "4h", SensorArrivalAt: day + "T08:00:00Z"}
+	both := relative
+	both.Deadline, both.ExpectedDuration, both.Timezone = "10:00", "30m", "America/New_York"
+	given := both
+	given.WarningAt, given.BreachAt = day+"T11:30:00Z", day+"T12:00:00Z"
+
+	absoluteDetail := m{"source": "cancel", "status": completed, "deadline": "12:00", "timezone": "UTC", "breachAt": day + "T12:00:00Z"}
+	relativeDetail := m{"source": "cancel", "status": completed, "maxDuration": "4h", "sensorArrivalAt": day + "T08:00:00Z", "breachAt": day + "T12:00:00Z"}
+
+	tests := []struct {
+		name       string
+		in         in
+		hour       int    // the hour the run ends, UTC
+		status     string // "" means the trigger read fails
+		wantType   string // "" means nothing is published
+		wantDetail m
+	}{
+		{"absolute met", absolute, 11, completed, met, absoluteDetail},
+		{"absolute breach", absolute, 12, completed, breach, absoluteDetail},
+		{"absolute, no timezone", in{Date: day, Deadline: "12:00", ExpectedDuration: "30m"}, 11, completed, met, absoluteDetail},
+		{"absolute, maxDuration without an arrival", in{Date: day, Deadline: "12:00", ExpectedDuration: "30m", MaxDuration: "4h", Timezone: "UTC"}, 11, completed, met, absoluteDetail},
+		{"absolute, failed run", absolute, 12, failed, breach, m{"source": "cancel", "status": failed, "deadline": "12:00", "timezone": "UTC", "breachAt": day + "T12:00:00Z"}},
+		{"absolute, configured zone", in{Date: day, Deadline: "06:00", ExpectedDuration: "30m", Timezone: "America/New_York"}, 11, types.TriggerStatusRunning, breach,
+			m{"source": "cancel", "status": types.TriggerStatusRunning, "deadline": "06:00", "timezone": "America/New_York", "breachAt": day + "T10:00:00Z"}},
+		{"absolute, hourly", in{Date: day + "T10", Deadline: ":30", ExpectedDuration: "30m", Timezone: "UTC"}, 11, completed, met,
+			m{"source": "cancel", "status": completed, "deadline": ":30", "timezone": "UTC", "breachAt": day + "T11:30:00Z"}},
+		{"absolute, trigger read fails", absolute, 12, "", breach, m{"source": "cancel", "deadline": "12:00", "timezone": "UTC", "breachAt": day + "T12:00:00Z"}},
+		{"relative met", relative, 11, completed, met, relativeDetail},
+		{"relative breach", relative, 12, completed, breach, relativeDetail},
+		{"both, relative decides", both, 11, completed, met, relativeDetail},
+		{"given times with a deadline", given, 11, completed, met, m{"source": "cancel", "status": completed, "deadline": "10:00", "timezone": "America/New_York", "breachAt": day + "T12:00:00Z"}},
+		{"given breach time only", in{Date: day, BreachAt: day + "T10:00:00Z", Timezone: "UTC"}, 11, completed, breach, m{"source": "cancel", "status": completed, "breachAt": day + "T10:00:00Z"}},
+		{"given warning time only", in{Date: day, WarningAt: day + "T10:00:00Z"}, 11, completed, met, m{"source": "cancel", "status": completed}},
+		{"skipped, no deadline", in{Date: day}, 11, completed, "", nil},
+		{"skipped, other cadence", in{Date: day, Deadline: ":30", ExpectedDuration: "30m"}, 11, completed, "", nil},
+		{"skipped, failed before the breach", absolute, 11, failed, "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &storetest.FakeDynamo{GetItemFn: func(_ context.Context, get *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+				if sk, ok := get.Key["SK"].(*ddbtypes.AttributeValueMemberS); ok && sk.Value == types.ConfigSK {
+					return &dynamodb.GetItemOutput{}, nil
+				}
+				if tt.status == "" {
+					return nil, errors.New("throttled")
+				}
+				return &dynamodb.GetItemOutput{Item: triggerItem(tt.status)}, nil
+			}}
+			d := testDeps(fake, time.Date(2026, 3, 10, tt.hour, 0, 0, 0, time.UTC))
+			eb := &countingEventBridge{}
+			d.EventBridge, d.EventBusName = eb, "test-bus"
+			input := tt.in
+			input.Mode, input.PipelineID, input.ScheduleID = "cancel", "p", "stream"
+
+			if _, err := sla.HandleSLAMonitor(context.Background(), d, input); err != nil {
+				t.Fatalf("HandleSLAMonitor returned error: %v", err)
+			}
+
+			if tt.wantType == "" {
+				if eb.calls != 0 {
+					t.Errorf("published %v with %+v, want nothing", eb.detailTypes, eb.details)
+				}
+				return
+			}
+			if !slices.Equal(eb.detailTypes, []string{tt.wantType}) {
+				t.Fatalf("published %v, want %s", eb.detailTypes, tt.wantType)
+			}
+			evt := eb.details[0]
+			if want := "pipeline p: " + tt.wantType; evt.Message != want {
+				t.Errorf("Message = %q, want %q", evt.Message, want)
+			}
+			if !reflect.DeepEqual(evt.Detail, tt.wantDetail) {
+				t.Errorf("Detail = %v, want %v", evt.Detail, tt.wantDetail)
 			}
 		})
 	}

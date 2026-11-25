@@ -29,13 +29,15 @@ import (
 const slaTestDate = "2026-03-10"
 
 // slaRecorder records the schedules created (names and, in step, their
-// expressions) and the event types published, and both in call order. While
+// expressions and payloads) and the event types published, and both in call
+// order. While
 // failEvents > 0, PutEvents fails and counts it down. With exists set,
 // CreateSchedule records the name and answers as for an existing schedule;
 // with createErr set, it records the name and returns createErr.
 type slaRecorder struct {
 	schedules  []string
 	exprs      []string
+	payloads   []string
 	events     []string
 	details    []types.InterlockEvent
 	order      []string
@@ -47,6 +49,7 @@ type slaRecorder struct {
 func (r *slaRecorder) CreateSchedule(_ context.Context, in *scheduler.CreateScheduleInput, _ ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error) {
 	r.schedules = append(r.schedules, aws.ToString(in.Name))
 	r.exprs = append(r.exprs, aws.ToString(in.ScheduleExpression))
+	r.payloads = append(r.payloads, aws.ToString(in.Target.Input))
 	r.order = append(r.order, aws.ToString(in.Name))
 	if r.exists {
 		return nil, &schedulerTypes.ConflictException{Message: aws.String("schedule exists")}
@@ -168,6 +171,33 @@ func TestScheduleSLAAlerts_RetryKeepsSchedules(t *testing.T) {
 			}
 			if !slices.Equal(rec.schedules, want) {
 				t.Fatalf("schedules created = %v, want %v", rec.schedules, want)
+			}
+		})
+	}
+}
+
+// TestScheduleSLAAlerts_PayloadDeadline pins that both alerts carry the
+// pipeline's configured deadline and time zone and the breach time they mean.
+func TestScheduleSLAAlerts_PayloadDeadline(t *testing.T) {
+	for _, tt := range []struct{ name, timezone, deadline, want string }{
+		{"UTC deadline", "", "10:00", `"deadline":"10:00","breachAt":"2026-03-10T10:00:00Z"}`},
+		{"New York deadline", "America/New_York", "06:30", `"deadline":"06:30","timezone":"America/New_York","breachAt":"2026-03-10T10:30:00Z"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+				c.SLA = &types.SLAConfig{Deadline: tt.deadline, Timezone: tt.timezone, ExpectedDuration: "30m"}
+			})
+
+			if err := scheduleSLAAlerts(context.Background(), d); err != nil {
+				t.Fatalf("scheduleSLAAlerts: %v", err)
+			}
+
+			var want []string
+			for _, alertType := range []string{"SLA_WARNING", "SLA_BREACH"} {
+				want = append(want, `{"mode":"fire-alert","pipelineId":"p","scheduleId":"stream","date":"2026-03-10","alertType":"`+alertType+`",`+tt.want)
+			}
+			if !slices.Equal(rec.payloads, want) {
+				t.Errorf("payloads = %v, want %v", rec.payloads, want)
 			}
 		})
 	}
