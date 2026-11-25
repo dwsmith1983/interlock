@@ -289,11 +289,12 @@ var cutoffReferenceDates = [...]time.Time{
 }
 
 // cutoffBeforeBreach reports the run key whose cutoff falls furthest before
-// its sla.deadline breach, or returns "". Validation cannot know whether the
-// sensors send daily or hourly keys, so it checks the daily key and the
-// hourly keys T00 and T23 of each reference date, with the runtime's
-// functions: the cutoff in schedule.timezone (else sla.timezone, else UTC),
-// the breach in sla.timezone, deadlineDayOffset added to the daily key only.
+// its sla.deadline breach, or returns "". A deadline applies only to
+// run keys of its own form, so it checks the daily key of each reference date
+// for an "HH:MM" deadline and the hourly keys T00 and T23 for a ":MM" one,
+// with the runtime's functions: the cutoff in schedule.timezone (else
+// sla.timezone, else UTC), the breach in sla.timezone, deadlineDayOffset added
+// to the daily key only.
 // It runs only when every input passed its own check, so one mistake gives
 // one error.
 func cutoffBeforeBreach(cfg *types.PipelineConfig) string {
@@ -312,9 +313,9 @@ func cutoffBeforeBreach(cfg *types.PipelineConfig) string {
 	var worstCutoff, worstBreach time.Time
 	for _, ref := range cutoffReferenceDates {
 		day := ref.Format("2006-01-02")
-		keys := []string{day, day + "T00", day + "T23"}
+		keys := []string{day}
 		if strings.HasPrefix(s.Deadline, ":") {
-			keys = keys[1:] // the T23 key decides an hourly deadline
+			keys = []string{day + "T00", day + "T23"}
 		}
 		for _, key := range keys {
 			slaDate := key
@@ -335,13 +336,9 @@ func cutoffBeforeBreach(cfg *types.PipelineConfig) string {
 	if worstKey == "" {
 		return ""
 	}
-	msg := fmt.Sprintf("schedule.trigger.cutoff %q (cutoffDayOffset %d, %s) is earlier than the sla.deadline %q (deadlineDayOffset %d, %s) breach time for run key %s (cutoff %s, breach %s); move the cutoff at least %s later",
+	return fmt.Sprintf("schedule.trigger.cutoff %q (cutoffDayOffset %d, %s) is earlier than the sla.deadline %q (deadlineDayOffset %d, %s) breach time for run key %s (cutoff %s, breach %s); move the cutoff at least %s later",
 		tr.Cutoff, tr.CutoffDayOffset, cutoffZone, s.Deadline, s.DeadlineDayOffset, slaZone, worstKey,
 		worstCutoff.UTC().Format(time.RFC3339), worstBreach.UTC().Format(time.RFC3339), worstBreach.Sub(worstCutoff))
-	if strings.Contains(worstKey, "T") {
-		msg += " (the check covers hourly run keys because sensors may send them)"
-	}
-	return msg
 }
 
 // dayOffsetValid reports whether a day offset passes its own check: zero, or

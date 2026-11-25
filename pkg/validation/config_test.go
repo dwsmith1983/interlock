@@ -385,14 +385,9 @@ func breachErr(cutoff string, cutoffOffset int, cutoffZone, deadline string, dea
 		cutoff, cutoffOffset, cutoffZone, deadline, deadlineOffset, deadlineZone, key, cutoffAt, breachAt, short)
 }
 
-// hourlyKey adds the note an error for an hourly run key ends with.
-func hourlyKey(msg string) string {
-	return msg + " (the check covers hourly run keys because sensors may send them)"
-}
-
-// TestValidate_CutoffAfterBreach: with sla.deadline, the cutoff of every run
-// key form (daily, and hourly T00 and T23) is not earlier than its breach, on
-// a winter and a summer date.
+// TestValidate_CutoffAfterBreach: the cutoff of the run keys an sla.deadline
+// applies to (the daily key for HH:MM, hourly T00 and T23 for :MM) is not
+// earlier than their breach, on any of the reference dates.
 func TestValidate_CutoffAfterBreach(t *testing.T) {
 	daily := func(deadline string, offset int) types.SLAConfig {
 		return types.SLAConfig{Deadline: deadline, DeadlineDayOffset: offset, ExpectedDuration: "30m"}
@@ -438,14 +433,19 @@ func TestValidate_CutoffAfterBreach(t *testing.T) {
 		{name: "hourly after", sla: daily(":30", 0), cutoff: ":45"},
 		{name: "hourly equal", sla: daily(":30", 0), cutoff: ":30"},
 		{name: "hourly before", sla: daily(":30", 0), cutoff: ":15", wantErrs: []string{
-			hourlyKey(breachErr(":15", 0, "UTC", ":30", 0, "UTC", "2025-01-15T00", "2025-01-15T01:15:00Z", "2025-01-15T01:30:00Z", "15m0s"))}},
+			breachErr(":15", 0, "UTC", ":30", 0, "UTC", "2025-01-15T00", "2025-01-15T01:15:00Z", "2025-01-15T01:30:00Z", "15m0s")}},
 		{name: "hourly deadline, daily cutoff next day", sla: daily(":30", 0), cutoff: "02:00", cutoffOffset: 1},
 		{name: "hourly deadline in New York names the T23 key", sla: types.SLAConfig{Deadline: ":30", ExpectedDuration: "30m", Timezone: "America/New_York"}, cutoff: "19:00", wantErrs: []string{
-			hourlyKey(breachErr("19:00", 0, "America/New_York", ":30", 0, "America/New_York", "2025-01-15T23", "2025-01-16T00:00:00Z", "2025-01-16T05:30:00Z", "5h30m0s"))}},
+			breachErr("19:00", 0, "America/New_York", ":30", 0, "America/New_York", "2025-01-15T23", "2025-01-16T00:00:00Z", "2025-01-16T05:30:00Z", "5h30m0s")}},
 		{name: "hourly deadline, daily cutoff same day", sla: daily(":30", 0), cutoff: "23:00", wantErrs: []string{
-			hourlyKey(breachErr("23:00", 0, "UTC", ":30", 0, "UTC", "2025-01-15T23", "2025-01-15T23:00:00Z", "2025-01-16T00:30:00Z", "1h30m0s"))}},
-		{name: "daily deadline, hourly cutoff closes T00 first", sla: daily("10:00", 0), cutoff: ":15", wantErrs: []string{
-			hourlyKey(breachErr(":15", 0, "UTC", "10:00", 0, "UTC", "2025-01-15T00", "2025-01-15T01:15:00Z", "2025-01-15T10:00:00Z", "8h45m0s"))}},
+			breachErr("23:00", 0, "UTC", ":30", 0, "UTC", "2025-01-15T23", "2025-01-15T23:00:00Z", "2025-01-16T00:30:00Z", "1h30m0s")}},
+		{name: "daily deadline, hourly cutoff after the daily key's breach", sla: daily("10:00", 0), cutoff: ":15"},
+		{name: "daily deadline next day, hourly cutoff equal", sla: daily("00:15", 1), cutoff: ":15"},
+		{name: "daily deadline next day, hourly cutoff a minute before", sla: daily("00:16", 1), cutoff: ":15", wantErrs: []string{
+			breachErr(":15", 0, "UTC", "00:16", 1, "UTC", "2025-01-15", "2025-01-16T00:15:00Z", "2025-01-16T00:16:00Z", "1m0s")}},
+		{name: "daily deadline in New York, hourly cutoff in UTC", scheduleZone: "UTC",
+			sla: types.SLAConfig{Deadline: "23:00", ExpectedDuration: "30m", Timezone: "America/New_York"}, cutoff: ":15", wantErrs: []string{
+				breachErr(":15", 0, "UTC", "23:00", 0, "America/New_York", "2025-01-15", "2025-01-16T00:15:00Z", "2025-01-16T04:00:00Z", "3h45m0s")}},
 		{name: "daily deadline next day, hourly cutoff", sla: daily("10:00", 1), cutoff: ":15", wantErrs: []string{
 			breachErr(":15", 0, "UTC", "10:00", 1, "UTC", "2025-01-15", "2025-01-16T00:15:00Z", "2025-01-16T10:00:00Z", "9h45m0s")}},
 		{name: "maxDuration only, daily cutoff", sla: types.SLAConfig{MaxDuration: "2h"}, cutoff: "00:00"},
