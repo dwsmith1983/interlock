@@ -80,9 +80,10 @@ func handleRunFailure(ctx context.Context, d *lambda.Deps, input lambda.Orchestr
 	return startRetry(ctx, d, cfg, input)
 }
 
-// startRetry records the rerun, starts the next execution and then keeps the
-// trigger row's lock. Each step is idempotent, so the Task's Retry may run it
-// again: a repeated start gets ExecutionAlreadyExists.
+// startRetry records the rerun, starts the next execution, which waits before
+// it evaluates, and then keeps the trigger row's lock. Each step is idempotent,
+// so the Task's Retry may run it again: a repeated start gets
+// ExecutionAlreadyExists.
 func startRetry(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, input lambda.OrchestratorInput) (lambda.OrchestratorOutput, error) {
 	pipelineID, schedule, date := input.PipelineID, input.ScheduleID, input.Date
 	if input.ExecutionName == "" {
@@ -105,7 +106,7 @@ func startRetry(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, 
 		return lambda.OrchestratorOutput{}, err
 	}
 	d.Logger.InfoContext(ctx, "retry running", "pipeline", pipelineID, "schedule", schedule, "date", date,
-		"execution", next, "startedNow", started)
+		"execution", next, "startedNow", started, "delaySeconds", lambda.ExecRetryDelaySeconds(next))
 	return lambda.OrchestratorOutput{Mode: "complete-trigger", Status: StatusRetrying, NextExecution: next}, nil
 }
 

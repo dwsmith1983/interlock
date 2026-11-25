@@ -148,6 +148,26 @@ const DefaultPostRunWatchWindow = 4 * time.Hour
 // sensors when postRun.sensorTimeout is unset.
 const DefaultPostRunSensorTimeout = 2 * time.Hour
 
+// RetryDelayBaseSeconds and RetryDelayCapSeconds bound the wait before a
+// job-failure retry: one minute doubling per retry, at most 15 minutes.
+const (
+	RetryDelayBaseSeconds = 60
+	RetryDelayCapSeconds  = 900
+)
+
+// RetryDelaySeconds is the wait before retry number retry (1 is the first):
+// 60, 120, 240, 480, then 900. Zero or less gives 0.
+func RetryDelaySeconds(retry int) int {
+	if retry <= 0 {
+		return 0
+	}
+	delay := RetryDelayBaseSeconds
+	for n := 1; n < retry && delay < RetryDelayCapSeconds; n++ {
+		delay *= 2
+	}
+	return min(delay, RetryDelayCapSeconds)
+}
+
 // PostRunConfig defines optional post-completion validation.
 type PostRunConfig struct {
 	Evaluation     *EvaluationWindow `yaml:"evaluation,omitempty" json:"evaluation,omitempty"`

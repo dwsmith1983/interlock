@@ -678,11 +678,13 @@ func EvaluationTiming(ev types.EvaluationWindow) (window, interval time.Duration
 	return window, interval, errs
 }
 
-// ExecutionFitErrors reports an evaluation window plus job poll window longer
-// than timeout, the Step Functions execution timeout. The sum is a floor: each
-// evaluation and status poll also takes Lambda time, and a failed launch
-// retries. It returns nothing when timeout is not positive (unknown) or the
-// evaluation values have errors, which ValidatePipelineConfig reports.
+// ExecutionFitErrors reports an evaluation window plus job poll window plus the
+// longest retry delay the config can reach that exceed timeout, the Step
+// Functions execution timeout. Each retry is its own execution, so one delay
+// counts, not their sum. The total is a floor: each evaluation and status poll
+// also takes Lambda time, and a failed launch retries. It returns nothing when
+// timeout is not positive (unknown) or the evaluation values have errors, which
+// ValidatePipelineConfig reports.
 func ExecutionFitErrors(cfg *types.PipelineConfig, timeout time.Duration) []string {
 	window, _, errs := EvaluationTiming(cfg.Schedule.Evaluation)
 	if timeout <= 0 || len(errs) > 0 {
@@ -692,11 +694,17 @@ func ExecutionFitErrors(cfg *types.PipelineConfig, timeout time.Duration) []stri
 	if p := cfg.Job.JobPollWindowSeconds; p != nil && *p > 0 {
 		poll, pollMark = *p, ""
 	}
-	if window+time.Duration(poll)*time.Second <= timeout {
+	retries := max(cfg.Job.MaxRetries, types.IntOrDefault(cfg.Job.MaxCodeRetries, 1))
+	delay := time.Duration(types.RetryDelaySeconds(retries)) * time.Second
+	if window+time.Duration(poll)*time.Second+delay <= timeout {
 		return nil
 	}
-	return []string{fmt.Sprintf("schedule.evaluation.window %s plus job.jobPollWindowSeconds %d%s exceeds the Step Functions execution timeout %s (sfn_timeout_seconds)",
-		withDefaultMark(window, cfg.Schedule.Evaluation.Window), poll, pollMark, timeout)}
+	delayClause := ""
+	if delay > 0 {
+		delayClause = fmt.Sprintf(" plus the longest retry delay %s", delay)
+	}
+	return []string{fmt.Sprintf("schedule.evaluation.window %s plus job.jobPollWindowSeconds %d%s%s exceeds the Step Functions execution timeout %s (sfn_timeout_seconds)",
+		withDefaultMark(window, cfg.Schedule.Evaluation.Window), poll, pollMark, delayClause, timeout)}
 }
 
 // evaluationDuration parses one schedule.evaluation setting, which must be

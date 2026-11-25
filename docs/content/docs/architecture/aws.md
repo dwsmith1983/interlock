@@ -113,7 +113,7 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 | `validation-exhausted` | When the evaluation window closes: before the cutoff, release a first run (`evaluation-released` row, trigger row deleted, `EVALUATION_RELEASED`, status `released`); for a rerun, publish `VALIDATION_EXHAUSTED` and set `FAILED_FINAL` (`exhausted`); at or after the cutoff, publish `SENSOR_DEADLINE_EXPIRED` and set `FAILED_FINAL` (`cutoff`) |
 | `infra-failure` | After a failed `evaluate`, `validation-exhausted` or `check-job` step: publish `INFRA_FAILURE` and set a `RUNNING` trigger row `FAILED_FINAL`. A missing or finished row, or one a later execution holds because this one released its lock, is left alone |
 | `job-poll-exhausted` | Write a `timeout` joblog row for the run when the job poll window expires |
-| `complete-trigger` | On success set the trigger to `COMPLETED`. On fail/timeout start the next attempt (`status: retrying`) while `maxRetries` lasts, else set `FAILED_FINAL` and publish `RETRY_EXHAUSTED` (`PIPELINE_EXCLUDED` for an excluded date, `INFRA_FAILURE` when the next execution cannot start) |
+| `complete-trigger` | On success set the trigger to `COMPLETED`. On fail/timeout start the next attempt (`status: retrying`), which waits in its own execution, while `maxRetries` lasts, else set `FAILED_FINAL` and publish `RETRY_EXHAUSTED` (`PIPELINE_EXCLUDED` for an excluded date, `INFRA_FAILURE` when the next execution cannot start) |
 
 Supported trigger types: `http`, `airflow`, `glue`, `emr`, `emr-serverless`, `step-function`, `databricks`, `lambda`.
 
@@ -168,6 +168,10 @@ The state machine orchestrates the pipeline lifecycle as a sequential flow. A gl
 ### State Flow
 
 ```
+CheckRetryBackoff
+  → (retry) RetryBackoff → InitEvalLoop
+  → (any other run) InitEvalLoop
+
 InitEvalLoop → Evaluate → IsReady
   → (passed) Trigger → HasTriggerResult
       → InitJobPollLoop → WaitForJob → CheckJob → IsJobDone
@@ -185,6 +189,11 @@ InitEvalLoop → Evaluate → IsReady
 Evaluate, ValidationExhausted or CheckJob fails after its retries
   → RecordInfraFailure → InfraFailure
 ```
+
+### Retry Backoff (2 states)
+
+1. **CheckRetryBackoff**: if `retryDelaySeconds` is above 0 (a retry after a job failure), go to RetryBackoff; otherwise InitEvalLoop
+2. **RetryBackoff**: wait `retryDelaySeconds` (60 doubling per retry, at most 900), then InitEvalLoop
 
 ### Evaluation Loop (7 states)
 

@@ -47,6 +47,7 @@ type recorder struct {
 	startErr error
 	putErr   error // PutEvents fails with it, recording nothing
 	started  []string
+	delays   map[string]int // retryDelaySeconds each execution was started with
 	events   []published
 	ops      []string
 }
@@ -67,6 +68,16 @@ func (r *recorder) StartExecution(_ context.Context, in *sfn.StartExecutionInput
 	if slices.Contains(r.started, *in.Name) {
 		return nil, &sfntypes.ExecutionAlreadyExists{}
 	}
+	var input struct {
+		RetryDelaySeconds int `json:"retryDelaySeconds"`
+	}
+	if err := json.Unmarshal([]byte(*in.Input), &input); err != nil {
+		return nil, err
+	}
+	if r.delays == nil {
+		r.delays = map[string]int{}
+	}
+	r.delays[*in.Name] = input.RetryDelaySeconds
 	r.started = append(r.started, *in.Name)
 	return &sfn.StartExecutionOutput{}, nil
 }
@@ -184,14 +195,15 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 		wantOps       []string
 		wantTrigger   string
 		wantStaleAt   bool
-		wantReruns    []string // execution names keying the rerun rows
+		wantReruns    []string       // execution names keying the rerun rows
+		wantDelays    map[string]int // seconds each retry waits; nil is not checked
 		wantExhausted map[string]interface{}
 	}{
 		{
 			name: "RetriesUntilMaxRetries", maxRetries: 2,
 			calls:       []ctCall{failCall(ctExec, retrying, r1), failCall(r1, retrying, r2), failCall(r2, final, "")},
 			wantOps:     []string{"rerun " + r1, "start " + r1, "rerun " + r2, "start " + r2, toFinal, exhausted},
-			wantTrigger: final, wantReruns: []string{r1, r2},
+			wantTrigger: final, wantReruns: []string{r1, r2}, wantDelays: map[string]int{r1: 60, r2: 120},
 			wantExhausted: map[string]interface{}{"retries": float64(2), "maxRetries": float64(2), "runId": r2},
 		},
 		{
@@ -206,6 +218,15 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 			rows:    []map[string]ddbtypes.AttributeValue{categorizedRow("300", "other-run", types.FailurePermanent), categorizedRow("200", r1, types.FailureTransient)},
 			calls:   []ctCall{failCall(r1, retrying, r2)},
 			wantOps: []string{"rerun " + r2, "start " + r2}, wantTrigger: running, wantStaleAt: true, wantReruns: []string{r2},
+		},
+		{
+			// A permanent failure can be an outage inside the function, so it
+			// waits like any other.
+			name: "PermanentRetryBacksOff", tweak: func(c *types.PipelineConfig) { c.Job.MaxCodeRetries = &one },
+			rows:    []map[string]ddbtypes.AttributeValue{categorizedRow("200", ctExec, types.FailurePermanent)},
+			calls:   []ctCall{failCall(ctExec, retrying, r1)},
+			wantOps: []string{"rerun " + r1, "start " + r1}, wantTrigger: running, wantStaleAt: true, wantReruns: []string{r1},
+			wantDelays: map[string]int{r1: 60},
 		},
 		{
 			// The job may still be running, so neither budget applies.
@@ -357,6 +378,9 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 			}
 			if !slices.Equal(reruns, tt.wantReruns) {
 				t.Errorf("rerun rows %v, want %v", reruns, tt.wantReruns)
+			}
+			if tt.wantDelays != nil && !maps.Equal(rec.delays, tt.wantDelays) {
+				t.Errorf("retry delays %v, want %v", rec.delays, tt.wantDelays)
 			}
 			for _, e := range rec.events {
 				if e.Type == string(types.EventRetryExhausted) && !maps.Equal(e.Detail, tt.wantExhausted) {

@@ -90,6 +90,7 @@ TABLE_SCHEDULES = f"{PREFIX}-schedules"
 # e2e only: the mock clock and job server, as Lambdas reach it
 E2E_MOCK_URL = os.environ.get("E2E_MOCK_URL", "http://mock:8080")
 E2E_JOB_CHECK_INTERVAL_SECONDS = "5"
+E2E_RETRY_DELAY_MAX_SECONDS = "5"
 
 # EventBridge
 EVENT_BUS_NAME = f"{PREFIX}-events"
@@ -579,6 +580,7 @@ def _lambda_env(handler: str, sfn_arn: str | None, *, e2e: bool = False) -> dict
         base["E2E_CLOCK_URL"] = f"{E2E_MOCK_URL}/clock"
         base["E2E_SCHEDULE_TABLE"] = TABLE_SCHEDULES
         base["JOB_CHECK_INTERVAL_SECONDS"] = E2E_JOB_CHECK_INTERVAL_SECONDS
+        base["RETRY_DELAY_MAX_SECONDS"] = E2E_RETRY_DELAY_MAX_SECONDS
 
     return base
 

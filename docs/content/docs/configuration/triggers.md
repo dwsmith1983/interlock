@@ -22,7 +22,7 @@ job:
 |---|---|---|---|
 | `type` | string | -- | Job type (required, see types below) |
 | `config` | map | -- | Type-specific configuration |
-| `maxRetries` | int | 0 | Maximum retry attempts on failure |
+| `maxRetries` | int | 0 | Maximum retry attempts on failure, each after a [delay](../pipelines/#retry-budgets) |
 
 ## Job Types
 

@@ -575,9 +575,10 @@ func assertReleased(t *testing.T, id, date string, n int) {
 // The job reports fail for run A. Execution A's CompleteTrigger is the only
 // actor that reacts (job.maxRetries 1): it keeps the trigger row RUNNING,
 // starts B as <A>-r1 and ends through IsRetrying and Done, leaving the SLA to
-// B. The stream-router only publishes JOB_FAILED for the row. B must not read
-// A's fail: it keeps polling until the job reports success for B, and its
-// CompleteTrigger leaves the trigger row COMPLETED.
+// B. Only B waits in RetryBackoff before it evaluates. The stream-router only
+// publishes JOB_FAILED for the row. B must not read A's fail: it keeps polling
+// until the job reports success for B, and its CompleteTrigger leaves the
+// trigger row COMPLETED.
 func TestScenarioRerunIgnoresPreviousFailure(t *testing.T) {
 	const id = "rerun-after-fail"
 	_, date := startDay(t)
@@ -601,6 +602,9 @@ func TestScenarioRerunIgnoresPreviousFailure(t *testing.T) {
 	}
 	if h := executionHistory(t, runA); !stateExited(h, "IsRetrying") || stateExited(h, "CheckCancelSLA") {
 		t.Fatalf("execution A must leave through IsRetrying without CheckCancelSLA")
+	}
+	if a, b := stateExited(executionHistory(t, runA), "RetryBackoff"), stateExited(executionHistory(t, runB), "RetryBackoff"); a || !b {
+		t.Fatalf("exited RetryBackoff: execution A %v, execution B %v, want only B (the retry)", a, b)
 	}
 	// Let B check the job log at least once before its result exists: it
 	// either parks in WaitForJob again or, reading A's fail, finishes.

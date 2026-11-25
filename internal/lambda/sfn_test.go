@@ -20,7 +20,7 @@ import (
 // references in deploy/statemachine.asl.json. A missing key raises
 // States.Runtime, which Catch: States.ALL cannot intercept.
 var (
-	aslDereferencedTopLevelKeys = []string{"pipelineId", "scheduleId", "date", "sensorArrivalAt", "config"}
+	aslDereferencedTopLevelKeys = []string{"pipelineId", "scheduleId", "date", "sensorArrivalAt", "retryDelaySeconds", "config"}
 	aslDereferencedConfigKeys   = []string{
 		"evaluationIntervalSeconds", "evaluationWindowSeconds",
 		"jobCheckIntervalSeconds", "jobPollWindowSeconds",
@@ -222,6 +222,59 @@ func TestBuildSFNConfig(t *testing.T) {
 			cfg := baseConfig()
 			tt.mutate(cfg)
 			tt.check(t, lambda.BuildSFNConfig(cfg))
+		})
+	}
+}
+
+// capturingSFN keeps the input of the last execution started.
+type capturingSFN struct{ input string }
+
+func (c *capturingSFN) StartExecution(_ context.Context, in *sfn.StartExecutionInput, _ ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error) {
+	c.input = *in.Input
+	return &sfn.StartExecutionOutput{}, nil
+}
+
+// TestStartSFNWithName_RetryDelay: only a failure retry waits, by the number
+// in its name. RETRY_DELAY_MAX_SECONDS can shorten the wait, never lengthen it.
+func TestStartSFNWithName_RetryDelay(t *testing.T) {
+	const first, rerun = "p-stream-2026-03-01-1709280000", "p-stream-2026-03-01-rerun2-1709280000"
+	tests := []struct {
+		name, exec, env string
+		want            int
+	}{
+		{"first run", first, "", 0},
+		{"first retry", first + "-r1", "", 60},
+		{"third retry", first + "-r3", "", 240},
+		{"tenth retry", first + "-r10", "", 900},
+		{"retry number too large to parse", first + "-r99999999999999999999", "", 900},
+		{"requested rerun", rerun, "", 0},
+		{"retry of a requested rerun", rerun + "-r1", "", 60},
+		{"env shortens", first + "-r3", "5", 5},
+		{"env above the delay", first + "-r3", "300", 240},
+		{"env at the cap", first + "-r10", "900", 900},
+		{"env does not delay a first run", first, "5", 0},
+		{"env 0 is ignored", first + "-r3", "0", 240},
+		{"env negative is ignored", first + "-r3", "-5", 240},
+		{"env not a number is ignored", first + "-r3", "abc", 240},
+		{"env above the cap is ignored", first + "-r10", "901", 900},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("RETRY_DELAY_MAX_SECONDS", tt.env)
+			client := &capturingSFN{}
+			d := &lambda.Deps{SFNClient: client, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			if err := lambda.StartSFNWithName(context.Background(), d, baseConfig(), "p", "stream", "2026-03-01", tt.exec); err != nil {
+				t.Fatal(err)
+			}
+			var input struct {
+				RetryDelaySeconds *int `json:"retryDelaySeconds"`
+			}
+			if err := json.Unmarshal([]byte(client.input), &input); err != nil {
+				t.Fatal(err)
+			}
+			if input.RetryDelaySeconds == nil || *input.RetryDelaySeconds != tt.want {
+				t.Errorf("input %s, want retryDelaySeconds %d", client.input, tt.want)
+			}
 		})
 	}
 }

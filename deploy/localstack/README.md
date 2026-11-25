@@ -68,8 +68,9 @@ expects Lambdas built with `EXTRA_TAGS=e2e bash deploy/localstack/build.sh`
   of `sla-monitor` and `watchdog` record schedules instead of calling
   EventBridge Scheduler, and drops `SKIP_SCHEDULER`;
 - sets `E2E_CLOCK_URL` (`$E2E_MOCK_URL/clock`, default
-  `http://mock:8080/clock`), `E2E_SCHEDULE_TABLE` and
-  `JOB_CHECK_INTERVAL_SECONDS=5` on every Lambda;
+  `http://mock:8080/clock`), `E2E_SCHEDULE_TABLE`,
+  `JOB_CHECK_INTERVAL_SECONDS=5` and `RETRY_DELAY_MAX_SECONDS=5` (which can
+  only shorten the wait before a job-failure retry) on every Lambda;
 - skips the watchdog schedule rule and the SQS to alert-dispatcher mapping,
   since the harness invokes the watchdog and reads the alerts queue itself.
 
