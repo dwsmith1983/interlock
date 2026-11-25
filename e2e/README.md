@@ -49,7 +49,8 @@ without repository activity.
   (`-shuffle=on`): read only your own pipeline's events, alerts and schedules.
 - Assert the order of events only when one causes the other. Otherwise
   assert the set and the exact counts: events stamped in the same simulated
-  millisecond sort by type.
+  millisecond sort by type, then by content hash, which says nothing about
+  which came first.
 - Write a pipeline's config before the first invocation that reads it.
 - The watchdog scans every pipeline, so a watchdog call also acts on the
   other scenarios' pipelines. `fireDueSchedules(t, pipeline)` fires only the

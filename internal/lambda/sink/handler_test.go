@@ -1,7 +1,10 @@
 package sink_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -46,6 +49,15 @@ func breach(ts time.Time) types.InterlockEvent {
 	}
 }
 
+// eventSK is the sort key an event is stored under.
+func eventSK(t *testing.T, millisAndType string, event types.InterlockEvent) *ddbtypes.AttributeValueMemberS {
+	t.Helper()
+	eventJSON, err := json.Marshal(event)
+	require.NoError(t, err)
+	sum := sha256.Sum256(eventJSON)
+	return &ddbtypes.AttributeValueMemberS{Value: millisAndType + "#" + hex.EncodeToString(sum[:])[:16]}
+}
+
 // soleEvent returns the one item in the events table.
 func soleEvent(t *testing.T, mem *storetest.Mem) map[string]ddbtypes.AttributeValue {
 	t.Helper()
@@ -62,7 +74,7 @@ func TestHandleEventSink(t *testing.T) {
 		require.NoError(t, sink.HandleEventSink(context.Background(), d, in))
 		assert.Equal(t, map[string]ddbtypes.AttributeValue{
 			"PK":         &ddbtypes.AttributeValueMemberS{Value: "PIPELINE#silver-cdr-hour"},
-			"SK":         &ddbtypes.AttributeValueMemberS{Value: "1772619300000#SLA_BREACH"},
+			"SK":         &ddbtypes.AttributeValueMemberS{Value: "1772619300000#SLA_BREACH#e984205bf84ea8f6"},
 			"eventType":  &ddbtypes.AttributeValueMemberS{Value: "SLA_BREACH"},
 			"pipelineId": &ddbtypes.AttributeValueMemberS{Value: "silver-cdr-hour"},
 			"scheduleId": &ddbtypes.AttributeValueMemberS{Value: "hourly"},
@@ -78,8 +90,75 @@ func TestHandleEventSink(t *testing.T) {
 
 		require.NoError(t, sink.HandleEventSink(context.Background(), d, sinkInput(t, "SLA_BREACH", breach(time.Time{}))))
 		item := soleEvent(t, mem)
-		assert.Equal(t, &ddbtypes.AttributeValueMemberS{Value: "1772619360000#SLA_BREACH"}, item["SK"])
+		assert.Equal(t, eventSK(t, "1772619360000#SLA_BREACH", breach(time.Time{})), item["SK"])
 		assert.Equal(t, &ddbtypes.AttributeValueMemberN{Value: "1772619360000"}, item["timestamp"])
+	})
+
+	t.Run("stores the detail map", func(t *testing.T) {
+		d, _, mem := newSinkDeps(90)
+		in := lambda.EventBridgeInput{Source: "interlock", DetailType: "JOB_FAILED", Detail: json.RawMessage(
+			`{"pipelineId":"silver-cdr-hour","timestamp":"2026-03-04T10:15:00Z","detail":{"error":"boom","retries":0,
+			"delta":-1.5,"ok":true,"note":"","nothing":null,"nested":{"a":"b"},"list":["x",2]}}`)}
+
+		require.NoError(t, sink.HandleEventSink(context.Background(), d, in))
+		assert.Equal(t, &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
+			"error":   &ddbtypes.AttributeValueMemberS{Value: "boom"},
+			"retries": &ddbtypes.AttributeValueMemberN{Value: "0"},
+			"delta":   &ddbtypes.AttributeValueMemberN{Value: "-1.5"},
+			"ok":      &ddbtypes.AttributeValueMemberBOOL{Value: true},
+			"note":    &ddbtypes.AttributeValueMemberS{Value: ""},
+			"nothing": &ddbtypes.AttributeValueMemberNULL{Value: true},
+			"nested": &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
+				"a": &ddbtypes.AttributeValueMemberS{Value: "b"},
+			}},
+			"list": &ddbtypes.AttributeValueMemberL{Value: []ddbtypes.AttributeValue{
+				&ddbtypes.AttributeValueMemberS{Value: "x"},
+				&ddbtypes.AttributeValueMemberN{Value: "2"},
+			}},
+		}}, soleEvent(t, mem)["detail"])
+	})
+
+	t.Run("a detail that cannot be encoded is an error", func(t *testing.T) {
+		d, _, mem := newSinkDeps(90)
+		event := breach(sinkNow)
+		event.Detail = map[string]interface{}{"": "no key"}
+
+		err := sink.HandleEventSink(context.Background(), d, sinkInput(t, "SLA_BREACH", event))
+		require.ErrorContains(t, err, "marshal event detail (pipeline=silver-cdr-hour type=SLA_BREACH)")
+		assert.Empty(t, mem.Items("events"))
+	})
+
+	for name, change := range map[string]func(*types.InterlockEvent){
+		"message":     func(e *types.InterlockEvent) { e.Message = "SLA breach again" },
+		"date":        func(e *types.InterlockEvent) { e.Date = "2026-03-04T11" },
+		"detail":      func(e *types.InterlockEvent) { e.Detail = map[string]interface{}{"status": "RUNNING"} },
+		"microsecond": func(e *types.InterlockEvent) { e.Timestamp = e.Timestamp.Add(time.Microsecond) },
+	} {
+		t.Run("two events of one type in one millisecond both stay: "+name, func(t *testing.T) {
+			d, _, mem := newSinkDeps(90)
+			first, second := breach(sinkNow), breach(sinkNow)
+			change(&second)
+
+			for _, e := range []types.InterlockEvent{first, second} {
+				require.NoError(t, sink.HandleEventSink(context.Background(), d, sinkInput(t, "SLA_BREACH", e)))
+			}
+			assert.Len(t, mem.Items("events"), 2)
+		})
+	}
+
+	// The second delivery comes later and with the JSON laid out differently.
+	t.Run("an event delivered twice writes one row", func(t *testing.T) {
+		d, _, mem := newSinkDeps(90)
+		in := lambda.EventBridgeInput{Source: "interlock", DetailType: "INFRA_ALARM", Detail: json.RawMessage(
+			`{ "timestamp": "2026-03-04T10:15:00Z", "pipelineId": "INFRASTRUCTURE", "message": "sink-errors: ALARM", "detail": { "b": 1, "a": "x" } }`)}
+		require.NoError(t, sink.HandleEventSink(context.Background(), d, in))
+
+		var compact bytes.Buffer
+		require.NoError(t, json.Compact(&compact, in.Detail))
+		in.Detail = compact.Bytes()
+		d.NowFunc = func() time.Time { return sinkNow.Add(time.Minute) }
+		require.NoError(t, sink.HandleEventSink(context.Background(), d, in))
+		assert.Equal(t, &ddbtypes.AttributeValueMemberN{Value: "1772619300000"}, soleEvent(t, mem)["timestamp"])
 	})
 
 	for _, tt := range []struct {

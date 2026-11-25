@@ -121,3 +121,19 @@ run "failed_alerts_wait_for_the_dispatchers_delay" {
     error_message = "The dispatcher must get the alert queue's URL as ALERT_QUEUE_URL."
   }
 }
+
+run "alarm_events_carry_the_alarms_time" {
+  command = plan
+
+  assert {
+    condition     = aws_cloudwatch_event_target.cw_alarm_event_sink.input_transformer[0].input_paths["time"] == "$.time"
+    error_message = "The event-sink's alarm target must read the alarm event's time."
+  }
+
+  assert {
+    condition = jsondecode(
+      aws_cloudwatch_event_target.cw_alarm_event_sink.input_transformer[0].input_template
+    ).detail.timestamp == "<time>"
+    error_message = "The event-sink must get the alarm's time as the event timestamp."
+  }
+}

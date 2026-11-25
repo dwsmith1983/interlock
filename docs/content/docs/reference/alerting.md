@@ -220,10 +220,74 @@ The Terraform module deploys an `event-sink` Lambda that captures all EventBridg
 
 The events table uses:
 - **PK**: `PIPELINE#{pipelineId}` — all events for a pipeline
-- **SK**: `{tsMillis}#{eventType}` — sorted by timestamp
+- **SK**: `{tsMillis}#{eventType}#{hash}`, sorted by the event's time in epoch milliseconds. `hash` is the first 16 hex characters of the SHA-256 of the event's content. Two events of one type in the same millisecond each keep their row. An event delivered more than once is one row.
 - **GSI1**: `eventType` → `timestamp` — query all events of a given type
 
+The table is named `{env}-interlock-events`. Each event row also holds `eventType`, `timestamp` (epoch milliseconds, a number), `pipelineId`, `scheduleId`, `date` (the run date, empty for events without one), `message` and `ttl`. An event with details has them in the map `detail`, whose keys differ per event type. A `JOB_FAILED` row as plain JSON, without `PK`, `SK`, `eventType`, `timestamp` and `ttl`:
+
+```json
+{
+  "pipelineId": "gold-revenue",
+  "scheduleId": "stream",
+  "date": "2026-03-04",
+  "message": "job fail for gold-revenue: table not found",
+  "detail": {
+    "event": "fail",
+    "error": "table not found",
+    "runId": "jr_0123456789",
+    "category": "PERMANENT"
+  }
+}
+```
+
+A scheduled `SLA_WARNING` row's details are `status`, `source`, `actionHint` and `breachAt`, and a scheduled `SLA_BREACH` row's are `status`, `source` and `actionHint`. `SLA_MET` and the `SLA_BREACH` sent when the run ends have none.
+
+`INFRA_ALARM` rows are under `PIPELINE#INFRASTRUCTURE` and carry the time of the alarm's state change.
+
 Records expire after a configurable TTL (default: 90 days via the `events_table_ttl_days` variable).
+
+#### Querying Events
+
+One pipeline in a time range. `SK` is a string and starts with the milliseconds, so `:from` is the first millisecond to return and `:to` the one after the last:
+
+```bash
+aws dynamodb query --table-name dev-interlock-events \
+  --key-condition-expression 'PK = :pk AND SK BETWEEN :from AND :to' \
+  --expression-attribute-values '{
+    ":pk": {"S": "PIPELINE#gold-revenue"},
+    ":from": {"S": "1772582400000"},
+    ":to": {"S": "1772668800000"}
+  }'
+```
+
+One event type across all pipelines. `timestamp` is a number and a DynamoDB reserved word, and both ends of the range are included:
+
+```bash
+aws dynamodb query --table-name dev-interlock-events --index-name GSI1 \
+  --key-condition-expression 'eventType = :type AND #ts BETWEEN :from AND :to' \
+  --expression-attribute-names '{"#ts": "timestamp"}' \
+  --expression-attribute-values '{
+    ":type": {"S": "JOB_FAILED"},
+    ":from": {"N": "1772582400000"},
+    ":to": {"N": "1772668799999"}
+  }'
+```
+
+One run date of a pipeline. `date` is a reserved word too. The filter runs after the rows are read, so this query reads every event row of the pipeline. To read less, replace `SK < :letters` with a range of milliseconds as in the first query. Make it wide enough: events for a run date are stamped when they happen, which can be days later.
+
+```bash
+aws dynamodb query --table-name dev-interlock-events \
+  --key-condition-expression 'PK = :pk AND SK < :letters' \
+  --filter-expression '#d = :date' \
+  --expression-attribute-names '{"#d": "date"}' \
+  --expression-attribute-values '{
+    ":pk": {"S": "PIPELINE#gold-revenue"},
+    ":letters": {"S": "A"},
+    ":date": {"S": "2026-03-04"}
+  }'
+```
+
+The alert-dispatcher keeps its Slack thread records in the same table under the same `PK`, with an `SK` that starts with `THREAD`. A query on `PK` alone returns them too; `SK < "A"` leaves them out. The table does not record whether an alert was posted to Slack: an alert that could not be posted ends in the alert DLQ, which has its own [alarm](#cloudwatch-alarms).
 
 ### Alert Dispatcher (Slack)
 

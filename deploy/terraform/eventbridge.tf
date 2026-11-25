@@ -168,6 +168,7 @@ resource "aws_cloudwatch_event_target" "cw_alarm_event_sink" {
       alarmName = "$.detail.alarmName"
       state     = "$.detail.state.value"
       reason    = "$.detail.state.reason"
+      time      = "$.time"
     }
 
     input_template = <<-EOT
@@ -176,6 +177,7 @@ resource "aws_cloudwatch_event_target" "cw_alarm_event_sink" {
         "detail-type": "INFRA_ALARM",
         "detail": {
           "pipelineId": "INFRASTRUCTURE",
+          "timestamp": "<time>",
           "message": "<alarmName>: <state> — <reason>"
         }
       }
