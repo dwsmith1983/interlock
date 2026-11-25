@@ -9,9 +9,9 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// The RUN# query window around now: wide enough for any timezone and a
-// deadlineDayOffset or cutoffDayOffset up to 7. The breach time (or the
-// cutoff) decides what is still due.
+// The run date window around now, for RUN# rows and first sensor arrivals:
+// wide enough for any timezone and a deadlineDayOffset or cutoffDayOffset up
+// to 7. The breach time (or the cutoff) decides what is still due.
 const (
 	runKeysDaysBack  = 8
 	runKeysDaysAhead = 2
