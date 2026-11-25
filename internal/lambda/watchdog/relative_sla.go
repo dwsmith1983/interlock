@@ -3,6 +3,9 @@ package watchdog
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
@@ -10,9 +13,17 @@ import (
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// detectRelativeSLABreaches checks pipelines with MaxDuration SLA config: once
-// per date, RELATIVE_SLA_WARNING between the warning and breach times and
-// RELATIVE_SLA_BREACH from the breach time, while the run has not finished.
+// relativeSLALookback is how long after its breach time a date's
+// RELATIVE_SLA_BREACH may still be sent, which keeps each pass's reads to the
+// dates near their breach.
+const relativeSLALookback = 24 * time.Hour
+
+// detectRelativeSLABreaches checks the first sensor arrivals of pipelines with
+// MaxDuration SLA config, for run dates (hourly ones included) from
+// runKeysDaysBack to runKeysDaysAhead in UTC: once per date,
+// RELATIVE_SLA_WARNING between the warning and breach times and
+// RELATIVE_SLA_BREACH from the breach time until relativeSLALookback after it,
+// while the run has not finished.
 func detectRelativeSLABreaches(ctx context.Context, d *lambda.Deps) error {
 	configs, err := d.ConfigCache.GetAll(ctx)
 	if err != nil {
@@ -20,10 +31,9 @@ func detectRelativeSLABreaches(ctx context.Context, d *lambda.Deps) error {
 	}
 
 	now := d.Now()
-	datesToCheck := []string{
-		now.Format("2006-01-02"),
-		now.AddDate(0, 0, -1).Format("2006-01-02"),
-	}
+	const keyPrefix = "first-sensor-arrival#"
+	from := keyPrefix + now.UTC().AddDate(0, 0, -runKeysDaysBack).Format("2006-01-02")
+	to := keyPrefix + now.UTC().AddDate(0, 0, runKeysDaysAhead).Format("2006-01-02")
 
 	for id, cfg := range configs {
 		if cfg.SLA == nil || cfg.SLA.MaxDuration == "" {
@@ -34,27 +44,26 @@ func detectRelativeSLABreaches(ctx context.Context, d *lambda.Deps) error {
 			continue
 		}
 
-		scheduleID := lambda.ResolveScheduleID(cfg)
+		arrivals, err := d.Store.GetSensorsBetween(ctx, id, from, to)
+		if err != nil {
+			d.Logger.Error("first-sensor-arrival lookup failed", "pipelineId", id, "error", err)
+			continue
+		}
 
-		for _, checkDate := range datesToCheck {
-			checkRelativeSLAForDate(ctx, d, id, cfg, scheduleID, checkDate, now)
+		scheduleID := lambda.ResolveScheduleID(cfg)
+		for _, key := range slices.Sorted(maps.Keys(arrivals)) {
+			checkDate := strings.TrimPrefix(key, keyPrefix)
+			if !lambda.IsValidExecutionDate(checkDate) {
+				d.Logger.Warn("skipping malformed first-sensor-arrival key", "pipelineId", id, "key", key)
+				continue
+			}
+			checkRelativeSLAForDate(ctx, d, id, cfg, scheduleID, checkDate, arrivals[key], now)
 		}
 	}
 	return nil
 }
 
-func checkRelativeSLAForDate(ctx context.Context, d *lambda.Deps, id string, cfg *types.PipelineConfig, scheduleID, checkDate string, now time.Time) {
-	arrivalKey := "first-sensor-arrival#" + checkDate
-	arrivalData, err := d.Store.GetSensorData(ctx, id, arrivalKey)
-	if err != nil {
-		d.Logger.Error("first-sensor-arrival lookup failed",
-			"pipelineId", id, "date", checkDate, "error", err)
-		return
-	}
-	if arrivalData == nil {
-		return
-	}
-
+func checkRelativeSLAForDate(ctx context.Context, d *lambda.Deps, id string, cfg *types.PipelineConfig, scheduleID, checkDate string, arrivalData map[string]interface{}, now time.Time) {
 	arrivedAtStr, ok := arrivalData["arrivedAt"].(string)
 	if !ok || arrivedAtStr == "" {
 		return
@@ -65,7 +74,7 @@ func checkRelativeSLAForDate(ctx context.Context, d *lambda.Deps, id string, cfg
 			"pipelineId", id, "date", checkDate, "error", err)
 		return
 	}
-	if now.Before(warningAt) {
+	if now.Before(warningAt) || now.Sub(breachAt) > relativeSLALookback {
 		return
 	}
 	if now.Before(breachAt) {

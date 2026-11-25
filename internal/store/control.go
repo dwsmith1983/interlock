@@ -269,6 +269,38 @@ func (s *Store) GetAllSensors(ctx context.Context, pipelineID string) (map[strin
 	return result, nil
 }
 
+// GetSensorsBetween retrieves the pipeline's sensor rows from fromKey through
+// toKey, keys that begin with toKey included. The result has the shape of
+// GetAllSensors; the read is eventually consistent.
+func (s *Store) GetSensorsBetween(ctx context.Context, pipelineID, fromKey, toKey string) (map[string]map[string]interface{}, error) {
+	result := make(map[string]map[string]interface{})
+	err := QueryAll(ctx, s.Client, func(startKey map[string]ddbtypes.AttributeValue) *dynamodb.QueryInput {
+		return &dynamodb.QueryInput{
+			TableName:              &s.ControlTable,
+			KeyConditionExpression: aws.String("PK = :pk AND SK BETWEEN :from AND :to"),
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":pk":   &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+				":from": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK(fromKey)},
+				":to":   &ddbtypes.AttributeValueMemberS{Value: types.SensorSK(toKey) + "~"},
+			},
+			ExclusiveStartKey: startKey,
+		}
+	}, func(items []map[string]ddbtypes.AttributeValue) error {
+		for _, item := range items {
+			var rec types.ControlRecord
+			if err := attributevalue.UnmarshalMap(item, &rec); err != nil {
+				return fmt.Errorf("unmarshal sensor row: %w", err)
+			}
+			result[strings.TrimPrefix(rec.SK, types.SensorSK(""))] = rec.Data
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query sensors %q to %q for %q: %w", fromKey, toKey, pipelineID, err)
+	}
+	return result, nil
+}
+
 // ListRunKeys returns the pipeline's expected run dates (RUN# rows) from
 // fromDate through toDate, hourly keys on toDate included, in SK order with
 // the RUN# prefix stripped. The keys are returned as written, unvalidated.
