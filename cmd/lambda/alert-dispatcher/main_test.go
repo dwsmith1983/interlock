@@ -80,3 +80,21 @@ func TestLoggingOnlyWarning(t *testing.T) {
 		})
 	}
 }
+
+func TestEventsTTLDays(t *testing.T) {
+	tests := []struct {
+		value string
+		want  int
+	}{
+		{value: "", want: 90},
+		{value: "abc", want: 90},
+		{value: "0", want: 90},
+		{value: "-1", want: 90},
+		{value: "30", want: 30},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			assert.Equal(t, tt.want, eventsTTLDays(tt.value))
+		})
+	}
+}

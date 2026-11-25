@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +29,8 @@ type mockHTTPClient struct {
 	requests []*http.Request
 	bodies   [][]byte
 	status   int
-	respBody string // configurable response body (defaults to Slack Bot API success)
+	respBody string   // configurable response body (defaults to Slack Bot API success)
+	postTS   []string // ts of each successful post in turn; the last one repeats
 	err      error
 }
 
@@ -41,6 +43,9 @@ func (m *mockHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	m.bodies = append(m.bodies, body)
 
 	respBody := m.respBody
+	if respBody == "" && len(m.postTS) > 0 {
+		respBody = `{"ok":true,"ts":"` + m.postTS[min(len(m.requests), len(m.postTS))-1] + `"}`
+	}
 	if respBody == "" {
 		respBody = `{"ok":true,"ts":"1234.5678","channel":"C123"}`
 	}
@@ -99,6 +104,50 @@ func breachRecord(t *testing.T, messageID string) events.SQSMessage {
 	})
 }
 
+// datelessRecord builds an alert that has no run date. An empty sent leaves
+// the SentTimestamp attribute out.
+func datelessRecord(t *testing.T, pipelineID, sent string) events.SQSMessage {
+	t.Helper()
+	record := buildSQSRecord(t, "msg-"+pipelineID+sent, "CONFIG_INVALID", types.InterlockEvent{
+		PipelineID: pipelineID, Message: "config rejected",
+	})
+	if sent != "" {
+		record.Attributes = map[string]string{"SentTimestamp": sent}
+	}
+	return record
+}
+
+// epochMillis formats ts as the SentTimestamp attribute of an SQS message.
+func epochMillis(ts time.Time) string { return strconv.FormatInt(ts.UnixMilli(), 10) }
+
+// threadRow builds a saved thread; an empty channelID leaves it out.
+func threadRow(sk, ts, channelID string) map[string]ddbtypes.AttributeValue {
+	row := map[string]ddbtypes.AttributeValue{
+		"PK":       &ddbtypes.AttributeValueMemberS{Value: threadPK},
+		"SK":       &ddbtypes.AttributeValueMemberS{Value: sk},
+		"threadTs": &ddbtypes.AttributeValueMemberS{Value: ts},
+	}
+	if channelID != "" {
+		row["channelId"] = &ddbtypes.AttributeValueMemberS{Value: channelID}
+	}
+	return row
+}
+
+// assertThreadRow checks the thread saved under pk and sk.
+func assertThreadRow(t *testing.T, mem *storetest.Mem, pk, sk, ts string) {
+	t.Helper()
+	row := mem.Get("events", pk, sk)
+	require.NotNil(t, row, "no row %s %s", pk, sk)
+	assert.Equal(t, &ddbtypes.AttributeValueMemberS{Value: ts}, row["threadTs"])
+	assert.Equal(t, &ddbtypes.AttributeValueMemberS{Value: "C123456"}, row["channelId"])
+}
+
+func assertTopLevel(t *testing.T, payload map[string]interface{}) {
+	t.Helper()
+	assert.NotContains(t, payload, "thread_ts")
+	assert.NotContains(t, payload, "reply_broadcast")
+}
+
 func dispatch(t *testing.T, d *lambda.Deps, records ...events.SQSMessage) []string {
 	t.Helper()
 	resp, err := alert.HandleAlertDispatcher(context.Background(), d, events.SQSEvent{Records: records})
@@ -143,7 +192,7 @@ func TestHandleAlertDispatcher(t *testing.T) {
 				"text": "\xf0\x9f\x94\xb4 *SLA_BREACH* | silver-cdr-hour | 2026-03-04T10\nSLA breach for silver-cdr-hour",
 			},
 		}, blocks[0])
-		assert.NotContains(t, payload, "thread_ts")
+		assertTopLevel(t, payload)
 	})
 
 	t.Run("no token", func(t *testing.T) {
@@ -237,19 +286,29 @@ func TestHandleAlertDispatcher_Threading(t *testing.T) {
 	t.Run("later post replies in the thread", func(t *testing.T) {
 		c := &mockHTTPClient{status: http.StatusOK}
 		d, _, mem := newAlertDeps(c, "xoxb-test-token")
-		seeded := map[string]ddbtypes.AttributeValue{
-			"PK":        &ddbtypes.AttributeValueMemberS{Value: threadPK},
-			"SK":        &ddbtypes.AttributeValueMemberS{Value: threadSK},
-			"threadTs":  &ddbtypes.AttributeValueMemberS{Value: "9999.1234"},
-			"channelId": &ddbtypes.AttributeValueMemberS{Value: "C123456"},
-		}
+		seeded := threadRow(threadSK, "9999.1234", "C123456")
 		mem.Put("events", seeded)
 
 		assert.Empty(t, dispatch(t, d, breachRecord(t, "msg-thread-2")))
 		require.Len(t, c.requests, 1)
-		assert.Equal(t, "9999.1234", slackPayload(t, c, 0)["thread_ts"])
+		payload := slackPayload(t, c, 0)
+		assert.Equal(t, "9999.1234", payload["thread_ts"])
+		assert.NotContains(t, payload, "reply_broadcast")
 		assert.Equal(t, seeded, mem.Get("events", threadPK, threadSK))
 	})
+
+	for _, channelID := range []string{"C999999", ""} {
+		t.Run("a thread of channel "+strconv.Quote(channelID)+" is replaced", func(t *testing.T) {
+			c := &mockHTTPClient{status: http.StatusOK}
+			d, _, mem := newAlertDeps(c, "xoxb-test-token")
+			mem.Put("events", threadRow(threadSK, "9999.1234", channelID))
+
+			assert.Empty(t, dispatch(t, d, breachRecord(t, "msg-thread-channel")))
+			require.Len(t, c.requests, 1)
+			assertTopLevel(t, slackPayload(t, c, 0))
+			assertThreadRow(t, mem, threadPK, threadSK, "1234.5678")
+		})
+	}
 
 	t.Run("lookup error posts without a thread", func(t *testing.T) {
 		c := &mockHTTPClient{status: http.StatusOK}
@@ -275,5 +334,92 @@ func TestHandleAlertDispatcher_Threading(t *testing.T) {
 		assert.Empty(t, dispatch(t, d, breachRecord(t, "msg-save-err")))
 		assert.Len(t, c.requests, 1)
 		assert.Equal(t, 1, puts)
+	})
+}
+
+// TestHandleAlertDispatcher_DayThreads: alerts without a run date share one
+// thread per pipeline and UTC day, the day SQS received the message, and
+// replies in it are also shown in the channel.
+func TestHandleAlertDispatcher_DayThreads(t *testing.T) {
+	const daySK = "THREADDAY#2026-03-04"
+	sent := epochMillis(alertNow.Add(-time.Hour))
+
+	t.Run("a saved thread without a day is not used", func(t *testing.T) {
+		c := &mockHTTPClient{status: http.StatusOK}
+		d, _, mem := newAlertDeps(c, "xoxb-test-token")
+		seeded := threadRow("THREAD##", "9999.1234", "C123456")
+		mem.Put("events", seeded)
+
+		assert.Empty(t, dispatch(t, d, datelessRecord(t, "silver-cdr-hour", sent)))
+		require.Len(t, c.requests, 1)
+		assertTopLevel(t, slackPayload(t, c, 0))
+		assert.Equal(t, seeded, mem.Get("events", threadPK, "THREAD##"))
+		assertThreadRow(t, mem, threadPK, daySK, "1234.5678")
+	})
+
+	t.Run("a later alert of the day replies and broadcasts", func(t *testing.T) {
+		c := &mockHTTPClient{status: http.StatusOK, postTS: []string{"1.1", "2.2"}}
+		d, _, mem := newAlertDeps(c, "xoxb-test-token")
+
+		first, second := datelessRecord(t, "silver-cdr-hour", sent), datelessRecord(t, "silver-cdr-hour", epochMillis(alertNow))
+		assert.Empty(t, dispatch(t, d, first, second))
+		require.Len(t, c.requests, 2)
+		assertTopLevel(t, slackPayload(t, c, 0))
+		reply := slackPayload(t, c, 1)
+		assert.Equal(t, "1.1", reply["thread_ts"])
+		assert.Equal(t, true, reply["reply_broadcast"])
+		assertThreadRow(t, mem, threadPK, daySK, "1.1")
+	})
+
+	t.Run("each SentTimestamp day has its own thread", func(t *testing.T) {
+		c := &mockHTTPClient{status: http.StatusOK, postTS: []string{"1.1", "2.2"}}
+		d, _, mem := newAlertDeps(c, "xoxb-test-token")
+		d.NowFunc = func() time.Time { return alertNow.Add(48 * time.Hour) }
+		midnight := time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC)
+
+		assert.Empty(t, dispatch(t, d,
+			datelessRecord(t, "silver-cdr-hour", epochMillis(midnight.Add(-time.Millisecond))),
+			datelessRecord(t, "silver-cdr-hour", epochMillis(midnight)),
+		))
+		require.Len(t, c.requests, 2)
+		assertTopLevel(t, slackPayload(t, c, 0))
+		assertTopLevel(t, slackPayload(t, c, 1))
+		assertThreadRow(t, mem, threadPK, "THREADDAY#2026-03-03", "1.1")
+		assertThreadRow(t, mem, threadPK, daySK, "2.2")
+	})
+
+	for _, unreadable := range []string{"", "soon"} {
+		t.Run("SentTimestamp "+strconv.Quote(unreadable)+" uses the current UTC day", func(t *testing.T) {
+			c := &mockHTTPClient{status: http.StatusOK}
+			d, _, mem := newAlertDeps(c, "xoxb-test-token")
+			// Already 2026-03-05 in this zone.
+			d.NowFunc = func() time.Time { return alertNow.In(time.FixedZone("UTC+14", 14*60*60)) }
+
+			assert.Empty(t, dispatch(t, d, datelessRecord(t, "silver-cdr-hour", unreadable)))
+			assertThreadRow(t, mem, threadPK, daySK, "1234.5678")
+		})
+	}
+
+	t.Run("each pipeline has its own thread", func(t *testing.T) {
+		c := &mockHTTPClient{status: http.StatusOK, postTS: []string{"1.1", "2.2"}}
+		d, _, mem := newAlertDeps(c, "xoxb-test-token")
+
+		assert.Empty(t, dispatch(t, d, datelessRecord(t, "silver-cdr-hour", sent), datelessRecord(t, "INFRASTRUCTURE", sent)))
+		require.Len(t, c.requests, 2)
+		assertTopLevel(t, slackPayload(t, c, 1))
+		assertThreadRow(t, mem, threadPK, daySK, "1.1")
+		assertThreadRow(t, mem, "PIPELINE#INFRASTRUCTURE", daySK, "2.2")
+	})
+
+	t.Run("a run date without a schedule has its own thread", func(t *testing.T) {
+		c := &mockHTTPClient{status: http.StatusOK, postTS: []string{"1.1", "2.2"}}
+		d, _, mem := newAlertDeps(c, "xoxb-test-token")
+		dated := buildSQSRecord(t, "msg-dated", "SLA_BREACH", types.InterlockEvent{PipelineID: "silver-cdr-hour", Date: "2026-03-04"})
+
+		assert.Empty(t, dispatch(t, d, dated, datelessRecord(t, "silver-cdr-hour", sent)))
+		require.Len(t, c.requests, 2)
+		assertTopLevel(t, slackPayload(t, c, 1))
+		assertThreadRow(t, mem, threadPK, "THREAD##2026-03-04", "1.1")
+		assertThreadRow(t, mem, threadPK, daySK, "2.2")
 	})
 }

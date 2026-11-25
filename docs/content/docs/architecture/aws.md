@@ -75,7 +75,7 @@ Centralized log of all EventBridge events. The event-sink Lambda writes every ev
 | Entity | PK | SK | Purpose |
 |---|---|---|---|
 | Event | `PIPELINE#{id}` | `{tsMillis}#{eventType}` | Timestamped event record |
-| Thread | `PIPELINE#{id}` | `THREAD#{schedule}#{date}` | Slack thread storage for alert-dispatcher |
+| Thread | `PIPELINE#{id}` | `THREAD#{schedule}#{date}`, or `THREADDAY#{YYYY-MM-DD}` (UTC) for alerts without a run date | Slack thread storage for alert-dispatcher |
 
 GSI1 (`eventType` → `timestamp`) enables querying all events of a specific type across pipelines.
 
@@ -155,7 +155,7 @@ Receives EventBridge events via a rule that matches all `source: "interlock"` ev
 
 Processes messages from the SQS alert queue. Formats pipeline events into Slack Block Kit messages and posts them using the Slack Bot API (`chat.postMessage`).
 
-**Threading**: looks up existing thread records in the events table (`THREAD#{scheduleId}#{date}`). If a thread exists for the pipeline-day, replies in-thread. Otherwise, posts a new message and saves the thread timestamp for subsequent alerts.
+**Threading**: looks up the alert's thread record in the events table. The key is `THREAD#{scheduleId}#{date}` for an alert with a run date and `THREADDAY#{YYYY-MM-DD}` for one without, where the day is the UTC day of the SQS `SentTimestamp` (the same on every redelivery). If the record holds a thread in the configured channel, replies in it. A reply in a day thread sets `reply_broadcast`, so it also shows in the channel. Otherwise, posts a new message and saves its timestamp and channel over any earlier record.
 
 **Secrets Manager**: when `SLACK_SECRET_ARN` is set, the Slack bot token is read from Secrets Manager at cold start instead of the `SLACK_BOT_TOKEN` environment variable. The module conditionally grants `secretsmanager:GetSecretValue` to the alert-dispatcher role.
 

@@ -59,6 +59,11 @@ variable "events_table_ttl_days" {
   description = "TTL in days for records in the events table"
   type        = number
   default     = 90
+
+  validation {
+    condition     = var.events_table_ttl_days >= 1
+    error_message = "events_table_ttl_days must be at least 1."
+  }
 }
 
 variable "slack_bot_token" {

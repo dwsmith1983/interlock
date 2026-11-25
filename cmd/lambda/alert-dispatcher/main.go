@@ -38,13 +38,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	ttl := 90
-	if v := os.Getenv("EVENTS_TTL_DAYS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			ttl = n
-		}
-	}
-
 	deps := &ilambda.Deps{
 		Store: &store.Store{
 			Client:      dynamodb.NewFromConfig(cfg),
@@ -52,7 +45,7 @@ func main() {
 		},
 		SlackBotToken:  os.Getenv("SLACK_BOT_TOKEN"),
 		SlackChannelID: os.Getenv("SLACK_CHANNEL_ID"),
-		EventsTTLDays:  ttl,
+		EventsTTLDays:  eventsTTLDays(os.Getenv("EVENTS_TTL_DAYS")),
 		HTTPClient:     client.NewBreakerClient(&http.Client{Timeout: 10 * time.Second}, client.DefaultBreakerConfig("slack-api")),
 		Logger:         logger,
 	}
@@ -124,4 +117,18 @@ func slackMode(token, channelID string, secretConfigured bool) (loggingOnly bool
 		return false, errors.New("a Slack token is configured but SLACK_CHANNEL_ID is empty")
 	}
 	return false, nil
+}
+
+// defaultEventsTTLDays is how many days a thread row is kept when
+// EVENTS_TTL_DAYS gives no usable value.
+const defaultEventsTTLDays = 90
+
+// eventsTTLDays returns the days in v, or the default when v is empty,
+// unreadable or less than 1. A thread row written with less than a day to live
+// would already be expired.
+func eventsTTLDays(v string) int {
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return n
+	}
+	return defaultEventsTTLDays
 }

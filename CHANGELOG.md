@@ -84,6 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A long launch error filled the Slack `RETRY_EXHAUSTED` alert and was stored whole in the `infra-trigger-exhausted` job row.** The error is now cut to 1 KB in both, so the message's closing hint to submit a `RERUN_REQUEST` is not cut off.
 - **Slack alerts let some line-breaking and text-direction characters through.** Only the C0 controls (newlines and tabs among them) and DEL became spaces. The C1 controls (U+0080 to U+009F), the line and paragraph separators (U+2028, U+2029) and the bidirectional controls (such as U+202E) now do too.
 - **Slack alerts for some failures and warnings carried the info icon.** `RELATIVE_SLA_BREACH`, `IRREGULAR_SCHEDULE_MISSED`, `POST_RUN_FAILED`, `POST_RUN_DRIFT`, `BASELINE_CAPTURE_FAILED` and `INFRA_ALARM` now get the red circle, and `RELATIVE_SLA_WARNING` the yellow one.
+- **Slack alerts without a run date (`INFRA_ALARM`, `CONFIG_INVALID`) were hidden in one old thread per pipeline.** Each was a reply to the pipeline's first such alert until that thread's record expired (90 days by default). They now share one thread per pipeline and UTC day, and the replies also show in the channel.
+- **After `slack_channel_id` changed, alerts were still sent to the new channel as replies to threads saved in the old one.** A saved thread is now used only in its own channel; each thread starts again in the new channel with its next alert.
+- **`events_table_ttl_days` of 0 or less was accepted.** The alert-dispatcher then saved thread records that were already expired, so DynamoDB could delete one at any time and split a run date's alerts across threads. Terraform now rejects the value, and the alert-dispatcher reads an `EVENTS_TTL_DAYS` of 0 or less as 90, as the event-sink does.
 
 ## [0.11.0] - 2026-11-18
 
