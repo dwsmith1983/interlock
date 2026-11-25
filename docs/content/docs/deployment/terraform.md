@@ -281,19 +281,21 @@ Each Lambda gets its own execution role with least-privilege policies:
 | orchestrator | DynamoDB read/write (all 3 tables), Step Functions `StartExecution` (failure retries), EventBridge `PutEvents`, conditional trigger permissions |
 | sla-monitor | DynamoDB read (control, joblog), EventBridge Scheduler create/delete, EventBridge `PutEvents` |
 | watchdog | DynamoDB read (all 3 tables), DynamoDB write and delete (control only), Step Functions `StartExecution` (reconciliation), EventBridge Scheduler create (SLA schedules), EventBridge `PutEvents` |
+| alert-dispatcher | DynamoDB read/write (events, thread records), SQS `ReceiveMessage`, `DeleteMessage` and `ChangeMessageVisibility` (alert queue), conditional `secretsmanager:GetSecretValue` |
 
 The Step Functions execution role has permission to invoke the orchestrator and sla-monitor Lambdas.
 
 ### Dead-Letter Queues
 
-Two SQS DLQs capture failed DynamoDB stream processing:
+Two SQS DLQs capture failed DynamoDB stream processing and one captures alerts that could not be delivered to Slack:
 
 | Queue | Source |
 |---|---|
 | `{env}-interlock-sr-control-dlq` | Control table stream failures |
 | `{env}-interlock-sr-joblog-dlq` | Job log table stream failures |
+| `{env}-interlock-alert-dlq` | Alert queue messages the alert-dispatcher failed to deliver |
 
-Stream event source mappings use `bisect_batch_on_function_error` with 3 retry attempts before routing to the DLQ.
+Stream event source mappings use `bisect_batch_on_function_error` with 3 retry attempts before routing to the DLQ. An alert is tried 10 times with growing waits (see [Delivery retries](../../reference/alerting/#alert-dispatcher-slack)).
 
 ## Module Outputs
 

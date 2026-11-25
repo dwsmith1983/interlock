@@ -29,6 +29,7 @@ type mockHTTPClient struct {
 	requests []*http.Request
 	bodies   [][]byte
 	status   int
+	header   http.Header
 	respBody string   // configurable response body (defaults to Slack Bot API success)
 	postTS   []string // ts of each successful post in turn; the last one repeats
 	err      error
@@ -51,6 +52,7 @@ func (m *mockHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	}
 	return &http.Response{
 		StatusCode: m.status,
+		Header:     m.header,
 		Body:       io.NopCloser(strings.NewReader(respBody)),
 	}, nil
 }
@@ -91,6 +93,8 @@ func newAlertDeps(httpClient *mockHTTPClient, botToken string) (*lambda.Deps, *s
 		SlackChannelID: "C123456",
 		EventsTTLDays:  90,
 		HTTPClient:     httpClient,
+		SQS:            &fakeSQS{},
+		AlertQueueURL:  alertQueueURL,
 		NowFunc:        func() time.Time { return alertNow },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}, fake, mem

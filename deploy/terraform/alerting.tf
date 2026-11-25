@@ -20,15 +20,18 @@ resource "aws_sqs_queue" "alert_dlq" {
 resource "aws_sqs_queue" "alert" {
   name                              = "${var.environment}-interlock-alerts"
   message_retention_seconds         = 86400 # 1 day
-  visibility_timeout_seconds        = 60
+  visibility_timeout_seconds        = 180   # six times the dispatcher's timeout; a failed alert gets its own delay
   kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : null
   kms_data_key_reuse_period_seconds = var.kms_key_arn != "" ? 300 : null
   sqs_managed_sse_enabled           = var.kms_key_arn == "" ? true : null
   tags                              = var.tags
 
+  # The longest wait (the dispatcher's Retry-After ceiling of 3600 seconds plus
+  # jitter) times maxReceiveCount must stay under the 1 day retention: a message
+  # that outlives it is deleted and never reaches the DLQ.
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.alert_dlq.arn
-    maxReceiveCount     = 3
+    maxReceiveCount     = 10
   })
 }
 

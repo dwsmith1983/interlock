@@ -76,3 +76,48 @@ run "events_table_ttl_days_accepts_one" {
     error_message = "The alert-dispatcher must get events_table_ttl_days as EVENTS_TTL_DAYS."
   }
 }
+
+# The policies hold the queues' ARNs, which a plan knows only when overridden.
+run "failed_alerts_wait_for_the_dispatchers_delay" {
+  command = plan
+
+  override_resource {
+    target          = aws_sqs_queue.alert
+    override_during = plan
+    values = {
+      arn = "arn:aws:sqs:eu-west-1:123456789012:alerts"
+      url = "https://sqs.eu-west-1.amazonaws.com/123456789012/alerts"
+    }
+  }
+
+  override_resource {
+    target          = aws_sqs_queue.alert_dlq
+    override_during = plan
+    values = {
+      arn = "arn:aws:sqs:eu-west-1:123456789012:alert-dlq"
+    }
+  }
+
+  assert {
+    condition     = aws_sqs_queue.alert.visibility_timeout_seconds == 180
+    error_message = "The alert queue's visibility timeout must be six times the dispatcher's timeout."
+  }
+
+  assert {
+    condition     = jsondecode(aws_sqs_queue.alert.redrive_policy).maxReceiveCount == 10
+    error_message = "An alert must be tried 10 times before it goes to the DLQ."
+  }
+
+  assert {
+    condition = anytrue([
+      for s in jsondecode(aws_iam_role_policy.alert_dispatcher_sqs.policy).Statement :
+      contains(s.Action, "sqs:ChangeMessageVisibility") && s.Resource == [aws_sqs_queue.alert.arn]
+    ])
+    error_message = "The dispatcher must be able to change the visibility of alert queue messages."
+  }
+
+  assert {
+    condition     = aws_lambda_function.alert_dispatcher.environment[0].variables["ALERT_QUEUE_URL"] == aws_sqs_queue.alert.url
+    error_message = "The dispatcher must get the alert queue's URL as ALERT_QUEUE_URL."
+  }
+}

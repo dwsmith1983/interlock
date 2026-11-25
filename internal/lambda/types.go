@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eventbridge"
 	"github.com/aws/aws-sdk-go-v2/service/scheduler"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
@@ -41,6 +42,12 @@ type StatusChecker interface {
 type SchedulerAPI interface {
 	CreateSchedule(ctx context.Context, input *scheduler.CreateScheduleInput, opts ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error)
 	DeleteSchedule(ctx context.Context, input *scheduler.DeleteScheduleInput, opts ...func(*scheduler.Options)) (*scheduler.DeleteScheduleOutput, error)
+}
+
+// SQSAPI is the subset of the SQS client the alert-dispatcher uses to delay a
+// message's next delivery.
+type SQSAPI interface {
+	ChangeMessageVisibility(ctx context.Context, input *sqs.ChangeMessageVisibilityInput, opts ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
 }
 
 // HTTPDoer abstracts HTTP client for testing.

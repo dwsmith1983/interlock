@@ -99,6 +99,10 @@ RULE_ALERT_EVENTS = f"{PREFIX}-events-to-alerts"
 
 # SQS
 ALERT_QUEUE_NAME = f"{PREFIX}-alerts"
+ALERT_QUEUE_ATTRIBUTES = {
+    "MessageRetentionPeriod": "86400",
+    "VisibilityTimeout": "180",
+}
 
 # Step Functions
 STATE_MACHINE_NAME = f"{PREFIX}-pipeline"
@@ -348,11 +352,7 @@ def ensure_alert_queue() -> tuple[str, str]:
     sqs = _client("sqs")
     try:
         resp = sqs.create_queue(
-            QueueName=ALERT_QUEUE_NAME,
-            Attributes={
-                "MessageRetentionPeriod": "86400",
-                "VisibilityTimeout": "60",
-            },
+            QueueName=ALERT_QUEUE_NAME, Attributes=ALERT_QUEUE_ATTRIBUTES
         )
         queue_url = resp["QueueUrl"]
         print(f"  [sqs] created queue {ALERT_QUEUE_NAME}")
@@ -366,6 +366,8 @@ def ensure_alert_queue() -> tuple[str, str]:
         else:
             raise
 
+    # An existing queue keeps the attributes it was created with until set here.
+    sqs.set_queue_attributes(QueueUrl=queue_url, Attributes=ALERT_QUEUE_ATTRIBUTES)
     attrs = sqs.get_queue_attributes(QueueUrl=queue_url, AttributeNames=["QueueArn"])
     queue_arn = attrs["Attributes"]["QueueArn"]
     return queue_url, queue_arn
@@ -528,10 +530,13 @@ def _zip_bytes(zip_path: Path) -> bytes:
     return zip_path.read_bytes()
 
 
-def _lambda_env(handler: str, sfn_arn: str | None, *, e2e: bool = False) -> dict[str, str]:
+def _lambda_env(
+    handler: str, sfn_arn: str | None, *, alert_queue_url: str = "", e2e: bool = False
+) -> dict[str, str]:
     """Environment variables for a Lambda. Matches production Terraform, plus
     AWS_ENDPOINT_URL so the Go SDK calls the LocalStack container instead of
-    real AWS. With e2e, also the hooks an EXTRA_TAGS=e2e build reads.
+    real AWS. With e2e, also the hooks an EXTRA_TAGS=e2e build reads. Only the
+    alert-dispatcher gets alert_queue_url.
     """
     base = {
         # CRITICAL: force the AWS SDK inside the Lambda to talk to LocalStack
@@ -569,6 +574,7 @@ def _lambda_env(handler: str, sfn_arn: str | None, *, e2e: bool = False) -> dict
         )
         base["SCHEDULER_GROUP_NAME"] = "default"
     if handler == "alert-dispatcher":
+        base["ALERT_QUEUE_URL"] = alert_queue_url
         # No Slack token, so the dispatcher runs in logging-only mode and
         # writes alerts to its log. The empty values mirror the Terraform
         # defaults for the three Slack variables.
@@ -585,7 +591,9 @@ def _lambda_env(handler: str, sfn_arn: str | None, *, e2e: bool = False) -> dict
     return base
 
 
-def ensure_lambdas(sfn_arn: str | None, *, e2e: bool = False) -> dict[str, str]:
+def ensure_lambdas(
+    sfn_arn: str | None, *, alert_queue_url: str, e2e: bool = False
+) -> dict[str, str]:
     """Create or update all 6 Lambdas. Returns {handler: function_arn}."""
     lam = _client("lambda")
     arch = detect_lambda_architecture()
@@ -610,7 +618,7 @@ def ensure_lambdas(sfn_arn: str | None, *, e2e: bool = False) -> dict[str, str]:
         if not zip_path.exists():
             raise FileNotFoundError(f"missing build artifact: {zip_path} — run build.sh first")
         code_bytes = _zip_bytes(zip_path)
-        env = _lambda_env(handler, sfn_arn, e2e=e2e)
+        env = _lambda_env(handler, sfn_arn, alert_queue_url=alert_queue_url, e2e=e2e)
 
         try:
             resp = lam.create_function(
@@ -845,7 +853,9 @@ def cmd_deploy(e2e: bool = False) -> None:
     )
 
     print("--> Lambda functions")
-    lambda_arns = ensure_lambdas(sfn_arn=predicted_sfn_arn, e2e=e2e)
+    lambda_arns = ensure_lambdas(
+        sfn_arn=predicted_sfn_arn, alert_queue_url=alert_queue_url, e2e=e2e
+    )
 
     print("--> Step Functions state machine")
     sfn_arn = ensure_state_machine(

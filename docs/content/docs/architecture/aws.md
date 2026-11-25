@@ -159,7 +159,7 @@ Processes messages from the SQS alert queue. Formats pipeline events into Slack 
 
 **Secrets Manager**: when `SLACK_SECRET_ARN` is set, the Slack bot token is read from Secrets Manager at cold start instead of the `SLACK_BOT_TOKEN` environment variable. The module conditionally grants `secretsmanager:GetSecretValue` to the alert-dispatcher role.
 
-**Error handling**: Slack API errors return batch item failures so SQS retries individual messages. Thread lookup/save errors are logged but don't fail the message delivery.
+**Error handling**: a failed message is returned as a batch item failure. Before that, the dispatcher calls `ChangeMessageVisibility` to set how long SQS hides it: the try's doubling wait (60 to 900 seconds), or Slack's `Retry-After` (up to 3600 seconds) if that is longer, plus jitter. The try number is the message's `ApproximateReceiveCount`. If that call fails, the queue's visibility timeout (180 seconds) applies. After 10 tries SQS moves the message to the alert DLQ (see [Delivery retries](../../reference/alerting/#alert-dispatcher-slack)). Thread lookup/save errors are logged but don't fail the message delivery.
 
 ## Step Functions State Machine
 
@@ -300,7 +300,7 @@ Each Lambda function has its own IAM role with least-privilege policies:
 | sla-monitor | Read control, joblog | PutEvents | `scheduler:CreateSchedule`, `scheduler:DeleteSchedule` |
 | watchdog | Read control, joblog, rerun; write and delete in control only | PutEvents | `states:StartExecution` (reconciliation), `scheduler:CreateSchedule` (SLA schedules) |
 | event-sink | Write events table | -- | -- |
-| alert-dispatcher | Read/write events table (thread storage) | -- | SQS ReceiveMessage/DeleteMessage, conditional `secretsmanager:GetSecretValue` |
+| alert-dispatcher | Read/write events table (thread storage) | -- | SQS ReceiveMessage/DeleteMessage/ChangeMessageVisibility, conditional `secretsmanager:GetSecretValue` |
 
 Trigger permissions for the orchestrator are opt-in via Terraform variables (`enable_glue_trigger`, `enable_emr_trigger`, etc.).
 

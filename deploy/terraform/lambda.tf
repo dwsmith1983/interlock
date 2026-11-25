@@ -117,6 +117,7 @@ resource "aws_lambda_function" "alert_dispatcher" {
         SLACK_SECRET_ARN = var.slack_secret_arn
         EVENTS_TABLE     = aws_dynamodb_table.events.name
         EVENTS_TTL_DAYS  = var.events_table_ttl_days
+        ALERT_QUEUE_URL  = aws_sqs_queue.alert.url
       }
     )
   }
@@ -388,7 +389,7 @@ resource "aws_iam_role_policy" "event_sink_dynamodb" {
 }
 
 # -----------------------------------------------------------------------------
-# SQS receive — alert-dispatcher (alert queue)
+# SQS receive and retry delay: alert-dispatcher (alert queue)
 # -----------------------------------------------------------------------------
 
 resource "aws_iam_role_policy" "alert_dispatcher_sqs" {
@@ -398,7 +399,7 @@ resource "aws_iam_role_policy" "alert_dispatcher_sqs" {
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+      Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ChangeMessageVisibility"]
       Resource = [aws_sqs_queue.alert.arn]
     }]
   })

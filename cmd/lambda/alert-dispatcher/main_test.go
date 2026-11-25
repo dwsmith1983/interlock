@@ -12,11 +12,13 @@ func TestValidateEnv_MissingVars(t *testing.T) {
 	t.Setenv("SLACK_CHANNEL_ID", "")
 	t.Setenv("EVENTS_TABLE", "")
 	t.Setenv("EVENTS_TTL_DAYS", "")
+	t.Setenv("ALERT_QUEUE_URL", "")
 
 	err := ilambda.ValidateEnv("alert-dispatcher")
 	require.Error(t, err, "should report missing env vars")
 	assert.Contains(t, err.Error(), "EVENTS_TABLE")
 	assert.Contains(t, err.Error(), "EVENTS_TTL_DAYS")
+	assert.Contains(t, err.Error(), "ALERT_QUEUE_URL")
 	assert.NotContains(t, err.Error(), "SLACK_CHANNEL_ID", "Slack is optional (logging-only mode)")
 }
 
@@ -24,6 +26,7 @@ func TestValidateEnv_AllSet(t *testing.T) {
 	envVars := map[string]string{
 		"EVENTS_TABLE":    "events",
 		"EVENTS_TTL_DAYS": "90",
+		"ALERT_QUEUE_URL": "https://sqs.example/alerts",
 	}
 	for k, v := range envVars {
 		t.Setenv(k, v)
