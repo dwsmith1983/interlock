@@ -39,6 +39,13 @@ func ResolveSLADate(cfg *types.PipelineConfig, date string) string {
 	return t.AddDate(0, 0, cfg.SLA.DeadlineDayOffset).Format("2006-01-02")
 }
 
+// SLADeadlineFitsDate reports whether an sla.deadline applies to a run date: an
+// hourly ":MM" deadline to "YYYY-MM-DDThh", a daily "HH:MM" one to
+// "YYYY-MM-DD". A date of the other cadence has no absolute SLA.
+func SLADeadlineFitsDate(deadline, date string) bool {
+	return strings.HasPrefix(deadline, ":") == strings.Contains(date, "T")
+}
+
 // ResolveCutoffTime returns the instant schedule.trigger.cutoff falls on for
 // runKey, in schedule.timezone (else sla.timezone, else UTC), as sla.CutoffAt
 // computes it for a daily or an hourly key. It is the zero time when the key

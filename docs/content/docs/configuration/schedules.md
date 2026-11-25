@@ -226,7 +226,7 @@ The watchdog schedules SLA alerts only for run dates the pipeline says it expect
 |---|---|---|
 | `PIPELINE#<id>` | `RUN#<runKey>` | `ttl` (optional): epoch seconds after which DynamoDB deletes the row |
 
-`<runKey>` is the execution date: `YYYY-MM-DD` for a daily `HH:MM` deadline, `YYYY-MM-DDThh` (one row per hour) for an hourly `:MM` deadline. A key of the other form gets no SLA schedules, though the watchdog still closes it at its cutoff (see [Cutoff](#cutoff)); a malformed key is skipped with a warning, and a key on an excluded date is skipped. Generate a calendar of rows ahead of time, or add each day's row before its deadline:
+`<runKey>` is the execution date: `YYYY-MM-DD` for a daily `HH:MM` deadline, `YYYY-MM-DDThh` (one row per hour) for an hourly `:MM` deadline. A key of the other form gets no SLA schedules and no verdict when its run ends (see [Deadline Evaluation](#deadline-evaluation)), though the watchdog still closes it at its cutoff (see [Cutoff](#cutoff)); a malformed key is skipped with a warning, and a key on an excluded date is skipped. Generate a calendar of rows ahead of time, or add each day's row before its deadline:
 
 ```sh
 aws dynamodb put-item --table-name production-interlock-control --item '{
@@ -252,6 +252,8 @@ A config with a `deadline` must also set an `expectedDuration`; a `deadline` tha
 Each Scheduler entry invokes the sla-monitor Lambda at the exact timestamp to publish the corresponding event. Entries auto-delete after firing.
 
 When the pipeline job completes (or all retries are exhausted), the state machine cancels any unfired Scheduler entries. `SLA_MET` is published only when the run ends before the breach time and the date's trigger row is `COMPLETED`. A run that did not complete (it ended `FAILED_FINAL`, its final status could not be recorded, or its status could not be read) gets no `SLA_MET`; `SLA_BREACH` is still published when the breach time has passed. Besides the cancel step's verdict, a run whose final status could not be recorded keeps its SLA alerts while its row is `RUNNING` (see [Expected Run Dates](#expected-run-dates)). A date that fails before its breach time gets its failure alert (`RETRY_EXHAUSTED`, `JOB_FAILED` and the like) and neither `SLA_MET` nor `SLA_BREACH`, because the cancel step removes the breach schedule.
+
+A run date of the other form than the deadline (a daily date under an hourly `:MM` deadline, or an hourly date under a daily `HH:MM` one) has no deadline to be judged by: it gets no schedules, and neither `SLA_MET` nor `SLA_BREACH` when its run ends unless it has a relative SLA.
 
 The deadline is interpreted in `sla.timezone` (or UTC if not set).
 

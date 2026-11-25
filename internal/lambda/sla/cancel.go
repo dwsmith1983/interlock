@@ -17,7 +17,8 @@ import (
 // handleSLACancel deletes unfired SLA schedules and determines the final SLA
 // outcome. SLA_MET is published only for a COMPLETED trigger row; SLA_BREACH
 // is published once the breach time has passed, for a row in any status or
-// one that could not be read.
+// one that could not be read. A date its deadline does not fit gets no verdict,
+// unless it has a relative SLA.
 func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonitorInput) (lambda.SLAMonitorOutput, error) {
 	// Schedule names need only the execution date, so delete them first: a
 	// config read error below must not leave them to fire.
@@ -48,7 +49,7 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 			}
 			input.WarningAt = calc.WarningAt
 			input.BreachAt = calc.BreachAt
-		} else if input.Deadline != "" {
+		} else if input.Deadline != "" && lambda.SLADeadlineFitsDate(input.Deadline, input.Date) {
 			calcInput := input
 			if d.Store != nil {
 				cfg, cfgErr := d.Store.GetConfig(ctx, input.PipelineID)

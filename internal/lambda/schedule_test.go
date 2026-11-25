@@ -81,6 +81,21 @@ func TestStartByTime(t *testing.T) {
 	}
 }
 
+func TestSLADeadlineFitsDate(t *testing.T) {
+	tests := []struct {
+		deadline, date string
+		want           bool
+	}{
+		{":30", "2026-03-10T07", true},
+		{"10:00", "2026-03-10", true},
+		{":30", "2026-03-10", false},
+		{"10:00", "2026-03-10T07", false},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, SLADeadlineFitsDate(tt.deadline, tt.date), "deadline %q, date %q", tt.deadline, tt.date)
+	}
+}
+
 func cutoffConfig(cutoff string, offset int, tz string) *types.PipelineConfig {
 	return &types.PipelineConfig{Schedule: types.ScheduleConfig{
 		Timezone: tz,

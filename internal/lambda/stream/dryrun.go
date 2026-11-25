@@ -141,7 +141,9 @@ func publishDryRunSLAProjection(ctx context.Context, d *lambda.Deps, cfg *types.
 	message := fmt.Sprintf("dry-run: SLA projection for %s — estimated completion %s",
 		pipelineID, estimatedCompletion.Format(time.RFC3339))
 
-	if cfg.SLA.Deadline != "" {
+	if cfg.SLA.Deadline != "" && !lambda.SLADeadlineFitsDate(cfg.SLA.Deadline, date) {
+		verdict.Status = "n/a"
+	} else if cfg.SLA.Deadline != "" {
 		slaInput := lambda.SLAMonitorInput{
 			PipelineID:       pipelineID,
 			ScheduleID:       scheduleID,

@@ -192,8 +192,16 @@ func TestStreamDryRunTrigger(t *testing.T) {
 				"slaStatus": status, "estimatedCompletion": estimated, "deadline": deadline}),
 		}
 	}
+	// noVerdict is projection for a run date the deadline does not fit.
+	noVerdict := []publishedEvent{wouldTrigger,
+		dryRunEvent(types.EventDryRunSLAProjection, map[string]interface{}{"triggeredAt": at,
+			"estimatedCompletion": "2026-03-11T01:45:00Z", "expectedDuration": "30m", "status": "n/a"}),
+		dryRunEvent(types.EventDryRunCompleted, map[string]interface{}{"triggeredAt": at,
+			"slaStatus": "n/a", "estimatedCompletion": "2026-03-11T01:45:00Z"}),
+	}
 	tests := []struct {
 		name         string
+		hour         string // the sensor's hour, for an hourly run date; empty means a daily one
 		now          string // empty means 2026-03-11T01:15:00Z
 		marker       string // a seeded DRY_RUN# marker's triggeredAt; empty means none
 		lostRace     bool   // the marker read misses the seeded marker, as when another write lands first
@@ -223,9 +231,18 @@ func TestStreamDryRunTrigger(t *testing.T) {
 			wantEvents: projection("2026-03-11T01:50:00Z", "2026-03-11T02:20:00Z", "2026-03-11T02:00:00Z", -1200, "breach")},
 		{name: "SLA deadline a day later", tweak: sla("08:00", 1), wantMarker: at,
 			wantEvents: projection(at, "2026-03-11T01:45:00Z", "2026-03-12T08:00:00Z", 108900, "met")},
+		{name: "hourly SLA deadline, daily date", tweak: sla(":30", 0), wantMarker: at, wantEvents: noVerdict},
+		{name: "daily SLA deadline, hourly date", hour: "00", tweak: sla("08:00", 0), wantMarker: at, wantEvents: noVerdict},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			runDate := date
+			sensor := map[string]events.DynamoDBAttributeValue{
+				"status": events.NewStringAttribute("ready"), "date": events.NewStringAttribute(date)}
+			if tt.hour != "" {
+				runDate += "T" + tt.hour
+				sensor["hour"] = events.NewStringAttribute(tt.hour)
+			}
 			cfg := types.PipelineConfig{
 				Pipeline:   types.PipelineIdentity{ID: "p"},
 				DryRun:     true,
@@ -244,13 +261,13 @@ func TestStreamDryRunTrigger(t *testing.T) {
 				}
 			}
 			if tt.marker != "" {
-				seedDryRunMarker(mem, date, tt.marker)
+				seedDryRunMarker(mem, runDate, tt.marker)
 			}
 			if tt.lostRace {
 				fake := d.Store.Client.(*storetest.FakeDynamo)
 				get := fake.GetItemFn
 				fake.GetItemFn = func(ctx context.Context, in *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
-					if in.Key["SK"].(*ddbtypes.AttributeValueMemberS).Value == types.DryRunSK("stream", date) {
+					if in.Key["SK"].(*ddbtypes.AttributeValueMemberS).Value == types.DryRunSK("stream", runDate) {
 						return &dynamodb.GetItemOutput{}, nil
 					}
 					return get(ctx, in)
@@ -258,27 +275,25 @@ func TestStreamDryRunTrigger(t *testing.T) {
 			}
 			now := mustTime(t, cmp.Or(tt.now, at))
 			d.NowFunc = func() time.Time { return now }
-			record := sensorRecordWith("upstream", map[string]events.DynamoDBAttributeValue{
-				"status": events.NewStringAttribute("ready"), "date": events.NewStringAttribute(date)})
 
-			if err := handleRecord(ctx, d, record); err != nil {
+			if err := handleRecord(ctx, d, sensorRecordWith("upstream", sensor)); err != nil {
 				t.Fatalf("handleRecord: %v", err)
 			}
 
 			if !sameEvents(eb.events, tt.wantEvents) {
 				t.Errorf("events = %+v, want %+v", eb.events, tt.wantEvents)
 			}
-			if got := dryRunMarkerAt(mem, date); got != tt.wantMarker {
+			if got := dryRunMarkerAt(mem, runDate); got != tt.wantMarker {
 				t.Errorf("dry-run marker triggeredAt = %q, want %q", got, tt.wantMarker)
 			}
-			baseline, err := d.Store.GetSensorData(ctx, "p", "postrun-baseline#"+date)
+			baseline, err := d.Store.GetSensorData(ctx, "p", "postrun-baseline#"+runDate)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(baseline, tt.wantBaseline) {
 				t.Errorf("baseline = %v, want %v", baseline, tt.wantBaseline)
 			}
-			trigger := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("stream", date))
+			trigger := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("stream", runDate))
 			if sfnFake.calls != 0 || trigger != nil || len(jobEvents(mem)) != 0 {
 				t.Errorf("StartExecution calls %d, trigger row %v, job rows %v; want 0, none and none",
 					sfnFake.calls, trigger, jobEvents(mem))
