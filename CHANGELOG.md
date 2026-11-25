@@ -92,6 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The events table dropped each event's details.** A row kept the message, the run date and the time, but not the run ID, cutoff, retry counts, drift figures or anything else in the event's `detail`. These are now stored in the row's `detail` map.
 - **Two events of one type for one pipeline in the same millisecond were one row in the events table: the second replaced the first.** Each now has its own row, and an event delivered more than once is still one row.
 - **`INFRA_ALARM` rows carried the time the event-sink wrote them, so an alarm event delivered twice was two rows.** They now carry the time of the alarm's state change.
+- **An event the event-sink could not write was lost.** After Lambda's two retries only the function's error alarm showed it. Such an event, or one that exceeds the maximum event age, now goes to the SQS queue `{env}-interlock-event-sink-dlq`, which keeps it for 14 days and has a depth alarm (`{env}-interlock-dlq-event_sink-depth`). The event-sink role gets `sqs:SendMessage` on that queue only. The Terraform deployment docs describe how to write the event later. The watchdog has no such queue: its scheduled ticks carry no data, the next tick repeats the work, and a failed pass already raises its error alarm.
 
 ## [0.11.0] - 2026-11-18
 

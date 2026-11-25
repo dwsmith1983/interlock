@@ -151,6 +151,8 @@ See [Watchdog](../watchdog) for the full algorithm.
 
 Receives EventBridge events via a rule that matches all `source: "interlock"` events. Writes each event to the events table with the pipeline ID as PK and a composite `{tsMillis}#{eventType}#{hash}` as SK, where `hash` is taken from the event's content, and keeps the event's details in the `detail` map. TTL is set based on `EVENTS_TTL_DAYS` (default: 90).
 
+**Error handling**: EventBridge invokes the function asynchronously. An event that fails every try, or exceeds the maximum event age, goes to the event-sink DLQ through the function's on-failure destination. Retries and the maximum event age stay at Lambda's defaults (2 retries, 6 hours). See [Unwritten Events](../../deployment/terraform/#unwritten-events).
+
 ### alert-dispatcher
 
 Processes messages from the SQS alert queue. Formats pipeline events into Slack Block Kit messages and posts them using the Slack Bot API (`chat.postMessage`).
@@ -265,7 +267,7 @@ The Terraform module creates CloudWatch alarms across four categories to monitor
 |---|---|---|---|
 | Lambda errors | 6 (one per function) | `Errors` | `>= 1` per 5-minute period |
 | SFN failures | 1 (pipeline state machine) | `ExecutionsFailed` | `>= 1` per 5-minute period |
-| DLQ depth | 3 (control, joblog, alert queues) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
+| DLQ depth | 4 (control, joblog, alert and event-sink queues) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
 | Stream iterator age | 1 (stream-router, covers the control and joblog streams) | `IteratorAge` | `>= 300,000ms` (5 min) |
 
 Alarm state changes are reshaped into `INFRA_ALARM` events via EventBridge input transformers and routed to event-sink and alert-dispatcher. Optionally, alarms also publish to an SNS topic via the `sns_alarm_topic_arn` variable.
@@ -299,7 +301,7 @@ Each Lambda function has its own IAM role with least-privilege policies:
 | orchestrator | Read/write control, joblog, rerun | PutEvents | `states:StartExecution` (failure retries), conditional trigger permissions (Glue, EMR, etc.) |
 | sla-monitor | Read control, joblog | PutEvents | `scheduler:CreateSchedule`, `scheduler:DeleteSchedule` |
 | watchdog | Read control, joblog, rerun; write and delete in control only | PutEvents | `states:StartExecution` (reconciliation), `scheduler:CreateSchedule` (SLA schedules) |
-| event-sink | Write events table | -- | -- |
+| event-sink | Write events table | -- | SQS SendMessage (its DLQ) |
 | alert-dispatcher | Read/write events table (thread storage) | -- | SQS ReceiveMessage/DeleteMessage/ChangeMessageVisibility, conditional `secretsmanager:GetSecretValue` |
 
 Trigger permissions for the orchestrator are opt-in via Terraform variables (`enable_glue_trigger`, `enable_emr_trigger`, etc.).

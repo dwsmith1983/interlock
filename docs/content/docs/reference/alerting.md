@@ -246,6 +246,8 @@ A scheduled `SLA_WARNING` row's details are `status`, `source`, `actionHint` and
 
 Records expire after a configurable TTL (default: 90 days via the `events_table_ttl_days` variable).
 
+An event the event-sink could not write is kept for 14 days in the event-sink DLQ, which has its own [alarm](#cloudwatch-alarms). See [Unwritten Events](../../deployment/terraform/#unwritten-events) for what a message holds and how to write the event later.
+
 #### Querying Events
 
 One pipeline in a time range. `SK` is a string and starts with the milliseconds, so `:from` is the first millisecond to return and `:to` the one after the last:
@@ -336,7 +338,7 @@ The Terraform module creates CloudWatch alarms that monitor infrastructure healt
 |---|---|---|---|
 | Lambda errors | 6 (one per function) | `Errors` | `>= 1` per 5-minute period |
 | Step Functions failures | 1 | `ExecutionsFailed` | `>= 1` per 5-minute period |
-| DLQ depth | 3 (control, joblog, alert) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
+| DLQ depth | 4 (control, joblog, alert, event-sink) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
 | Stream iterator age | 1 (stream-router, covers the control and joblog streams) | `IteratorAge` | `>= 300,000ms` (5 minutes) |
 
 ### How It Works

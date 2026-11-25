@@ -18,6 +18,7 @@ locals {
     sr_control = aws_sqs_queue.stream_router_control_dlq
     sr_joblog  = aws_sqs_queue.stream_router_joblog_dlq
     alert      = aws_sqs_queue.alert_dlq
+    event_sink = aws_sqs_queue.event_sink_dlq
   }
 
   alarm_actions = var.sns_alarm_topic_arn != "" ? [var.sns_alarm_topic_arn] : []
