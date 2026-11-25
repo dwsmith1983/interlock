@@ -73,6 +73,9 @@ func TestJobPollExhausted_WriteErrorIsLambdaError(t *testing.T) {
 // retry after success) is left alone with nothing written.
 func TestTriggerExhausted(t *testing.T) {
 	cause := "ConcurrentRunsExceededException: Concurrent runs exceeded."
+	const msgPrefix, rerunHint = "trigger retries exhausted for p: ", "; submit a RERUN_REQUEST to run it"
+	cutCause := strings.Repeat("x", 1023)
+	longCause := cutCause + strings.Repeat("\u00e9", 100) // the 1024-byte cut splits the first \u00e9
 	final, running := types.TriggerStatusFailedFinal, types.TriggerStatusRunning
 	retryExhausted := "event " + string(types.EventRetryExhausted)
 	wantOps := []string{retryExhausted, "status " + final}
@@ -92,11 +95,15 @@ func TestTriggerExhausted(t *testing.T) {
 		wantErrSub   string
 		wantJoblog   [][2]string // event, runId
 		wantError    string      // the exhausted row's error; "" for no attribute
+		wantMsg      string      // "" for the message with wantError
 		wantOps      []string
 		wantRow      string // a RUNNING row keeps its staleAt; any other has neither staleAt nor ttl
 	}{
 		{name: "withCause", errorInfo: map[string]interface{}{"Error": "States.TaskFailed", "Cause": cause},
 			wantJoblog: [][2]string{exhaustedRow}, wantError: cause, wantOps: wantOps, wantRow: final},
+		{name: "longCause", errorInfo: map[string]interface{}{"Error": "States.TaskFailed", "Cause": longCause},
+			wantJoblog: [][2]string{exhaustedRow}, wantError: store.CutReason(longCause),
+			wantMsg: msgPrefix + cutCause + rerunHint, wantOps: wantOps, wantRow: final},
 		{name: "noErrorInfo", wantJoblog: [][2]string{exhaustedRow}, wantOps: wantOps, wantRow: final},
 		{name: "joblogWriteFails", errorInfo: map[string]interface{}{"Cause": cause},
 			putErr: errors.New("dynamodb: write capacity exceeded"), wantErrSub: "write trigger-exhausted joblog",
@@ -201,6 +208,13 @@ func TestTriggerExhausted(t *testing.T) {
 			}
 			if !slices.Equal(rec.ops, tt.wantOps) {
 				t.Errorf("ops = %v, want %v", rec.ops, tt.wantOps)
+			}
+			if len(tt.wantOps) > 0 {
+				if len(rec.events) != 1 {
+					t.Errorf("events = %+v, want one", rec.events)
+				} else if got, want := rec.events[0].Message, cmp.Or(tt.wantMsg, msgPrefix+tt.wantError+rerunHint); got != want {
+					t.Errorf("message = %q, want %q", got, want)
+				}
 			}
 			row := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("s", ctDate))
 			if got := strAttr(t, row, "status"); got != tt.wantRow {

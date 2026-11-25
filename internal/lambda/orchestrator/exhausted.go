@@ -180,7 +180,7 @@ func handleTriggerExhausted(ctx context.Context, d *lambda.Deps, input lambda.Or
 
 	errMsg := ""
 	if cause, ok := input.ErrorInfo["Cause"].(string); ok {
-		errMsg = cause
+		errMsg = store.CutReason(cause)
 	}
 	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
 		types.JobEventInfraTriggerExhausted, "", 0, errMsg); err != nil {
