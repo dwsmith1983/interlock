@@ -131,7 +131,7 @@ terraform apply
 | `events_table_ttl_days` | number | `90` | TTL in days for events table records; must be at least 1 |
 | `lambda_concurrency` | object | See below | Reserved concurrent executions per Lambda function |
 | `sns_alarm_topic_arn` | string | `""` | SNS topic ARN for CloudWatch alarm notifications. When set, all alarms send to this topic |
-| `kms_key_arn` | string | `""` | Customer managed KMS key for the DynamoDB tables and SQS queues. Empty = AWS managed keys for the tables and stream-router DLQs, SQS-managed encryption for the alert queues. When set, the key policy must let EventBridge use the key; see [Encryption](#encryption) |
+| `kms_key_arn` | string | `""` | Customer managed KMS key for the DynamoDB tables and SQS queues. Empty = AWS managed keys for the tables, the stream-router DLQs and the event-sink DLQ, SQS-managed encryption for the alert queues. When set, the key policy must let EventBridge use the key; see [Encryption](#encryption) |
 
 #### Lambda Concurrency Defaults
 
@@ -154,7 +154,7 @@ A synchronous `lambda` job holds one orchestrator instance until its function re
 
 ## Encryption
 
-With `kms_key_arn` empty, the tables use the AWS managed DynamoDB key, the stream-router DLQs the AWS managed SQS key, and the alert queues SQS-managed encryption (SSE-SQS). The alert queues cannot use the AWS managed SQS key (`alias/aws/sqs`): EventBridge delivers to them as `events.amazonaws.com`, and that key's policy cannot be changed to allow it.
+With `kms_key_arn` empty, the tables use the AWS managed DynamoDB key, the stream-router DLQs and the event-sink DLQ the AWS managed SQS key, and the alert queues SQS-managed encryption (SSE-SQS). The alert queues cannot use the AWS managed SQS key (`alias/aws/sqs`): EventBridge delivers to them as `events.amazonaws.com`, and that key's policy cannot be changed to allow it.
 
 When you set `kms_key_arn`, every table and queue uses your key, and its key policy must let EventBridge use it, or alerts never reach the queue. The condition limits the grant to EventBridge rules in the account the module is deployed in, so `<account-id>` is that account, which need not be the one that owns the key; the alert queue's policy already accepts messages only from the module's two alert rules:
 
@@ -173,7 +173,7 @@ When you set `kms_key_arn`, every table and queue uses your key, and its key pol
 
 If the key policy does not let EventBridge use the key, the deploy still succeeds and alerts are dropped without an error: the `FailedInvocations` metric of the alert rules rises, and CloudTrail shows a KMS `AccessDenied` for `events.amazonaws.com`. When that happens, check this statement and its `aws:SourceAccount` condition.
 
-The module grants every Lambda role `kms:Decrypt` and `kms:GenerateDataKey` on the key: all six read or write the encrypted tables, the stream-router also reads the table streams and sends to its DLQs, and the alert-dispatcher receives from the alert queue. With a key in the same account, its key policy must let IAM policies grant it (the default key policy does, through the account root statement) or name the six roles. With a key in another account, the key policy must also allow this account or those roles, and the role grants are still needed. Use a key dedicated to this deployment: the Lambda roles can decrypt anything else the key protects.
+The module grants every Lambda role `kms:Decrypt` and `kms:GenerateDataKey` on the key. All six read or write the encrypted tables. The stream-router also reads the table streams and sends to its DLQs, the event-sink sends to its DLQ, and the alert-dispatcher receives from the alert queue. With a key in the same account, its key policy must let IAM policies grant it (the default key policy does, through the account root statement) or name the six roles. With a key in another account, the key policy must also allow this account or those roles, and the role grants are still needed. Use a key dedicated to this deployment: the Lambda roles can decrypt anything else the key protects.
 
 ## Secrets Manager
 
@@ -199,7 +199,7 @@ The module creates CloudWatch alarms across four categories. All alarms conditio
 |---|---|---|
 | Lambda errors | One per function (6 total) | `Errors >= 1` per 5-minute period |
 | Step Functions failures | One for the pipeline state machine | `ExecutionsFailed >= 1` per 5-minute period |
-| DLQ depth | One per dead-letter queue (3 total) | `ApproximateNumberOfMessagesVisible >= 1` |
+| DLQ depth | One per dead-letter queue (4 total) | `ApproximateNumberOfMessagesVisible >= 1` |
 | Stream iterator age | One for the stream-router function (covers both the control and joblog streams) | `IteratorAge >= 300,000ms` (5 minutes) |
 
 CloudWatch alarm state changes are reshaped via EventBridge input transformers into `INFRA_ALARM` events and routed to both event-sink and alert-dispatcher. This means infrastructure alerts appear in the events table and Slack alongside pipeline lifecycle events — no additional Go code required.
@@ -281,21 +281,53 @@ Each Lambda gets its own execution role with least-privilege policies:
 | orchestrator | DynamoDB read/write (all 3 tables), Step Functions `StartExecution` (failure retries), EventBridge `PutEvents`, conditional trigger permissions |
 | sla-monitor | DynamoDB read (control, joblog), EventBridge Scheduler create/delete, EventBridge `PutEvents` |
 | watchdog | DynamoDB read (all 3 tables), DynamoDB write and delete (control only), Step Functions `StartExecution` (reconciliation), EventBridge Scheduler create (SLA schedules), EventBridge `PutEvents` |
+| event-sink | DynamoDB `PutItem` (events), SQS `SendMessage` (its DLQ) |
 | alert-dispatcher | DynamoDB read/write (events, thread records), SQS `ReceiveMessage`, `DeleteMessage` and `ChangeMessageVisibility` (alert queue), conditional `secretsmanager:GetSecretValue` |
 
 The Step Functions execution role has permission to invoke the orchestrator and sla-monitor Lambdas.
 
 ### Dead-Letter Queues
 
-Two SQS DLQs capture failed DynamoDB stream processing and one captures alerts that could not be delivered to Slack:
+The module creates four SQS DLQs: two for failed DynamoDB stream processing, one for alerts that did not reach Slack, and one for events the event-sink could not write:
 
 | Queue | Source |
 |---|---|
 | `{env}-interlock-sr-control-dlq` | Control table stream failures |
 | `{env}-interlock-sr-joblog-dlq` | Job log table stream failures |
 | `{env}-interlock-alert-dlq` | Alert queue messages the alert-dispatcher failed to deliver |
+| `{env}-interlock-event-sink-dlq` | Events the event-sink failed to write |
 
 Stream event source mappings use `bisect_batch_on_function_error` with 3 retry attempts before routing to the DLQ. An alert is tried 10 times with growing waits (see [Delivery retries](../../reference/alerting/#alert-dispatcher-slack)).
+
+#### Unwritten Events
+
+EventBridge invokes the event-sink asynchronously. Lambda retries a failed event twice by default. An event that fails every try goes to `{env}-interlock-event-sink-dlq`, as does one that exceeds the maximum event age (6 hours by default). The queue keeps it for 14 days, and the `{env}-interlock-dlq-event_sink-depth` alarm fires when a message is in it. If Lambda cannot send to the queue, only the function's `DestinationDeliveryFailures` metric shows it. An event EventBridge could not hand to Lambda does not reach the queue; it counts in the rule's `FailedInvocations` metric.
+
+A message is Lambda's JSON record of the invocation. For an event that failed every try, `requestPayload` is the EventBridge event as the event-sink received it, `responsePayload` holds the error, and `requestContext.condition` is `RetriesExhausted`.
+
+To write the event after fixing the cause, invoke the event-sink with the `requestPayload`:
+
+```bash
+queue_url=$(aws sqs get-queue-url --queue-name dev-interlock-event-sink-dlq \
+  --query QueueUrl --output text)
+
+aws sqs receive-message --queue-url "$queue_url" \
+  --visibility-timeout 300 --wait-time-seconds 10 --output json > message.json
+jq -r '.Messages[0].Body' message.json | jq '.requestPayload' > event.json
+
+aws lambda invoke --function-name dev-interlock-event-sink \
+  --cli-binary-format raw-in-base64-out --payload file://event.json response.json
+```
+
+This call waits for the result. The event is written when the output has no `FunctionError`; then delete the message. Otherwise `response.json` holds the error and the message is visible again after the 300 seconds.
+
+```bash
+aws sqs delete-message --queue-url "$queue_url" \
+  --receipt-handle "$(jq -r '.Messages[0].ReceiptHandle' message.json)"
+rm message.json event.json response.json
+```
+
+Replaying an event more than once is safe: its row's key comes from its content, so the same event rewrites the same row. Every event Interlock publishes carries a timestamp, alarm events included. An event without one is keyed on the time of the write, so replaying it adds a row.
 
 ## Module Outputs
 

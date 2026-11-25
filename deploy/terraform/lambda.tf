@@ -389,6 +389,23 @@ resource "aws_iam_role_policy" "event_sink_dynamodb" {
 }
 
 # -----------------------------------------------------------------------------
+# SQS SendMessage: event-sink (events it could not write)
+# -----------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "event_sink_dlq" {
+  name = "sqs-dlq"
+  role = aws_iam_role.lambda["event-sink"].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:SendMessage"]
+      Resource = [aws_sqs_queue.event_sink_dlq.arn]
+    }]
+  })
+}
+
+# -----------------------------------------------------------------------------
 # SQS receive and retry delay: alert-dispatcher (alert queue)
 # -----------------------------------------------------------------------------
 
@@ -526,8 +543,8 @@ resource "aws_iam_role_policy" "sqs_dlq" {
 # KMS: with a customer managed key, every Lambda role can use it. DynamoDB
 # decrypts the table key as the caller on every table or stream read and write;
 # SQS needs Decrypt to receive and Decrypt plus GenerateDataKey to send. One
-# action list for all roles is deliberate: only stream-router sends to an
-# encrypted queue and needs GenerateDataKey, the rest need only Decrypt.
+# action list for all roles is deliberate: only stream-router and event-sink
+# send to an encrypted queue and need GenerateDataKey, the rest need only Decrypt.
 # -----------------------------------------------------------------------------
 
 resource "aws_iam_role_policy" "kms" {
@@ -545,7 +562,7 @@ resource "aws_iam_role_policy" "kms" {
 }
 
 # =============================================================================
-# SQS Dead-Letter Queues for stream event source mappings
+# SQS Dead-Letter Queues for stream event source mappings and the event-sink
 # =============================================================================
 
 resource "aws_sqs_queue" "stream_router_control_dlq" {
@@ -562,6 +579,33 @@ resource "aws_sqs_queue" "stream_router_joblog_dlq" {
   kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : "alias/aws/sqs"
   kms_data_key_reuse_period_seconds = 300
   tags                              = var.tags
+}
+
+resource "aws_sqs_queue" "event_sink_dlq" {
+  name                              = "${var.environment}-interlock-event-sink-dlq"
+  message_retention_seconds         = 1209600 # 14 days
+  kms_master_key_id                 = var.kms_key_arn != "" ? var.kms_key_arn : "alias/aws/sqs"
+  kms_data_key_reuse_period_seconds = 300
+  tags                              = var.tags
+}
+
+# =============================================================================
+# Failure destination: event-sink
+# =============================================================================
+
+# EventBridge invokes the event-sink asynchronously. Lambda sends an event that
+# failed every try, or grew too old waiting for one, to the queue as the
+# function's role. Retries and the maximum event age stay at Lambda's defaults.
+resource "aws_lambda_function_event_invoke_config" "event_sink" {
+  function_name = aws_lambda_function.event_sink.function_name
+
+  destination_config {
+    on_failure {
+      destination = aws_sqs_queue.event_sink_dlq.arn
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.event_sink_dlq]
 }
 
 # =============================================================================

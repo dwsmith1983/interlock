@@ -62,7 +62,7 @@ This provisions:
 - 1 EventBridge custom event bus
 - EventBridge schedule for the watchdog
 - IAM roles with least-privilege policies
-- SQS dead-letter queues for stream processing
+- SQS dead-letter queues for stream processing, undelivered alerts and unwritten events
 - CloudWatch log groups
 
 ## What Gets Deployed
