@@ -355,6 +355,7 @@ The Terraform module creates CloudWatch alarms that monitor infrastructure healt
 | Step Functions failures | 1 | `ExecutionsFailed` | `>= 1` per 5-minute period |
 | DLQ depth | 4 (control, joblog, alert, event-sink) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
 | Stream iterator age | 1 (stream-router, covers the control and joblog streams) | `IteratorAge` | `>= 300,000ms` (5 minutes) |
+| Alert rule delivery | 2 (the `alert_events` and `cw_alarm_alert` rules, which send alerts to the alert queue) | `FailedInvocations` | `>= 1` per 5-minute period |
 
 ### How It Works
 

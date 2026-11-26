@@ -261,7 +261,7 @@ The ASL template at `deploy/statemachine.asl.json` uses substitution variables r
 
 ## CloudWatch Alarms
 
-The Terraform module creates CloudWatch alarms across four categories to monitor infrastructure health:
+The Terraform module creates CloudWatch alarms across five categories to monitor infrastructure health:
 
 | Category | Alarms | Metric | Threshold |
 |---|---|---|---|
@@ -269,6 +269,7 @@ The Terraform module creates CloudWatch alarms across four categories to monitor
 | SFN failures | 1 (pipeline state machine) | `ExecutionsFailed` | `>= 1` per 5-minute period |
 | DLQ depth | 4 (control, joblog, alert and event-sink queues) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
 | Stream iterator age | 1 (stream-router, covers the control and joblog streams) | `IteratorAge` | `>= 300,000ms` (5 min) |
+| Alert rule delivery | 2 (`alert_events` and `cw_alarm_alert` rules to the alert queue) | `FailedInvocations` | `>= 1` per 5-minute period |
 
 Alarm state changes are reshaped into `INFRA_ALARM` events via EventBridge input transformers and routed to event-sink and alert-dispatcher. Optionally, alarms also publish to an SNS topic via the `sns_alarm_topic_arn` variable.
 

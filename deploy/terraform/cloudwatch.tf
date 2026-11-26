@@ -1,5 +1,6 @@
 # -----------------------------------------------------------------------------
-# CloudWatch alarms — Lambda errors, SFN failures, DLQ depth, stream lag
+# CloudWatch alarms: Lambda errors, SFN failures, DLQ depth, stream lag,
+# alert rule delivery failures
 # -----------------------------------------------------------------------------
 
 locals {
@@ -19,6 +20,19 @@ locals {
     sr_joblog  = aws_sqs_queue.stream_router_joblog_dlq
     alert      = aws_sqs_queue.alert_dlq
     event_sink = aws_sqs_queue.event_sink_dlq
+  }
+
+  # Rules that send alerts to the alert queue, with the bus their metrics carry
+  # (null for the default bus, whose rule metrics have no EventBusName).
+  alert_rules = {
+    alert_events = {
+      name = aws_cloudwatch_event_rule.alert_events.name
+      bus  = aws_cloudwatch_event_bus.interlock.name
+    }
+    cw_alarm_alert = {
+      name = aws_cloudwatch_event_rule.cw_alarm_alert.name
+      bus  = null
+    }
   }
 
   alarm_actions = var.sns_alarm_topic_arn != "" ? [var.sns_alarm_topic_arn] : []
@@ -122,6 +136,34 @@ resource "aws_cloudwatch_metric_alarm" "stream_iterator_age" {
   dimensions = {
     FunctionName = aws_lambda_function.stream_router.function_name
   }
+
+  alarm_actions = local.alarm_actions
+  ok_actions    = local.alarm_actions
+  tags          = var.tags
+}
+
+# =============================================================================
+# 5. Alert Rule Failed Invocation Alarms: EventBridge could not deliver alerts
+# =============================================================================
+
+resource "aws_cloudwatch_metric_alarm" "alert_rule_failed_invocations" {
+  for_each = local.alert_rules
+
+  alarm_name          = "${var.environment}-interlock-rule-${each.key}-failed-invocations"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "FailedInvocations"
+  namespace           = "AWS/Events"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 1
+  alarm_description   = "EventBridge rule ${each.value.name} could not deliver alerts to the alert queue"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = merge(
+    { RuleName = each.value.name },
+    each.value.bus == null ? {} : { EventBusName = each.value.bus },
+  )
 
   alarm_actions = local.alarm_actions
   ok_actions    = local.alarm_actions
