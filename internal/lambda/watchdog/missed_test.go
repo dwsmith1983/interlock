@@ -175,10 +175,10 @@ func TestDetectMissedInclusionSchedules_EveningBeforeThenMissed(t *testing.T) {
 }
 
 // TestDetectMissedInclusionSchedules: one IRREGULAR_SCHEDULE_MISSED per past
-// inclusion date (the newest three) with no trigger row and no marker, newest
-// first, each followed by its marker. The clock is 09:00 on slaTestDate
-// unless a case says otherwise. ScheduleTime holds schedule.time back on the
-// date itself until that time in schedule.timezone.
+// inclusion date from the last 8 days (the newest three) with no trigger row
+// and no marker, newest first, each followed by its marker. The clock is
+// 09:00 on slaTestDate unless a case says otherwise. ScheduleTime holds
+// schedule.time back on the date itself until that time in schedule.timezone.
 func TestDetectMissedInclusionSchedules(t *testing.T) {
 	type row struct {
 		name    string
@@ -252,6 +252,9 @@ func TestDetectMissedInclusionSchedules(t *testing.T) {
 		{name: "newest three only", dates: []string{"2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06"},
 			want: []string{"2026-03-06", "2026-03-05", "2026-03-04"}},
 		{name: "dry run", dates: []string{"2026-03-05", "2026-03-15"}, dryRun: true},
+		// The check looks back 8 days from slaTestDate (2026-03-10).
+		{name: "older than the lookback", dates: []string{"2026-03-01", "2026-03-15"}},
+		{name: "oldest day in the lookback", dates: []string{"2026-03-02", "2026-03-15"}, want: []string{"2026-03-02"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) { run(t, tt) })

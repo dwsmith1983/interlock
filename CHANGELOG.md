@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The watchdog creates a run date's SLA schedules when its warning time is at most 6 hours away**, instead of as soon as the run date is within two days (UTC). It used to issue two `CreateSchedule` calls per pass for every pending run date in that window, up to 146 for an hourly pipeline in UTC with its rows written ahead, which could use up its 60 second timeout. If no pass schedules a date in the 6 hours before its warning (a watchdog outage, a rejected config, throttling, a `watchdog_schedule` slower than 6 hours), its `SLA_WARNING` is not sent, nor its `SLA_BREACH` if that lasts until the breach. A change to `sla.deadline`, `expectedDuration`, `timezone` or `deadlineDayOffset` now reaches every date not yet scheduled; a date already scheduled keeps its old times, so delete its two schedules to move them, at least 5 minutes after the change.
 - **Event rows in the events table have the sort key `{tsMillis}#{eventType}#{hash}`** instead of `{tsMillis}#{eventType}`. `hash` is 16 hex characters taken from the event's content (see Fixed). Queries on a range of milliseconds work as before. Anything that reads a row by its exact key or splits the key must change. Rows written before the upgrade keep the old key until their TTL removes them.
 
+### Changed
+
+- **The watchdog's inclusion check looks back 8 days.** It checks the 3 most recent inclusion dates up to 8 days before the current date in `schedule.timezone` (that date included), as many days as it looks back for `RUN#` rows. It used to take the 3 most recent past dates however old, so a monthly or quarterly date missed long ago stayed in the check. A missed date older than 8 days is no longer reported.
+
 ### Removed
 
 - **The sla-monitor Lambda no longer accepts the `schedule`, `reconcile` and `calculate` modes**, and rejects them as unknown. Nothing in the deployment sent them: the watchdog creates the SLA schedules and Scheduler invokes `fire-alert`.

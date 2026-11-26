@@ -61,7 +61,9 @@ without repository activity.
 
 ## Adding a scenario
 
-Add a top-level test to `scenarios_test.go`:
+Add a top-level test to `scenarios_test.go`, or to a file of its own per
+feature (as `relative_sla_test.go`, `watch_window_test.go` and
+`inclusion_test.go` do):
 
 1. `startDay(t)` for a fresh day, and a pipeline ID no other test uses.
 2. `putConfig` (start from `scenarioConfig`), queue mock outcomes with
