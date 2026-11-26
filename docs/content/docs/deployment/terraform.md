@@ -171,7 +171,7 @@ When you set `kms_key_arn`, every table and queue uses your key, and its key pol
 }
 ```
 
-If the key policy does not let EventBridge use the key, the deploy still succeeds and alerts are dropped without an error: the `FailedInvocations` metric of the alert rules rises, and CloudTrail shows a KMS `AccessDenied` for `events.amazonaws.com`. When that happens, check this statement and its `aws:SourceAccount` condition.
+If the key policy does not let EventBridge use the key, the deploy still succeeds and alerts are dropped: the `FailedInvocations` metric of the alert rules rises, their `{env}-interlock-rule-*-failed-invocations` alarms fire, and CloudTrail shows a KMS `AccessDenied` for `events.amazonaws.com`. That alarm's own Slack message is dropped too, because it travels the `cw_alarm_alert` rule to the same queue. It still reaches the events table, since the alarm log rule targets the event-sink Lambda, and it reaches people through `sns_alarm_topic_arn`, so set that topic. When the alarm fires, check this statement and its `aws:SourceAccount` condition.
 
 The module grants every Lambda role `kms:Decrypt` and `kms:GenerateDataKey` on the key. All six read or write the encrypted tables. The stream-router also reads the table streams and sends to its DLQs, the event-sink sends to its DLQ, and the alert-dispatcher receives from the alert queue. With a key in the same account, its key policy must let IAM policies grant it (the default key policy does, through the account root statement) or name the six roles. With a key in another account, the key policy must also allow this account or those roles, and the role grants are still needed. Use a key dedicated to this deployment: the Lambda roles can decrypt anything else the key protects.
 
@@ -193,7 +193,7 @@ When `slack_secret_arn` is set, the module automatically grants `secretsmanager:
 
 ## CloudWatch Alarms
 
-The module creates CloudWatch alarms across four categories. All alarms conditionally route to an SNS topic when `sns_alarm_topic_arn` is set.
+The module creates CloudWatch alarms across five categories. All alarms conditionally route to an SNS topic when `sns_alarm_topic_arn` is set.
 
 | Category | Alarms | Threshold |
 |---|---|---|
@@ -201,6 +201,7 @@ The module creates CloudWatch alarms across four categories. All alarms conditio
 | Step Functions failures | One for the pipeline state machine | `ExecutionsFailed >= 1` per 5-minute period |
 | DLQ depth | One per dead-letter queue (4 total) | `ApproximateNumberOfMessagesVisible >= 1` |
 | Stream iterator age | One for the stream-router function (covers both the control and joblog streams) | `IteratorAge >= 300,000ms` (5 minutes) |
+| Alert rule delivery | One per rule that sends alerts to the alert queue (`alert_events`, `cw_alarm_alert`) | `FailedInvocations >= 1` per 5-minute period |
 
 CloudWatch alarm state changes are reshaped via EventBridge input transformers into `INFRA_ALARM` events and routed to both event-sink and alert-dispatcher. This means infrastructure alerts appear in the events table and Slack alongside pipeline lifecycle events — no additional Go code required.
 

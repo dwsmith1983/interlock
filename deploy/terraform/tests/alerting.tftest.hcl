@@ -137,3 +137,61 @@ run "alarm_events_carry_the_alarms_time" {
     error_message = "The event-sink must get the alarm's time as the event timestamp."
   }
 }
+
+# An alert EventBridge could not hand to the alert queue is dropped, so each
+# alert rule has an alarm on its FailedInvocations. Metrics of a custom-bus rule
+# carry EventBusName and RuleName; those of a default-bus rule carry RuleName.
+run "alert_rules_alarm_on_failed_invocations" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for k in ["alert_events", "cw_alarm_alert"] :
+      aws_cloudwatch_metric_alarm.alert_rule_failed_invocations[k].namespace == "AWS/Events" &&
+      aws_cloudwatch_metric_alarm.alert_rule_failed_invocations[k].metric_name == "FailedInvocations" &&
+      aws_cloudwatch_metric_alarm.alert_rule_failed_invocations[k].threshold == 1 &&
+      aws_cloudwatch_metric_alarm.alert_rule_failed_invocations[k].treat_missing_data == "notBreaching"
+    ])
+    error_message = "Each alert rule must have an alarm on one or more FailedInvocations."
+  }
+
+  assert {
+    condition = aws_cloudwatch_metric_alarm.alert_rule_failed_invocations["alert_events"].dimensions == tomap({
+      EventBusName = "test-interlock-events"
+      RuleName     = "test-interlock-alert-events"
+    })
+    error_message = "The alert_events alarm must watch that rule on the interlock bus."
+  }
+
+  assert {
+    condition = aws_cloudwatch_metric_alarm.alert_rule_failed_invocations["cw_alarm_alert"].dimensions == tomap({
+      RuleName = "test-interlock-cw-alarm-alert"
+    })
+    error_message = "The cw_alarm_alert alarm must watch that rule by RuleName only, as on the default bus."
+  }
+
+  # The alarm rules match the prefix, so the alarm reaches the events table.
+  assert {
+    condition = alltrue([
+      for a in values(aws_cloudwatch_metric_alarm.alert_rule_failed_invocations) :
+      startswith(a.alarm_name, "test-interlock-")
+    ])
+    error_message = "The rule alarms must be named with the environment's interlock- prefix."
+  }
+}
+
+run "alert_rule_alarms_notify_the_sns_topic" {
+  command = plan
+
+  variables {
+    sns_alarm_topic_arn = "arn:aws:sns:eu-west-1:123456789012:ops"
+  }
+
+  assert {
+    condition = alltrue([
+      for a in values(aws_cloudwatch_metric_alarm.alert_rule_failed_invocations) :
+      contains(a.alarm_actions, var.sns_alarm_topic_arn)
+    ])
+    error_message = "The rule alarms must notify sns_alarm_topic_arn."
+  }
+}
