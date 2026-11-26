@@ -41,6 +41,9 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 			"pipeline", input.PipelineID, "date", input.Date)
 	}
 
+	// Each branch adds what the verdict is judged against: a relative verdict
+	// must not name the deadline.
+	detail := map[string]interface{}{"source": "cancel"}
 	if input.WarningAt == "" && input.BreachAt == "" {
 		if input.MaxDuration != "" && input.SensorArrivalAt != "" {
 			calc, err := lambda.HandleSLACalculate(input, d.Now())
@@ -49,6 +52,8 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 			}
 			input.WarningAt = calc.WarningAt
 			input.BreachAt = calc.BreachAt
+			detail["maxDuration"] = input.MaxDuration
+			detail["sensorArrivalAt"] = input.SensorArrivalAt
 		} else if input.Deadline != "" && lambda.SLADeadlineFitsDate(input.Deadline, input.Date) {
 			calcInput := input
 			if d.Store != nil {
@@ -68,7 +73,14 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 			}
 			input.WarningAt = calc.WarningAt
 			input.BreachAt = calc.BreachAt
+			addDeadline(detail, input)
 		}
+	} else {
+		// The caller gave the times; the state machine never does.
+		addDeadline(detail, input)
+	}
+	if input.BreachAt != "" {
+		detail["breachAt"] = input.BreachAt
 	}
 
 	now := d.Now().UTC()
@@ -88,6 +100,9 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 	}
 	if publish && d.Store != nil {
 		tr, err := d.Store.GetTrigger(ctx, input.PipelineID, input.ScheduleID, input.Date)
+		if tr != nil {
+			detail["status"] = tr.Status
+		}
 		switch {
 		case err != nil:
 			// An unknown status is not COMPLETED: withhold SLA_MET, keep SLA_BREACH.
@@ -110,7 +125,7 @@ func handleSLACancel(ctx context.Context, d *lambda.Deps, input lambda.SLAMonito
 		"pipeline", input.PipelineID, "alertType", alertType, "published", publish)
 	if publish {
 		if err := lambda.PublishEvent(ctx, d, alertType, input.PipelineID, input.ScheduleID, input.Date,
-			fmt.Sprintf("pipeline %s: %s", input.PipelineID, alertType)); err != nil {
+			fmt.Sprintf("pipeline %s: %s", input.PipelineID, alertType), detail); err != nil {
 			return lambda.SLAMonitorOutput{}, fmt.Errorf("publish SLA cancel verdict: %w", err)
 		}
 	}

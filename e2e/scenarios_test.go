@@ -113,6 +113,34 @@ func waitEvents(t *testing.T, pipeline, date string, want map[string]int, chains
 	waitFor(t, settleTimeout, fmt.Sprintf("%s events %v", pipeline, want), match)
 }
 
+// assertDetails fails unless the pipeline's events of eventType are as many as
+// want, in order, and each one's details hold that want's keys and values.
+func assertDetails(t *testing.T, pipeline, eventType string, want ...map[string]any) {
+	t.Helper()
+	var got []map[string]any
+	for _, e := range events(t, pipeline) {
+		if e.Type == eventType {
+			got = append(got, e.Detail)
+		}
+	}
+	ok := len(got) == len(want)
+	for i := 0; ok && i < len(want); i++ {
+		for k, v := range want[i] {
+			ok = ok && got[i][k] == v
+		}
+	}
+	if !ok {
+		t.Fatalf("%s %s details = %v, want %v", pipeline, eventType, got, want)
+	}
+}
+
+// slaDetail is what an SLA event's details must hold: its source and status,
+// and the scenarios' deadline, which falls at breachAt.
+func slaDetail(source, status string, breachAt time.Time) map[string]any {
+	return map[string]any{"source": source, "status": status,
+		"deadline": slaDeadline, "timezone": "UTC", "breachAt": breachAt.Format(time.RFC3339)}
+}
+
 // waitAlerts waits until every want alert is on the queue (as many times as
 // it is in want), drains the queue once more to catch a late extra, then
 // fails unless want are the pipeline's only alerts.
@@ -249,6 +277,9 @@ func TestScenarioSLAMet(t *testing.T) {
 	jt := string(types.EventJobTriggered)
 	waitEvents(t, sameDayID, date, map[string]int{jt: 2, vp: 1, jc: 1, warn: 1, breach: 2},
 		[]string{warn, breach, vp, jc}, []string{vp, breach})
+	assertDetails(t, sameDayID, warn, slaDetail("schedule", "not started", at(0, 8)))
+	assertDetails(t, sameDayID, breach, slaDetail("schedule", "not started", at(0, 8)),
+		slaDetail("cancel", types.TriggerStatusCompleted, at(0, 8)))
 
 	advanceTo(t, at(1, 2))
 	invokeWatchdog(t)
@@ -256,6 +287,7 @@ func TestScenarioSLAMet(t *testing.T) {
 	advanceTo(t, at(1, 3))
 	run(metID)
 	waitEvents(t, metID, date, map[string]int{jt: 2, vp: 1, jc: 1, met: 1}, []string{vp, jc}, []string{vp, met})
+	assertDetails(t, metID, met, slaDetail("cancel", types.TriggerStatusCompleted, at(1, 8)))
 
 	assertNothingFires(t, metID, at(1, 7))
 	assertNothingFires(t, metID, at(1, 8))
@@ -845,6 +877,8 @@ func TestScenarioSLAWarningDuringRetry(t *testing.T) {
 	waitEvents(t, id, date,
 		map[string]int{string(types.EventJobTriggered): 3, vp: 2, jf: 1, warn: 1, jc: 1, met: 1},
 		[]string{vp, vp, jc}, []string{warn, jc}, []string{warn, met})
+	assertDetails(t, id, warn, slaDetail("schedule", types.TriggerStatusRunning, breachAt))
+	assertDetails(t, id, met, slaDetail("cancel", types.TriggerStatusCompleted, breachAt))
 
 	assertNothingFires(t, id, breachAt)
 	waitAlerts(t, id, alert{id, date, jf}, alert{id, date, warn}, alert{id, date, jc}, alert{id, date, met})

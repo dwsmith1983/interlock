@@ -170,13 +170,18 @@ func TestSLAFireAlert_EventDetail(t *testing.T) {
 		alertType  string
 		breachAt   string
 		deadline   string
+		timezone   string
 		wantDetail map[string]interface{}
 	}{
 		{name: "not started warning", alertType: "SLA_WARNING", breachAt: b, wantDetail: map[string]interface{}{"status": "not started", "source": "schedule", "actionHint": checkSensor, "breachAt": b}},
 		{name: "running warning", trigger: running, alertType: "SLA_WARNING", breachAt: b, wantDetail: map[string]interface{}{"status": running, "source": "schedule", "actionHint": mayComplete, "breachAt": b}},
 		{name: "running breach", trigger: running, alertType: "SLA_BREACH", wantDetail: map[string]interface{}{"status": running, "source": "schedule", "actionHint": mayComplete}},
 		{name: "not started breach", alertType: "SLA_BREACH", wantDetail: map[string]interface{}{"status": "not started", "source": "schedule", "actionHint": investigate}},
-		{name: "not started breach with deadline", alertType: "SLA_BREACH", deadline: "14:00", wantDetail: map[string]interface{}{"status": "not started", "source": "schedule", "actionHint": investigate, "deadline": "14:00"}},
+		{name: "not started breach with deadline", alertType: "SLA_BREACH", deadline: "14:00", wantDetail: map[string]interface{}{"status": "not started", "source": "schedule", "actionHint": investigate, "deadline": "14:00", "timezone": "UTC"}},
+		{name: "breach with deadline, zone and breach time", alertType: "SLA_BREACH", breachAt: b, deadline: "06:00", timezone: "America/New_York", wantDetail: map[string]interface{}{"status": "not started", "source": "schedule", "actionHint": investigate, "deadline": "06:00", "timezone": "America/New_York", "breachAt": b}},
+		{name: "breach past its breach time", trigger: running, alertType: "SLA_BREACH", breachAt: "2026-03-11T09:30:00Z", deadline: "09:30", wantDetail: map[string]interface{}{"status": running, "source": "schedule", "actionHint": mayComplete, "deadline": "09:30", "timezone": "UTC", "breachAt": "2026-03-11T09:30:00Z"}},
+		{name: "warning with an hourly deadline", alertType: "SLA_WARNING", breachAt: b, deadline: ":00", timezone: "Asia/Tokyo", wantDetail: map[string]interface{}{"status": "not started", "source": "schedule", "actionHint": checkSensor, "deadline": ":00", "timezone": "Asia/Tokyo", "breachAt": b}},
+		{name: "no deadline, so no zone", alertType: "SLA_BREACH", breachAt: b, timezone: "Asia/Tokyo", wantDetail: map[string]interface{}{"status": "not started", "source": "schedule", "actionHint": investigate, "breachAt": b}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -194,7 +199,7 @@ func TestSLAFireAlert_EventDetail(t *testing.T) {
 
 			_, err := sla.HandleSLAMonitor(context.Background(), d, lambda.SLAMonitorInput{
 				Mode: "fire-alert", PipelineID: "p", ScheduleID: "stream", Date: date,
-				AlertType: tt.alertType, BreachAt: tt.breachAt, Deadline: tt.deadline,
+				AlertType: tt.alertType, BreachAt: tt.breachAt, Deadline: tt.deadline, Timezone: tt.timezone,
 			})
 			if err != nil {
 				t.Fatalf("fire-alert: %v", err)

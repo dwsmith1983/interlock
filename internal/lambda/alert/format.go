@@ -38,11 +38,14 @@ func FormatAlertText(detailType string, detail types.InterlockEvent) string {
 
 	var parts []string
 	if v, ok := detail.Detail["deadline"]; ok {
-		if breachAt, ok2 := detail.Detail["breachAt"]; ok2 {
-			parts = append(parts, fmt.Sprintf("Deadline %s (%s)", esc(v), esc(breachAt)))
-		} else {
-			parts = append(parts, "Deadline "+esc(v))
+		deadline := "Deadline " + esc(v)
+		if timezone, ok2 := detail.Detail["timezone"]; ok2 {
+			deadline += " " + esc(timezone)
 		}
+		if breachAt, ok2 := detail.Detail["breachAt"]; ok2 {
+			deadline += " (" + esc(breachAt) + ")"
+		}
+		parts = append(parts, deadline)
 	}
 	for _, f := range []struct{ key, label string }{
 		{"status", "Status"}, {"source", "Source"}, {"cron", "Cron"}, {"cutoff", "Cutoff"}, {"cutoffAt", "Cutoff at"}, {"hash", "Config hash"},

@@ -1,6 +1,7 @@
 package sla
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"time"
@@ -55,9 +56,7 @@ func handleSLAFireAlert(ctx context.Context, d *lambda.Deps, input lambda.SLAMon
 	if input.BreachAt != "" {
 		alertDetail["breachAt"] = input.BreachAt
 	}
-	if input.Deadline != "" {
-		alertDetail["deadline"] = input.Deadline
-	}
+	addDeadline(alertDetail, input)
 
 	msg := fmt.Sprintf("pipeline %s: %s", input.PipelineID, input.AlertType)
 
@@ -69,4 +68,14 @@ func handleSLAFireAlert(ctx context.Context, d *lambda.Deps, input lambda.SLAMon
 		AlertType: input.AlertType,
 		FiredAt:   d.Now().UTC().Format(time.RFC3339),
 	}, nil
+}
+
+// addDeadline adds the configured deadline, if any, and the time zone it is
+// read in to an event detail.
+func addDeadline(detail map[string]interface{}, input lambda.SLAMonitorInput) {
+	if input.Deadline == "" {
+		return
+	}
+	detail["deadline"] = input.Deadline
+	detail["timezone"] = cmp.Or(input.Timezone, "UTC")
 }

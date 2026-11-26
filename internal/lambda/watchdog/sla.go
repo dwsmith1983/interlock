@@ -117,7 +117,7 @@ func scheduleSLAForDate(ctx context.Context, d *lambda.Deps, id string, cfg *typ
 	if warnErr == nil && !warningAt.After(now) {
 		toCreate.WarningAt = ""
 	}
-	if err := lambda.CreateSLASchedules(ctx, d, id, scheduleID, date, toCreate, true); err != nil {
+	if err := lambda.CreateSLASchedules(ctx, d, id, scheduleID, date, cfg.SLA, toCreate, true); err != nil {
 		d.Logger.Error("create SLA schedule failed",
 			"pipelineId", id, "date", date, "error", err)
 		return

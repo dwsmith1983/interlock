@@ -161,6 +161,34 @@ func TestFormatAlertText_CutoffPassed(t *testing.T) {
 	}
 }
 
+// TestFormatAlertText_SLADeadline: an SLA alert shows its configured deadline
+// with the time zone it is in, and the UTC instant that was. Every value is
+// escaped, and a verdict that has no deadline shows none.
+func TestFormatAlertText_SLADeadline(t *testing.T) {
+	type m = map[string]interface{}
+	for _, tt := range []struct {
+		name, detailType string
+		detail           m
+		want             string
+	}{
+		{"scheduled breach", "SLA_BREACH", m{"status": "RUNNING", "source": "schedule", "actionHint": "h", "deadline": "06:00", "timezone": "America/New_York", "breachAt": "2026-03-10T10:00:00Z"},
+			"Deadline 06:00 America/New_York (2026-03-10T10:00:00Z) · Status: RUNNING · Source: schedule\n→ h"},
+		{"met", "SLA_MET", m{"status": "COMPLETED", "source": "cancel", "deadline": ":30", "timezone": "UTC", "breachAt": "2026-03-10T08:30:00Z"},
+			"Deadline :30 UTC (2026-03-10T08:30:00Z) · Status: COMPLETED · Source: cancel"},
+		{"no timezone", "SLA_WARNING", m{"deadline": ":30", "breachAt": "b"}, "Deadline :30 (b)"},
+		{"no breachAt", "SLA_WARNING", m{"deadline": ":30", "timezone": "UTC"}, "Deadline :30 UTC"},
+		{"no deadline", "SLA_MET", m{"source": "cancel", "maxDuration": "2h", "timezone": "UTC", "breachAt": "b"}, "Source: cancel"},
+		{"escaped", "SLA_WARNING", m{"deadline": "<8>", "timezone": "<\nz>", "breachAt": "a&b"}, "Deadline &lt;8&gt; &lt; z&gt; (a&amp;b)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			text := alert.FormatAlertText(tt.detailType, types.InterlockEvent{PipelineID: "p", Message: "m", Detail: tt.detail})
+			if _, got, _ := strings.Cut(text, "\nm\n"); got != tt.want {
+				t.Errorf("text = %q, want it to end %q", text, tt.want)
+			}
+		})
+	}
+}
+
 // TestAlertEmoji: failures are red, warnings yellow, a met SLA a check mark
 // and everything else info, and the emoji leads the header.
 func TestAlertEmoji(t *testing.T) {
