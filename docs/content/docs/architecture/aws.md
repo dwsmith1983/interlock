@@ -47,6 +47,9 @@ The primary state table. Stores pipeline configs, sensor data, trigger locks, an
 | Sensor data | `PIPELINE#{id}` | `SENSOR#{key}` | External sensor writes |
 | Trigger lock | `PIPELINE#{id}` | `TRIGGER#{schedule}#{date}` | Dedup lock for executions; `startedAt` and `completedAt` mark the job's launch and the run's completion |
 | Expected run date | `PIPELINE#{id}` | `RUN#{runKey}` | Written by the user; drives the SLA schedules, start-by and cutoff checks |
+| Rerun request | `PIPELINE#{id}` | `RERUN_REQUEST#{schedule}#{date}` | Written by the user (`manual`) or by Interlock (`late-data`, `data-drift`); the stream-router acts on it |
+
+Interlock's own bookkeeping rows expire: the `SENSOR#` rows it writes (the alert markers `schedule-missed-check#`, `irregular-missed-check#`, `postrun-check#`, `relative-sla-warning-check#` and `relative-sla-breach-check#`, plus `first-sensor-arrival#{date}` and `postrun-baseline#{date}`) and the `late-data` and `data-drift` rerun requests carry a `ttl` 31 days after their latest write. That is the longest post-run watch window (720h, counted from `completedAt`, during which the baseline is read) plus a day. Seeding one rule's entry into an existing baseline row keeps that row's `ttl`. Sensor rows and rerun requests the user writes, `CONFIG`, `TRIGGER#` and `RUN#` rows get no `ttl` from Interlock.
 
 DynamoDB Streams are enabled with `NEW_IMAGE` view type. The stream-router Lambda processes sensor writes and config changes from this stream.
 

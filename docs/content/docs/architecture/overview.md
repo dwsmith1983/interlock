@@ -233,7 +233,7 @@ postRun:
 
 ### How It Works
 
-1. **Baseline capture**: When a job completes successfully, the orchestrator reads all sensors and writes a date-scoped baseline (`postrun-baseline#<date>`) to the control table.
+1. **Baseline capture**: When a job completes successfully, the orchestrator reads all sensors and writes a date-scoped baseline (`postrun-baseline#<date>`) to the control table. The row expires 31 days after its latest capture (or, for a row a seed created, 31 days after it was written), past the longest watch window (720h).
 2. **Stream-based evaluation**: When a sensor matching a post-run rule arrives via DynamoDB Stream, the stream-router evaluates it:
    - If the trigger is **RUNNING**, drift is logged as an informational `POST_RUN_DRIFT_INFLIGHT` event (no rerun).
    - If the trigger is **COMPLETED** and the date is inside its watch window, the sensor count is compared against the baseline. Drift above `driftThreshold` writes a `data-drift` rerun request, which skips the circuit breaker. A sensor first written after completion has no baseline value, so that first value becomes its baseline and later writes are compared with it.

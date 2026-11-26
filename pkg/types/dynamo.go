@@ -80,7 +80,9 @@ type ControlRecord struct {
 	Data   map[string]interface{} `dynamodbav:"data,omitempty"`
 	Status string                 `dynamodbav:"status,omitempty"`
 	// TTL is when DynamoDB deletes the row (epoch seconds). Rows that expire
-	// carry it (DRY_RUN#, config-invalid markers); no TRIGGER# row is written with one.
+	// carry it (DRY_RUN#, config-invalid markers, and Interlock's own SENSOR#
+	// and RERUN_REQUEST# rows); user sensor rows and TRIGGER# rows are written
+	// without one.
 	TTL int64 `dynamodbav:"ttl,omitempty"`
 	// StaleAt is, on a RUNNING TRIGGER# row, the epoch second after which the
 	// watchdog treats the run as dead and closes it.

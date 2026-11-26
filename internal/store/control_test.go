@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -534,8 +535,18 @@ func TestWriteSensor_Success(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected non-nil sensor data")
 	}
-	if got["status"] != "COMPLETE" {
-		t.Errorf("status = %v, want %q", got["status"], "COMPLETE")
+	if !reflect.DeepEqual(got, data) {
+		t.Errorf("GetSensorData = %v, want %v (no ttl key)", got, data)
+	}
+	all, err := s.GetAllSensors(context.Background(), "pipe-1")
+	if err != nil {
+		t.Fatalf("GetAllSensors after WriteSensor: %v", err)
+	}
+	if !reflect.DeepEqual(all["upstream-complete"], data) {
+		t.Errorf("GetAllSensors[upstream-complete] = %v, want %v (no ttl key)", all["upstream-complete"], data)
+	}
+	if _, ok := mock.items[itemKey("control", types.PipelinePK("pipe-1"), types.SensorSK("upstream-complete"))]["ttl"]; !ok {
+		t.Error("stored row has no ttl attribute")
 	}
 }
 

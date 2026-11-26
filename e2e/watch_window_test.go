@@ -4,14 +4,50 @@ package e2e
 
 import (
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	sfntypes "github.com/aws/aws-sdk-go-v2/service/sfn/types"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
+
+// assertOwnRowTTL checks that the pipeline's control row sk carries the ttl
+// Interlock gives its own rows: the simulated time of the write plus
+// MaxPostRunWatchWindow and a day. The clock only moves forward and the store
+// reads it at the write, so the write happened between notBefore (a clock
+// reading taken before the step that writes the row) and the clock now.
+func assertOwnRowTTL(t *testing.T, pipeline, sk string, notBefore time.Time) {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	out, err := ddb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(controlTable),
+		ConsistentRead: aws.Bool(true),
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipeline)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: sk},
+		},
+	})
+	if err != nil {
+		t.Fatalf("get %s for %s: %v", sk, pipeline, err)
+	}
+	life := validation.MaxPostRunWatchWindow + 24*time.Hour
+	lo, hi := notBefore.Add(life).Unix(), mockNow(t).Add(life).Unix()
+	n, ok := out.Item["ttl"].(*ddbtypes.AttributeValueMemberN)
+	if !ok {
+		t.Fatalf("%s for %s: ttl = %#v, want a number in [%d, %d]", sk, pipeline, out.Item["ttl"], lo, hi)
+	}
+	ttl, err := strconv.ParseInt(n.Value, 10, 64)
+	if err != nil || ttl < lo || ttl > hi {
+		t.Fatalf("%s for %s: ttl = %s, want a number in [%d, %d]", sk, pipeline, n.Value, lo, hi)
+	}
+}
 
 // waitExecutionDone waits until the named execution has ended, so its
 // complete-trigger (completion time and baseline) is done before the clock
@@ -46,6 +82,7 @@ func TestScenarioLateDataWatchWindow(t *testing.T) {
 
 	writeReady(t, id, date)
 	run1 := waitLaunch(t, id, 1)
+	assertOwnRowTTL(t, id, types.SensorSK("first-sensor-arrival#"+date), start)
 	reportJob(t, id, date, run1, types.JobEventSuccess)
 	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1})
 	waitCompleted(t, id, date)
@@ -112,14 +149,18 @@ func TestScenarioDriftWatchWindow(t *testing.T) {
 	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 100, "date": date})
 	writeReady(t, id, date)
 	run := waitLaunch(t, id, 1)
+	reported := mockNow(t)
 	reportJob(t, id, date, run, types.JobEventSuccess)
 	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1})
 	waitCompleted(t, id, date)
 	waitExecutionDone(t, run)
+	assertOwnRowTTL(t, id, types.SensorSK("postrun-baseline#"+date), reported)
 
 	advanceTo(t, at(7, 0))
 	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 120, "date": date})
 	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1, drift: 1, rejected: 1})
+	// Read before the manual request below overwrites the row.
+	assertOwnRowTTL(t, id, types.RerunRequestSK(streamSchedule, date), at(7, 0))
 
 	advanceTo(t, at(8, 15))
 	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 130, "date": date})

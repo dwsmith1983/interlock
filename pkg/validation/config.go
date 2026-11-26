@@ -599,8 +599,9 @@ func isZoneName(tz string) bool {
 	return err == nil
 }
 
-// maxPostRunWatchWindow bounds postRun.watchWindow: job and rerun rows live 30 days.
-const maxPostRunWatchWindow = 720 * time.Hour
+// MaxPostRunWatchWindow bounds postRun.watchWindow: job and rerun rows live 30 days.
+// The store derives the ttl of Interlock's own control rows (ownRowTTL) from it.
+const MaxPostRunWatchWindow = 720 * time.Hour
 
 // validatePostRun checks the post-run durations. With rules, the watchdog's
 // sensor timeout must end inside the watch window (both at their defaults
@@ -613,7 +614,7 @@ func validatePostRun(pr *types.PostRunConfig) []string {
 		switch {
 		case err != nil:
 			errs, windowOK = append(errs, fmt.Sprintf("postRun.watchWindow invalid Go duration %q", pr.WatchWindow)), false
-		case d <= 0 || d > maxPostRunWatchWindow:
+		case d <= 0 || d > MaxPostRunWatchWindow:
 			errs, windowOK = append(errs, fmt.Sprintf("postRun.watchWindow %q out of range (0s,720h]", pr.WatchWindow)), false
 		default:
 			window = d

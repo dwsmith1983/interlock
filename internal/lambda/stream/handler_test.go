@@ -189,7 +189,8 @@ func newNoWriteFake(t *testing.T) *storetest.FakeDynamo {
 // NewImage, so routing it makes downstream handlers act on absent data. A
 // deleted RERUN_REQUEST# row starts a rerun with reason "manual"; a deleted
 // SENSOR# row publishes a POST_RUN_* verdict. TTL expiries (30-day JOB# rows,
-// trigger-lock rows) arrive as REMOVE with a Service user identity.
+// trigger-lock rows, Interlock's own SENSOR# and RERUN_REQUEST# rows) arrive
+// as REMOVE with a Service user identity.
 func TestHandleRecord_SkipsRemoveRecords(t *testing.T) {
 	ttlIdentity := &events.DynamoDBUserIdentity{
 		Type:        "Service",
@@ -206,6 +207,8 @@ func TestHandleRecord_SkipsRemoveRecords(t *testing.T) {
 		{name: "job row deleted", sk: types.JobSK("stream", testDate, "1772000000000")},
 		{name: "job row expired by ttl", sk: types.JobSK("stream", testDate, "1772000000000"), userIdentity: ttlIdentity},
 		{name: "trigger row expired by ttl", sk: types.TriggerSK("stream", testDate), userIdentity: ttlIdentity},
+		{name: "sensor marker expired by ttl", sk: types.SensorSK("schedule-missed-check#" + testDate), userIdentity: ttlIdentity},
+		{name: "rerun request expired by ttl", sk: types.RerunRequestSK("stream", testDate), userIdentity: ttlIdentity},
 	}
 
 	for _, tt := range tests {

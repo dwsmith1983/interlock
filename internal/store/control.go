@@ -333,12 +333,23 @@ func (s *Store) ListRunKeys(ctx context.Context, pipelineID, fromDate, toDate st
 	return keys, nil
 }
 
-// WriteSensor writes (or overwrites) a sensor row in the control table.
+// ownRowTTL is how long Interlock's own control rows (SENSOR# markers and
+// baselines, the RERUN_REQUEST# rows it writes) live. The longest reader is
+// the post-run baseline, written at completion and read until the watch
+// window (at most MaxPostRunWatchWindow) after completedAt; a day of slack
+// is added on top. A baseline that a rerun's completion did not rewrite (no
+// post-run sensor then, or a failed capture) can expire inside the rerun's
+// window; the next post-run write then seeds a new one.
+const ownRowTTL = validation.MaxPostRunWatchWindow + 24*time.Hour
+
+// WriteSensor writes (or overwrites) one of Interlock's own SENSOR# rows,
+// expiring ownRowTTL after the write. User sensor rows are not written here.
 func (s *Store) WriteSensor(ctx context.Context, pipelineID, sensorKey string, data map[string]interface{}) error {
 	rec := types.ControlRecord{
 		PK:   types.PipelinePK(pipelineID),
 		SK:   types.SensorSK(sensorKey),
 		Data: data,
+		TTL:  s.now().Add(ownRowTTL).Unix(),
 	}
 
 	item, err := attributevalue.MarshalMap(rec)
@@ -356,14 +367,16 @@ func (s *Store) WriteSensor(ctx context.Context, pipelineID, sensorKey string, d
 	return nil
 }
 
-// WriteSensorIfAbsent writes a sensor row only if it does not already exist.
-// Returns true if the write succeeded (key was absent), false if the key
-// already existed. This is used for idempotent first-occurrence recording.
+// WriteSensorIfAbsent writes one of Interlock's own SENSOR# rows, expiring
+// ownRowTTL after the write, only if it does not already exist. Returns true
+// if the write succeeded (key was absent), false if the key already existed.
+// This is used for idempotent first-occurrence recording.
 func (s *Store) WriteSensorIfAbsent(ctx context.Context, pipelineID, sensorKey string, data map[string]interface{}) (bool, error) {
 	rec := types.ControlRecord{
 		PK:   types.PipelinePK(pipelineID),
 		SK:   types.SensorSK(sensorKey),
 		Data: data,
+		TTL:  s.now().Add(ownRowTTL).Unix(),
 	}
 
 	item, err := attributevalue.MarshalMap(rec)
@@ -393,7 +406,7 @@ func (s *Store) WriteSensorIfAbsent(ctx context.Context, pipelineID, sensorKey s
 // row without one, which WriteSensor writes for a nil map (data is
 // omitempty), or one whose data is not a map, returns an error because
 // DynamoDB rejects the document path. An empty non-nil map is stored as an
-// empty data map and takes the field.
+// empty data map and takes the field. The row's ttl is left as it was.
 func (s *Store) WriteSensorFieldIfAbsent(ctx context.Context, pipelineID, sensorKey, field string, value map[string]interface{}) (bool, error) {
 	av, err := attributevalue.Marshal(value)
 	if err != nil {
@@ -436,18 +449,20 @@ func (s *Store) DeleteSensor(ctx context.Context, pipelineID, sensorKey string) 
 	return nil
 }
 
-// WriteRerunRequest writes a RERUN_REQUEST row to the control table.
+// WriteRerunRequest writes a RERUN_REQUEST row of Interlock's own (late-data,
+// data-drift) to the control table, expiring ownRowTTL after the write.
 // The stream-router picks this up via DynamoDB streams and validates
 // via the circuit breaker before starting a new SFN execution.
 func (s *Store) WriteRerunRequest(ctx context.Context, pipelineID, schedule, date, reason string) error {
-	now := s.now().UTC().Format(time.RFC3339)
+	now := s.now()
 	_, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: &s.ControlTable,
 		Item: map[string]ddbtypes.AttributeValue{
 			"PK":          &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
 			"SK":          &ddbtypes.AttributeValueMemberS{Value: types.RerunRequestSK(schedule, date)},
 			"reason":      &ddbtypes.AttributeValueMemberS{Value: reason},
-			"requestedAt": &ddbtypes.AttributeValueMemberS{Value: now},
+			"requestedAt": &ddbtypes.AttributeValueMemberS{Value: now.UTC().Format(time.RFC3339)},
+			"ttl":         &ddbtypes.AttributeValueMemberN{Value: fmt.Sprintf("%d", now.Add(ownRowTTL).Unix())},
 		},
 	})
 	if err != nil {
