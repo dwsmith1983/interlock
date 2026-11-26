@@ -32,7 +32,7 @@ schedule:
 | `trigger` | object | yes | Condition that activates the evaluation loop, with the [cutoff](#cutoff) for its latest automatic start (see below). A config without one is rejected as `CONFIG_INVALID` |
 | `evaluation` | object | no | Window and interval settings for the evaluation loop |
 | `exclude` | object | no | Dates the pipeline does not run (see [Calendar Exclusions](#calendar-exclusions)) |
-| `include` | object | no | `dates` (`YYYY-MM-DD` list) the pipeline is expected to run on; the watchdog publishes `IRREGULAR_SCHEDULE_MISSED` for a date with no trigger row once that date has begun in `timezone` (UTC when unset). It does not stop runs on other dates. Not allowed with `cron` |
+| `include` | object | no | `dates` (`YYYY-MM-DD` list) the pipeline is expected to run on; the watchdog publishes `IRREGULAR_SCHEDULE_MISSED` for a date with no trigger row once that date has begun in `timezone` (UTC when unset). It checks only dates from the last 8 days, at most the 3 most recent, so a missed date older than that is not reported. It does not stop runs on other dates. Not allowed with `cron` |
 | `time` | string | no | `HH:MM` with a two-digit hour (`00:00` to `23:59`) in `timezone`: on an `include` date, the missed-date check waits until this time. Without it the check fires at local midnight of the date, so set `time` to avoid an alert before the run is due. Used only with `include`. Another format (`9:00`, `24:00`, `:30`), `time` without `include`, or `time` with `cron` rejects the config as `CONFIG_INVALID` |
 
 ### Trigger Condition

@@ -85,23 +85,33 @@ func ResolveTimezone(tz string) *time.Location {
 	return time.UTC
 }
 
-// maxInclusionLookback is the maximum number of past inclusion dates to check.
-// Caps DynamoDB reads when the watchdog has been down for an extended period.
-const maxInclusionLookback = 3
+// The inclusion dates the watchdog checks: those from the last
+// inclusionLookbackDays days of now's date (as long as the watchdog's RUN#
+// lookback), and of those at most the maxInclusionLookback most recent. The
+// day bound keeps an old date from alerting again once its marker is gone;
+// the count caps DynamoDB reads.
+const (
+	inclusionLookbackDays = 8
+	maxInclusionLookback  = 3
+)
 
-// PastInclusionDates returns dates from the list that are on or before now's
-// date in loc, sorted most recent first and capped at maxInclusionLookback (3)
-// entries. The cap bounds DynamoDB reads when the watchdog has been down for an
-// extended period. Dates must be YYYY-MM-DD strings; unparseable entries
-// are silently skipped. Returns nil if no dates qualify.
+// PastInclusionDates returns dates from the list that fall between
+// inclusionLookbackDays (8) days before now's date in loc and that date
+// itself, both included, sorted most recent first and capped at
+// maxInclusionLookback (3) entries. Older dates are dropped, so a missed date
+// is reported only while it is in the window. Dates must be YYYY-MM-DD
+// strings; unparseable entries are silently skipped. Returns nil if no dates
+// qualify.
 func PastInclusionDates(dates []string, now time.Time, loc *time.Location) []string {
-	nowDate := now.In(loc).Format("2006-01-02")
+	localNow := now.In(loc)
+	nowDate := localNow.Format("2006-01-02")
+	oldestDate := localNow.AddDate(0, 0, -inclusionLookbackDays).Format("2006-01-02")
 	var past []string
 	for _, d := range dates {
 		if _, err := time.Parse("2006-01-02", d); err != nil {
 			continue
 		}
-		if d <= nowDate {
+		if oldestDate <= d && d <= nowDate {
 			past = append(past, d)
 		}
 	}

@@ -19,19 +19,19 @@ func TestPastInclusionDates_AllFuture(t *testing.T) {
 
 func TestPastInclusionDates_MultiplePast(t *testing.T) {
 	now := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
-	dates := []string{"2026-01-15", "2026-02-28", "2026-03-05"}
+	dates := []string{"2026-03-02", "2026-03-04", "2026-03-05"}
 
 	got := lambda.PastInclusionDates(dates, now, time.UTC)
-	assert.Equal(t, []string{"2026-03-05", "2026-02-28", "2026-01-15"}, got,
+	assert.Equal(t, []string{"2026-03-05", "2026-03-04", "2026-03-02"}, got,
 		"should return all past dates, most recent first")
 }
 
 func TestPastInclusionDates_MixedPastFuture(t *testing.T) {
 	now := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
-	dates := []string{"2026-01-01", "2026-03-08", "2026-03-12", "2026-04-01"}
+	dates := []string{"2026-03-03", "2026-03-08", "2026-03-12", "2026-04-01"}
 
 	got := lambda.PastInclusionDates(dates, now, time.UTC)
-	assert.Equal(t, []string{"2026-03-08", "2026-01-01"}, got,
+	assert.Equal(t, []string{"2026-03-08", "2026-03-03"}, got,
 		"should only return past dates, most recent first")
 }
 
@@ -47,13 +47,30 @@ func TestPastInclusionDates_TodayIncluded(t *testing.T) {
 func TestPastInclusionDates_CappedAt3(t *testing.T) {
 	now := time.Date(2026, 3, 10, 14, 0, 0, 0, time.UTC)
 	dates := []string{
-		"2026-01-01", "2026-01-15", "2026-02-01", "2026-02-15", "2026-03-01",
+		"2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06",
 	}
 
 	got := lambda.PastInclusionDates(dates, now, time.UTC)
 	assert.Len(t, got, 3, "result should be capped at 3 entries")
-	assert.Equal(t, []string{"2026-03-01", "2026-02-15", "2026-02-01"}, got,
+	assert.Equal(t, []string{"2026-03-06", "2026-03-05", "2026-03-04"}, got,
 		"should return the 3 most recent past dates, most recent first")
+}
+
+// TestPastInclusionDates_SkipsDatesOlderThanLookback: only dates from the
+// last 8 days of now's date in loc qualify. At 23:00 on 2026-03-09 in New
+// York it is already 2026-03-10 in UTC, so 2026-03-01 is in the window only
+// when the bound is taken in loc.
+func TestPastInclusionDates_SkipsDatesOlderThanLookback(t *testing.T) {
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load zone: %v", err)
+	}
+	now := time.Date(2026, 3, 10, 3, 0, 0, 0, time.UTC)
+	dates := []string{"2026-02-28", "2026-03-01", "2026-03-08"}
+
+	got := lambda.PastInclusionDates(dates, now, newYork)
+	assert.Equal(t, []string{"2026-03-08", "2026-03-01"}, got,
+		"dates 1 and 8 days back qualify, 9 days back does not")
 }
 
 // TestPastInclusionDates_UsesLocation: a date is past once it has begun in
