@@ -61,9 +61,9 @@ const (
 	JobEventTimeout               = "timeout"
 	JobEventInfraTriggerFailure   = "infra-trigger-failure"
 	JobEventInfraTriggerExhausted = "infra-trigger-exhausted"
-	JobEventLateDataArrival       = "late-data-arrival"
+	JobEventLateDataArrival       = "late-data-arrival" // no longer written; read from older rows
 	JobEventRerunAccepted         = "rerun-accepted"
-	JobEventRerunRejected         = "rerun-rejected"
+	JobEventRerunRejected         = "rerun-rejected" // no longer written; read from older rows
 	JobEventValidationExhausted   = "validation-exhausted"
 	JobEventEvaluationReleased    = "evaluation-released" // evaluation ran out before the cutoff; the lock was released
 )
