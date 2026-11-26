@@ -95,7 +95,12 @@ code path first and assert the exact values it produces.
 - Terraform's `filter_criteria` drifting from deploy.py's copy. The e2e deploy
   sets the stream mapping filters from that copy, so the filters themselves run.
 - DynamoDB TTL. It is off, and would run on the real clock rather than the
-  simulated one.
+  simulated one. The watch-window scenarios check that Interlock's own rows
+  (`first-sensor-arrival#`, `postrun-baseline#`, the `data-drift` rerun
+  request) carry a `ttl` 31 days past the simulated write time, but e2e does
+  not show DynamoDB deleting them, the stream router skipping the REMOVE
+  record an expiry sends, or that Terraform turns TTL on for the control
+  table.
 - Part of `job.maxRetries`. `TestScenarioRerunIgnoresPreviousFailure` covers
   one CompleteTrigger retry (a reported `fail`, `maxRetries: 1`, a `-r1`
   retry that then succeeds) and `TestScenarioRetriesExhausted` the

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +27,7 @@ import (
 	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 const (
@@ -483,6 +485,8 @@ func TestCompleteTrigger_PostRunBaseline(t *testing.T) {
 					{Key: "audit-result", Check: types.CheckGTE, Field: "sensor_count", Value: 100}}}
 			}
 			d, mem, rec := memDeps(t, cfg)
+			now := time.Date(2026, 3, 8, 7, 0, 0, 0, time.UTC)
+			d.Store.Now = func() time.Time { return now }
 			mem.Put("control", strItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("s", date), "status", types.TriggerStatusRunning))
 			for key, data := range tt.sensors {
 				if err := d.Store.WriteSensor(ctx, "p", key, data); err != nil {
@@ -513,6 +517,28 @@ func TestCompleteTrigger_PostRunBaseline(t *testing.T) {
 			if tt.wantOps != nil && !slices.Equal(rec.ops, tt.wantOps) {
 				t.Errorf("ops = %v, want %v", rec.ops, tt.wantOps)
 			}
+			if tt.wantBaseline == nil {
+				return
+			}
+			// The baseline expires counted from its capture, and a later
+			// capture (a rerun's completion) moves the expiry on.
+			checkBaselineTTL(t, mem, date, now)
+			now = now.Add(26 * time.Hour)
+			if err := lambda.CapturePostRunBaseline(ctx, d, "p", "s", date); err != nil {
+				t.Fatalf("second capture: %v", err)
+			}
+			checkBaselineTTL(t, mem, date, now)
 		})
+	}
+}
+
+// checkBaselineTTL fails the test unless date's baseline row expires
+// MaxPostRunWatchWindow plus a day after writtenAt.
+func checkBaselineTTL(t *testing.T, mem *storetest.Mem, date string, writtenAt time.Time) {
+	t.Helper()
+	row := mem.Get("control", types.PipelinePK("p"), types.SensorSK("postrun-baseline#"+date))
+	want := strconv.FormatInt(writtenAt.Add(validation.MaxPostRunWatchWindow+24*time.Hour).Unix(), 10)
+	if ttl, ok := row["ttl"].(*ddbtypes.AttributeValueMemberN); !ok || ttl.Value != want {
+		t.Errorf("baseline ttl = %v, want %s", row["ttl"], want)
 	}
 }

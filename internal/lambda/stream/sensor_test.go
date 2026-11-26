@@ -15,6 +15,7 @@ import (
 
 	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // httpJobConfig is the smallest job.config validation accepts for an http job.
@@ -204,12 +205,15 @@ func TestSensorEvent_FirstArrival(t *testing.T) {
 			})
 			ctx, arrivalKey := context.Background(), "first-sensor-arrival#"+tt.date
 			if tt.seeded != "" {
+				seededAt := mustTime(t, tt.seeded)
+				d.Store.Now = func() time.Time { return seededAt }
 				if err := d.Store.WriteSensor(ctx, "p", arrivalKey, map[string]interface{}{"arrivedAt": tt.seeded}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			now := mustTime(t, tt.now)
 			d.NowFunc = func() time.Time { return now }
+			d.Store.Now = func() time.Time { return now }
 			sfnFake.fail = tt.sfnFail
 
 			err := handleRecord(ctx, d, sensorRecord(tt.date))
@@ -238,6 +242,13 @@ func TestSensorEvent_FirstArrival(t *testing.T) {
 				}
 				if got["arrivedAt"] != tt.wantArrival {
 					t.Errorf("%s arrivedAt = %v, want %s", arrivalKey, got["arrivedAt"], tt.wantArrival)
+				}
+				// The row expires counted from its first write, which a kept
+				// arrival does not refresh.
+				row := mem.Get("control", types.PipelinePK("p"), types.SensorSK(arrivalKey))
+				wantTTL := strconv.FormatInt(mustTime(t, tt.wantArrival).Add(validation.MaxPostRunWatchWindow+24*time.Hour).Unix(), 10)
+				if ttl, ok := row["ttl"].(*ddbtypes.AttributeValueMemberN); !ok || ttl.Value != wantTTL {
+					t.Errorf("%s ttl = %v, want %s", arrivalKey, row["ttl"], wantTTL)
 				}
 			}
 		})

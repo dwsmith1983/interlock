@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // postRunRecord is the stream record of the "row-count" post-run sensor for
@@ -183,6 +185,7 @@ func firstWriteWorld(t *testing.T, ruleKeys ...string) (*lambda.Deps, *storetest
 	mem.Put("control", completedRow("2026-03-10", "2026-03-10T12:00:00Z"))
 	now := mustTime(t, "2026-03-10T13:00:00Z")
 	d.NowFunc = func() time.Time { return now }
+	d.Store.Now = func() time.Time { return now }
 	return d, mem, eb
 }
 
@@ -240,6 +243,17 @@ func TestPostRunSensor_FirstWriteAfterCompletion(t *testing.T) {
 	}
 	if req := rerun(); strAttr(req["reason"]) != "data-drift" {
 		t.Errorf("rerun request = %v, want reason data-drift", req)
+	}
+	// Both rows Interlock wrote expire counted from the clock at the write.
+	wantTTL := strconv.FormatInt(d.NowFunc().Add(validation.MaxPostRunWatchWindow+24*time.Hour).Unix(), 10)
+	rows := map[string]map[string]ddbtypes.AttributeValue{
+		"seeded baseline": mem.Get("control", types.PipelinePK("p"), types.SensorSK("postrun-baseline#"+date)),
+		"rerun request":   rerun(),
+	}
+	for name, row := range rows {
+		if ttl, ok := row["ttl"].(*ddbtypes.AttributeValueMemberN); !ok || ttl.Value != wantTTL {
+			t.Errorf("%s ttl = %v, want %s", name, row["ttl"], wantTTL)
+		}
 	}
 }
 

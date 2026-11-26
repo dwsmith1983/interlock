@@ -68,15 +68,17 @@ The team's jobs write to the control table (`<environment>-interlock-control`), 
 
 | Row | `PK` | `SK` | Attributes |
 |---|---|---|---|
-| Sensor | `PIPELINE#<id>` | `SENSOR#<key>` | `data`: a map of the fields the rules read (`status`, `count`, ...) |
-| Rerun request | `PIPELINE#<id>` | `RERUN_REQUEST#<schedule>#<date>` | `reason` (optional, default `manual`) and `requestedAt` (the request time) |
+| Sensor | `PIPELINE#<id>` | `SENSOR#<key>` | `data`: a map of the fields the rules read (`status`, `count`, ...); `ttl` (optional, epoch seconds) |
+| Rerun request | `PIPELINE#<id>` | `RERUN_REQUEST#<schedule>#<date>` | `reason` (optional, default `manual`), `requestedAt` (the request time) and `ttl` (optional, epoch seconds) |
 | Expected run date | `PIPELINE#<id>` | `RUN#<runKey>` | `ttl` (optional, epoch seconds); see [Expected Run Dates](../../configuration/schedules/#expected-run-dates) |
 
 - Put sensor fields in `data`: rule evaluation reads only that map.
 - The trigger sensor, whose key is `schedule.trigger.key` or that key followed by `#` and a period (`orders#2026-03-10`), sets the execution date from its `date` (`YYYY-MM-DD` or `YYYYMMDD`) and `hour` (`00` to `23`) fields. Both must be strings. A missing or invalid `date` gives the current UTC date.
 - In a rerun request, `<schedule>` is `cron` when the pipeline has `schedule.cron` and `stream` otherwise, and `<date>` is the execution date, `YYYY-MM-DD` or `YYYY-MM-DDThh`. A request with any other schedule or date is skipped. Requests with the same `reason` share one rerun budget per date, `job.maxManualReruns` (default 1); `data-drift` and `late-data` share `job.maxDriftReruns`.
 - A request for a date whose run is still `RUNNING` is rejected with `RERUN_REJECTED` (`a run is in progress for <date>`) and spends no budget. A run whose execution ended without closing its row (it timed out or was stopped, or the step that would have closed the row failed) stays `RUNNING` until the watchdog's [stale-trigger check](../../architecture/watchdog/#stale-trigger-detection) publishes `SFN_TIMEOUT` and sets it to `FAILED_FINAL`, once the row's stale deadline (`staleAt`) has passed. The deadline counts from the run's latest attempt (each retry refreshes it) and is `sfn_timeout_seconds` plus 30 minutes, 4h30m by default; add up to one `watchdog_schedule` interval. Nothing shortens the wait. Write the request again, with a new `requestedAt`, once the run ends or after the `SFN_TIMEOUT`.
-- Interlock acts on the DynamoDB stream, and a `PutItem` that changes nothing in the item emits no stream record. The request row is never deleted, so a repeated request needs a new `requestedAt`, and a sensor rewritten with the same `data` triggers nothing.
+- Interlock acts on the DynamoDB stream, and a `PutItem` that changes nothing in the item emits no stream record. Interlock does not delete a request row once handled, so a repeated request needs a new `requestedAt`, and a sensor rewritten with the same `data` triggers nothing.
+- Interlock never deletes or expires the rows a team writes. Its own `SENSOR#` bookkeeping rows and the `late-data` and `data-drift` rerun requests it writes expire 31 days after they are written (see [Control Table](../../architecture/aws/#control-table)). A per-period sensor (`orders#2026-03-10`) and a manual rerun request are written once per date, so they pile up under the pipeline's key; give them a `ttl` to have DynamoDB delete them. Set it past the date's last use: its cutoff, any rerun of the date you still expect to request, and for a post-run sensor the date's post-run watch window. A key without a period is rewritten in place and needs none.
+- An automatic `late-data` or `data-drift` request for the same schedule and date replaces a manual request row and gives it Interlock's `ttl`.
 
 ```sh
 aws dynamodb put-item --table-name production-interlock-control --item '{

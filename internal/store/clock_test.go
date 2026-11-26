@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -15,6 +16,7 @@ import (
 	"github.com/dwsmith1983/interlock/internal/store"
 	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // fixedClockStart is the injected "now" used by the clock tests. It is far
@@ -87,6 +89,33 @@ func TestWriters_UseInjectedClock(t *testing.T) {
 				want := fixedClockStart.UTC().Format(time.RFC3339)
 				if got := strAttr(t, put.Item["requestedAt"], "requestedAt"); got != want {
 					t.Errorf("requestedAt = %s, want %s", got, want)
+				}
+			},
+		},
+		{
+			name: "WriteRerunRequest ttl",
+			call: func(ctx context.Context, s *store.Store) error {
+				return s.WriteRerunRequest(ctx, "pipe-1", "daily", "2026-03-10", "data-drift")
+			},
+			check: checkOwnRowTTL,
+		},
+		{
+			name: "WriteSensor ttl",
+			call: func(ctx context.Context, s *store.Store) error {
+				return s.WriteSensor(ctx, "pipe-1", "schedule-missed-check#2026-03-10", map[string]interface{}{"alerted": "true"})
+			},
+			check: checkOwnRowTTL,
+		},
+		{
+			name: "WriteSensorIfAbsent ttl",
+			call: func(ctx context.Context, s *store.Store) error {
+				_, err := s.WriteSensorIfAbsent(ctx, "pipe-1", "first-sensor-arrival#2026-03-10", map[string]interface{}{"arrivedAt": "x"})
+				return err
+			},
+			check: func(t *testing.T, put *dynamodb.PutItemInput, upd *dynamodb.UpdateItemInput) {
+				checkOwnRowTTL(t, put, upd)
+				if got := aws.ToString(put.ConditionExpression); got != "attribute_not_exists(PK)" {
+					t.Errorf("ConditionExpression = %q, want attribute_not_exists(PK)", got)
 				}
 			},
 		},
@@ -179,6 +208,19 @@ func TestWriters_UseInjectedClock(t *testing.T) {
 			}
 			tt.check(t, put, upd)
 		})
+	}
+}
+
+// checkOwnRowTTL fails the test unless the put carries the ttl of one of
+// Interlock's own control rows, counted from fixedClockStart.
+func checkOwnRowTTL(t *testing.T, put *dynamodb.PutItemInput, _ *dynamodb.UpdateItemInput) {
+	t.Helper()
+	if put == nil {
+		t.Fatal("PutItem was not called")
+	}
+	want := fmt.Sprintf("%d", fixedClockStart.Add(validation.MaxPostRunWatchWindow+24*time.Hour).Unix())
+	if got := numAttr(t, put.Item["ttl"], "ttl"); got != want {
+		t.Errorf("ttl = %s, want %s", got, want)
 	}
 }
 

@@ -3,13 +3,17 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	"github.com/dwsmith1983/interlock/internal/store/storetest"
+	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // TestWriteSensorFieldIfAbsent: the field is added to an existing sensor
@@ -55,6 +59,30 @@ func TestWriteSensorFieldIfAbsent(t *testing.T) {
 				t.Errorf("data = %v, want %v", data, tt.wantData)
 			}
 		})
+	}
+}
+
+// TestWriteSensorFieldIfAbsent_KeepsTTL: a field written after the clock has
+// moved on leaves the row's ttl where WriteSensor set it.
+func TestWriteSensorFieldIfAbsent_KeepsTTL(t *testing.T) {
+	ctx := context.Background()
+	fake, mem := storetest.NewMem()
+	s := storetest.NewStore(fake)
+	now := fixedClockStart
+	s.Now = func() time.Time { return now }
+	if err := s.WriteSensor(ctx, "p", "postrun-baseline#2026-03-10", map[string]interface{}{"a": map[string]interface{}{"count": 1.0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(48 * time.Hour)
+	got, err := s.WriteSensorFieldIfAbsent(ctx, "p", "postrun-baseline#2026-03-10", "b", map[string]interface{}{"count": 2.0})
+	if err != nil || !got {
+		t.Fatalf("WriteSensorFieldIfAbsent = %v, %v; want true, nil", got, err)
+	}
+	row := mem.Get("control", types.PipelinePK("p"), types.SensorSK("postrun-baseline#2026-03-10"))
+	want := fmt.Sprintf("%d", fixedClockStart.Add(validation.MaxPostRunWatchWindow+24*time.Hour).Unix())
+	if got := numAttr(t, row["ttl"], "ttl"); got != want {
+		t.Errorf("ttl = %s, want %s (the first write's)", got, want)
 	}
 }
 

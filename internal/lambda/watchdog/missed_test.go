@@ -3,6 +3,7 @@ package watchdog
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"testing"
@@ -10,8 +11,10 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/dwsmith1983/interlock/pkg/types"
+	"github.com/dwsmith1983/interlock/pkg/validation"
 )
 
 // TestDetectMissedSchedules: one SCHEDULE_MISSED per RUN# key past its start-by
@@ -65,6 +68,7 @@ func TestDetectMissedSchedules(t *testing.T) {
 				}
 			})
 			ctx, pk := context.Background(), types.PipelinePK("p")
+			d.Store.Now = func() time.Time { return tt.now }
 			if _, err := d.Store.Client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 				TableName: aws.String("control"), Key: sItem("PK", pk, "SK", types.RunSK(slaTestDate)),
 			}); err != nil {
@@ -104,6 +108,13 @@ func TestDetectMissedSchedules(t *testing.T) {
 				marker := mem.Get("control", pk, types.SensorSK("schedule-missed-check#"+key))
 				if _, alerted := tt.want[key]; (marker != nil) != (tt.marked || alerted) {
 					t.Errorf("marker for %s present = %v, want %v", key, marker != nil, tt.marked || alerted)
+				}
+				if marker == nil {
+					continue
+				}
+				wantTTL := fmt.Sprintf("%d", tt.now.Add(validation.MaxPostRunWatchWindow+24*time.Hour).Unix())
+				if ttl, ok := marker["ttl"].(*ddbtypes.AttributeValueMemberN); !ok || ttl.Value != wantTTL {
+					t.Errorf("marker for %s ttl = %v, want %s", key, marker["ttl"], wantTTL)
 				}
 			}
 		})

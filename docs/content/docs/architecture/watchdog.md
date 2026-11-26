@@ -105,7 +105,7 @@ For each pipeline with schedule.cron that is not a dry run:
 
 ### What Counts as Started
 
-The orchestrator writes `startedAt` on the trigger row just before it launches the job, since a `lambda` job runs inside the launch call. A `RUNNING` row without `startedAt` is a run still evaluating its rules, so it has not started. `FAILED_FINAL`, including a launch whose retries ran out (`RETRY_EXHAUSTED`), already sent its own final alert, so it is not reported again. The marker makes the alert once per run date: later passes skip that date. It is written only after the publish succeeds, so a failed publish is retried on the next pass.
+The orchestrator writes `startedAt` on the trigger row just before it launches the job, since a `lambda` job runs inside the launch call. A `RUNNING` row without `startedAt` is a run still evaluating its rules, so it has not started. `FAILED_FINAL`, including a launch whose retries ran out (`RETRY_EXHAUSTED`), already sent its own final alert, so it is not reported again. The marker makes the alert once per run date: later passes skip that date. It is written only after the publish succeeds, so a failed publish is retried on the next pass. It expires 31 days after it is written; the check reads `RUN#` keys from at most 8 days back, so an expired marker's key is no longer checked.
 
 ### Event Format
 
@@ -157,7 +157,7 @@ For each pipeline with postRun config:
 
 A post-run sensor has arrived when it exists and either differs from what it was when the run completed or did not exist then. The whole stored record is compared, so a change in any of its fields, a timestamp such as `updatedAt` included, counts as a change; when the write happened is not otherwise used. A sensor rewritten with identical values has not arrived. A sensor present at completion whose baseline capture failed (`BASELINE_CAPTURE_FAILED`) has no entry, so it counts as arrived. A post-run sensor written between the run completing and the baseline capture counts as present at completion. An entry the stream-router seeded from a first write after completion carries `_seededAfterCompletion`, so it differs from the sensor and counts as arrived.
 
-The marker makes the alert once per date. It is written only after the publish succeeds, so a failed publish is retried on the next pass.
+The marker makes the alert once per date. It is written only after the publish succeeds, so a failed publish is retried on the next pass. It expires 31 days after it is written, long after its date stops being checked.
 
 ### Configuration
 
