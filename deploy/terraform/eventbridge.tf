@@ -99,7 +99,6 @@ resource "aws_cloudwatch_event_rule" "alert_events" {
       "SCHEDULE_MISSED",
       "DATA_DRIFT",
       "POST_RUN_DRIFT",
-      "POST_RUN_DRIFT_INFLIGHT",
       "POST_RUN_FAILED",
       "POST_RUN_SENSOR_MISSING",
       "RERUN_ACCEPTED",
