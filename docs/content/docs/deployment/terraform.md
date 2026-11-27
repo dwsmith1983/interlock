@@ -145,6 +145,7 @@ terraform apply
 | `trigger_secrets_arn` | string | `""` | Full Secrets Manager secret ARN, including its random 6-character suffix, in the deployment's region (no wildcards), holding a JSON object of `INTERLOCK_` variables for trigger auth. The orchestrator loads it at cold start and is granted `secretsmanager:GetSecretValue` on it; see [Setting `INTERLOCK_` values](../../configuration/triggers/#setting-interlock_-values) |
 | `orchestrator_env` | map(string) | `{}` | Extra orchestrator environment variables; every key must match `^INTERLOCK_[A-Z0-9_]+$` and may not be `INTERLOCK_PIPELINE_ID`, `INTERLOCK_SCHEDULE_ID`, `INTERLOCK_DATE` or `INTERLOCK_RUN_ID`, which each run sets itself. Values are stored in Terraform state and shown in plans and the Lambda console, so put tokens in `trigger_secrets_arn` |
 | `events_table_ttl_days` | number | `90` | TTL in days for events table records; must be at least 1 |
+| `deletion_protection` | bool | `true` | Deletion protection on all four DynamoDB tables. `terraform destroy` cannot remove a protected table: set it to `false` and apply first (see [Tear Down](#tear-down)) |
 | `lambda_concurrency` | object | See below | Reserved concurrent executions per Lambda function |
 | `sns_alarm_topic_arn` | string | `""` | SNS topic ARN for CloudWatch alarm notifications. When set, all alarms send to this topic |
 | `kms_key_arn` | string | `""` | Customer managed KMS key for the DynamoDB tables and SQS queues. Empty = AWS managed keys for the tables, the stream-router DLQs and the event-sink DLQ, SQS-managed encryption for the alert queues. When set, the key policy must let EventBridge use the key; see [Encryption](#encryption) |
@@ -243,7 +244,7 @@ The module creates 4 tables, all using on-demand billing:
 | Rerun | `{env}-interlock-rerun` | Rerun requests and tracking |
 | Events | `{env}-interlock-events` | Centralized event log for dashboards and audit (GSI1: eventType → timestamp) |
 
-All tables have TTL enabled on the `ttl` attribute, point-in-time recovery on, and deletion protection on (see [Tear Down](#tear-down)). The control and joblog tables have DynamoDB Streams enabled (`NEW_IMAGE`) to drive the stream-router Lambda.
+All tables have TTL enabled on the `ttl` attribute, point-in-time recovery on, and deletion protection on unless `deletion_protection = false` (see [Tear Down](#tear-down)). The control and joblog tables have DynamoDB Streams enabled (`NEW_IMAGE`) to drive the stream-router Lambda.
 
 ### Lambda Functions
 
@@ -373,12 +374,20 @@ Use these outputs to integrate Interlock with your existing infrastructure (e.g.
 
 ## Tear Down
 
-The four tables have deletion protection on, so `terraform destroy` stops at them. To remove a deployment, turn protection off on each table first, then destroy. This deletes the tables and their data, so back up anything you need:
+With `deletion_protection` at its default of `true`, `terraform destroy` stops at the four tables. To remove a deployment, set it to `false` in the module block and apply, which turns protection off on every table:
+
+```hcl
+module "interlock" {
+  source = "path/to/interlock/deploy/terraform"
+
+  deletion_protection = false
+  # ...
+}
+```
 
 ```bash
-for t in control joblog rerun events; do
-  aws dynamodb update-table --table-name "production-interlock-$t" --no-deletion-protection-enabled
-  aws dynamodb wait table-exists --table-name "production-interlock-$t"
-done
+terraform apply
 terraform destroy
 ```
+
+`terraform destroy` then deletes the tables and all their data: pipeline configs, sensor data, run history, rerun requests and the event log. Back up anything you need first. A proof of concept that is torn down and redeployed often can keep `deletion_protection = false` from the start.
