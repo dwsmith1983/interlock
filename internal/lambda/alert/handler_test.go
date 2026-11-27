@@ -341,6 +341,31 @@ func TestHandleAlertDispatcher_Threading(t *testing.T) {
 	})
 }
 
+// TestProcessAlert_ManualRerunBroadcasts: a manual rerun alert replies in
+// its date's thread, which may be days old, and is also shown in the channel;
+// another alert of that date replies without it.
+func TestProcessAlert_ManualRerunBroadcasts(t *testing.T) {
+	for detailType, broadcast := range map[types.EventDetailType]bool{types.EventManualRerunRequired: true, types.EventLateDataArrival: false} {
+		t.Run(string(detailType), func(t *testing.T) {
+			c := &mockHTTPClient{status: http.StatusOK}
+			d, _, mem := newAlertDeps(c, "xoxb-test-token")
+			mem.Put("events", threadRow(threadSK, "1111.2222", "C123456"))
+
+			assert.Empty(t, dispatch(t, d, buildSQSRecord(t, "msg-manual", string(detailType), types.InterlockEvent{
+				PipelineID: "silver-cdr-hour", ScheduleID: "hourly", Date: "2026-03-04T10", Message: "m",
+			})))
+			require.Len(t, c.requests, 1)
+			payload := slackPayload(t, c, 0)
+			assert.Equal(t, "1111.2222", payload["thread_ts"])
+			if broadcast {
+				assert.Equal(t, true, payload["reply_broadcast"])
+			} else {
+				assert.NotContains(t, payload, "reply_broadcast")
+			}
+		})
+	}
+}
+
 // TestHandleAlertDispatcher_DayThreads: alerts without a run date share one
 // thread per pipeline and UTC day, the day SQS received the message, and
 // replies in it are also shown in the channel.

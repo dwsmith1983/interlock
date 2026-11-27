@@ -189,6 +189,69 @@ func TestFormatAlertText_SLADeadline(t *testing.T) {
 	}
 }
 
+// TestFormatAlertText_ManualRerunRequired: the alert names why, the job, its
+// last run, when the run finished and the late data arrived or the request
+// was written, the sensor key and what to do. Sensor data, baselines and the
+// request row stay in the event, and every value is escaped.
+func TestFormatAlertText_ManualRerunRequired(t *testing.T) {
+	type m = map[string]interface{}
+	common := func(extra m) m {
+		d := m{"reason": "late-data", "blockedBy": "job.maxAutoRerunAge", "jobType": "airflow",
+			"job":       m{"url": "https://airflow.example.com", "dagId": "daily-orders"},
+			"lastRunId": "run-1", "completedAt": "2026-03-10T12:00:00Z", "finishedAgo": "25h0m0s",
+			"baseline":     m{"count": "baseline-7"},
+			"rerunRequest": m{"table": "control", "PK": "PIPELINE#pk-secret", "SK": "RERUN_REQUEST#daily#2026-03-10", "reason": "manual"},
+			"actionHint":   "rerun by hand"}
+		for k, v := range extra {
+			d[k] = v
+		}
+		return d
+	}
+	const head = "\xf0\x9f\x94\xb4 *MANUAL_RERUN_REQUIRED* | p | 2026-03-10\nm\nReason: late-data (job.maxAutoRerunAge)" +
+		"\nJob: airflow dagId=daily-orders url=https://airflow.example.com\nLast run: run-1" +
+		"\nRun finished: 2026-03-10T12:00:00Z (25h0m0s ago)"
+	for _, tt := range []struct {
+		name   string
+		detail m
+		want   string
+	}{
+		{"sensor", common(m{"source": "sensor", "arrivedAt": "2026-03-11T12:59:30Z", "sensorKey": "upstream",
+			"sensorData": m{"count": "value-42"}}),
+			head + "\nArrived: 2026-03-11T12:59:30Z\nSensor key: upstream\n\u2192 rerun by hand"},
+		{"rerun request", common(m{"source": "rerun-request", "reason": "data-drift", "blockedBy": "postRun.watchWindow",
+			"requestedAt": "2026-03-11T13:00:00Z"}),
+			strings.Replace(head, "late-data (job.maxAutoRerunAge)", "data-drift (postRun.watchWindow)", 1) +
+				"\nRequested: 2026-03-11T13:00:00Z\n\u2192 rerun by hand"},
+		{"escaped", m{"reason": "late<!channel>", "jobType": "http", "job": m{"url": "https://a.example.com/x&y", "method": "PO\nST"},
+			"lastRunId": "run\u2028<2>", "sensorKey": "k\t>"},
+			"\xf0\x9f\x94\xb4 *MANUAL_RERUN_REQUIRED* | p | 2026-03-10\nm\nReason: late&lt;!channel&gt;" +
+				"\nJob: http method=PO ST url=https://a.example.com/x&amp;y\nLast run: run &lt;2&gt;\nSensor key: k &gt;"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			text := alert.FormatAlertText(string(types.EventManualRerunRequired), types.InterlockEvent{
+				PipelineID: "p", Date: "2026-03-10", Message: "m", Detail: tt.detail})
+			if text != tt.want {
+				t.Errorf("text = %q, want %q", text, tt.want)
+			}
+			for _, leak := range []string{"value-42", "baseline-7", "pk-secret", "Source"} {
+				if strings.Contains(text, leak) {
+					t.Errorf("text %q contains %q", text, leak)
+				}
+			}
+		})
+	}
+	t.Run("capped", func(t *testing.T) {
+		text := alert.FormatAlertText(string(types.EventManualRerunRequired), types.InterlockEvent{
+			PipelineID: "p", Date: "2026-03-10", Message: "m", Detail: common(m{"sensorKey": strings.Repeat("<", 2048)})})
+		if n := utf8.RuneCountInString(text); n > 2900 || !strings.HasSuffix(text, "...") {
+			t.Fatalf("text has %d characters, ends %q; want at most 2900 ending in ...", n, text[len(text)-12:])
+		}
+		if body := strings.TrimSuffix(text, "..."); !strings.HasSuffix(body, "&lt;") {
+			t.Errorf("text is cut inside an entity: ...%q", body[len(body)-12:])
+		}
+	})
+}
+
 // TestAlertEmoji: failures are red, warnings yellow, a met SLA a check mark
 // and everything else info, and the emoji leads the header.
 func TestAlertEmoji(t *testing.T) {
@@ -196,7 +259,7 @@ func TestAlertEmoji(t *testing.T) {
 		"\xf0\x9f\x94\xb4": {"SLA_BREACH", "JOB_FAILED", "VALIDATION_EXHAUSTED", "RETRY_EXHAUSTED", "INFRA_FAILURE",
 			"SFN_TIMEOUT", "SCHEDULE_MISSED", "DATA_DRIFT", "CONFIG_INVALID", "SENSOR_DEADLINE_EXPIRED",
 			"RELATIVE_SLA_BREACH", "IRREGULAR_SCHEDULE_MISSED", "POST_RUN_FAILED", "POST_RUN_DRIFT",
-			"BASELINE_CAPTURE_FAILED", "INFRA_ALARM"},
+			"BASELINE_CAPTURE_FAILED", "INFRA_ALARM", "MANUAL_RERUN_REQUIRED"},
 		"\xf0\x9f\x9f\xa1": {"SLA_WARNING", "RELATIVE_SLA_WARNING"},
 		"\xe2\x9c\x85":     {"SLA_MET"},
 		"\xe2\x84\xb9\xef\xb8\x8f": {"UNKNOWN_TYPE", "JOB_TRIGGERED", "JOB_COMPLETED", "TRIGGER_RECOVERED",

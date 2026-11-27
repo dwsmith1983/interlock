@@ -2,6 +2,8 @@ package alert
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -35,6 +37,9 @@ func FormatAlertText(detailType string, detail types.InterlockEvent) string {
 	if detail.Message != "" || len(detail.Detail) == 0 {
 		text += "\n" + esc(detail.Message)
 	}
+	if detailType == string(types.EventManualRerunRequired) {
+		return capText(text + manualRerunText(detail.Detail))
+	}
 
 	var parts []string
 	if v, ok := detail.Detail["deadline"]; ok {
@@ -62,6 +67,42 @@ func FormatAlertText(detailType string, detail types.InterlockEvent) string {
 		text += "\n→ " + esc(hint)
 	}
 	return capText(text)
+}
+
+// manualRerunText is the body of a MANUAL_RERUN_REQUIRED alert: why, the job
+// and its last run, when the run finished, when the late data arrived or the
+// request was written, the sensor key, then the action hint. Sensor data, any
+// baseline and the request row stay in the event.
+func manualRerunText(d map[string]interface{}) string {
+	str := func(k string) string {
+		if v, ok := d[k]; ok {
+			return esc(v)
+		}
+		return ""
+	}
+	reason, finished, job := str("reason"), str("completedAt"), str("jobType")
+	if by := str("blockedBy"); reason != "" && by != "" {
+		reason += " (" + by + ")"
+	}
+	if ago := str("finishedAgo"); finished != "" && ago != "" {
+		finished += " (" + ago + " ago)"
+	}
+	if ids, ok := d["job"].(map[string]interface{}); ok {
+		for _, k := range slices.Sorted(maps.Keys(ids)) {
+			job += " " + esc(k) + "=" + esc(ids[k])
+		}
+	}
+	var text string
+	for _, f := range [][2]string{{"Reason", reason}, {"Job", strings.TrimSpace(job)}, {"Last run", str("lastRunId")},
+		{"Run finished", finished}, {"Arrived", str("arrivedAt")}, {"Requested", str("requestedAt")}, {"Sensor key", str("sensorKey")}} {
+		if f[1] != "" {
+			text += "\n" + f[0] + ": " + f[1]
+		}
+	}
+	if hint := str("actionHint"); hint != "" {
+		text += "\n→ " + hint
+	}
+	return text
 }
 
 // maxSectionChars keeps the text under Slack's 3000-character section limit.
@@ -98,7 +139,8 @@ func alertEmoji(detailType string) string {
 		string(types.EventConfigInvalid), string(types.EventSensorDeadlineExpired),
 		string(types.EventRelativeSLABreach), string(types.EventIrregularScheduleMissed),
 		string(types.EventPostRunFailed), string(types.EventPostRunDrift),
-		string(types.EventBaselineCaptureFailed), string(types.EventInfraAlarm):
+		string(types.EventBaselineCaptureFailed), string(types.EventInfraAlarm),
+		string(types.EventManualRerunRequired):
 		return "\xf0\x9f\x94\xb4" // red circle
 	case string(types.EventSLAWarning), string(types.EventRelativeSLAWarning):
 		return "\xf0\x9f\x9f\xa1" // yellow circle

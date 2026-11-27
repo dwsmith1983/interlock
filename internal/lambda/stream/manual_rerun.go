@@ -14,7 +14,7 @@ import (
 )
 
 // manualRerunHint is the action a manual-rerun event asks for.
-const manualRerunHint = "Rerun by writing a manual RERUN_REQUEST row (see rerunRequest) once the new data is checked."
+const manualRerunHint = "Check the new data, then rerun by writing a manual RERUN_REQUEST row for this date (its keys are in the event's rerunRequest field)."
 
 // maxManualRerunSensorData is the most sensor data, as JSON bytes, a
 // manual-rerun event carries.
