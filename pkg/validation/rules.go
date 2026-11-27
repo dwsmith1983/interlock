@@ -23,6 +23,7 @@ var checkOps = []types.CheckOp{
 var reservedSensorKeys = []string{
 	"postrun-baseline", "postrun-check", "irregular-missed-check", "schedule-missed-check",
 	"first-sensor-arrival", "relative-sla-warning-check", "relative-sla-breach-check",
+	"manual-rerun-alert-late-data", "manual-rerun-alert-data-drift",
 }
 
 // ruleErrors reports what is wrong with rule r at path: a missing key, a key

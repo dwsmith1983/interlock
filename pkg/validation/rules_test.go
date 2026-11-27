@@ -74,7 +74,8 @@ func TestRuleErrors(t *testing.T) {
 			[]string{`<p>.key "a#b" must not contain #`, `<p>.field is required for check "lte"`}},
 	}
 	for _, name := range []string{"postrun-baseline", "postrun-check", "irregular-missed-check", "schedule-missed-check",
-		"first-sensor-arrival", "relative-sla-warning-check", "relative-sla-breach-check"} {
+		"first-sensor-arrival", "relative-sla-warning-check", "relative-sla-breach-check",
+		"manual-rerun-alert-late-data", "manual-rerun-alert-data-drift"} {
 		tests = append(tests, ruleCase{"reserved " + name, rule{Key: name, Check: types.CheckExists},
 			[]string{`<p>.key "` + name + `" is a name Interlock uses for its own rows`}})
 	}
