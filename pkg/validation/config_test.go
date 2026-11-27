@@ -632,6 +632,33 @@ func TestValidate_PostRunWatchWindow(t *testing.T) {
 	}
 }
 
+// TestValidatePipelineConfig_MaxAutoRerunAge: job.maxAutoRerunAge is a Go
+// duration in (0s,720h]. It may be shorter than the post-run watch window.
+func TestValidatePipelineConfig_MaxAutoRerunAge(t *testing.T) {
+	tests := []struct {
+		name, age, window string
+		wantErrs          []string
+	}{
+		{"unset", "", "", nil},
+		{"120h", "120h", "", nil},
+		{"720h", "720h", "", nil},
+		{"721h", "721h", "", []string{`job.maxAutoRerunAge "721h" out of range (0s,720h]`}},
+		{"0s", "0s", "", []string{`job.maxAutoRerunAge "0s" out of range (0s,720h]`}},
+		{"negative", "-1h", "", []string{`job.maxAutoRerunAge "-1h" out of range (0s,720h]`}},
+		{"abc", "abc", "", []string{`job.maxAutoRerunAge invalid Go duration "abc"`}},
+		{"shorter than the watch window", "24h", "200h", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := types.PipelineConfig{Pipeline: types.PipelineIdentity{ID: "orders"}, Job: types.JobConfig{MaxAutoRerunAge: tt.age}}
+			if tt.window != "" {
+				cfg.PostRun = &types.PostRunConfig{WatchWindow: tt.window}
+			}
+			assert.Equal(t, tt.wantErrs, validate(&cfg))
+		})
+	}
+}
+
 // TestValidate_Evaluation: schedule.evaluation.window and interval are whole
 // seconds of at least 1s, the interval fits in the window, and the window allows
 // at most 1000 evaluations.

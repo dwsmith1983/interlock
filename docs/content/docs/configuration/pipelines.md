@@ -191,6 +191,7 @@ job:
   maxCodeRetries: 1
   maxDriftReruns: 2
   maxManualReruns: 3
+  maxAutoRerunAge: "120h"
   jobPollWindowSeconds: 3600
 ```
 
@@ -204,6 +205,7 @@ Interlock maintains separate retry budgets by failure source, preventing one cat
 | `maxCodeRetries` | int* | `1` | 0--3 | Retry attempts for permanent (code/logic) failures. Only used when the trigger runner reports `FailureCategory: PERMANENT`. Each waits before it starts (see Retry delay) |
 | `maxDriftReruns` | int* | `1` | 0--5 | Rerun budget for automatic drift and late-data reruns |
 | `maxManualReruns` | int* | `1` | 0--5 | Rerun budget for manual rerun requests |
+| `maxAutoRerunAge` | string | `"120h"` | above 0, at most `720h` | How long after a run completes its date may still be rerun automatically for late data or drift. A Go duration. Automatic reruns stop at the earlier of this and the end of the [watch window](#watch-window); the watch itself goes on for the whole window. Job-failure retries and manual requests are not limited by it |
 
 Fields marked `int*` use pointer semantics: omit to use the default, set to `0` to explicitly disable.
 
@@ -246,6 +248,7 @@ The framework validates the pipeline ID and all retry and timeout fields at conf
 | `maxCodeRetries` | 0--3 |
 | `maxDriftReruns` | 0--5 |
 | `maxManualReruns` | 0--5 |
+| `maxAutoRerunAge` | Go duration above 0, at most `720h` (any value with any `watchWindow`) |
 | `jobPollWindowSeconds` | 60--86400 (0 = use default) |
 
 ## Post-Run Monitoring
@@ -272,7 +275,7 @@ postRun:
 | `driftThreshold` | float* | `0` | Minimum change in `driftField` to trigger a drift rerun. Set to `0` for any change. |
 | `driftField` | string | `"sensor_count"` | Sensor field compared with the baseline for drift. |
 | `sensorTimeout` | string | `"2h"` | Grace period after job completion before the watchdog alerts on missing sensors. It must be a positive Go duration and, with `rules`, at most the post-run watch window (`postRun.watchWindow`, default `"4h"`). |
-| `watchWindow` | string | `"4h"` | How long after a run completes its date is watched for late data, drift and the post-run checks (see [Watch window](#watch-window)). A Go duration above 0 and at most `720h`. |
+| `watchWindow` | string | `"4h"` | How long after a run completes its date is watched for late data, drift and the post-run checks (see [Watch window](#watch-window)). A Go duration above 0 and at most `720h`. Automatic reruns end separately, at `job.maxAutoRerunAge` (default `120h`) when that comes first. |
 | `evaluation` | object | -- | Accepted but not read. |
 
 ### How It Works
@@ -285,12 +288,13 @@ postRun:
 
 ### Watch window
 
-A completed date is watched for late data, drift and the post-run checks from the run's completion until `watchWindow` later (default `4h`). complete-trigger records the completion as `completedAt` on the trigger row, and a rerun's completion starts a new window. At the limit the watch has ended.
+A completed date is watched for late data, drift and the post-run checks from the run's completion until `watchWindow` later (default `4h`). complete-trigger records the completion as `completedAt` on the trigger row, and a rerun's completion starts a new window and restarts `job.maxAutoRerunAge` too, since both count from `completedAt`: a manual rerun ten days after the first run opens another `120h` of automatic reruns by default. At the limit the watch has ended.
 
-- Inside the window, a trigger sensor written again for a date whose last run succeeded is late data: `LATE_DATA_ARRIVAL` and a `late-data` `RERUN_REQUEST`. A `rerun-accepted` job row does not count as a run. Once the rerun budget is spent, the late-data event and the rerun rejection (`RERUN_REJECTED`) repeat for each late trigger-sensor write inside the window. Both are recorded in the events table only: late data and rejected reruns write no job row, so the job log does not grow with late writes. `late-data-arrival` and `rerun-rejected` rows written by earlier versions are still skipped when a run's outcome is read, until their 30-day ttl removes them.
-- Inside the window, a post-run sensor is compared with the baseline and checked against `rules`: `POST_RUN_DRIFT` and a `data-drift` `RERUN_REQUEST`, or `POST_RUN_PASSED` / `POST_RUN_FAILED`. A sensor the baseline has no value for is checked against `rules`, and its value becomes the baseline that later writes are compared with. A seed never replaces a baseline value written first by another write; if the baseline then has no value for the rule either (the row was deleted, the capture at completion won without this sensor, or another rule's first write, handled at the same time on a different shard, created the row first), that write is neither seeded nor compared, and the sensor's next write that carries `driftField` seeds it.
-- After it, a trigger or post-run sensor write is ignored with no event and no rerun request. A `COMPLETED` row without `completedAt` is not watched. Inflight drift (`POST_RUN_DRIFT_INFLIGHT`, trigger `RUNNING`) is not bounded by the window.
-- An automatic `RERUN_REQUEST` (reason `late-data` or `data-drift`) is checked again when the stream-router handles it: for a `COMPLETED` date outside the window it is skipped with no rerun, row or event. A request written just inside the window but handled at or after the limit is skipped too. A manual `RERUN_REQUEST` (any other reason) still runs. Automatic requests skip the circuit breaker, since the stream-router wrote them on a change it had already seen; manual ones go through it.
+- Inside the window, a trigger sensor written again for a date whose last run succeeded is late data: `LATE_DATA_ARRIVAL` and, until `job.maxAutoRerunAge` (below), a `late-data` `RERUN_REQUEST`. A `rerun-accepted` job row does not count as a run. Once the rerun budget is spent, the late-data event and the rerun rejection (`RERUN_REJECTED`) repeat for each late trigger-sensor write inside the window until `job.maxAutoRerunAge`; past the age no request is written, so only `LATE_DATA_ARRIVAL` repeats. Both are recorded in the events table only: late data and rejected reruns write no job row, so the job log does not grow with late writes. `late-data-arrival` and `rerun-rejected` rows written by earlier versions are still skipped when a run's outcome is read, until their 30-day ttl removes them.
+- Inside the window, a post-run sensor is compared with the baseline and checked against `rules`: `POST_RUN_DRIFT` and, until `job.maxAutoRerunAge`, a `data-drift` `RERUN_REQUEST`, or `POST_RUN_PASSED` / `POST_RUN_FAILED`. A sensor the baseline has no value for is checked against `rules`, and its value becomes the baseline that later writes are compared with. A seed never replaces a baseline value written first by another write; if the baseline then has no value for the rule either (the row was deleted, the capture at completion won without this sensor, or another rule's first write, handled at the same time on a different shard, created the row first), that write is neither seeded nor compared, and the sensor's next write that carries `driftField` seeds it.
+- Watching and automatic reruns end separately. A `late-data` or `data-drift` `RERUN_REQUEST` is written only before `completedAt` plus `job.maxAutoRerunAge` (default `120h`). With a window longer than that age, late data and drift after the age still publish `LATE_DATA_ARRIVAL` and `POST_RUN_DRIFT`, but the stream-router only logs that automatic reruns have ended and writes no request, so a pending manual request is left in place. To rerun such a date, write a manual `RERUN_REQUEST`. The default window (`4h`) ends well before the default age, so the age matters only for a window over `120h` or an age set below the window.
+- After the window, a trigger or post-run sensor write is ignored with no event and no rerun request. A `COMPLETED` row without `completedAt` is not watched. Inflight drift (`POST_RUN_DRIFT_INFLIGHT`, trigger `RUNNING`) is not bounded by the window.
+- An automatic `RERUN_REQUEST` (reason `late-data` or `data-drift`) is checked again when the stream-router handles it: for a `COMPLETED` date outside the window, past `job.maxAutoRerunAge`, or with no `completedAt`, it is skipped with no rerun, row or event, and the log's `endedBy` says why: `postRun.watchWindow`, `job.maxAutoRerunAge` or `no-completion-time`. A request written just inside the limit but handled at or after it is skipped too. A manual `RERUN_REQUEST` (any other reason) still runs. Automatic requests skip the circuit breaker, since the stream-router wrote them on a change it had already seen; manual ones go through it.
 - The window is independent of `schedule.trigger.cutoff`: a late-data rerun inside the window runs after the cutoff, and a sensor after the window and before the cutoff starts nothing.
 - A sensor is judged by when the stream-router handles it, not when it was written.
 - Nothing is published when a window ends.
