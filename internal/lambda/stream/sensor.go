@@ -87,6 +87,12 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 	scheduleID := lambda.ResolveScheduleID(cfg)
 	date := lambda.ResolveExecutionDate(sensorData, now)
 
+	// What a manual-rerun event says about this write when it is late data.
+	late := manualRerunInput{sensorKey: sensorKey, sensorData: sensorData, arrivedAt: record.Change.ApproximateCreationDateTime.Time}
+	if late.arrivedAt.Unix() <= 0 {
+		late.arrivedAt = now
+	}
+
 	// Dry-run mode: observe and record what would happen, but never start SFN.
 	if cfg.DryRun {
 		return handleDryRunTrigger(ctx, d, cfg, pipelineID, scheduleID, date, now)
@@ -101,7 +107,7 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 			return fmt.Errorf("close %q at its cutoff: %w", pipelineID, err)
 		}
 		if !closed {
-			handleLateData(ctx, d, cfg, pipelineID, scheduleID, date, now)
+			handleLateData(ctx, d, cfg, pipelineID, scheduleID, date, now, late)
 			d.Logger.InfoContext(ctx, "sensor ignored: run date will not start",
 				"pipelineId", pipelineID, "schedule", scheduleID, "date", date)
 		}
@@ -114,7 +120,7 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 		return fmt.Errorf("acquire trigger lock for %q: %w", pipelineID, err)
 	}
 	if !acquired {
-		handleLateData(ctx, d, cfg, pipelineID, scheduleID, date, now)
+		handleLateData(ctx, d, cfg, pipelineID, scheduleID, date, now, late)
 		d.Logger.InfoContext(ctx, "trigger lock already held",
 			"pipelineId", pipelineID,
 			"schedule", scheduleID,
@@ -148,8 +154,8 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 
 // handleLateData requests a rerun when the sensor is late data for a date
 // whose run completed, and logs a failed check.
-func handleLateData(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string, now time.Time) {
-	if err := checkLateDataArrival(ctx, d, cfg, pipelineID, scheduleID, date, now); err != nil {
+func handleLateData(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date string, now time.Time, late manualRerunInput) {
+	if err := checkLateDataArrival(ctx, d, cfg, pipelineID, scheduleID, date, now, late); err != nil {
 		d.Logger.WarnContext(ctx, "late data check failed", "error", err)
 	}
 }

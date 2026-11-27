@@ -49,7 +49,7 @@ job:
 | Field | Type | Description |
 |---|---|---|
 | `method` | string | HTTP method, upper case: `GET`, `HEAD`, `POST` (default), `PUT`, `PATCH` or `DELETE` |
-| `url` | string | Target URL (required). It must be an `http` or `https` URL with a host and may not contain user info; send credentials in `headers`. A query and a fragment are sent as written. A failed request still reports the URL's path, so keep tokens in `headers`, not in the path. http sends headers, including tokens, in clear text; use https for any endpoint outside a trusted network |
+| `url` | string | Target URL (required). It must be an `http` or `https` URL with a host and may not contain user info; send credentials in `headers`. A query and a fragment are sent as written. A failed request still reports the URL's path, and so does a [`MANUAL_RERUN_REQUIRED`](../../reference/alerting/#rerun-events) event (with the query, fragment and user info removed), so keep tokens in `headers`, not in the path. http sends headers, including tokens, in clear text; use https for any endpoint outside a trusted network |
 | `headers` | map | HTTP headers |
 | `body` | string | Request body (supports [template variables](#template-variables)) |
 | `timeout` | int | Request timeout in seconds; unset or 0 uses 30 |

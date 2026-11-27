@@ -499,8 +499,9 @@ func TestLateData_WatchWindow(t *testing.T) {
 
 // TestLateData_MaxAutoRerunAge: with a 200h watch window and
 // job.maxAutoRerunAge 24h, a trigger sensor 25h after completedAt still
-// publishes LATE_DATA_ARRIVAL but writes no late-data request, so a pending
-// manual request is left as it was. Inside the age the request is written.
+// publishes LATE_DATA_ARRIVAL and MANUAL_RERUN_REQUIRED but writes no
+// late-data request, so a pending manual request is left as it was. Inside the
+// age the request is written.
 func TestLateData_MaxAutoRerunAge(t *testing.T) {
 	const date = "2026-03-10"
 	pk := types.PipelinePK("p")
@@ -547,7 +548,11 @@ func TestLateData_MaxAutoRerunAge(t *testing.T) {
 			for _, e := range eb.events {
 				gotEvents = append(gotEvents, e.Type)
 			}
-			if want := []string{string(types.EventLateDataArrival)}; sfnFake.calls != 0 || !slices.Equal(gotEvents, want) {
+			want := []string{string(types.EventLateDataArrival)}
+			if tt.wantReason != "late-data" {
+				want = append(want, string(types.EventManualRerunRequired))
+			}
+			if sfnFake.calls != 0 || !slices.Equal(gotEvents, want) {
 				t.Errorf("StartExecution calls %d, events %v; want 0 and %v", sfnFake.calls, gotEvents, want)
 			}
 			req := mem.Get("control", pk, types.RerunRequestSK("stream", date))

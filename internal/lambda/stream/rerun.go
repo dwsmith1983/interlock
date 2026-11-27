@@ -344,8 +344,9 @@ func checkSensorFreshness(ctx context.Context, d *lambda.Deps, pipelineID, jobSK
 // checkLateDataArrival detects sensor updates after a pipeline has completed.
 // Only a date inside its post-run watch window at now is acted on; after the
 // window the sensor is ignored. Inside it LATE_DATA_ARRIVAL is published, and
-// a late-data rerun is requested only while automatic reruns are allowed.
-func checkLateDataArrival(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string, now time.Time) error {
+// a late-data rerun is requested only while automatic reruns are allowed;
+// after that a manual rerun is asked for, with late describing the write.
+func checkLateDataArrival(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string, now time.Time, late manualRerunInput) error {
 	trigger, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
 	if err != nil || trigger == nil {
 		return err
@@ -378,7 +379,9 @@ func checkLateDataArrival(ctx context.Context, d *lambda.Deps, cfg *types.Pipeli
 	// Past the automatic rerun end no request is written, so a pending manual
 	// request is not replaced by one that would be skipped.
 	if !lambda.AutoRerunAllowed(cfg, trigger, now) {
-		logAutoRerunEnded(ctx, d, cfg, trigger, "late data rerun not requested: automatic reruns have ended", pipelineID, schedule, date, "late-data")
+		late.reason, late.source, late.now = "late-data", "sensor", now
+		late.blockedBy = logAutoRerunEnded(ctx, d, cfg, trigger, "late data rerun not requested: automatic reruns have ended", pipelineID, schedule, date, late.reason)
+		recordManualRerunRequired(ctx, d, cfg, pipelineID, schedule, date, trigger, job, late)
 		return nil
 	}
 	if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, schedule, date, "late-data"); writeErr != nil {
@@ -388,16 +391,20 @@ func checkLateDataArrival(ctx context.Context, d *lambda.Deps, cfg *types.Pipeli
 	return nil
 }
 
+// endedByNoCompletion is the endedBy label of a row without a parseable
+// completedAt.
+const endedByNoCompletion = "no-completion-time"
+
 // logAutoRerunEnded logs that an automatic rerun of a completed date was not
 // requested or started because its automatic reruns have ended, naming the
 // bound that ended them: postRun.watchWindow, job.maxAutoRerunAge, or
-// no-completion-time for a row without a parseable completedAt.
-func logAutoRerunEnded(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, tr *types.ControlRecord, msg, pipelineID, schedule, date, reason string) {
+// endedByNoCompletion. It returns that label.
+func logAutoRerunEnded(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, tr *types.ControlRecord, msg, pipelineID, schedule, date, reason string) string {
 	end := lambda.AutoRerunEnd(cfg, tr)
 	var endedBy string
 	switch {
 	case end.IsZero():
-		endedBy = "no-completion-time"
+		endedBy = endedByNoCompletion
 	case end.Equal(lambda.PostRunWatchEnd(cfg, tr)):
 		endedBy = "postRun.watchWindow"
 	default:
@@ -405,4 +412,5 @@ func logAutoRerunEnded(ctx context.Context, d *lambda.Deps, cfg *types.PipelineC
 	}
 	d.Logger.InfoContext(ctx, msg, "pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason,
 		"completedAt", tr.CompletedAt, "maxAutoRerunAge", lambda.MaxAutoRerunAge(cfg).String(), "endedBy", endedBy)
+	return endedBy
 }

@@ -48,6 +48,11 @@ const (
 	EventDryRunRetryExhausted    EventDetailType = "DRY_RUN_RETRY_EXHAUSTED"
 	EventWatchdogDegraded        EventDetailType = "WATCHDOG_DEGRADED"
 	EventConfigInvalid           EventDetailType = "CONFIG_INVALID"
+	// EventManualRerunRequired is the first late data or drift on a completed
+	// date after its automatic reruns ended; EventManualRerunStillRequired is
+	// each later one for the same completion.
+	EventManualRerunRequired      EventDetailType = "MANUAL_RERUN_REQUIRED"
+	EventManualRerunStillRequired EventDetailType = "MANUAL_RERUN_STILL_REQUIRED"
 )
 
 // EventSource is the EventBridge source for all interlock events.

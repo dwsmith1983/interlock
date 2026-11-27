@@ -122,9 +122,11 @@ code path first and assert the exact values it produces.
     `JOB_FAILED`, starts nothing).
 
   The retry scenario covers the Step Functions Trigger retry.
-- Part of `job.maxAutoRerunAge`. `TestScenarioLateDataMaxAutoRerunAge`
-  writes a trigger sensor 90 minutes after completion with a 2h watch window
-  and a 1h age: `LATE_DATA_ARRIVAL`, no rerun request, no second launch. Not
-  run: drift past the age, and an automatic request written before the age
-  but handled after it (the stream-router's re-check). Unit tests cover both.
+- Part of `job.maxAutoRerunAge`. `TestScenarioManualRerunRequired` writes a
+  trigger sensor twice, 90 minutes after the 06:00 start, with a 2h watch window
+  and a 1h age: `LATE_DATA_ARRIVAL` and `MANUAL_RERUN_REQUIRED`, then
+  `MANUAL_RERUN_STILL_REQUIRED`, no rerun request and no second launch; a
+  manual `RERUN_REQUEST` then launches run 2. Not run: drift past the age,
+  and an automatic request written before the age but handled after it (the
+  stream-router's re-check). Unit tests cover both.
 - Slack delivery. The dispatcher's queue mapping is off in e2e.

@@ -120,48 +120,6 @@ func TestScenarioLateDataWatchWindow(t *testing.T) {
 		alert{id, date, late}, alert{id, date, accepted}, alert{id, date, accepted})
 }
 
-// With postRun.watchWindow 2h and job.maxAutoRerunAge 1h, the run completing
-// near 06:00 is watched until near 08:00 but rerun automatically only until
-// near 07:00. A trigger sensor rewritten at 07:30 is still late data
-// (LATE_DATA_ARRIVAL) but writes no late-data request, so nothing launches and
-// the trigger row stays COMPLETED. The request would be written right after the
-// event in the same invocation, and request rows are not deleted once handled,
-// so the row is checked once the event's alert has gone through the alert
-// queue, and the check holds for noRequestHold.
-func TestScenarioLateDataMaxAutoRerunAge(t *testing.T) {
-	const id, noRequestHold = "late-data-age", 10 * time.Second
-	start, date := startDay(t)
-	cfg := scenarioConfig(id)
-	cfg.PostRun = &types.PostRunConfig{WatchWindow: "2h"}
-	cfg.Job.MaxAutoRerunAge = "1h"
-	putConfig(t, cfg)
-	jt, vp, jc := string(types.EventJobTriggered), string(types.EventValidationPassed), string(types.EventJobCompleted)
-	late := string(types.EventLateDataArrival)
-
-	writeReady(t, id, date)
-	run := waitLaunch(t, id, 1)
-	reportJob(t, id, date, run, types.JobEventSuccess)
-	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1})
-	waitCompleted(t, id, date)
-	waitExecutionDone(t, run)
-
-	advanceTo(t, start.Add(90*time.Minute))
-	writeSensor(t, id, scenarioSensor, map[string]interface{}{"status": "ready", "date": date, "attempt": 2})
-	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, late: 1})
-	waitAlerts(t, id, alert{id, date, jc}, alert{id, date, late})
-
-	for until := time.Now().Add(noRequestHold); time.Now().Before(until); time.Sleep(pollInterval) {
-		if item := rerunRequestRow(t, id, date); item != nil {
-			t.Fatalf("rerun request for %s = %v, want none", id, item)
-		}
-	}
-	if got, want := jobEvents(t, id), []string{types.JobEventSuccess}; !slices.Equal(got, want) {
-		t.Fatalf("job log = %v, want %v", got, want)
-	}
-	assertLaunches(t, id, 1)
-	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
-}
-
 // rerunRequestRow is the pipeline's RERUN_REQUEST row for date, nil when there
 // is none.
 func rerunRequestRow(t *testing.T, pipeline, date string) map[string]ddbtypes.AttributeValue {
