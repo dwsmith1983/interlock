@@ -9,15 +9,21 @@
 locals {
   lambda_names = toset(["stream-router", "orchestrator", "sla-monitor", "watchdog", "event-sink", "alert-dispatcher"])
 
+  # The events table is left out: only the event-sink and alert-dispatcher use
+  # it, and they have their own policies.
   table_arns = [
     aws_dynamodb_table.control.arn,
     aws_dynamodb_table.joblog.arn,
     aws_dynamodb_table.rerun.arn,
-    aws_dynamodb_table.events.arn,
   ]
 
   table_and_index_arns = flatten([
     for arn in local.table_arns : [arn, "${arn}/index/*"]
+  ])
+
+  # The watchdog never reads the rerun table.
+  watchdog_read_arns = flatten([
+    for arn in [aws_dynamodb_table.control.arn, aws_dynamodb_table.joblog.arn] : [arn, "${arn}/index/*"]
   ])
 }
 
@@ -263,7 +269,7 @@ resource "aws_lambda_function" "watchdog" {
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# DynamoDB read/write — stream-router, orchestrator (all 3 tables)
+# DynamoDB read/write: stream-router, orchestrator (control, joblog, rerun)
 # -----------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "dynamodb_rw" {
@@ -292,12 +298,12 @@ resource "aws_iam_role_policy" "dynamodb_rw" {
 }
 
 # -----------------------------------------------------------------------------
-# DynamoDB mixed — watchdog (read all 3 tables, write control only)
+# DynamoDB mixed: watchdog (read control, joblog; write control only)
 # -----------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "dynamodb_watchdog" {
   statement {
-    sid = "ReadAllTables"
+    sid = "ReadControlJoblog"
     actions = [
       "dynamodb:GetItem",
       "dynamodb:BatchGetItem",
@@ -306,7 +312,7 @@ data "aws_iam_policy_document" "dynamodb_watchdog" {
       "dynamodb:ConditionCheckItem",
       "dynamodb:DescribeTable",
     ]
-    resources = local.table_and_index_arns
+    resources = local.watchdog_read_arns
   }
 
   statement {
