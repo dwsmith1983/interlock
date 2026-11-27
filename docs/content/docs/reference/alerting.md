@@ -62,7 +62,7 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Within `sensorTimeout` of the trigger row's `completedAt`, the watchdog found no post-run sensor that exists and either differs from its completion-time baseline or was absent then; once per date, retried on the next pass if the publish fails |
 | `BASELINE_CAPTURE_FAILED` | Baseline capture error | Error occurred while capturing the post-run baseline at trigger completion |
 | `SENSOR_DEADLINE_EXPIRED` | A run date passed its cutoff without starting | The run date is closed (`FAILED_FINAL`) by the stream-router or the watchdog's reconciliation when a sensor is processed after the cutoff, by the watchdog on its next pass for a date with a `RUN#` row, or by the orchestrator when a run is still evaluating at the cutoff, and from then nothing more starts for it; `source` says which; detail has `cutoff` and `cutoffAt`; run it manually with `RERUN_REQUEST` |
-| `PIPELINE_EXCLUDED` | Pipeline excluded by calendar | Sensor, rerun, job-failure, or post-run drift skipped due to calendar exclusion |
+| `PIPELINE_EXCLUDED` | Pipeline excluded by calendar | Sensor, rerun, job-failure, or post-run drift skipped due to calendar exclusion. For a rerun request, detail carries the request's `reason` and `why` (`excluded by calendar`), and no job row is written |
 
 ### Rerun Events
 
@@ -70,8 +70,8 @@ Published by the **stream-router** when processing rerun requests and late data 
 
 | Detail Type | Meaning | When |
 |---|---|---|
-| `LATE_DATA_ARRIVAL` | Sensor updated after job completed | The trigger sensor was written again for a `COMPLETED` date whose last run succeeded, inside the [watch window](../../configuration/pipelines/#watch-window). Job rows about rerun requests and late data do not count as a run. Once the rerun budget is spent, each further late trigger-sensor write inside the window publishes this again, followed by `RERUN_REJECTED` |
-| `RERUN_REJECTED` | Rerun request rejected | The date's run is still `RUNNING` (any reason; no budget is spent), the rerun budget is spent, or the circuit breaker refused a manual request: the date's last run succeeded (job rows about earlier requests and late data do not count as a run), at least one sensor has a readable `updatedAt` ([accepted forms](../../configuration/pipelines/#pushing-sensor-data)), and none is later than that run. Late-data and drift requests skip the circuit breaker |
+| `LATE_DATA_ARRIVAL` | Sensor updated after job completed | The trigger sensor was written again for a `COMPLETED` date whose last run succeeded, inside the [watch window](../../configuration/pipelines/#watch-window). Writes no job row; a `rerun-accepted` job row does not count as a run. Once the rerun budget is spent, each further late trigger-sensor write inside the window publishes this again, followed by `RERUN_REJECTED` |
+| `RERUN_REJECTED` | Rerun request rejected | The date's run is still `RUNNING` (any reason; no budget is spent), the rerun budget is spent, or the circuit breaker refused a manual request: the date's last run succeeded (a `rerun-accepted` job row does not count as a run), at least one sensor has a readable `updatedAt` ([accepted forms](../../configuration/pipelines/#pushing-sensor-data)), and none is later than that run. Late-data and drift requests skip the circuit breaker. Writes no job row; detail carries `reason` (the request's: `manual`, `late-data`, `data-drift` or the value written) and `why` (the rejection, as in the message) |
 | `RERUN_ACCEPTED` | Rerun request accepted | Rerun passed the budget check, the date's run was not in progress (`RUNNING`), a manual request also passed the circuit breaker, and the trigger lock was reset |
 
 ### Dry-Run Events
@@ -86,7 +86,7 @@ Published by the **stream-router** Lambda for pipelines with `dryRun: true`. The
 | `DRY_RUN_DRIFT` | Post-run sensor data changed | Sensor value changed from its baseline; it would have triggered a drift re-run |
 | `DRY_RUN_COMPLETED` | Observation loop closed | Terminal event for the evaluation period — carries the SLA verdict (`met`, `breach`, or `n/a`) |
 | `DRY_RUN_WOULD_RERUN` | A rerun request would run | A `RERUN_REQUEST` for a dry-run pipeline passed the exclusion check, its rerun budget, the run-in-progress check (the date is not `RUNNING`) and the circuit breaker; detail carries `reason` and `circuitBreaker` (`passed`, `skipped (no job history)`, or `skipped (automatic request)` for a `late-data` or `data-drift` request) |
-| `DRY_RUN_RERUN_REJECTED` | A rerun request would be refused | The date is excluded, the budget is spent, the date's run is still `RUNNING`, or the circuit breaker found no new sensor data for a manual request; detail carries `reason` |
+| `DRY_RUN_RERUN_REJECTED` | A rerun request would be refused | The date is excluded, the budget is spent, the date's run is still `RUNNING`, or the circuit breaker found no new sensor data for a manual request; detail carries `reason`, the kind of rejection (`excluded by calendar`, `limit exceeded`, `run in progress` or `circuit breaker`), not the request's reason as in `RERUN_REJECTED` |
 | `DRY_RUN_WOULD_RETRY` | A job failure would be retried | A `fail` or `timeout` row for a dry-run pipeline with retry budget left (`retries: 0`) |
 | `DRY_RUN_RETRY_EXHAUSTED` | A job failure would end the date | As `DRY_RUN_WOULD_RETRY`, when the budget is zero or the date is excluded |
 

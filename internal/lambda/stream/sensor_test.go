@@ -422,8 +422,8 @@ func TestLateData_WatchWindow(t *testing.T) {
 		completedAt string
 		now         string
 		jobEvent    string   // the run's job row; empty means success
-		above       []string // newer job rows the stream-router wrote about reruns and late data
-		wantEvents  []string // nil means none; a late sensor also writes a request and a job row
+		above       []string // newer job rows the stream-router wrote about reruns and late data before it stopped
+		wantEvents  []string // nil means none; a late sensor also writes a request, and no job row
 	}{
 		{name: "inside (guard)", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z", wantEvents: late},
 		{name: "inside, job failed", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z", jobEvent: types.JobEventFail},
@@ -480,9 +480,6 @@ func TestLateData_WatchWindow(t *testing.T) {
 				gotEvents = append(gotEvents, e.Type)
 			}
 			wantJobs, wantRerun := append([]string{cmp.Or(tt.jobEvent, types.JobEventSuccess)}, tt.above...), tt.wantEvents != nil
-			if wantRerun {
-				wantJobs = append(wantJobs, types.JobEventLateDataArrival)
-			}
 			if sfnFake.calls != 0 || !slices.Equal(gotEvents, tt.wantEvents) {
 				t.Errorf("StartExecution calls %d, events %v; want 0 and %v", sfnFake.calls, gotEvents, tt.wantEvents)
 			}
@@ -496,6 +493,53 @@ func TestLateData_WatchWindow(t *testing.T) {
 				t.Errorf("job rows = %v, want %v", got, wantJobs)
 			}
 		})
+	}
+}
+
+// TestLateData_RepeatedWritesAddNoJobRows: with the date's run a success and
+// its drift rerun budget spent, each late trigger-sensor write publishes
+// LATE_DATA_ARRIVAL and its late-data request is rejected with RERUN_REJECTED
+// naming the request's reason and why. The joblog keeps only the run's row,
+// so the lookup of the date's outcome does not grow with late writes.
+func TestLateData_RepeatedWritesAddNoJobRows(t *testing.T) {
+	const date = "2026-03-10"
+	now := mustTime(t, "2026-03-10T13:00:00Z")
+	d, mem, sfnFake, eb := rerunWorld(t, "1773133200000", &now)
+	mem.Put("rerun", map[string]ddbtypes.AttributeValue{
+		"PK":     &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
+		"SK":     &ddbtypes.AttributeValueMemberS{Value: types.RerunSK("stream", date, 0)},
+		"reason": &ddbtypes.AttributeValueMemberS{Value: "late-data"}})
+	ctx := context.Background()
+
+	for i := range 3 {
+		if err := handleRecord(ctx, d, sensorRecord(date)); err != nil {
+			t.Fatalf("late write %d: %v", i, err)
+		}
+		if err := handleRecord(ctx, d, rerunRequestRecord("late-data", now.Format(time.RFC3339))); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		now = now.Add(20 * time.Minute)
+	}
+
+	late, rejected := string(types.EventLateDataArrival), string(types.EventRerunRejected)
+	var gotTypes []string
+	for _, e := range eb.events {
+		gotTypes = append(gotTypes, e.Type)
+	}
+	if want := []string{late, rejected, late, rejected, late, rejected}; !slices.Equal(gotTypes, want) {
+		t.Fatalf("events = %v, want %v", gotTypes, want)
+	}
+	wantDetail := map[string]interface{}{"reason": "late-data", "why": "drift rerun limit exceeded"}
+	for i, e := range eb.events {
+		if e.Type == rejected && !maps.Equal(e.Detail, wantDetail) {
+			t.Errorf("event %d detail = %v, want %v", i, e.Detail, wantDetail)
+		}
+	}
+	if got := jobEvents(mem); !slices.Equal(got, []string{types.JobEventSuccess}) {
+		t.Errorf("job rows = %v, want [%s]", got, types.JobEventSuccess)
+	}
+	if sfnFake.calls != 0 || len(mem.Items("rerun")) != 1 {
+		t.Errorf("StartExecution calls %d, rerun rows %d; want 0 and 1", sfnFake.calls, len(mem.Items("rerun")))
 	}
 }
 

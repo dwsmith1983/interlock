@@ -109,7 +109,7 @@ func TestScenarioLateDataWatchWindow(t *testing.T) {
 	waitEvents(t, id, date, map[string]int{jt: 4, vp: 3, jc: 3, late: 1, accepted: 2})
 	waitCompleted(t, id, date)
 
-	wantLog := []string{types.JobEventSuccess, types.JobEventLateDataArrival, types.JobEventRerunAccepted,
+	wantLog := []string{types.JobEventSuccess, types.JobEventRerunAccepted,
 		types.JobEventSuccess, types.JobEventRerunAccepted, types.JobEventSuccess}
 	if got := jobEvents(t, id); !slices.Equal(got, wantLog) {
 		t.Fatalf("job log = %v, want %v", got, wantLog)
@@ -128,7 +128,8 @@ func TestScenarioLateDataWatchWindow(t *testing.T) {
 // after the window, a count of 130 publishes nothing and writes no request. A
 // manual RERUN_REQUEST written after it is rejected (maxManualReruns 0); the
 // router handles the control stream in order, so that RERUN_REJECTED shows the
-// 08:15 sensor was handled first.
+// 08:15 sensor was handled first. Neither rejection writes a job row; each
+// RERUN_REJECTED names the request's reason and why.
 func TestScenarioDriftWatchWindow(t *testing.T) {
 	const id, postRunSensor = "drift-window", "row-count"
 	start, date := startDay(t)
@@ -172,10 +173,13 @@ func TestScenarioDriftWatchWindow(t *testing.T) {
 	})
 	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1, drift: 1, rejected: 2})
 
-	wantLog := []string{types.JobEventSuccess, types.JobEventRerunRejected, types.JobEventRerunRejected}
+	wantLog := []string{types.JobEventSuccess}
 	if got := jobEvents(t, id); !slices.Equal(got, wantLog) {
 		t.Fatalf("job log = %v, want %v", got, wantLog)
 	}
+	assertDetails(t, id, rejected,
+		map[string]any{"reason": "data-drift", "why": "drift rerun limit exceeded"},
+		map[string]any{"reason": "manual", "why": "manual rerun limit exceeded"})
 	assertLaunches(t, id, 1)
 	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
 	waitAlerts(t, id, alert{id, date, jc}, alert{id, date, drift}, alert{id, date, rejected}, alert{id, date, rejected})

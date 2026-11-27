@@ -77,11 +77,9 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 
 	// Calendar exclusion check (execution date).
 	if lambda.IsExcludedDate(cfg, date) {
-		if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventRerunRejected, "", 0, "excluded by calendar"); err != nil {
-			d.Logger.Warn("failed to write rerun-rejected joblog for calendar exclusion", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
-		}
 		if pubErr := lambda.PublishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, schedule, date,
-			fmt.Sprintf("rerun blocked for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
+			fmt.Sprintf("rerun blocked for %s: execution date %s excluded by calendar", pipelineID, date),
+			map[string]interface{}{"reason": reason, "why": "excluded by calendar"}); pubErr != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
 		}
 		return nil
@@ -227,15 +225,13 @@ func undoRerunStart(ctx context.Context, d *lambda.Deps, pipelineID, schedule, d
 	}
 }
 
-// rejectRerun records a rejected rerun request: a rerun-rejected job row
-// carrying why, a RERUN_REJECTED event and an info log naming the request's
-// reason and why.
+// rejectRerun records a rejected rerun request: a RERUN_REJECTED event whose
+// detail carries the request's reason and why, and an info log naming both.
+// It writes no job row.
 func rejectRerun(ctx context.Context, d *lambda.Deps, pipelineID, schedule, date, reason, why string) {
-	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date, types.JobEventRerunRejected, "", 0, why); err != nil {
-		d.Logger.Warn("failed to write rerun-rejected joblog", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
-	}
 	if err := lambda.PublishEvent(ctx, d, string(types.EventRerunRejected), pipelineID, schedule, date,
-		fmt.Sprintf("rerun rejected for %s: %s", pipelineID, why)); err != nil {
+		fmt.Sprintf("rerun rejected for %s: %s", pipelineID, why),
+		map[string]interface{}{"reason": reason, "why": why}); err != nil {
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventRerunRejected, "error", err)
 	}
 	d.Logger.Info("rerun request rejected",
@@ -371,12 +367,6 @@ func checkLateDataArrival(ctx context.Context, d *lambda.Deps, cfg *types.Pipeli
 
 	if job.Event != types.JobEventSuccess {
 		return nil
-	}
-
-	if err := d.Store.WriteJobEvent(ctx, pipelineID, schedule, date,
-		types.JobEventLateDataArrival, "", 0,
-		"sensor updated after pipeline completed successfully"); err != nil {
-		d.Logger.Warn("failed to write late-data-arrival joblog", "error", err, "pipeline", pipelineID, "schedule", schedule, "date", date)
 	}
 
 	if err := lambda.PublishEvent(ctx, d, string(types.EventLateDataArrival), pipelineID, schedule, date,

@@ -15,9 +15,9 @@ import (
 )
 
 // TestGetLatestJobOutcome: the newest JOB# row for the date whose event is
-// not one the stream-router writes about reruns and late data (rerun-accepted,
-// rerun-rejected, late-data-arrival), or nil. Rows are listed oldest first
-// and get SK timestamps 1, 2, 3, ...
+// not one the stream-router writes, or once wrote, about reruns and late data
+// (rerun-accepted, rerun-rejected, late-data-arrival), or nil. Rows are listed
+// oldest first and get SK timestamps 1, 2, 3, ...
 func TestGetLatestJobOutcome(t *testing.T) {
 	audit := []string{types.JobEventLateDataArrival, types.JobEventRerunRejected, types.JobEventRerunAccepted}
 	manyAudit := []string{types.JobEventSuccess}

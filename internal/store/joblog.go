@@ -121,15 +121,17 @@ func isTerminalJobEvent(event string) bool {
 }
 
 // jobOutcomePageSize is how many job rows GetLatestJobOutcome reads per page.
-// Rows the stream-router writes can pile up above the last run during a long
-// watch window, and the rows are small.
+// Rows the stream-router wrote about late data and rejected reruns, before it
+// stopped writing them, can still sit above the last run, and the rows are
+// small.
 const jobOutcomePageSize = 100
 
 // GetLatestJobOutcome returns the newest job row for a pipeline, schedule and
 // date that records what the date's run did, skipping the rows the
-// stream-router writes about reruns and late data (see isAuditJobEvent).
-// Returns nil, nil if there is none. Only the event attribute of a skipped row
-// is read, so a malformed older row cannot fail the lookup.
+// stream-router writes, or once wrote, about reruns and late data (see
+// isAuditJobEvent). Returns nil, nil if there is none. Only the event
+// attribute of a skipped row is read, so a malformed older row cannot fail
+// the lookup.
 func (s *Store) GetLatestJobOutcome(ctx context.Context, pipelineID, schedule, date string) (*types.JobLogRecord, error) {
 	prefix := "JOB#" + schedule + "#" + date + "#"
 	var startKey map[string]ddbtypes.AttributeValue
@@ -165,12 +167,18 @@ func (s *Store) GetLatestJobOutcome(ctx context.Context, pipelineID, schedule, d
 	}
 }
 
-// isAuditJobEvent reports whether a job row is one the stream-router writes
-// about a rerun request or late data rather than a record of the run. Any
-// other event, including one this version does not know, is an outcome.
+// isAuditJobEvent reports whether a job row is one the stream-router writes,
+// or once wrote, about a rerun request or late data rather than a record of
+// the run. Any other event, including one this version does not know, is an
+// outcome.
 func isAuditJobEvent(event string) bool {
 	switch event {
-	case types.JobEventRerunAccepted, types.JobEventRerunRejected, types.JobEventLateDataArrival:
+	case types.JobEventRerunAccepted:
+		return true
+	case types.JobEventRerunRejected, types.JobEventLateDataArrival:
+		// No longer written. Kept for rows stored before that change, which
+		// would otherwise read as run outcomes; remove once those have
+		// expired (30 days).
 		return true
 	}
 	return false

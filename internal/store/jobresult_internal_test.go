@@ -36,8 +36,8 @@ func TestIsTerminalJobEvent(t *testing.T) {
 
 // TestIsAuditJobEvent_CoversEveryJobEvent pins the rows GetLatestJobOutcome
 // skips: one entry per job event constant, true only for the rows the
-// stream-router writes about reruns and late data. An unknown event is an
-// outcome.
+// stream-router writes, or once wrote, about reruns and late data. An unknown
+// event is an outcome.
 func TestIsAuditJobEvent_CoversEveryJobEvent(t *testing.T) {
 	tests := map[string]bool{
 		types.JobEventSuccess:               false,

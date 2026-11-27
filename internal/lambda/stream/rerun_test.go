@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -238,8 +239,8 @@ func strAttr(v ddbtypes.AttributeValue) string {
 // success and the "upstream" sensor was updated after it (09:00). An accepted
 // request starts one run, writes a rerun row and a rerun-accepted job row,
 // deletes the date's post-run baseline and sets the trigger RUNNING; a
-// rejected one writes a rerun-rejected job row and changes nothing else. Calendar exclusion is checked on the request's date,
-// not the wall-clock date.
+// rejected one writes no job row and changes nothing else. Calendar exclusion
+// is checked on the request's date, not the wall-clock date.
 func TestRerunRequest_Outcomes(t *testing.T) {
 	const (
 		date      = "2026-03-10"
@@ -275,27 +276,27 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 		{name: "success, fresh sensor", reason: "manual", updatedAt: fresh,
 			wantStarts: 1, wantEvents: accepted, wantJobs: []string{success, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
 		{name: "success, stale sensor", reason: "manual", updatedAt: stale,
-			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantStatus: completed,
+			wantEvents: rejected, wantJobs: []string{success}, wantStatus: completed,
 			wantMsg: "rerun rejected for p: previous run succeeded and no sensor data has changed"},
 		{name: "success, fresh RFC3339 sensor", reason: "manual", updatedAt: "2026-03-10T09:00:00Z",
 			wantStarts: 1, wantEvents: accepted, wantJobs: []string{success, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
 		{name: "success, stale RFC3339 sensor", reason: "manual", updatedAt: "2026-03-10T07:00:00Z",
-			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantStatus: completed,
+			wantEvents: rejected, wantJobs: []string{success}, wantStatus: completed,
 			wantMsg: "rerun rejected for p: previous run succeeded and no sensor data has changed"},
 		{name: "fail, stale sensor", reason: "manual", trigger: types.TriggerStatusFailedFinal, job: fail, updatedAt: stale,
 			wantStarts: 1, wantEvents: accepted, wantJobs: []string{fail, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
 		{name: "first drift", reason: "data-drift", tweak: budgets(1, 1),
 			wantStarts: 1, wantEvents: accepted, wantJobs: []string{success, types.JobEventRerunAccepted}, wantReruns: 1, wantStatus: running},
 		{name: "second drift", reason: "data-drift", reruns: []string{"data-drift"}, tweak: budgets(1, 1),
-			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantReruns: 1, wantStatus: completed},
+			wantEvents: rejected, wantJobs: []string{success}, wantReruns: 1, wantStatus: completed},
 		{name: "late-data vs drift row", reason: "late-data", reruns: []string{"data-drift"}, tweak: budgets(1, 1),
-			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantReruns: 1, wantStatus: completed},
+			wantEvents: rejected, wantJobs: []string{success}, wantReruns: 1, wantStatus: completed},
 		{name: "manual after drift spent", reason: "manual", reruns: []string{"data-drift"}, tweak: budgets(1, 2),
 			wantStarts: 1, wantEvents: accepted, wantJobs: []string{success, types.JobEventRerunAccepted}, wantReruns: 2, wantStatus: running},
 		{name: "second manual", reason: "manual", reruns: []string{"data-drift", "manual"}, tweak: budgets(1, 2),
 			wantStarts: 1, wantEvents: accepted, wantJobs: []string{success, types.JobEventRerunAccepted}, wantReruns: 3, wantStatus: running},
 		{name: "third manual", reason: "manual", reruns: []string{"data-drift", "manual", "manual"}, tweak: budgets(1, 2),
-			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantReruns: 3, wantStatus: completed},
+			wantEvents: rejected, wantJobs: []string{success}, wantReruns: 3, wantStatus: completed},
 		{name: "no trigger row", reason: "manual", trigger: noTrigger, job: fail,
 			wantEvents: []string{string(types.EventInfraFailure)}, wantJobs: []string{fail}},
 		{name: "fail, no sensor", reason: "manual", job: fail, noSensor: true,
@@ -313,13 +314,13 @@ func TestRerunRequest_Outcomes(t *testing.T) {
 		{name: "start fails", reason: "manual", job: fail, sfnFail: 1, wantErr: true,
 			wantJobs: []string{fail}, wantStatus: completed},
 		{name: "data-drift vs late-data row", reason: "data-drift", reruns: []string{"late-data"}, tweak: budgets(1, 1),
-			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantReruns: 1, wantStatus: completed,
+			wantEvents: rejected, wantJobs: []string{success}, wantReruns: 1, wantStatus: completed,
 			wantMsg: "rerun rejected for p: drift rerun limit exceeded"},
 		{name: "manual spent", reason: "manual", reruns: []string{"manual"}, tweak: budgets(1, 1),
-			wantEvents: rejected, wantJobs: []string{success, types.JobEventRerunRejected}, wantReruns: 1, wantStatus: completed,
+			wantEvents: rejected, wantJobs: []string{success}, wantReruns: 1, wantStatus: completed,
 			wantMsg: "rerun rejected for p: manual rerun limit exceeded"},
 		{name: "excluded date", reason: "manual", tweak: func(c *types.PipelineConfig) { c.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{date}} },
-			wantEvents: []string{string(types.EventPipelineExcluded)}, wantJobs: []string{success, types.JobEventRerunRejected}, wantStatus: completed},
+			wantEvents: []string{string(types.EventPipelineExcluded)}, wantJobs: []string{success}, wantStatus: completed},
 		{name: "wall clock excluded, request date not (guard)", reason: "manual", now: "2026-03-11T13:00:00Z",
 			tweak: func(c *types.PipelineConfig) {
 				c.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{"2026-03-11"}}
@@ -531,11 +532,16 @@ func rerunRequestRecord(reason, requestedAt string) events.DynamoDBEventRecord {
 }
 
 // TestRerunRequest_RepeatedAfterBreakerRejection: the circuit breaker judges
-// by the last run, not by the rerun-rejected row its own first rejection
-// wrote, so asking again does not get a rerun past it.
+// by the last run, not by a rerun-rejected row an earlier version stored
+// above it, so a request is refused, asking again is refused again, and
+// neither rejection adds a job row.
 func TestRerunRequest_RepeatedAfterBreakerRejection(t *testing.T) {
 	now := mustTime(t, "2026-03-10T13:00:00Z")
 	d, mem, sfnFake, eb := rerunWorld(t, "1773100800000", &now)
+	mem.Put("joblog", map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", "2026-03-10", "1773129600001")},
+		"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventRerunRejected}})
 	ctx := context.Background()
 
 	if err := handleRecord(ctx, d, rerunRequestRecord("manual", "2026-03-10T13:00:00Z")); err != nil {
@@ -558,7 +564,7 @@ func TestRerunRequest_RepeatedAfterBreakerRejection(t *testing.T) {
 	if sfnFake.calls != 0 || len(mem.Items("rerun")) != 0 {
 		t.Errorf("StartExecution calls %d, rerun rows %d; want 0 and 0", sfnFake.calls, len(mem.Items("rerun")))
 	}
-	wantJobs := []string{types.JobEventSuccess, types.JobEventRerunRejected, types.JobEventRerunRejected}
+	wantJobs := []string{types.JobEventSuccess, types.JobEventRerunRejected}
 	if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
 		t.Errorf("job rows = %v, want %v", got, wantJobs)
 	}
@@ -595,7 +601,7 @@ func TestRerunRequest_AutomaticSkipsBreaker(t *testing.T) {
 				gotEvents = append(gotEvents, e.Type)
 			}
 			wantStarts, wantEvents, wantReruns := 0, []string{string(types.EventRerunRejected)}, 0
-			wantJobs := []string{types.JobEventSuccess, types.JobEventRerunRejected}
+			wantJobs := []string{types.JobEventSuccess}
 			if tt.wantStart {
 				wantStarts, wantEvents, wantReruns = 1, []string{string(types.EventRerunAccepted)}, 1
 				wantJobs = []string{types.JobEventSuccess, types.JobEventRerunAccepted}
@@ -633,16 +639,17 @@ func TestRerunRequest_RunningDateIsRefused(t *testing.T) {
 		excluded     bool
 		wantEvent    string
 		wantMsg      string
+		wantWhy      string // the event detail's why
 	}{
-		{name: "manual", reason: "manual", wantEvent: rejected, wantMsg: inProgress},
-		{name: "late-data", reason: "late-data", wantEvent: rejected, wantMsg: inProgress},
-		{name: "data-drift", reason: "data-drift", wantEvent: rejected, wantMsg: inProgress},
+		{name: "manual", reason: "manual", wantEvent: rejected, wantMsg: inProgress, wantWhy: runInProgress(date)},
+		{name: "late-data", reason: "late-data", wantEvent: rejected, wantMsg: inProgress, wantWhy: runInProgress(date)},
+		{name: "data-drift", reason: "data-drift", wantEvent: rejected, wantMsg: inProgress, wantWhy: runInProgress(date)},
 		{name: "breaker would reject", reason: "manual", job: types.JobEventSuccess, updatedAt: "1773100800000",
-			wantEvent: rejected, wantMsg: inProgress},
+			wantEvent: rejected, wantMsg: inProgress, wantWhy: runInProgress(date)},
 		{name: "budget spent", reason: "manual", reruns: []string{"manual"}, wantEvent: rejected,
-			wantMsg: "rerun rejected for p: manual rerun limit exceeded"},
+			wantMsg: "rerun rejected for p: manual rerun limit exceeded", wantWhy: "manual rerun limit exceeded"},
 		{name: "excluded date", reason: "manual", excluded: true, wantEvent: string(types.EventPipelineExcluded),
-			wantMsg: "rerun blocked for p: execution date 2026-03-10 excluded by calendar"},
+			wantMsg: "rerun blocked for p: execution date 2026-03-10 excluded by calendar", wantWhy: "excluded by calendar"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -690,7 +697,10 @@ func TestRerunRequest_RunningDateIsRefused(t *testing.T) {
 			}
 
 			if len(eb.events) != 1 || eb.events[0].Type != tt.wantEvent || eb.events[0].Message != tt.wantMsg {
-				t.Errorf("events = %+v, want one %s %q", eb.events, tt.wantEvent, tt.wantMsg)
+				t.Fatalf("events = %+v, want one %s %q", eb.events, tt.wantEvent, tt.wantMsg)
+			}
+			if want := map[string]interface{}{"reason": tt.reason, "why": tt.wantWhy}; !maps.Equal(eb.events[0].Detail, want) {
+				t.Errorf("event detail = %v, want %v", eb.events[0].Detail, want)
 			}
 			if tt.wantEvent == rejected {
 				why := strconv.Quote(strings.TrimPrefix(tt.wantMsg, "rerun rejected for p: "))
@@ -704,7 +714,7 @@ func TestRerunRequest_RunningDateIsRefused(t *testing.T) {
 			if sfnFake.calls != 0 || len(mem.Items("rerun")) != len(tt.reruns) {
 				t.Errorf("StartExecution calls %d, rerun rows %d; want 0 and %d", sfnFake.calls, len(mem.Items("rerun")), len(tt.reruns))
 			}
-			wantJobs := []string{cmp.Or(tt.job, types.JobEventFail), types.JobEventRerunRejected}
+			wantJobs := []string{cmp.Or(tt.job, types.JobEventFail)}
 			if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
 				t.Errorf("job rows = %v, want %v", got, wantJobs)
 			}
@@ -758,7 +768,7 @@ func TestRerunRequest_LostResetRace(t *testing.T) {
 	if sfnFake.calls != 0 || len(mem.Items("rerun")) != 0 {
 		t.Errorf("StartExecution calls %d, rerun rows %d; want 0 and 0", sfnFake.calls, len(mem.Items("rerun")))
 	}
-	wantJobs := []string{types.JobEventSuccess, types.JobEventRerunRejected}
+	wantJobs := []string{types.JobEventSuccess}
 	if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
 		t.Errorf("job rows = %v, want %v", got, wantJobs)
 	}
