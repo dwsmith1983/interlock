@@ -63,7 +63,7 @@ The trigger condition uses the same check syntax as validation rules: `exists`, 
 
 ### Cutoff
 
-The cutoff is the latest automatic start of a run date, and every pipeline sets one: a config without `schedule.trigger.cutoff` is rejected as `CONFIG_INVALID`. Past it the date is closed with `SENSOR_DEADLINE_EXPIRED` and only a `RERUN_REQUEST` runs it, so no date starts on its own at an arbitrary age. Until then Interlock keeps waiting for readiness, and the start-by check (`schedule.cron`) and the SLA warning and breach are what alert. A run that starts one minute before the cutoff made it.
+The cutoff is the latest automatic start of a run date, and every pipeline sets one: a config without `schedule.trigger.cutoff` is rejected as `CONFIG_INVALID`. Past it the date is closed with `SENSOR_DEADLINE_EXPIRED` and only a `RERUN_REQUEST` ([row format](../../guides/shared-deployment/#writing-sensor-data-and-rerun-requests)) runs it, so no date starts on its own at an arbitrary age. Until then Interlock keeps waiting for readiness, and the start-by check (`schedule.cron`) and the SLA warning and breach are what alert. A run that starts one minute before the cutoff made it.
 
 ```yaml
 schedule:
@@ -208,6 +208,12 @@ sla:
 A daily deadline falls on the execution date plus `deadlineDayOffset` days, for cron and sensor-triggered pipelines alike. Interlock never moves it on its own. A pipeline that processes date D's data on D+1 says so:
 
 ```yaml
+schedule:
+  trigger:
+    key: upstream-complete
+    check: exists
+    cutoff: "12:00"
+    cutoffDayOffset: 1   # a cutoff on the deadline's day or later
 sla:
   deadline: "10:00"
   deadlineDayOffset: 1   # the run for 2026-03-10 is due 2026-03-11 10:00
@@ -238,7 +244,7 @@ aws dynamodb put-item --table-name production-interlock-control --item '{
 
 The control table's TTL attribute is `ttl`; setting it (above, 2026-04-09, the run date plus 30 days) keeps old rows from piling up. Each pass the watchdog reads the rows from 8 days before to 2 days after the current UTC date and schedules alerts for every row whose warning is at most 6 hours away, whose breach is still ahead and whose run has not finished (see [Deadline Evaluation](#deadline-evaluation)). That window covers any timezone and `deadlineDayOffset` up to 7, the most validation allows.
 
-A run has finished when its trigger row is `COMPLETED` or `FAILED_FINAL`; the job log is read only for a date with no trigger row, where a newest result of `success`, `fail`, `timeout`, `infra-trigger-exhausted` or `validation-exhausted` counts as finished (`rerun-accepted` rows are skipped). So a retry or a rerun keeps its alerts while its row is `RUNNING`, and a job that reported success can still get an alert due before CompleteTrigger sets `COMPLETED`, normally within one job check interval (60s by default). If the final status cannot be recorded, or the step that ends a date after a failed launch fails after writing its job row, the row stays `RUNNING` and alerts due meanwhile go out until the watchdog closes the stale row with `SFN_TIMEOUT` (by default 4.5h after the latest attempt started). Where the cancel step ran, or a rerun starts a date that finished before its schedules were created, the watchdog has to schedule `SLA_WARNING` and `SLA_BREACH`, so one due before its next pass is not sent.
+A run has finished when its trigger row is `COMPLETED` or `FAILED_FINAL`; the job log is read only for a date with no trigger row, where a newest result of `success`, `fail`, `timeout`, `infra-trigger-exhausted` or `validation-exhausted` counts as finished (`rerun-accepted` rows are skipped). So a retry or a rerun keeps its alerts while its row is `RUNNING`, and a job that reported success can still get an alert due before CompleteTrigger sets `COMPLETED`, normally within one job check interval (60 seconds). If the final status cannot be recorded, or the step that ends a date after a failed launch fails after writing its job row, the row stays `RUNNING` and alerts due meanwhile go out until the watchdog closes the stale row with `SFN_TIMEOUT` (by default 4.5h after the latest attempt started). Where the cancel step ran, or a rerun starts a date that finished before its schedules were created, the watchdog has to schedule `SLA_WARNING` and `SLA_BREACH`, so one due before its next pass is not sent.
 
 ### Deadline Evaluation
 
@@ -289,8 +295,8 @@ SLA events are published to the custom EventBridge bus. You can create rules to 
 
 | Event | When |
 |---|---|
-| `SLA_WARNING` | Warning deadline reached (job still running) |
-| `SLA_BREACH` | Final deadline reached (job still running) |
+| `SLA_WARNING` | Warning time reached and the run has not finished: it has not started yet or is still running. Not sent at or after the breach time |
+| `SLA_BREACH` | Breach time reached and the run has not finished, whether or not it started; also the verdict when a run ends after the breach time |
 | `SLA_MET` | Run ended before the breach time and its trigger row is `COMPLETED` |
 
 Example event:
@@ -303,10 +309,20 @@ Example event:
     "pipelineId": "gold-revenue",
     "scheduleId": "stream",
     "date": "2026-03-01",
-    "message": "pipeline gold-revenue: SLA_BREACH"
+    "message": "pipeline gold-revenue: SLA_BREACH",
+    "timestamp": "2026-03-01T10:00:01.204Z",
+    "detail": {
+      "status": "RUNNING",
+      "source": "schedule",
+      "breachAt": "2026-03-01T10:00:00Z",
+      "deadline": "10:00",
+      "timezone": "UTC"
+    }
   }
 }
 ```
+
+The inner `detail` also carries an `actionHint`, a short hint for the reader. `status` is the trigger row's status, or `not started` when the date has none. `scheduleId` is `stream` here; it is `cron` for a pipeline that sets `schedule.cron`, such as the example on the [Pipelines](../pipelines/) page.
 
 The event's details (deadline, time zone, breach time) are listed under [Event Sink](../../reference/alerting/#event-sink).
 
@@ -330,4 +346,4 @@ schedule:
 | `dates` | list | Excluded dates, `YYYY-MM-DD` |
 | `holidays` | string | Accepted but not read |
 
-A trigger sensor write, and the watchdog's sensor-trigger reconciliation, start nothing while the current day in `schedule.timezone` is excluded. Reruns, failure retries, the post-run drift rerun, and the SLA, start-by and cutoff checks look at the execution date instead (its date part for an hourly `YYYY-MM-DDThh` date); a skipped rerun or retry publishes `PIPELINE_EXCLUDED`. The Terraform `calendars_path` variable is accepted but not read: named calendar files are not loaded, so list the dates in `exclude.dates`.
+A trigger sensor write, and the watchdog's sensor-trigger reconciliation, start nothing while the current day in `schedule.timezone` is excluded. A trigger sensor write that passes its condition then publishes `PIPELINE_EXCLUDED`; the reconciliation publishes nothing. Reruns, failure retries, the post-run drift rerun, and the SLA, start-by and cutoff checks look at the execution date instead (its date part for an hourly `YYYY-MM-DDThh` date); a skipped rerun, retry or drift rerun publishes `PIPELINE_EXCLUDED`. The Terraform `calendars_path` variable is accepted but not read: named calendar files are not loaded, so list the dates in `exclude.dates`.

@@ -67,19 +67,27 @@ configured `headers` so config cannot override them. The same values expand in
 | `X-Interlock-Date` | `${INTERLOCK_DATE}` | execution date: `2026-03-01`, or `2026-03-01T05` for an hourly run |
 | `X-Interlock-Run-Id` | `${INTERLOCK_RUN_ID}` | run ID (the Step Functions execution name) |
 
-In `body` the identity variables are inserted JSON-escaped (whatever the
-pipeline ID holds, the body stays valid JSON), so use them inside JSON strings.
-Header values are inserted as they are. When IDs are not plain ASCII, read them
-from the body fields rather than the headers: net/http trims leading and
-trailing whitespace and sends raw bytes in headers. A pipeline ID containing a
-control character other than tab cannot be sent in a header at all, so its http
-launches fail.
+In `body` the identity variables are inserted JSON-escaped, so use them inside
+JSON strings. Header values are inserted as they are. Every identity value is
+plain ASCII: the [pipeline ID](../pipelines/#pipeline) is limited to
+`A-Za-z0-9_-`, and the run ID is built from it.
 
 With no `body`, Interlock sends `par_day` (`20260301`), `par_hour` (`05`, hourly
 dates only), `pipelineId`, `scheduleId`, `date` and `runId` as a JSON object.
 
 The run ID is an identifier, not a secret: anything that can write to the joblog
 table can report a result for any run.
+
+#### Repeated requests
+
+One run can send the same request more than once. Within one launch attempt, a
+network error or a 5xx response is retried twice, about 0.2 and 0.4 seconds
+apart. A launch that still fails, or that gets a 4xx or a refused redirect,
+fails the Trigger state, which tries again with the same run ID up to
+`trigger_max_attempts` times (default 3, waiting 30, 60 and 120 seconds). A
+request that timed out may also have reached the endpoint. So start the job
+once per `X-Interlock-Run-Id` and answer a repeat with a 2xx without starting it
+again. A failure retry or a rerun is a new run with a new run ID.
 
 #### Reporting the result
 
@@ -213,7 +221,7 @@ job:
 | `jobName` | string | Glue job name (required) |
 | `arguments` | map | Job arguments (keys prefixed with `--`); Interlock adds `--par_day` and, for hourly dates, `--par_hour` |
 
-**Returned metadata**: `jobRunId` -- used by the orchestrator to poll `GetJobRun`.
+**Returned metadata**: `glue_job_name`, `glue_job_run_id` -- used by the orchestrator to poll `GetJobRun`.
 
 ### `emr`
 
@@ -237,7 +245,7 @@ job:
 | `command` | string | JAR the step runs, such as an S3 URI (required) |
 | `arguments` | map | Step arguments, sent as `key=value` in key order; Interlock adds `--par_day` (`--par_day=20260301`) and, for hourly dates, `--par_hour`, replacing a configured value of the same key |
 
-**Returned metadata**: `clusterID`, `stepId` -- used by the orchestrator to poll `DescribeStep`.
+**Returned metadata**: `emr_cluster_id`, `emr_step_id` -- used by the orchestrator to poll `DescribeStep`.
 
 ### `emr-serverless`
 
@@ -273,7 +281,7 @@ Config values are stored in plaintext and are visible in `GetJobRun`, so a job
 that needs a credential should read its own secret under its runtime role
 rather than take it as an argument.
 
-**Returned metadata**: `applicationId`, `jobRunId` -- used by the orchestrator to poll `GetJobRun`.
+**Returned metadata**: `emr_sl_application_id`, `emr_sl_job_run_id` -- used by the orchestrator to poll `GetJobRun`.
 
 ### `step-function`
 
@@ -293,7 +301,7 @@ job:
 | `stateMachineArn` | string | Step Function state machine ARN (required) |
 | `arguments` | map | Top-level string fields of the execution input; Interlock adds `par_day` (`20260301`) and, for hourly dates, `par_hour` (`05`), replacing a configured value of the same key |
 
-**Returned metadata**: `executionArn` -- used by the orchestrator to poll `DescribeExecution`.
+**Returned metadata**: `sfn_execution_arn` -- used by the orchestrator to poll `DescribeExecution`.
 
 ### `databricks`
 
@@ -389,6 +397,12 @@ is not recorded.
 Variables are expanded when the job is triggered. Any other `${...}` expands to
 an empty string.
 
+The expansion follows shell rules, so the unbraced form `$INTERLOCK_<NAME>`
+expands too, and a `$` followed by a letter, a digit, `_`, `{` or one of
+`*#$@!?-` starts a variable. A literal `$` in that position is lost: `$HOME`,
+`$1` and `$$` become empty strings, `price: $5` becomes `price: `. A `$` followed
+by anything else, such as a space, or at the end of the text, stays as it is.
+
 | Variable | Expands in | Value |
 |---|---|---|
 | `${INTERLOCK_<NAME>}` | `http` body and headers, `airflow` body and headers, `databricks` headers, `lambda` payload | the orchestrator Lambda's environment variable `INTERLOCK_<NAME>` |
@@ -472,6 +486,25 @@ holds the token), or other secrets an endpoint or function holds, so keep
 trigger endpoints from echoing credentials and functions from putting their
 event in error messages.
 
+Anyone with write access to the control table, where pipeline configs live, can
+send any `INTERLOCK_` value to a URL of their choice, for example through an
+`http` trigger's headers or body. Write access to the control table therefore
+amounts to read access on these tokens.
+
+## Network Access
+
+`http`, `airflow` and `databricks` calls leave from the orchestrator Lambda,
+which the Terraform module runs outside any VPC, so they reach only endpoints on
+the public internet. They also refuse to connect to a private, loopback,
+link-local (the instance metadata address included), multicast or unspecified IP
+address, whatever host name resolves to it; the call fails with an `ssrf:` error.
+An endpoint on a private network, such as an Airflow webserver inside a VPC,
+needs a public address (for example a load balancer with TLS and
+authentication) before a trigger can reach it. The module has no setting that
+attaches the Lambda to a VPC or turns the address check off. The AWS job types
+(`glue`, `emr`, `emr-serverless`, `step-function`, `lambda`) call AWS APIs and are
+not affected.
+
 Trigger calls follow a redirect only to the same host as written in the URL,
 including any explicit port, keeping the scheme or going from `http` to `https`,
 and keeping the method. An `http` to `https` upgrade is followed when the URL
@@ -486,31 +519,30 @@ point the trigger URL at the final endpoint.
 An `http` job whose POST (or other non-GET request) is answered with 303 See
 Other counts as triggered, as for a 2xx: the endpoint processed the request, and
 the job reports its own result. The redirect is not followed. A GET follows a
-same-origin 303 like any other redirect. `airflow` and `databricks` calls fail
-on any 3xx, since they need the run ID from a 2xx body.
+same-origin 303 like any other redirect. `airflow` and `databricks` calls follow
+redirects by the same rules: a same-host 307 or 308 keeps the method and is
+followed. They fail on a redirect that is not followed, a 303 included, since
+they need the run ID from a 2xx body.
 
 `http`, `airflow` and `databricks` responses are read up to 1 MiB. A larger one
 fails with `response exceeds 1 MiB`.
-
-Anyone with write access to the control table, where pipeline configs live, can
-send any `INTERLOCK_` value to a URL of their choice, for example through an
-`http` trigger's headers or body. Write access to the control table therefore
-amounts to read access on these tokens.
 
 ## Status Polling
 
 After a job executes, the orchestrator Lambda polls for completion using the returned metadata. Each job type implements `CheckStatus()`:
 
-| Type | SDK Call | Status Mapping |
-|---|---|---|
-| `glue` | `GetJobRun` + CloudWatch RCA verification | RUNNING -> running, SUCCEEDED -> succeeded (verified), FAILED/STOPPED -> failed |
-| `emr` | `DescribeStep` | RUNNING/PENDING -> running, COMPLETED -> succeeded, FAILED/CANCELLED -> failed |
-| `emr-serverless` | `GetJobRun` | RUNNING/SUBMITTED -> running, SUCCESS -> succeeded, FAILED/CANCELLED -> failed |
-| `step-function` | `DescribeExecution` | RUNNING -> running, SUCCEEDED -> succeeded, FAILED/TIMED_OUT/ABORTED -> failed |
-| `databricks` | `GET /runs/get` | RUNNING/PENDING -> running, TERMINATED(SUCCESS) -> succeeded, others -> failed |
-| `airflow` | `GET /api/v1/dags/{dag_id}/dagRuns/{dag_run_id}` (`/api/v2/...` with `apiVersion: 3`) | running -> running, success -> succeeded, failed -> failed |
+| Type | SDK Call | Succeeded | Failed (category) |
+|---|---|---|---|
+| `glue` | `GetJobRun` + CloudWatch RCA verification | `SUCCEEDED`, unless the RCA check finds a failure (then failed, `TRANSIENT`) | `FAILED`, `STOPPED`, `ERROR` (`TRANSIENT`); `TIMEOUT` (`TIMEOUT`) |
+| `emr` | `DescribeStep` | `COMPLETED` | `FAILED`, `CANCELLED`, `INTERRUPTED` (`TRANSIENT`) |
+| `emr-serverless` | `GetJobRun` | `SUCCESS` | `FAILED`, `CANCELLED` (`TRANSIENT`) |
+| `step-function` | `DescribeExecution` | `SUCCEEDED` | `FAILED`, `ABORTED` (`TRANSIENT`); `TIMED_OUT` (`TIMEOUT`) |
+| `databricks` | `GET /api/2.1/jobs/runs/get` | life cycle `TERMINATED` with result `SUCCESS` | `TERMINATED` with any other result, `INTERNAL_ERROR` (`TRANSIENT`); `SKIPPED` (`PERMANENT`) |
+| `airflow` | `GET /api/v1/dags/{dag_id}/dagRuns/{dag_run_id}` (`/api/v2/...` with `apiVersion: 3`) | `success` | `failed` (no category, so `maxRetries` applies) |
 
-The `airflow` and `databricks` polls send the trigger's configured headers, expanded like the trigger's own. A poll runs only when the run's URL, kept from the trigger call, has the scheme and host of the trigger config, so the headers never go elsewhere: changing a trigger's URL while a run is polling stops the polls for that run until the state machine times out.
+Any other state counts as still running, and the next check comes 60 seconds later (a fixed interval: no pipeline field or module variable sets it). A status call that fails (an AWS or HTTP error) is logged and also counts as still running. A `PERMANENT` failure is retried under `maxCodeRetries` and the others under `maxRetries` (see [Retry Budgets](../pipelines/#retry-budgets)).
+
+The `airflow` and `databricks` polls send the trigger's configured headers, expanded like the trigger's own. A poll runs only when the run's URL, kept from the trigger call, has the scheme and host of the trigger config, so the headers never go elsewhere: changing a trigger's URL while a run is polling stops the polls for that run. When `job.jobPollWindowSeconds` passes, the run gets a `timeout` row and CompleteTrigger retries it like any other timeout.
 
 The `http` and `lambda` types have no status API. An `http` job reports its own result (see [`http`](#http)); a `lambda` job's result is the call's outcome (see [`lambda`](#lambda)).
 
@@ -530,10 +562,17 @@ The Terraform module provides opt-in variables to grant the orchestrator Lambda 
 
 | Variable | Default | Grants |
 |---|---|---|
-| `enable_glue_trigger` | `false` | `glue:StartJobRun`, `glue:GetJobRun`, `logs:FilterLogEvents` (scoped to `/aws-glue/jobs/logs-v2`) |
-| `enable_emr_trigger` | `false` | `elasticmapreduce:AddJobFlowSteps`, `elasticmapreduce:DescribeStep` |
+| `enable_glue_trigger` | `false` | `glue:StartJobRun` and `glue:GetJobRun` on `glue_job_arns`, `logs:FilterLogEvents` on `/aws-glue/jobs/logs-v2` |
+| `enable_emr_trigger` | `false` | `elasticmapreduce:AddJobFlowSteps` and `elasticmapreduce:DescribeStep` on `emr_cluster_arns` |
 | `enable_emr_serverless_trigger` | `false` | `emr-serverless:StartJobRun` on `emr_serverless_app_arns`, `emr-serverless:GetJobRun` on their job runs, `iam:PassRole` on `emr_serverless_execution_role_arns` (passed to `emr-serverless.amazonaws.com` only) |
 | `enable_sfn_trigger` | `false` | `states:StartExecution` on `sfn_trigger_arns`, `states:DescribeExecution` on their executions |
-| `enable_lambda_trigger` | `false` | `lambda:InvokeFunction` on `lambda_trigger_arns` (required when enabled) |
+| `enable_lambda_trigger` | `false` | `lambda:InvokeFunction` on `lambda_trigger_arns` |
 
-Enable only the trigger types your pipelines use to maintain least-privilege IAM policies.
+Each ARN list named in a row is required when its flag is `true`: an empty list fails `terraform plan`. List the ARN of every job, cluster, application, role, state machine or function your pipelines name, for example:
+
+```hcl
+enable_glue_trigger = true
+glue_job_arns       = ["arn:aws:glue:us-east-1:123456789012:job/gold-revenue-etl"]
+```
+
+`http`, `airflow` and `databricks` jobs need no flag; see [Network Access](#network-access). Enable only the trigger types your pipelines use to maintain least-privilege IAM policies.
