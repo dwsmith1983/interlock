@@ -300,10 +300,10 @@ Each Lambda gets its own execution role with least-privilege policies:
 
 | Role | Permissions |
 |---|---|
-| stream-router | DynamoDB read/write (all 4 tables), DynamoDB Streams (control + joblog), Step Functions `StartExecution`, EventBridge `PutEvents`, SQS `SendMessage` (DLQs) |
-| orchestrator | DynamoDB read/write (all 4 tables), Step Functions `StartExecution` (failure retries), EventBridge `PutEvents`, conditional trigger permissions |
+| stream-router | DynamoDB read/write (control, joblog, rerun), DynamoDB Streams (control + joblog), Step Functions `StartExecution`, EventBridge `PutEvents`, SQS `SendMessage` (DLQs) |
+| orchestrator | DynamoDB read/write (control, joblog, rerun), Step Functions `StartExecution` (failure retries), EventBridge `PutEvents`, conditional trigger permissions |
 | sla-monitor | DynamoDB read (control, joblog), EventBridge Scheduler create/delete, EventBridge `PutEvents` |
-| watchdog | DynamoDB read (all 4 tables), DynamoDB write and delete (control only), Step Functions `StartExecution` (reconciliation), EventBridge Scheduler create (SLA schedules), EventBridge `PutEvents` |
+| watchdog | DynamoDB read (control, joblog), DynamoDB write and delete (control only), Step Functions `StartExecution` (reconciliation), EventBridge Scheduler create (SLA schedules), EventBridge `PutEvents` |
 | event-sink | DynamoDB `PutItem` (events), SQS `SendMessage` (its DLQ) |
 | alert-dispatcher | DynamoDB read/write (events, thread records), SQS `ReceiveMessage`, `DeleteMessage` and `ChangeMessageVisibility` (alert queue), conditional `secretsmanager:GetSecretValue` |
 

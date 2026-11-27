@@ -316,7 +316,7 @@ Each Lambda function has its own IAM role with least-privilege policies:
 | stream-router | Read/write control, joblog, rerun + stream access | PutEvents | `states:StartExecution`, SQS SendMessage (DLQs) |
 | orchestrator | Read/write control, joblog, rerun | PutEvents | `states:StartExecution` (failure retries), conditional trigger permissions (Glue, EMR, etc.) |
 | sla-monitor | Read control, joblog | PutEvents | `scheduler:CreateSchedule`, `scheduler:DeleteSchedule` |
-| watchdog | Read control, joblog, rerun; write and delete in control only | PutEvents | `states:StartExecution` (reconciliation), `scheduler:CreateSchedule` (SLA schedules) |
+| watchdog | Read control, joblog; write and delete in control only | PutEvents | `states:StartExecution` (reconciliation), `scheduler:CreateSchedule` (SLA schedules) |
 | event-sink | Write events table | -- | SQS SendMessage (its DLQ) |
 | alert-dispatcher | Read/write events table (thread storage) | -- | SQS ReceiveMessage/DeleteMessage/ChangeMessageVisibility, conditional `secretsmanager:GetSecretValue` |
 

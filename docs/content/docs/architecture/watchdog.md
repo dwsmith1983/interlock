@@ -209,13 +209,13 @@ EventBridge rule (rate) → watchdog Lambda → DynamoDB (read configs, triggers
                                           → EventBridge custom bus (publish events)
 ```
 
-The watchdog reads from the control, joblog and rerun tables and writes only to the control table (trigger status, dedup markers, released locks). It also starts executions during sensor-trigger reconciliation and creates the SLA Scheduler entries.
+The watchdog reads from the control and joblog tables and writes only to the control table (trigger status, dedup markers, released locks). It also starts executions during sensor-trigger reconciliation and creates the SLA Scheduler entries.
 
 ### IAM Permissions
 
 | Action | Scope |
 |---|---|
-| DynamoDB read (GetItem, Query, Scan, etc.) | All 3 tables + indexes |
+| DynamoDB read (GetItem, Query, Scan, etc.) | Control and joblog tables + indexes |
 | DynamoDB write (PutItem, UpdateItem, DeleteItem) | Control table only |
 | Step Functions StartExecution | Pipeline state machine |
 | EventBridge Scheduler CreateSchedule | SLA schedule group |
