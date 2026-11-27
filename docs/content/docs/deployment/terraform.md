@@ -292,7 +292,7 @@ The ASL definition is at `deploy/statemachine.asl.json` and uses `templatefile()
 | Alert queue | `{env}-interlock-alerts` | SQS queue the alert-dispatcher reads to post to Slack |
 | Scheduler group | `{env}-interlock-sla` | EventBridge Scheduler group for the SLA warning and breach entries |
 
-Four of the six functions (stream-router, orchestrator, sla-monitor, watchdog) publish events to the custom bus. The module already routes every event to the events table and, when `slack_secret_arn` and `slack_channel_id` are set, alert events to Slack; add your own rules on the bus for other targets (SNS, PagerDuty, etc.).
+Four of the six functions (stream-router, orchestrator, sla-monitor, watchdog) publish events to the custom bus, and the bus policy lets only their roles do so. The module already routes every event to the events table and, when `slack_secret_arn` and `slack_channel_id` are set, alert events to Slack; add your own rules on the bus for other targets (SNS, PagerDuty, etc.).
 
 ### IAM
 

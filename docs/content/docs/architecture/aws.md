@@ -292,7 +292,7 @@ See [Alerting](../../reference/alerting/#cloudwatch-alarms) for details on the e
 
 ## EventBridge
 
-A custom event bus (`{environment}-interlock-events`) receives all framework events. Four of the six functions publish to it: stream-router, orchestrator, sla-monitor and watchdog have `events:PutEvents` on the bus. The bus policy allows all six roles.
+A custom event bus (`{environment}-interlock-events`) receives all framework events. Four of the six functions publish to it: stream-router, orchestrator, sla-monitor and watchdog have `events:PutEvents` on the bus, and the bus policy allows only their four roles. The event-sink and alert-dispatcher read events and cannot put any on the bus.
 
 The watchdog Lambda is invoked by a scheduled rule on the default event bus (EventBridge scheduled rules require the default bus).
 

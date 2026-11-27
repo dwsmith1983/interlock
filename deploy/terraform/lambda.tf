@@ -9,6 +9,10 @@
 locals {
   lambda_names = toset(["stream-router", "orchestrator", "sla-monitor", "watchdog", "event-sink", "alert-dispatcher"])
 
+  # The functions that put events on the Interlock bus. The bus policy and the
+  # PutEvents role policies both use this list, so they cannot drift apart.
+  event_publisher_names = toset(["stream-router", "orchestrator", "sla-monitor", "watchdog"])
+
   # The events table is left out: only the event-sink and alert-dispatcher use
   # it, and they have their own policies.
   table_arns = [
@@ -360,7 +364,7 @@ resource "aws_iam_role_policy" "dynamodb_sla_read" {
 }
 
 # -----------------------------------------------------------------------------
-# EventBridge PutEvents — all 4 functions
+# EventBridge PutEvents: the functions that publish to the Interlock bus
 # -----------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "eventbridge_put" {
@@ -371,7 +375,7 @@ data "aws_iam_policy_document" "eventbridge_put" {
 }
 
 resource "aws_iam_role_policy" "eventbridge_put" {
-  for_each = toset(["stream-router", "orchestrator", "sla-monitor", "watchdog"])
+  for_each = local.event_publisher_names
   name     = "eventbridge-put"
   role     = aws_iam_role.lambda[each.key].id
   policy   = data.aws_iam_policy_document.eventbridge_put.json
