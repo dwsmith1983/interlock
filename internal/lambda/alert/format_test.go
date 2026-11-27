@@ -191,8 +191,9 @@ func TestFormatAlertText_SLADeadline(t *testing.T) {
 
 // TestFormatAlertText_ManualRerunRequired: the alert names why, the job, its
 // last run, when the run finished and the late data arrived or the request
-// was written, the sensor key and what to do. Sensor data, baselines and the
-// request row stay in the event, and every value is escaped.
+// was written, the sensor key, for drift its field and numbers, and what to
+// do. Sensor data, baselines and the request row stay in the event, and every
+// value is escaped.
 func TestFormatAlertText_ManualRerunRequired(t *testing.T) {
 	type m = map[string]interface{}
 	common := func(extra m) m {
@@ -216,8 +217,17 @@ func TestFormatAlertText_ManualRerunRequired(t *testing.T) {
 		want   string
 	}{
 		{"sensor", common(m{"source": "sensor", "arrivedAt": "2026-03-11T12:59:30Z", "sensorKey": "upstream",
-			"sensorData": m{"count": "value-42"}}),
+			"sensorData": m{"count": "value-42"}, "driftField": "count"}),
 			head + "\nArrived: 2026-03-11T12:59:30Z\nSensor key: upstream\n\u2192 rerun by hand"},
+		{"drift", common(m{"source": "sensor", "reason": "data-drift", "arrivedAt": "2026-03-11T12:59:30Z", "sensorKey": "row-count",
+			"sensorData": m{"count": "value-42"}, "driftField": "count<x>", "previousCount": 100.0, "currentCount": 120.0,
+			"delta": 20.0, "driftThreshold": 0.5}),
+			strings.Replace(head, "late-data", "data-drift", 1) + "\nArrived: 2026-03-11T12:59:30Z\nSensor key: row-count" +
+				"\nDrift: count&lt;x&gt; 100 to 120 (change 20, threshold 0.5)\n\u2192 rerun by hand"},
+		{"drift, large counts", m{"reason": "data-drift", "driftField": "count", "previousCount": 1234567.0, "currentCount": 1234999.0,
+			"delta": 432.0, "driftThreshold": 1e7},
+			"\xf0\x9f\x94\xb4 *MANUAL_RERUN_REQUIRED* | p | 2026-03-10\nm\nReason: data-drift" +
+				"\nDrift: count 1234567 to 1234999 (change 432, threshold 10000000)"},
 		{"rerun request", common(m{"source": "rerun-request", "reason": "data-drift", "blockedBy": "postRun.watchWindow",
 			"requestedAt": "2026-03-11T13:00:00Z"}),
 			strings.Replace(head, "late-data (job.maxAutoRerunAge)", "data-drift (postRun.watchWindow)", 1) +

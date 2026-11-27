@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -71,8 +72,9 @@ func FormatAlertText(detailType string, detail types.InterlockEvent) string {
 
 // manualRerunText is the body of a MANUAL_RERUN_REQUIRED alert: why, the job
 // and its last run, when the run finished, when the late data arrived or the
-// request was written, the sensor key, then the action hint. Sensor data, any
-// baseline and the request row stay in the event.
+// request was written, the sensor key, for data-drift the drift field and
+// its numbers, then the action hint. Sensor data, any baseline and the
+// request row stay in the event.
 func manualRerunText(d map[string]interface{}) string {
 	str := func(k string) string {
 		if v, ok := d[k]; ok {
@@ -92,9 +94,21 @@ func manualRerunText(d map[string]interface{}) string {
 			job += " " + esc(k) + "=" + esc(ids[k])
 		}
 	}
+	num := func(k string) string { // a float64 without an exponent, so 1234567 is not 1.234567e+06
+		if f, ok := d[k].(float64); ok {
+			return esc(strconv.FormatFloat(f, 'f', -1, 64))
+		}
+		return str(k)
+	}
+	var drift string
+	if field := str("driftField"); d["reason"] == "data-drift" && field != "" {
+		drift = field + " " + num("previousCount") + " to " + num("currentCount") +
+			" (change " + num("delta") + ", threshold " + num("driftThreshold") + ")"
+	}
 	var text string
 	for _, f := range [][2]string{{"Reason", reason}, {"Job", strings.TrimSpace(job)}, {"Last run", str("lastRunId")},
-		{"Run finished", finished}, {"Arrived", str("arrivedAt")}, {"Requested", str("requestedAt")}, {"Sensor key", str("sensorKey")}} {
+		{"Run finished", finished}, {"Arrived", str("arrivedAt")}, {"Requested", str("requestedAt")}, {"Sensor key", str("sensorKey")},
+		{"Drift", drift}} {
 		if f[1] != "" {
 			text += "\n" + f[0] + ": " + f[1]
 		}

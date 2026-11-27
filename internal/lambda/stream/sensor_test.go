@@ -409,10 +409,12 @@ func jobEvents(mem *storetest.Mem) []string {
 // TestLateData_WatchWindow: a trigger sensor for a COMPLETED date is late data
 // only while the post-run watch window is open: from completedAt until
 // completedAt plus postRun.watchWindow (6h here unless a row says otherwise,
-// 4h by default). At the limit, or with no completedAt, it is ignored.
+// 4h by default). From the limit on it publishes only MANUAL_RERUN_REQUIRED,
+// blocked by the window, and writes no request; with no completedAt or a
+// failed run it publishes nothing.
 func TestLateData_WatchWindow(t *testing.T) {
 	const date = "2026-03-10"
-	late := []string{string(types.EventLateDataArrival)}
+	late, manual := []string{string(types.EventLateDataArrival)}, []string{evManual}
 	window := func(w string) func(*types.PipelineConfig) {
 		return func(c *types.PipelineConfig) { c.PostRun = &types.PostRunConfig{WatchWindow: w} }
 	}
@@ -424,7 +426,7 @@ func TestLateData_WatchWindow(t *testing.T) {
 		now         string
 		jobEvent    string   // the run's job row; empty means success
 		above       []string // newer job rows the stream-router wrote about reruns and late data before it stopped
-		wantEvents  []string // nil means none; a late sensor also writes a request, and no job row
+		wantEvents  []string // nil means none; LATE_DATA_ARRIVAL also writes a request, and no job row
 	}{
 		{name: "inside (guard)", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z", wantEvents: late},
 		{name: "inside, job failed", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z", jobEvent: types.JobEventFail},
@@ -432,19 +434,20 @@ func TestLateData_WatchWindow(t *testing.T) {
 			above: []string{types.JobEventLateDataArrival, types.JobEventRerunRejected}, wantEvents: late},
 		{name: "inside, fail under a rejected rerun", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z",
 			jobEvent: types.JobEventFail, above: []string{types.JobEventRerunRejected}},
-		{name: "at the limit", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T18:00:00Z"},
-		{name: "two days later", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-12T09:00:00Z"},
+		{name: "at the limit", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T18:00:00Z", wantEvents: manual},
+		{name: "at the limit, job failed", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T18:00:00Z", jobEvent: types.JobEventFail},
+		{name: "two days later", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-12T09:00:00Z", wantEvents: manual},
 		{name: "default window, inside (guard)", tweaks: []func(*types.PipelineConfig){func(c *types.PipelineConfig) { c.PostRun = nil }},
 			completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T15:59:59Z", wantEvents: late},
 		{name: "default window, at the limit", tweaks: []func(*types.PipelineConfig){func(c *types.PipelineConfig) { c.PostRun = nil }},
-			completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T16:00:00Z"},
+			completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T16:00:00Z", wantEvents: manual},
 		{name: "no completedAt", now: "2026-03-10T12:30:00Z"},
 		{name: "inside, past the cutoff (guard)", tweaks: []func(*types.PipelineConfig){cutoff},
 			completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T14:30:00Z", wantEvents: late},
 		{name: "outside, before the cutoff", tweaks: []func(*types.PipelineConfig){window("1h"), cutoff},
-			completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T13:30:00Z"},
+			completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T13:30:00Z", wantEvents: manual},
 		{name: "rerun completed later (guard)", completedAt: "2026-03-11T08:00:00Z", now: "2026-03-11T13:59:59Z", wantEvents: late},
-		{name: "rerun's window ended", completedAt: "2026-03-11T08:00:00Z", now: "2026-03-11T14:00:00Z"},
+		{name: "rerun's window ended", completedAt: "2026-03-11T08:00:00Z", now: "2026-03-11T14:00:00Z", wantEvents: manual},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -480,9 +483,14 @@ func TestLateData_WatchWindow(t *testing.T) {
 			for _, e := range eb.events {
 				gotEvents = append(gotEvents, e.Type)
 			}
-			wantJobs, wantRerun := append([]string{cmp.Or(tt.jobEvent, types.JobEventSuccess)}, tt.above...), tt.wantEvents != nil
+			wantJobs, wantRerun := append([]string{cmp.Or(tt.jobEvent, types.JobEventSuccess)}, tt.above...), slices.Equal(tt.wantEvents, late)
 			if sfnFake.calls != 0 || !slices.Equal(gotEvents, tt.wantEvents) {
 				t.Errorf("StartExecution calls %d, events %v; want 0 and %v", sfnFake.calls, gotEvents, tt.wantEvents)
+			}
+			for _, e := range eb.events {
+				if e.Type == evManual && (e.Detail["reason"] != "late-data" || e.Detail["blockedBy"] != "postRun.watchWindow") {
+					t.Errorf("MANUAL_RERUN_REQUIRED reason %v, blockedBy %v; want late-data, postRun.watchWindow", e.Detail["reason"], e.Detail["blockedBy"])
+				}
 			}
 			if got := mem.Get("control", pk, types.TriggerSK("stream", date))["status"].(*ddbtypes.AttributeValueMemberS).Value; got != types.TriggerStatusCompleted {
 				t.Errorf("trigger status = %q, want COMPLETED", got)

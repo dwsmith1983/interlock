@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -17,13 +18,15 @@ import (
 const manualRerunHint = "Check the new data, then rerun by writing a manual RERUN_REQUEST row for this date (its keys are in the event's rerunRequest field)."
 
 // maxManualRerunSensorData is the most sensor data, as JSON bytes, a
-// manual-rerun event carries.
+// manual-rerun event carries in each of sensorData and baseline.
 const maxManualRerunSensorData = 32 * 1024
 
 // manualRerunInput is what the place that stopped an automatic rerun knows
 // about it: the request reason (late-data or data-drift), where it came from
 // (sensor or rerun-request), the bound that stopped it (the endedBy label of
 // logAutoRerunEnded), the late sensor write or the request's time, and now.
+// For drift, drift holds its numbers (postRunDrift) and baseline the entry
+// the write was compared with.
 type manualRerunInput struct {
 	reason, source, blockedBy string
 	sensorKey                 string
@@ -31,6 +34,7 @@ type manualRerunInput struct {
 	arrivedAt                 time.Time
 	requestedAt               string
 	now                       time.Time
+	drift, baseline           map[string]interface{}
 }
 
 // recordManualRerunRequired publishes MANUAL_RERUN_REQUIRED the first time an
@@ -72,8 +76,9 @@ func recordManualRerunRequired(ctx context.Context, d *lambda.Deps, cfg *types.P
 
 // manualRerunDetail is the detail of a manual-rerun event: why and how the
 // automatic rerun stopped, the job and its last run, the late data or the
-// request, and the request row a person writes to rerun. A value that is
-// unknown is left out, and so is sensor data over maxManualRerunSensorData.
+// request, the drift, and the request row a person writes to rerun. A value
+// that is unknown is left out, and so is sensor data or a baseline over
+// maxManualRerunSensorData.
 func manualRerunDetail(d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string,
 	tr *types.ControlRecord, job *types.JobLogRecord, in manualRerunInput) map[string]interface{} {
 	completed, _ := time.Parse(time.RFC3339, tr.CompletedAt) // parseable: AutoRerunEnd is not zero
@@ -97,11 +102,15 @@ func manualRerunDetail(d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, sc
 	if !in.arrivedAt.IsZero() {
 		detail["arrivedAt"] = in.arrivedAt.UTC().Format(time.RFC3339)
 	}
-	if in.sensorData != nil {
-		if data, err := json.Marshal(in.sensorData); err != nil || len(data) > maxManualRerunSensorData {
-			detail["sensorDataOmitted"] = true
+	maps.Copy(detail, in.drift)
+	for k, v := range map[string]map[string]interface{}{"sensorData": in.sensorData, "baseline": in.baseline} {
+		if v == nil {
+			continue
+		}
+		if data, err := json.Marshal(v); err != nil || len(data) > maxManualRerunSensorData {
+			detail[k+"Omitted"] = true
 		} else {
-			detail["sensorData"] = in.sensorData
+			detail[k] = v
 		}
 	}
 	return detail
@@ -122,6 +131,21 @@ func requireManualRerunOnRequest(ctx context.Context, d *lambda.Deps, cfg *types
 		in.requestedAt = r.String()
 	}
 	recordManualRerunRequired(ctx, d, cfg, pipelineID, schedule, date, tr, job, in)
+	return nil
+}
+
+// requireManualRerunOnDrift records a manual rerun for a drifted post-run
+// write (write, with its drift, baseline and blockedBy set), reading the
+// date's latest job outcome for it. A failed read is returned so the stream
+// retries the record.
+func requireManualRerunOnDrift(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string,
+	tr *types.ControlRecord, write manualRerunInput) error {
+	job, err := d.Store.GetLatestJobOutcome(ctx, pipelineID, schedule, date)
+	if err != nil {
+		return fmt.Errorf("get latest job outcome for %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	write.reason, write.source = "data-drift", "sensor"
+	recordManualRerunRequired(ctx, d, cfg, pipelineID, schedule, date, tr, job, write)
 	return nil
 }
 

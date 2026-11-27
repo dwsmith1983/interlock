@@ -90,9 +90,9 @@ func TestHandleRerunRequest_SkipsBadRows(t *testing.T) {
 // TestRerunRequest_WatchWindow: an automatic (late-data or data-drift) rerun
 // request for a COMPLETED date is re-checked against the post-run watch
 // window (6h from completedAt) when it is handled; outside it, it is skipped
-// with no start or row and publishes only MANUAL_RERUN_REQUIRED (nothing
-// without a completedAt or for an excluded date). A manual request is never
-// checked.
+// with no start or row and publishes only MANUAL_RERUN_REQUIRED, blocked by
+// the window as late data after it is (nothing without a completedAt or for
+// an excluded date). A manual request is never checked.
 func TestRerunRequest_WatchWindow(t *testing.T) {
 	const date = "2026-03-10"
 	tests := []struct {
@@ -189,6 +189,11 @@ func TestRerunRequest_WatchWindow(t *testing.T) {
 			}
 			if sfnFake.calls != wantStarts || !slices.Equal(gotEvents, wantEvents) {
 				t.Errorf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, gotEvents, wantStarts, wantEvents)
+			}
+			for _, e := range eb.events {
+				if e.Type == evManual && e.Detail["blockedBy"] != "postRun.watchWindow" {
+					t.Errorf("MANUAL_RERUN_REQUIRED blockedBy = %v, want postRun.watchWindow", e.Detail["blockedBy"])
+				}
 			}
 			if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
 				t.Errorf("job rows = %v, want %v", got, wantJobs)

@@ -63,11 +63,11 @@ func waitExecutionDone(t *testing.T, name string) {
 // after its latest completion. A trigger sensor rewritten at 07:30, inside the
 // first run's window (ends near 08:00), is late data: one LATE_DATA_ARRIVAL and
 // a late-data rerun. Its completion near 07:30 starts a new window ending near
-// 09:30. A rewrite at 09:45 is ignored: no event and no rerun request. A manual
-// RERUN_REQUEST written after it still runs, and since the router handles the
-// control stream's records in order, its RERUN_ACCEPTED shows the 09:45 sensor
-// was handled first. The clock keeps ticking between advances, so every check
-// keeps at least 15 simulated minutes from a window's end.
+// 09:30. A rewrite at 09:45 starts no rerun: it publishes only
+// MANUAL_RERUN_REQUIRED (blocked by the window), and a second rewrite only
+// MANUAL_RERUN_STILL_REQUIRED, which is not alerted. A manual RERUN_REQUEST
+// written after them still runs. The clock keeps ticking between advances, so
+// every check keeps at least 15 simulated minutes from a window's end.
 func TestScenarioLateDataWatchWindow(t *testing.T) {
 	const id = "late-data-window"
 	start, date := startDay(t)
@@ -79,6 +79,7 @@ func TestScenarioLateDataWatchWindow(t *testing.T) {
 	putConfig(t, cfg)
 	jt, vp, jc := string(types.EventJobTriggered), string(types.EventValidationPassed), string(types.EventJobCompleted)
 	late, accepted := string(types.EventLateDataArrival), string(types.EventRerunAccepted)
+	manual, still := string(types.EventManualRerunRequired), string(types.EventManualRerunStillRequired)
 
 	writeReady(t, id, date)
 	run1 := waitLaunch(t, id, 1)
@@ -98,6 +99,9 @@ func TestScenarioLateDataWatchWindow(t *testing.T) {
 
 	advanceTo(t, at(9, 45))
 	writeSensor(t, id, scenarioSensor, map[string]interface{}{"status": "ready", "date": date, "attempt": 3})
+	waitEvents(t, id, date, map[string]int{jt: 3, vp: 2, jc: 2, late: 1, accepted: 1, manual: 1})
+	writeSensor(t, id, scenarioSensor, map[string]interface{}{"status": "ready", "date": date, "attempt": 4})
+	waitEvents(t, id, date, map[string]int{jt: 3, vp: 2, jc: 2, late: 1, accepted: 1, manual: 1, still: 1})
 	putItem(t, map[string]ddbtypes.AttributeValue{
 		"PK":          &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(id)},
 		"SK":          &ddbtypes.AttributeValueMemberS{Value: types.RerunRequestSK(streamSchedule, date)},
@@ -106,8 +110,11 @@ func TestScenarioLateDataWatchWindow(t *testing.T) {
 	})
 	run3 := waitLaunch(t, id, 3)
 	reportJob(t, id, date, run3, types.JobEventSuccess)
-	waitEvents(t, id, date, map[string]int{jt: 4, vp: 3, jc: 3, late: 1, accepted: 2})
+	waitEvents(t, id, date, map[string]int{jt: 4, vp: 3, jc: 3, late: 1, accepted: 2, manual: 1, still: 1})
 	waitCompleted(t, id, date)
+	want := map[string]any{"reason": "late-data", "blockedBy": "postRun.watchWindow", "source": "sensor", "sensorKey": scenarioSensor}
+	assertDetails(t, id, manual, want)
+	assertDetails(t, id, still, want)
 
 	wantLog := []string{types.JobEventSuccess, types.JobEventRerunAccepted,
 		types.JobEventSuccess, types.JobEventRerunAccepted, types.JobEventSuccess}
@@ -117,7 +124,7 @@ func TestScenarioLateDataWatchWindow(t *testing.T) {
 	assertLaunches(t, id, 3)
 	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
 	waitAlerts(t, id, alert{id, date, jc}, alert{id, date, jc}, alert{id, date, jc},
-		alert{id, date, late}, alert{id, date, accepted}, alert{id, date, accepted})
+		alert{id, date, late}, alert{id, date, accepted}, alert{id, date, accepted}, alert{id, date, manual})
 }
 
 // rerunRequestRow is the pipeline's RERUN_REQUEST row for date, nil when there
@@ -144,12 +151,12 @@ func rerunRequestRow(t *testing.T, pipeline, date string) map[string]ddbtypes.At
 // (2h). The post-run sensor's count is 100 when the run completes near 06:00,
 // and complete-trigger captures it as the baseline (POST_RUN_BASELINE_CAPTURED,
 // not an alert). At 07:00 it is 120, which publishes POST_RUN_DRIFT and a
-// data-drift rerun request, rejected because maxDriftReruns is 0. At 08:15,
-// after the window, a count of 130 publishes nothing and writes no request. A
-// manual RERUN_REQUEST written after it is rejected (maxManualReruns 0); the
-// router handles the control stream in order, so that RERUN_REJECTED shows the
-// 08:15 sensor was handled first. Neither rejection writes a job row; each
-// RERUN_REJECTED names the request's reason and why.
+// data-drift rerun request, rejected because maxDriftReruns is 0, so the
+// baseline stays 100. At 08:15, after the window, a count of 130 publishes
+// only MANUAL_RERUN_REQUIRED (data-drift, blocked by the window) and writes no
+// request; a count of 140 then publishes only MANUAL_RERUN_STILL_REQUIRED,
+// which is not alerted. A manual RERUN_REQUEST written after them is rejected
+// (maxManualReruns 0). Neither rejection writes a job row; each RERUN_REJECTED names the request's reason and why.
 func TestScenarioDriftWatchWindow(t *testing.T) {
 	const id, postRunSensor = "drift-window", "row-count"
 	start, date := startDay(t)
@@ -166,6 +173,7 @@ func TestScenarioDriftWatchWindow(t *testing.T) {
 	putConfig(t, cfg)
 	jt, vp, jc := string(types.EventJobTriggered), string(types.EventValidationPassed), string(types.EventJobCompleted)
 	drift, rejected, base := string(types.EventPostRunDrift), string(types.EventRerunRejected), string(types.EventPostRunBaselineCaptured)
+	manual, still := string(types.EventManualRerunRequired), string(types.EventManualRerunStillRequired)
 
 	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 100, "date": date})
 	writeReady(t, id, date)
@@ -185,13 +193,20 @@ func TestScenarioDriftWatchWindow(t *testing.T) {
 
 	advanceTo(t, at(8, 15))
 	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 130, "date": date})
+	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1, drift: 1, rejected: 1, manual: 1})
+	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 140, "date": date})
+	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1, drift: 1, rejected: 1, manual: 1, still: 1})
 	putItem(t, map[string]ddbtypes.AttributeValue{
 		"PK":          &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(id)},
 		"SK":          &ddbtypes.AttributeValueMemberS{Value: types.RerunRequestSK(streamSchedule, date)},
 		"reason":      &ddbtypes.AttributeValueMemberS{Value: "manual"},
 		"requestedAt": &ddbtypes.AttributeValueMemberS{Value: mockNow(t).UTC().Format(time.RFC3339)},
 	})
-	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1, drift: 1, rejected: 2})
+	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1, drift: 1, rejected: 2, manual: 1, still: 1})
+	want := map[string]any{"reason": "data-drift", "blockedBy": "postRun.watchWindow", "source": "sensor",
+		"sensorKey": postRunSensor, "driftField": "count"}
+	assertDetails(t, id, manual, want)
+	assertDetails(t, id, still, want)
 
 	wantLog := []string{types.JobEventSuccess}
 	if got := jobEvents(t, id); !slices.Equal(got, wantLog) {
@@ -202,5 +217,6 @@ func TestScenarioDriftWatchWindow(t *testing.T) {
 		map[string]any{"reason": "manual", "why": "manual rerun limit exceeded"})
 	assertLaunches(t, id, 1)
 	assertTriggerStatus(t, id, date, types.TriggerStatusCompleted)
-	waitAlerts(t, id, alert{id, date, jc}, alert{id, date, drift}, alert{id, date, rejected}, alert{id, date, rejected})
+	waitAlerts(t, id, alert{id, date, jc}, alert{id, date, drift}, alert{id, date, rejected}, alert{id, date, rejected},
+		alert{id, date, manual})
 }

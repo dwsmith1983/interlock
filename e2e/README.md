@@ -126,7 +126,13 @@ code path first and assert the exact values it produces.
   trigger sensor twice, 90 minutes after the 06:00 start, with a 2h watch window
   and a 1h age: `LATE_DATA_ARRIVAL` and `MANUAL_RERUN_REQUIRED`, then
   `MANUAL_RERUN_STILL_REQUIRED`, no rerun request and no second launch; a
-  manual `RERUN_REQUEST` then launches run 2. Not run: drift past the age,
+  manual `RERUN_REQUEST` then launches run 2. The watch-window scenarios
+  rewrite the trigger sensor and the post-run sensor twice after the window:
+  `MANUAL_RERUN_REQUIRED` (`late-data` or `data-drift`, blocked by
+  `postRun.watchWindow`), then `MANUAL_RERUN_STILL_REQUIRED`. Not run: drift
+  past the age inside the window (`MANUAL_RERUN_REQUIRED` in place of
+  `POST_RUN_DRIFT`), since it would turn the drift scenario's after-window
+  alert into `MANUAL_RERUN_STILL_REQUIRED` and needs a scenario of its own;
   and an automatic request written before the age but handled after it (the
   stream-router's re-check, which publishes `MANUAL_RERUN_REQUIRED` with
   `source: rerun-request`): placing a request between the age and its

@@ -13,9 +13,10 @@ import (
 )
 
 // handlePostRunSensorEvent evaluates post-run rules reactively when a sensor
-// arrives via DynamoDB Stream. A completed date is checked only inside its
-// post-run watch window.
-func handlePostRunSensorEvent(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, sensorKey string, sensorData map[string]interface{}) error {
+// arrives via DynamoDB Stream; arrivedAt is its stream record's creation
+// time, zero when unknown. A completed date is checked only inside its
+// post-run watch window; after it, drift only asks for a manual rerun.
+func handlePostRunSensorEvent(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, sensorKey string, sensorData map[string]interface{}, arrivedAt time.Time) error {
 	if cfg.DryRun {
 		return handleDryRunPostRunSensor(ctx, d, cfg, pipelineID, sensorKey, sensorData)
 	}
@@ -32,17 +33,21 @@ func handlePostRunSensorEvent(ctx context.Context, d *lambda.Deps, cfg *types.Pi
 		return nil
 	}
 
+	write := manualRerunInput{sensorKey: sensorKey, sensorData: sensorData, arrivedAt: arrivedAt, now: now}
+	if arrivedAt.Unix() <= 0 {
+		write.arrivedAt = now
+	}
 	switch trigger.Status {
 	case types.TriggerStatusRunning:
 		return handlePostRunInflight(ctx, d, cfg, pipelineID, scheduleID, date, sensorKey, sensorData)
 	case types.TriggerStatusCompleted:
 		if !lambda.PostRunWatched(cfg, trigger, now) {
-			d.Logger.InfoContext(ctx, "post-run sensor ignored: post-run watch window has ended",
+			d.Logger.InfoContext(ctx, "post-run sensor after the post-run watch window: no automatic rerun or post-run check",
 				"pipelineId", pipelineID, "schedule", scheduleID, "date", date, "sensor", sensorKey,
 				"completedAt", trigger.CompletedAt)
-			return nil
+			return recordDriftAfterWindow(ctx, d, cfg, trigger, pipelineID, scheduleID, date, write)
 		}
-		return handlePostRunCompleted(ctx, d, cfg, trigger, now, pipelineID, scheduleID, date, sensorKey, sensorData)
+		return handlePostRunCompleted(ctx, d, cfg, trigger, pipelineID, scheduleID, date, write)
 	default:
 		return nil
 	}
@@ -72,90 +77,38 @@ func handlePostRunInflight(ctx context.Context, d *lambda.Deps, cfg *types.Pipel
 		return nil
 	}
 
-	driftField := lambda.ResolveDriftField(cfg.PostRun)
-	threshold := 0.0
-	if cfg.PostRun.DriftThreshold != nil {
-		threshold = *cfg.PostRun.DriftThreshold
-	}
-	dr := lambda.DetectDrift(ruleBaseline, sensorData, driftField, threshold)
+	dr, detail := postRunDrift(cfg.PostRun, ruleBaseline, sensorData)
 	if dr.Drifted {
+		detail["sensorKey"], detail["source"] = sensorKey, "post-run-stream"
 		if err := lambda.PublishEvent(ctx, d, string(types.EventPostRunDriftInflight), pipelineID, scheduleID, date,
 			fmt.Sprintf("inflight drift detected for %s: %.0f → %.0f (informational)", pipelineID, dr.Previous, dr.Current),
-			map[string]interface{}{
-				"previousCount":  dr.Previous,
-				"currentCount":   dr.Current,
-				"delta":          dr.Delta,
-				"driftThreshold": threshold,
-				"driftField":     driftField,
-				"sensorKey":      sensorKey,
-				"source":         "post-run-stream",
-			}); err != nil {
+			detail); err != nil {
 			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDriftInflight, "error", err)
 		}
 	}
 	return nil
 }
 
-// handlePostRunCompleted evaluates post-run rules after the job has completed.
-// Drift is always published; a data-drift rerun is requested only while the
-// trigger row tr still allows automatic reruns at now, the time the caller
-// judged the watch window by.
-func handlePostRunCompleted(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, tr *types.ControlRecord, now time.Time, pipelineID, scheduleID, date, sensorKey string, sensorData map[string]interface{}) error {
+// handlePostRunCompleted evaluates post-run rules after the job has completed,
+// for a write inside the date's watch window of the trigger row tr at
+// write.now. Drift goes to handleCompletedDrift instead of the rules.
+func handlePostRunCompleted(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, tr *types.ControlRecord, pipelineID, scheduleID, date string, write manualRerunInput) error {
 	baselineKey := "postrun-baseline#" + date
 	baseline, err := d.Store.GetSensorData(ctx, pipelineID, baselineKey)
 	if err != nil {
 		return fmt.Errorf("get baseline for post-run: %w", err)
 	}
 
-	ruleKey, ruleBaseline := postRunBaselineEntry(cfg.PostRun.Rules, sensorKey, baseline)
-	if ruleKey != "" {
-		if ruleBaseline == nil && seedsPostRunBaseline(cfg.PostRun, ruleKey, sensorKey, date, sensorData) {
-			if ruleBaseline, err = seedPostRunBaseline(ctx, d, pipelineID, date, ruleKey, baseline != nil, sensorData); err != nil {
-				return err
-			}
+	ruleKey, ruleBaseline := postRunBaselineEntry(cfg.PostRun.Rules, write.sensorKey, baseline)
+	if ruleBaseline == nil && seedsPostRunBaseline(cfg.PostRun, ruleKey, write.sensorKey, date, write.sensorData) {
+		if ruleBaseline, err = seedPostRunBaseline(ctx, d, pipelineID, date, ruleKey, baseline != nil, write.sensorData); err != nil {
+			return err
 		}
-
-		if ruleBaseline != nil {
-			driftField := lambda.ResolveDriftField(cfg.PostRun)
-			threshold := 0.0
-			if cfg.PostRun.DriftThreshold != nil {
-				threshold = *cfg.PostRun.DriftThreshold
-			}
-			dr := lambda.DetectDrift(ruleBaseline, sensorData, driftField, threshold)
-			if dr.Drifted {
-				if err := lambda.PublishEvent(ctx, d, string(types.EventPostRunDrift), pipelineID, scheduleID, date,
-					fmt.Sprintf("post-run drift detected for %s: %.0f → %.0f records", pipelineID, dr.Previous, dr.Current),
-					map[string]interface{}{
-						"previousCount":  dr.Previous,
-						"currentCount":   dr.Current,
-						"delta":          dr.Delta,
-						"driftThreshold": threshold,
-						"driftField":     driftField,
-						"sensorKey":      sensorKey,
-						"source":         "post-run-stream",
-					}); err != nil {
-					d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDrift, "error", err)
-				}
-
-				switch {
-				case lambda.IsExcludedDate(cfg, date):
-					if pubErr := lambda.PublishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleID, date,
-						fmt.Sprintf("post-run drift rerun skipped for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
-						d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
-					}
-					d.Logger.InfoContext(ctx, "post-run drift rerun skipped: execution date excluded by calendar",
-						"pipelineId", pipelineID, "date", date)
-				case !lambda.AutoRerunAllowed(cfg, tr, now):
-					logAutoRerunEnded(ctx, d, cfg, tr, "post-run drift rerun not requested: automatic reruns have ended",
-						pipelineID, scheduleID, date, "data-drift")
-				default:
-					if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, scheduleID, date, "data-drift"); writeErr != nil {
-						d.Logger.WarnContext(ctx, "failed to write rerun request on post-run drift",
-							"pipelineId", pipelineID, "error", writeErr)
-					}
-				}
-				return nil
-			}
+	}
+	if ruleBaseline != nil {
+		if dr, drift := postRunDrift(cfg.PostRun, ruleBaseline, write.sensorData); dr.Drifted {
+			write.drift, write.baseline = drift, ruleBaseline
+			return handleCompletedDrift(ctx, d, cfg, tr, pipelineID, scheduleID, date, dr, write)
 		}
 	}
 
@@ -181,6 +134,79 @@ func handlePostRunCompleted(ctx context.Context, d *lambda.Deps, cfg *types.Pipe
 	}
 
 	return nil
+}
+
+// handleCompletedDrift acts on drift (dr, and write.drift) of a write inside
+// the watch window of tr. While automatic reruns are allowed at write.now it
+// publishes POST_RUN_DRIFT and requests a data-drift rerun, or publishes
+// PIPELINE_EXCLUDED for a calendar-excluded date. After that it asks for a
+// manual rerun and publishes no POST_RUN_DRIFT: with no rerun the baseline
+// stays as it is, so every later write would repeat it.
+func handleCompletedDrift(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, tr *types.ControlRecord, pipelineID, scheduleID, date string,
+	dr lambda.DriftResult, write manualRerunInput) error {
+	if !lambda.AutoRerunAllowed(cfg, tr, write.now) {
+		write.blockedBy = logAutoRerunEnded(ctx, d, cfg, tr, "post-run drift rerun not requested: automatic reruns have ended",
+			pipelineID, scheduleID, date, "data-drift")
+		return requireManualRerunOnDrift(ctx, d, cfg, pipelineID, scheduleID, date, tr, write)
+	}
+	detail := maps.Clone(write.drift)
+	detail["sensorKey"], detail["source"] = write.sensorKey, "post-run-stream"
+	if err := lambda.PublishEvent(ctx, d, string(types.EventPostRunDrift), pipelineID, scheduleID, date,
+		fmt.Sprintf("post-run drift detected for %s: %.0f → %.0f records", pipelineID, dr.Previous, dr.Current), detail); err != nil {
+		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDrift, "error", err)
+	}
+	if lambda.IsExcludedDate(cfg, date) {
+		if pubErr := lambda.PublishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleID, date,
+			fmt.Sprintf("post-run drift rerun skipped for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
+			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
+		}
+		d.Logger.InfoContext(ctx, "post-run drift rerun skipped: execution date excluded by calendar",
+			"pipelineId", pipelineID, "date", date)
+		return nil
+	}
+	if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, scheduleID, date, "data-drift"); writeErr != nil {
+		d.Logger.WarnContext(ctx, "failed to write rerun request on post-run drift",
+			"pipelineId", pipelineID, "error", writeErr)
+	}
+	return nil
+}
+
+// recordDriftAfterWindow handles a post-run write after the watch window of
+// tr: drift from its rule's baseline entry asks for a manual rerun, blocked by
+// the window. It never seeds or rewrites the baseline, publishes no POST_RUN_*
+// event and evaluates no post-run rule. Without the baseline row, which
+// expires with its ttl, nothing is recorded.
+func recordDriftAfterWindow(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, tr *types.ControlRecord, pipelineID, scheduleID, date string,
+	write manualRerunInput) error {
+	baseline, err := d.Store.GetSensorData(ctx, pipelineID, "postrun-baseline#"+date)
+	if err != nil {
+		return fmt.Errorf("get baseline after the post-run watch window: %w", err)
+	}
+	_, entry := postRunBaselineEntry(cfg.PostRun.Rules, write.sensorKey, baseline)
+	if entry == nil {
+		return nil
+	}
+	dr, drift := postRunDrift(cfg.PostRun, entry, write.sensorData)
+	if !dr.Drifted {
+		return nil
+	}
+	write.drift, write.baseline, write.blockedBy = drift, entry, endedByWatchWindow
+	return requireManualRerunOnDrift(ctx, d, cfg, pipelineID, scheduleID, date, tr, write)
+}
+
+// postRunDrift compares a post-run write with its rule's baseline entry by
+// postRun.driftField and driftThreshold, and gives the drift's numbers as
+// event detail: driftField, previousCount, currentCount, delta and
+// driftThreshold.
+func postRunDrift(cfg *types.PostRunConfig, entry, sensorData map[string]interface{}) (dr lambda.DriftResult, detail map[string]interface{}) {
+	field := lambda.ResolveDriftField(cfg)
+	threshold := 0.0
+	if cfg.DriftThreshold != nil {
+		threshold = *cfg.DriftThreshold
+	}
+	dr = lambda.DetectDrift(entry, sensorData, field, threshold)
+	return dr, map[string]interface{}{"previousCount": dr.Previous, "currentCount": dr.Current, "delta": dr.Delta,
+		"driftThreshold": threshold, "driftField": field}
 }
 
 // postRunBaselineEntry returns the key of the first post-run rule sensorKey
