@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
 
 import deploy
 
@@ -32,6 +32,17 @@ class LambdaEnvTest(unittest.TestCase):
         self.assertEqual(deploy._lambda_env("sla-monitor", SFN_ARN)["SKIP_SCHEDULER"], "true")
         watchdog = deploy._lambda_env("watchdog", SFN_ARN)
         self.assertEqual([v for v in SCHEDULER_VARS if v in watchdog], [])
+
+    def test_lambda_env_scheduler_skipped_outside_e2e(self) -> None:
+        # LocalStack Community has no EventBridge Scheduler, so both Lambdas
+        # that create schedules must skip it; e2e records them in a table.
+        for handler in ("sla-monitor", "watchdog"):
+            with self.subTest(handler=handler):
+                self.assertEqual(deploy._lambda_env(handler, SFN_ARN)["SKIP_SCHEDULER"], "true")
+                self.assertNotIn("SKIP_SCHEDULER", deploy._lambda_env(handler, SFN_ARN, e2e=True))
+        for handler in ("stream-router", "orchestrator", "event-sink", "alert-dispatcher"):
+            with self.subTest(handler=handler):
+                self.assertNotIn("SKIP_SCHEDULER", deploy._lambda_env(handler, SFN_ARN))
 
     def test_lambda_env_e2e_sets_hooks(self) -> None:
         for handler in deploy.LAMBDA_HANDLERS:
@@ -189,7 +200,7 @@ class AlertAllowlistTest(unittest.TestCase):
 
 
 class CmdSmokeTest(unittest.TestCase):
-    def test_smoke_ignores_schedules_table(self) -> None:
+    def _client(self) -> mock.MagicMock:
         client = mock.MagicMock()
         client.list_functions.return_value = {
             "Functions": [{"FunctionName": f"{deploy.PREFIX}-{h}"} for h in deploy.LAMBDA_HANDLERS]
@@ -201,9 +212,81 @@ class CmdSmokeTest(unittest.TestCase):
         client.get_function.return_value = {
             "Configuration": {"Environment": {"Variables": {"AWS_ENDPOINT_URL": "x"}}}
         }
-        with mock.patch.object(deploy, "_client", return_value=client), \
-                contextlib.redirect_stdout(io.StringIO()):
+        client.invoke.return_value = {"StatusCode": 200, "Payload": io.BytesIO(b"null")}
+        return client
+
+    def _smoke(self, client: mock.MagicMock) -> tuple[str, mock.MagicMock]:
+        out = io.StringIO()
+        with mock.patch.object(deploy, "_client", return_value=client) as factory, \
+                contextlib.redirect_stdout(out):
             deploy.cmd_smoke()  # exits 1 on a mismatch
+        return out.getvalue(), factory
+
+    def _smoke_fails(self, client: mock.MagicMock) -> str:
+        out = io.StringIO()
+        with mock.patch.object(deploy, "_client", return_value=client), \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as cm:
+            deploy.cmd_smoke()
+        self.assertEqual(cm.exception.code, 1)
+        return out.getvalue()
+
+    def test_smoke_ignores_schedules_table(self) -> None:
+        self._smoke(self._client())
+
+    def test_smoke_invokes_watchdog(self) -> None:
+        client = self._client()
+        out, factory = self._smoke(client)
+        client.invoke.assert_called_once()
+        kwargs = client.invoke.call_args.kwargs
+        self.assertEqual(kwargs["FunctionName"], f"{deploy.PREFIX}-watchdog")
+        self.assertEqual(kwargs.get("InvocationType", "RequestResponse"), "RequestResponse")
+        # A long read timeout for a slow first container start, and no retry,
+        # which would run the watchdog a second time.
+        factory.assert_any_call(
+            "lambda", read_timeout=deploy.SMOKE_INVOKE_TIMEOUT_SECONDS, max_attempts=1
+        )
+        self.assertIn("invoked", out)
+        self.assertIn("PASSED", out)
+
+    def test_smoke_fails_on_function_error(self) -> None:
+        client = self._client()
+        client.invoke.return_value = {
+            "StatusCode": 200,
+            "FunctionError": "Unhandled",
+            "Payload": io.BytesIO(b'{"errorMessage": "boom"}'),
+        }
+        out = self._smoke_fails(client)
+        self.assertIn("FAIL", out)
+        self.assertIn("boom", out)
+        self.assertNotIn("PASSED", out)
+
+    def test_smoke_fails_when_invoke_errors(self) -> None:
+        client = self._client()
+        client.invoke.side_effect = ClientError(
+            {"Error": {"Code": "ResourceConflictException", "Message": "state Failed"}}, "Invoke"
+        )
+        out = self._smoke_fails(client)
+        self.assertIn("FAIL", out)
+        self.assertIn("state Failed", out)
+        self.assertNotIn("PASSED", out)
+
+    def test_smoke_fails_when_endpoint_unreachable(self) -> None:
+        client = self._client()
+        client.invoke.side_effect = EndpointConnectionError(endpoint_url="http://localhost:4566")
+        out = self._smoke_fails(client)
+        self.assertIn("FAIL", out)
+        self.assertIn("http://localhost:4566", out)
+        self.assertNotIn("PASSED", out)
+
+    def test_smoke_fails_when_payload_read_errors(self) -> None:
+        client = self._client()
+        payload = mock.MagicMock()
+        payload.read.side_effect = ReadTimeoutError(endpoint_url="http://localhost:4566")
+        client.invoke.return_value = {"StatusCode": 200, "Payload": payload}
+        out = self._smoke_fails(client)
+        self.assertIn("FAIL", out)
+        self.assertIn("Read timeout", out)
+        self.assertNotIn("PASSED", out)
 
 
 if __name__ == "__main__":
