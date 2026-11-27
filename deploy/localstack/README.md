@@ -6,8 +6,10 @@ system can be smoke-tested without an AWS account.
 
 ## Prerequisites
 
-- Docker
+- Docker. `localstack-up` mounts the Docker socket (`/var/run/docker.sock`)
+  into LocalStack, which starts each Lambda in its own container.
 - Go (matching the project's toolchain version)
+- `zip` and `curl`
 - Python 3.11+
 - `boto3` — `pip install -r deploy/localstack/requirements.txt`
 
@@ -21,12 +23,15 @@ make -f deploy/localstack/Makefile localstack-all
 
 This runs:
 
-1. `localstack-up`     — start LocalStack at `http://localhost:4566`
-2. `localstack-build`  — build the 6 Lambda zips under `deploy/localstack/dist/`
-3. `localstack-deploy` — create all infra via boto3
-4. `localstack-smoke`  — sanity-check the deploy
+1. `localstack-up`: start LocalStack at `http://localhost:4566`, as
+   container `interlock-localstack` with the alias `localstack` on the Docker
+   network `interlock-net`
+2. `localstack-build`: build the 6 Lambda zips under `deploy/localstack/dist/`
+3. `localstack-deploy`: create all infra via boto3
+4. `localstack-smoke`: check the deploy and invoke the watchdog
 
-Tear everything down:
+Tear everything down (`localstack-down` also removes every container on
+`interlock-net`, which includes the Lambda containers LocalStack started):
 
 ```
 make -f deploy/localstack/Makefile localstack-teardown
@@ -48,12 +53,15 @@ make -f deploy/localstack/Makefile localstack-down
 | IAM | `lambda-role`, `sfn-role` (dummy LocalStack roles) |
 
 All Lambdas receive `AWS_ENDPOINT_URL=http://localstack:4566` so the Go SDK
-inside them calls LocalStack instead of real AWS.
+inside them calls LocalStack instead of real AWS. LocalStack starts the Lambda
+containers on `interlock-net`, where `localstack` is its network alias.
 
 ## What's skipped vs production
 
-- **EventBridge Scheduler** — Pro-only. `sla-monitor` gets `SKIP_SCHEDULER=true`
-  so its schedule-creation paths no-op.
+- **EventBridge Scheduler**: Pro-only. `sla-monitor` and `watchdog` get
+  `SKIP_SCHEDULER=true` so their schedule-creation paths no-op. Scheduled
+  `SLA_WARNING` and `SLA_BREACH` alerts therefore do not fire locally; the
+  `SLA_MET` or `SLA_BREACH` published when a run ends still does.
 - **CloudWatch alarms** and alarm-driven EventBridge rules.
 - **KMS-encrypted SQS** — the LocalStack stubbed KMS is not representative.
 - **Reserved concurrency, DLQs, secrets** — not meaningful for local smoke.
@@ -88,6 +96,11 @@ The smoke check ensures:
 1. All 6 Interlock Lambdas are present.
 2. All 4 DynamoDB tables are present (the e2e schedules table is ignored).
 3. `stream-router` has `AWS_ENDPOINT_URL` set in its environment.
+4. The watchdog runs: it is invoked synchronously with an empty scheduled
+   event and must return without a function error. This fails when LocalStack
+   cannot start Lambda containers (no Docker socket) or a Lambda cannot reach
+   LocalStack at `AWS_ENDPOINT_URL`. The first invoke starts a container, so it
+   can take a minute.
 
 ## Environment variables
 

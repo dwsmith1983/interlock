@@ -417,7 +417,7 @@ make audit           # lint, test, e2e-check and guards in one run
 
 ### Local Development with LocalStack
 
-Run the full Interlock stack locally against [LocalStack](https://localstack.cloud/) Community (real Lambdas, DynamoDB streams, Step Functions and EventBridge) without an AWS account. LocalStack Community has no EventBridge Scheduler, so scheduled `SLA_WARNING` and `SLA_BREACH` alerts do not fire locally. The deploy sets `SKIP_SCHEDULER=true` on `sla-monitor` only, so for a pipeline with `sla.deadline` and a `RUN#` row the watchdog still tries to create the schedules, and those calls fail. The `SLA_MET` or `SLA_BREACH` that the cancel step publishes when a run ends still arrives. Prerequisites: Docker, Go 1.26+, `zip`, Python 3.11+ on the `PATH` as `python`, and `boto3` (`pip install -r deploy/localstack/requirements.txt`).
+Run the full Interlock stack locally against [LocalStack](https://localstack.cloud/) Community (real Lambdas, DynamoDB streams, Step Functions and EventBridge) without an AWS account. LocalStack Community has no EventBridge Scheduler, so scheduled `SLA_WARNING` and `SLA_BREACH` alerts do not fire locally: the deploy sets `SKIP_SCHEDULER=true` on `sla-monitor` and the watchdog, which then create no schedules. The `SLA_MET` or `SLA_BREACH` that the cancel step publishes when a run ends still arrives. LocalStack starts each Lambda in its own container, so it needs the Docker socket, which `localstack-up` mounts (`/var/run/docker.sock`). Prerequisites: Docker, Go 1.26+, `zip`, `curl`, Python 3.11+ on the `PATH` as `python`, and `boto3` (`pip install -r deploy/localstack/requirements.txt`).
 
 ```bash
 make -f deploy/localstack/Makefile localstack-all

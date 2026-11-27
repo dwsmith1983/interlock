@@ -6,8 +6,9 @@ names, stream view types, batch sizes, and Lambda env vars match the production
 shape so code behaves the same locally.
 
 Skipped relative to production (Pro-only or not useful locally):
-  - EventBridge Scheduler (Pro-only). Sla-monitor Lambdas get SKIP_SCHEDULER=true
-    so their schedule-creation paths no-op (except under --e2e, below).
+  - EventBridge Scheduler (Pro-only). The sla-monitor and watchdog Lambdas get
+    SKIP_SCHEDULER=true so their schedule-creation paths no-op (except under
+    --e2e, below).
   - CloudWatch alarms / alarm-driven EventBridge rules.
   - KMS-encrypted SQS queues (LocalStack community uses a stubbed KMS).
 
@@ -20,7 +21,7 @@ Usage:
     python deploy.py deploy         # create all resources (idempotent)
     python deploy.py deploy --e2e   # same, wired for the e2e harness
     python deploy.py teardown       # delete all resources
-    python deploy.py smoke          # sanity-check what was deployed
+    python deploy.py smoke          # check what was deployed, invoke the watchdog
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ from typing import Any
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -49,10 +50,10 @@ PREFIX = f"{ENVIRONMENT}-interlock"
 REGION = "us-east-1"
 ENDPOINT_URL = os.environ.get("AWS_ENDPOINT_URL", "http://localhost:4566")
 # The endpoint Lambdas use when calling AWS services from *inside* the
-# LocalStack container network. When LocalStack runs via the Makefile target
-# with container name `interlock-localstack`, the Lambda Docker containers
-# reach it as `http://localstack:4566` on the shared Docker network. Override
-# with LAMBDA_AWS_ENDPOINT_URL if running a different topology.
+# LocalStack container network. The Makefile target starts the container
+# `interlock-localstack` with the network alias `localstack` on interlock-net,
+# so the Lambda Docker containers reach it as `http://localstack:4566`.
+# Override with LAMBDA_AWS_ENDPOINT_URL if running a different topology.
 LAMBDA_ENDPOINT_URL = os.environ.get(
     "LAMBDA_AWS_ENDPOINT_URL", "http://localstack:4566"
 )
@@ -153,7 +154,7 @@ ALERT_DETAIL_TYPES = [
 # ---------------------------------------------------------------------------
 
 
-def _client(service: str):
+def _client(service: str, *, read_timeout: int = 60, max_attempts: int = 3):
     """Build a boto3 client targeted at LocalStack with dummy credentials."""
     return boto3.client(
         service,
@@ -161,7 +162,10 @@ def _client(service: str):
         endpoint_url=ENDPOINT_URL,
         aws_access_key_id="test",
         aws_secret_access_key="test",
-        config=Config(retries={"max_attempts": 3, "mode": "standard"}),
+        config=Config(
+            read_timeout=read_timeout,
+            retries={"max_attempts": max_attempts, "mode": "standard"},
+        ),
     )
 
 
@@ -559,14 +563,14 @@ def _lambda_env(
         # Production never sets this; SSRF protection stays active in real AWS.
         base["DISABLE_SSRF_PROTECTION"] = "true"
 
+    if handler in ("sla-monitor", "watchdog") and not e2e:
+        # EventBridge Scheduler is Pro-only, so outside e2e both Lambdas that
+        # create schedules are told to no-op those paths.
+        base["SKIP_SCHEDULER"] = "true"
     if handler == "sla-monitor" or (e2e and handler == "watchdog"):
-        # EventBridge Scheduler is Pro-only, so outside e2e sla-monitor is
-        # told to no-op schedule-creation paths. Under e2e both Lambdas that
-        # schedule (sla-monitor, watchdog) write to the schedules table
+        # Under e2e both Lambdas that schedule write to the schedules table
         # instead and need a target and role to record. Dummy ARNs satisfy
         # the envcheck guard so sla-monitor can boot on LocalStack Community.
-        if not e2e:
-            base["SKIP_SCHEDULER"] = "true"
         base["SLA_MONITOR_ARN"] = (
             f"arn:aws:lambda:{REGION}:{DUMMY_ACCOUNT_ID}:function:{PREFIX}-sla-monitor"
         )
@@ -934,7 +938,43 @@ def cmd_smoke() -> None:
         sys.exit(1)
     print(f"  [lambda] {probe} AWS_ENDPOINT_URL={env['AWS_ENDPOINT_URL']}")
 
+    # 4. A Lambda really runs: LocalStack can start its container and the
+    # function reaches LocalStack's DynamoDB. The watchdog ignores its event,
+    # and its schedule rule runs it every minute anyway, so this extra pass
+    # does nothing a scheduled one would not.
+    invoke_watchdog()
+
     print("==> Smoke test PASSED")
+
+
+# The first invoke starts the function's container, which can be slow, so the
+# read timeout is longer than boto3's default 60 s. One attempt only: a
+# retried invoke would run the watchdog twice.
+SMOKE_INVOKE_TIMEOUT_SECONDS = 300
+SMOKE_WATCHDOG_EVENT = {"source": "aws.events", "detail-type": "Scheduled Event", "detail": {}}
+
+
+def invoke_watchdog() -> None:
+    """Invoke the watchdog synchronously and exit 1 if it does not succeed."""
+    fn_name = f"{PREFIX}-watchdog"
+    lam = _client("lambda", read_timeout=SMOKE_INVOKE_TIMEOUT_SECONDS, max_attempts=1)
+    print(f"  [lambda] invoking {fn_name} (the first run starts its container)")
+    try:
+        resp = lam.invoke(
+            FunctionName=fn_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(SMOKE_WATCHDOG_EVENT).encode(),
+        )
+        payload = resp["Payload"].read().decode(errors="replace")
+    except (ClientError, BotoCoreError) as e:
+        print(f"  FAIL: invoking {fn_name} failed: {e}")
+        print("  A function in state Failed usually means LocalStack has no Docker socket"
+              " to start Lambda containers; see deploy/localstack/README.md")
+        sys.exit(1)
+    if resp.get("FunctionError"):
+        print(f"  FAIL: {fn_name} returned a function error ({resp['FunctionError']}): {payload}")
+        sys.exit(1)
+    print(f"  [lambda] invoked {fn_name}: status {resp.get('StatusCode')}, no function error")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -947,7 +987,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--e2e", action="store_true", help="wire the stack for the e2e harness"
     )
     sub.add_parser("teardown", help="delete all resources")
-    sub.add_parser("smoke", help="sanity-check what was deployed")
+    sub.add_parser("smoke", help="check what was deployed and invoke the watchdog")
     return parser.parse_args(argv)
 
 
