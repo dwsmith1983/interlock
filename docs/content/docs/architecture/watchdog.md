@@ -1,7 +1,7 @@
 ---
 title: Watchdog
 weight: 3
-description: Detects stale triggers, missed schedules, SLA gaps, passed cutoffs, and missing post-run sensors.
+description: Nine scheduled checks for stale runs, missed cron schedules, missed inclusion-calendar dates, missed triggers, SLA schedules, cutoffs, post-run sensors, relative SLAs and invalid configs.
 ---
 
 The watchdog is one of six Lambda functions in the Interlock framework. It runs independently on an EventBridge schedule (default: every 5 minutes) and runs nine checks in a table-driven loop to detect silent failures:
@@ -15,6 +15,8 @@ The watchdog is one of six Lambda functions in the Interlock framework. It runs 
 7. **Missing post-run sensors** -- a pipeline completed but the expected post-run sensor never arrived
 8. **Relative SLA** -- a pipeline with `maxDuration` SLA whose run has not finished: `RELATIVE_SLA_WARNING` once at first sensor arrival + `maxDuration` - `expectedDuration` (75% of `maxDuration` without `expectedDuration`), then `RELATIVE_SLA_BREACH` once at arrival + `maxDuration`. Run dates with a first sensor arrival, daily and hourly, are checked from 8 days before to 2 days after today (UTC). Nothing is sent once a breach time is more than 24 hours past, so an alert the watchdog could not send by then (an outage, say) is lost. For a run the watchdog started itself, the arrival is the time it started it
 9. **Invalid configs** -- a pipeline's `CONFIG` row was rejected (malformed or failing validation), so that pipeline is skipped while the others run; reported as `CONFIG_INVALID` once per broken config version and day
+
+A dry-run pipeline is skipped by every check except stale triggers and invalid configs.
 
 In STAMP terms, these are safety constraint violations caused by _what didn't happen_ rather than what went wrong.
 
@@ -138,8 +140,8 @@ For pipelines with `postRun` config, the watchdog checks whether post-run sensor
 ```
 Load all pipeline configs (via config cache)
 
-For each pipeline with postRun config:
-  Find TRIGGER# record for today with status=COMPLETED
+For each pipeline with postRun rules that is not a dry run:
+  Find TRIGGER# record for today's UTC date with status=COMPLETED
   If no completed trigger, or it has no completedAt → skip
   Marker SENSOR#postrun-check#<date> present → already alerted (skip)
 
@@ -171,6 +173,7 @@ postRun:
       check: gte
       field: count
       value: 1000
+  driftField: count
 ```
 
 ### Event Format
@@ -183,11 +186,19 @@ postRun:
     "pipelineId": "silver-orders",
     "scheduleId": "stream",
     "date": "2026-03-01",
-    "message": "post-run sensor not received within 2h of completion",
-    "timestamp": "2026-03-01T14:30:00Z"
+    "message": "post-run sensor missing for silver-orders on 2026-03-01",
+    "timestamp": "2026-03-01T14:30:00Z",
+    "detail": {
+      "source": "watchdog",
+      "sensorTimeout": "2h",
+      "ruleKeys": "output-row-count",
+      "actionHint": "post-run sensor data has not arrived within the expected timeout"
+    }
   }
 }
 ```
+
+`sensorTimeout` is the configured value, empty when it is unset (the 2-hour default applies). `ruleKeys` lists the `postRun.rules` keys, separated by a comma and a space.
 
 ## Deployment
 
@@ -228,13 +239,14 @@ Keep the interval well under 6 hours. SLA schedules are created at most 6 hours 
 
 All nine checks run independently in sequence. An error in any check does not prevent the remaining checks from running. Errors are collected into an aggregate error and returned to the Lambda runtime.
 
-When one or more checks fail, the watchdog publishes a `WATCHDOG_DEGRADED` event to EventBridge listing the failed check names. The event-sink records it, but it is not on the module's alert rule, so it does not reach Slack; add a rule on the bus to route it.
+When one or more checks fail, the watchdog publishes a `WATCHDOG_DEGRADED` event to EventBridge whose message lists the failed check names. It has no inner `detail`, and `pipelineId` is empty, so the event-sink stores it under the PK `PIPELINE#`. The event-sink records it, but it is not on the module's alert rule, so it does not reach Slack; add a rule on the bus to route it.
 
 ```json
 {
   "source": "interlock",
   "detail-type": "WATCHDOG_DEGRADED",
   "detail": {
+    "pipelineId": "",
     "message": "watchdog checks failed: stale-triggers, sla-scheduling",
     "timestamp": "2026-03-01T12:30:00Z"
   }

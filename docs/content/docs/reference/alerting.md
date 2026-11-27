@@ -8,7 +8,7 @@ Interlock publishes all lifecycle and alert events to a custom EventBridge event
 
 ## EventBridge Event Bus
 
-The Terraform module creates a custom event bus named `{environment}-interlock-events`. All four Lambda functions publish events to this bus using `events:PutEvents`.
+The Terraform module creates a custom event bus named `{environment}-interlock-events`. Four of the six Lambda functions publish events to this bus using `events:PutEvents`: stream-router, orchestrator, sla-monitor and watchdog.
 
 The bus name is available as a Terraform output:
 
@@ -40,7 +40,7 @@ Published by the **sla-monitor** Lambda via EventBridge Scheduler callbacks and 
 
 ### Lifecycle Events
 
-Published by the **orchestrator** and **stream-router** Lambdas during the pipeline lifecycle.
+Published by the **orchestrator** and **stream-router** Lambdas during the pipeline lifecycle. The **watchdog** publishes some of them too: `SFN_TIMEOUT`, `POST_RUN_SENSOR_MISSING`, `SENSOR_DEADLINE_EXPIRED`, and `JOB_TRIGGERED` when its reconciliation restarts a released date.
 
 | Detail Type | Meaning | When |
 |---|---|---|
@@ -55,11 +55,11 @@ Published by the **orchestrator** and **stream-router** Lambdas during the pipel
 | `SFN_TIMEOUT` | Step Functions execution timed out | Global `TimeoutSeconds` exceeded (configurable via `sfn_timeout_seconds` Terraform variable); the watchdog publishes it once the trigger row's `staleAt` passes, with `staleAt` in the detail, and closes the row `FAILED_FINAL` only after the publish succeeds, so a failed publish is retried on the next pass |
 | `DATA_DRIFT` | Reserved | Defined and on the alert rule, but nothing publishes it; post-run drift is `POST_RUN_DRIFT` |
 | `POST_RUN_DRIFT` | Post-run sensor changed after completion | Sensor value drifted from baseline after job completed, inside the [watch window](../../configuration/pipelines/#watch-window), while a rerun can follow: until `job.maxAutoRerunAge` (default `120h`) has passed since completion, with a `data-drift` rerun request. Past the age drift publishes `MANUAL_RERUN_REQUIRED` instead, since with no rerun the baseline stays as it is and every later write would repeat it |
-| `POST_RUN_DRIFT_INFLIGHT` | Post-run sensor changed while job running | Informational drift detected during an active execution |
+| `POST_RUN_DRIFT_INFLIGHT` | Post-run sensor changed while job running | Informational: a post-run sensor drifted from the date's baseline while the trigger row is `RUNNING`. It fires only while a baseline from an earlier completion is still present: a first run and its retries have not completed, and an accepted rerun deletes the baseline when it starts, so none of them has one |
 | `POST_RUN_FAILED` | Post-run rules failed | A post-run sensor arrived inside the watch window, did not drift, and the `postRun.rules` failed |
 | `POST_RUN_PASSED` | Post-run rules passed | As `POST_RUN_FAILED`, when the rules pass. Not an alert |
 | `POST_RUN_BASELINE_CAPTURED` | Post-run baseline written | A successful run's sensor values were captured as the drift baseline. Not an alert |
-| `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | Within `sensorTimeout` of the trigger row's `completedAt`, the watchdog found no post-run sensor that exists and either differs from its completion-time baseline or was absent then; once per date, retried on the next pass if the publish fails |
+| `POST_RUN_SENSOR_MISSING` | No post-run sensor data received | On the first watchdog pass after the trigger row's `completedAt` plus `sensorTimeout`, the watchdog found no post-run sensor that exists and either differs from its completion-time baseline or was absent then. Only the daily run date equal to the current UTC date is checked, so an earlier date, an hourly run or a timeout that ends after UTC midnight gets none. Once per date, retried on the next pass if the publish fails; detail carries `source: watchdog`, `sensorTimeout`, `ruleKeys` and `actionHint` |
 | `BASELINE_CAPTURE_FAILED` | Baseline capture error | Error occurred while capturing the post-run baseline at trigger completion |
 | `SENSOR_DEADLINE_EXPIRED` | A run date passed its cutoff without starting | The run date is closed (`FAILED_FINAL`) by the stream-router or the watchdog's reconciliation when a sensor is processed after the cutoff, by the watchdog on its next pass for a date with a `RUN#` row, or by the orchestrator when a run is still evaluating at the cutoff, and from then nothing more starts for it; `source` says which; detail has `cutoff` and `cutoffAt`; run it manually with `RERUN_REQUEST` |
 | `PIPELINE_EXCLUDED` | Pipeline excluded by calendar | Sensor, rerun, job-failure, or post-run drift skipped due to calendar exclusion. For a rerun request, detail carries the request's `reason` and `why` (`excluded by calendar`), and no job row is written |
@@ -84,19 +84,19 @@ Published by the **stream-router** Lambda for pipelines with `dryRun: true`. The
 
 | Detail Type | Meaning | When |
 |---|---|---|
-| `DRY_RUN_WOULD_TRIGGER` | All validation rules passed | Interlock would have triggered the pipeline job at this time |
-| `DRY_RUN_LATE_DATA` | Sensor updated after trigger point | Sensor data arrived after the dry-run trigger was recorded — would have triggered a re-run |
-| `DRY_RUN_SLA_PROJECTION` | Estimated completion vs. deadline | Projects whether the SLA would be met or breached based on `expectedDuration` and `deadline` |
+| `DRY_RUN_WOULD_TRIGGER` | All validation rules passed | Interlock would have triggered the pipeline job at this time; detail carries `triggeredAt` and `rulesEvaluated` |
+| `DRY_RUN_LATE_DATA` | Sensor updated after trigger point | A trigger sensor write that passes the trigger condition arrived after the date's dry-run marker was written; detail carries `triggeredAt` and `lateBy` |
+| `DRY_RUN_SLA_PROJECTION` | Estimated completion vs. deadline | Published after `DRY_RUN_WOULD_TRIGGER` whenever `sla.expectedDuration` is set; projects whether `sla.deadline` would be met |
 | `DRY_RUN_DRIFT` | Post-run sensor data changed | Sensor value changed from its baseline; it would have triggered a drift re-run |
-| `DRY_RUN_COMPLETED` | Observation loop closed | Terminal event for the evaluation period — carries the SLA verdict (`met`, `breach`, or `n/a`) |
+| `DRY_RUN_COMPLETED` | The dry-run trigger was recorded | Always the last event of a would-trigger, published right after `DRY_RUN_WOULD_TRIGGER` and any projection; carries the SLA verdict (`met`, `breach`, or `n/a`) |
 | `DRY_RUN_WOULD_RERUN` | A rerun request would run | A `RERUN_REQUEST` for a dry-run pipeline passed the exclusion check, its rerun budget, the run-in-progress check (the date is not `RUNNING`) and the circuit breaker; detail carries `reason` and `circuitBreaker` (`passed`, `skipped (no job history)`, or `skipped (automatic request)` for a `late-data` or `data-drift` request) |
 | `DRY_RUN_RERUN_REJECTED` | A rerun request would be refused | The date is excluded, the budget is spent, the date's run is still `RUNNING`, or the circuit breaker found no new sensor data for a manual request; detail carries `reason`, the kind of rejection (`excluded by calendar`, `limit exceeded`, `run in progress` or `circuit breaker`), not the request's reason as in `RERUN_REJECTED` |
 | `DRY_RUN_WOULD_RETRY` | A job failure would be retried | A `fail` or `timeout` row for a dry-run pipeline with retry budget left (`retries: 0`) |
 | `DRY_RUN_RETRY_EXHAUSTED` | A job failure would end the date | As `DRY_RUN_WOULD_RETRY`, when the budget is zero or the date is excluded |
 
-The `DRY_RUN_SLA_PROJECTION` detail includes `status` (`"met"`, `"breach"`, or `"n/a"`), `estimatedCompletion`, `deadline`, and `marginSeconds` fields. In dry-run events `deadline` is the breach time (RFC 3339, UTC), not the configured deadline. A run date of the other form than `sla.deadline` has the status `"n/a"` and no `deadline` or `marginSeconds`.
+The `DRY_RUN_SLA_PROJECTION` detail includes `status` (`"met"`, `"breach"`, or `"n/a"`), `triggeredAt`, `expectedDuration`, `estimatedCompletion` (trigger time plus `expectedDuration`), `deadline`, and `marginSeconds` fields. In dry-run events `deadline` is the breach time (RFC 3339, UTC), not the configured deadline. A run date of the other form than `sla.deadline` has the status `"n/a"` and no `deadline` or `marginSeconds`. A relative SLA (`sla.maxDuration`) is not projected: with `expectedDuration` and no `deadline` the status is `"met"`, with no `deadline` or `marginSeconds`.
 
-The `DRY_RUN_COMPLETED` detail includes `triggeredAt`, `slaStatus` (`"met"`, `"breach"`, or `"n/a"`), and optionally `estimatedCompletion` and `deadline` when SLA is configured.
+The `DRY_RUN_COMPLETED` detail includes `triggeredAt` and `slaStatus` (`"met"`, `"breach"`, or `"n/a"`). With a projection it also has `estimatedCompletion`, and `deadline` when the projection computed one; without `sla.expectedDuration` the status is `"n/a"`.
 
 ### Watchdog Events
 
@@ -109,7 +109,7 @@ Published by the **watchdog** Lambda, invoked on an EventBridge schedule (defaul
 | `IRREGULAR_SCHEDULE_MISSED` | An inclusion-calendar date has no run | Once per `schedule.include` date with no trigger row, once the date has begun in `schedule.timezone` (UTC when unset) and, when set, `schedule.time` on that date has passed; without `schedule.time` it fires at local midnight of the date. Only dates up to 8 days before the current date in `schedule.timezone` are checked, at most the 3 most recent. Retried on the next pass if the publish fails |
 | `SCHEDULE_MISSED` | The job for a run date has not started by the cron's start-by time, so the SLA is at risk | Once per `RUN#` date of a cron pipeline, on the first watchdog pass after the start-by time; detail carries `cron` and `startBy`. A date that already ended `COMPLETED` or `FAILED_FINAL` (for example after `RETRY_EXHAUSTED`) is not reported |
 | `TRIGGER_RECOVERED` | Sensor trigger condition met but no trigger existed | Watchdog re-evaluated sensor data and self-healed a trigger the stream-router missed. The recovered run records its first sensor arrival at this start, unless one is already recorded, so its SLA verdict counts `maxDuration` from it. A restart of a date whose evaluation was released publishes `JOB_TRIGGERED` instead |
-| `WATCHDOG_DEGRADED` | One or more watchdog checks failed | Detail lists the failed checks; `pipelineId` is empty. Not an alert |
+| `WATCHDOG_DEGRADED` | One or more watchdog checks failed | The message lists the failed checks; there is no inner `detail`, and `pipelineId` is empty (the event-sink row's PK is `PIPELINE#`). Not an alert |
 | `CONFIG_INVALID` | A pipeline's `CONFIG` row was rejected, so that pipeline does not run | At the end of a watchdog pass, for a row whose PK is not `PIPELINE#<id>`, whose `config` is missing, not a string or not valid JSON for the config, or that fails validation (for example no `schedule.trigger` or no `schedule.trigger.cutoff`, an `sla` block with neither `deadline` nor `maxDuration`, a `deadline` that is not `HH:MM` or `:MM` or has no positive `expectedDuration`, a cutoff earlier than the `sla.deadline` breach, a trigger condition or `validation`/`postRun` rule that can never pass (an unknown `check`, a missing `key` or `field`, `equals` without a `value`, a threshold that is not a number, an `age_lt` that is not a positive Go duration), a rule `key` with `#` or equal to one of Interlock's own sensor row names, a `validation.trigger` other than `ALL` or `ANY` or `ANY` with no rules, or a `schedule.evaluation` window or interval that is not whole seconds of at least `1s`, an interval longer than the window, a window that allows more than 1000 evaluations, or a window plus `job.jobPollWindowSeconds` plus the longest [retry delay](../../configuration/pipelines/#retry-budgets) longer than `sfn_timeout_seconds`, a sum that is only a floor for the execution's length, so leave headroom). Once per broken config version and day: a marker row `CONFIG_INVALID#<hash>` with a 24 h TTL holds it, so a changed but still broken config reports at once, while a config fixed and broken again with the same content within 24 h does not report again. At most 20 reports per pass; the rest follow on later passes. `pipelineId` is the parsed ID, or the raw PK; detail carries `reason` (cut to 1 KB) and `hash` (first 16 hex characters of the SHA-256 of the `config` string, absent when there is none) |
 
 ## Event Payload Structure
@@ -143,7 +143,7 @@ Events follow the standard EventBridge envelope format:
 }
 ```
 
-The outer `detail` object always includes `pipelineId`. The inner `detail` map holds the fields of that event type; an event without any has none.
+The outer `detail` object always includes `pipelineId`. `scheduleId` is `cron` for a pipeline with `schedule.cron` and `stream` otherwise. The inner `detail` map holds the fields of that event type; an event without any has none.
 
 ## Creating EventBridge Rules
 
@@ -318,10 +318,11 @@ The module deploys an `alert-dispatcher` Lambda that reads from an SQS alert que
 
 | Variable | Description |
 |---|---|
-| `slack_bot_token` | Bot token with `chat:write` scope (sensitive) |
+| `slack_secret_arn` | ARN of a Secrets Manager secret whose value is the bot token as a plain string (not JSON), with `chat:write` scope. Read at the dispatcher's cold start |
 | `slack_channel_id` | Channel ID to post alerts to |
+| `slack_bot_token` | Deprecated: the token as a plain Terraform value (sensitive). Setting it without `slack_secret_arn` makes the plan print a deprecation warning. When both are set, the secret wins |
 
-With `slack_bot_token`, `slack_secret_arn` and `slack_channel_id` all empty, the dispatcher runs in logging-only mode and writes each alert to its log; once a token or secret is set, `slack_channel_id` is required, and `slack_secret_arn` (a Secrets Manager secret holding the token) is the preferred way to pass the token.
+With `slack_bot_token`, `slack_secret_arn` and `slack_channel_id` all empty, the dispatcher runs in logging-only mode and writes each alert to its log; once a token or secret is set, `slack_channel_id` is required.
 
 **Message text**: each message starts with an icon. A red circle marks failures, timeouts, SLA breaches, missed schedules and cutoffs, post-run drift, `CONFIG_INVALID`, `INFRA_ALARM` and `MANUAL_RERUN_REQUIRED`; a yellow circle marks `SLA_WARNING` and `RELATIVE_SLA_WARNING`; a check mark marks `SLA_MET`. Every other event gets an info icon, among them `POST_RUN_SENSOR_MISSING`, `POST_RUN_DRIFT_INFLIGHT`, `RERUN_REJECTED` and the dry-run events. In event values, control characters (newlines and tabs too), line and paragraph separators and bidirectional controls become spaces, and `&`, `<` and `>` are escaped. An SLA alert with a `deadline` shows it as `Deadline 06:00 America/New_York (2026-03-01T11:00:00Z)`: the configured deadline, its time zone and the breach time in UTC.
 
@@ -349,7 +350,7 @@ Since EventBridge supports many target types, you can build any alert delivery p
 
 ## CloudWatch Alarms
 
-The Terraform module creates CloudWatch alarms that monitor infrastructure health independently of pipeline events. Alarm state changes are reshaped into `INFRA_ALARM` events via EventBridge input transformers and routed to both event-sink and alert-dispatcher — no additional Go code required.
+The Terraform module creates CloudWatch alarms that monitor infrastructure health independently of pipeline events. Alarm state changes are reshaped into `INFRA_ALARM` events via EventBridge input transformers. Every state change of an Interlock alarm (to `ALARM`, `OK` or `INSUFFICIENT_DATA`) goes to event-sink; only a change to `ALARM` goes to the alert queue and Slack.
 
 ### Alarm Categories
 
@@ -363,10 +364,10 @@ The Terraform module creates CloudWatch alarms that monitor infrastructure healt
 
 ### How It Works
 
-1. CloudWatch detects a metric threshold breach and transitions the alarm to `ALARM` state
+1. CloudWatch changes an alarm's state, for example to `ALARM` when a metric crosses its threshold
 2. The alarm state change publishes to the default EventBridge bus
-3. An EventBridge rule with an **input transformer** reshapes the alarm into an `INFRA_ALARM` event with the standard Interlock event structure
-4. The transformed event routes to both event-sink (→ events table) and the SQS alert queue (→ alert-dispatcher → Slack)
+3. Two EventBridge rules match the module's alarms (names starting `{environment}-interlock-`), each with an **input transformer** that reshapes the change into an `INFRA_ALARM` event with the standard Interlock event structure
+4. One rule sends every state change to event-sink (→ events table); the other sends only changes to `ALARM` to the SQS alert queue (→ alert-dispatcher → Slack)
 
 ### SNS Integration
 
@@ -381,4 +382,4 @@ module "interlock" {
 }
 ```
 
-When `sns_alarm_topic_arn` is set, all alarms add the topic as an alarm action alongside the EventBridge route.
+When `sns_alarm_topic_arn` is set, every alarm notifies the topic both on entering `ALARM` and on returning to `OK` (alarm and OK actions), alongside the EventBridge route.

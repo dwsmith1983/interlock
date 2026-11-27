@@ -143,20 +143,20 @@ The Step Functions state machine has 31 states:
 
 2. **SLA scheduling**: not a state machine step. The watchdog creates one-time EventBridge Scheduler entries for the SLA warning and breach of each run date that has a `RUN#` row, at most 6 hours before the warning. The Scheduler fires alerts independently at exact timestamps.
 
-3. **Job polling** — polls the triggered job for completion via `check-job` mode. Terminal events (success, fail, timeout) proceed to SLA cleanup.
+3. **Job polling**: polls the triggered job for completion via `check-job` mode. A terminal event (success, fail, timeout) goes to CompleteTrigger. When it starts a retry, the execution ends and the retry's execution keeps the SLA schedules; otherwise the run goes on to SLA cleanup.
 
 4. **SLA cleanup**: cancels unfired SLA Scheduler entries and publishes `SLA_MET` if the run completed before the breach time, and `SLA_BREACH` once the breach time has passed.
 
 ## Event System
 
-All lifecycle events are published to a custom EventBridge event bus. This replaces the previous SNS-based alert system with a unified event stream.
+All lifecycle events are published to a custom EventBridge event bus.
 
 | Event Type | When Published |
 |---|---|
 | `VALIDATION_PASSED` | All validation rules pass |
 | `VALIDATION_EXHAUSTED` | Evaluation window closed without passing, for a rerun; the date ends `FAILED_FINAL` |
 | `EVALUATION_RELEASED` | Evaluation window closed before the cutoff; the date can start again (not an alert) |
-| `JOB_TRIGGERED` | Pipeline trigger executed |
+| `JOB_TRIGGERED` | A normal run publishes two: the stream-router's when it starts the execution, and the orchestrator's when it launches the job. The watchdog's reconciliation also publishes one when it restarts a date whose evaluation was released |
 | `JOB_COMPLETED` | Triggered job finished successfully |
 | `JOB_FAILED` | Triggered job failed |
 | `SLA_WARNING` | SLA warning deadline reached |
@@ -169,10 +169,10 @@ All lifecycle events are published to a custom EventBridge event bus. This repla
 | `RELATIVE_SLA_WARNING` / `RELATIVE_SLA_BREACH` | A relative SLA (`sla.maxDuration`) is at risk or exceeded (watchdog) |
 | `POST_RUN_PASSED` | Post-run rules pass after job completion, inside the watch window |
 | `POST_RUN_FAILED` | Post-run rules fail (no drift detected), inside the watch window |
-| `POST_RUN_DRIFT` | Sensor count drifted from baseline after completion, inside the watch window, while automatic reruns are allowed → `data-drift` rerun requested. Past `job.maxAutoRerunAge` drift publishes `MANUAL_RERUN_REQUIRED` instead |
-| `POST_RUN_DRIFT_INFLIGHT` | Sensor count drifted while job is still running (informational) |
+| `POST_RUN_DRIFT` | A post-run sensor's `driftField` drifted from the baseline after completion, inside the watch window, while automatic reruns are allowed → `data-drift` rerun requested. Past `job.maxAutoRerunAge` drift publishes `MANUAL_RERUN_REQUIRED` instead |
+| `POST_RUN_DRIFT_INFLIGHT` | A post-run sensor drifted from the date's baseline while the date is `RUNNING` (informational). Only while a baseline from an earlier completion is still there: a first run, its retries and an accepted rerun have none |
 | `POST_RUN_BASELINE_CAPTURED` | Baseline sensor snapshot captured on job success |
-| `POST_RUN_SENSOR_MISSING` | Post-run sensor not received within timeout (watchdog) |
+| `POST_RUN_SENSOR_MISSING` | Post-run sensor not received within `sensorTimeout` of completion (watchdog; only for the daily run date equal to the current UTC date) |
 | `INFRA_FAILURE` | Unrecoverable infrastructure error |
 
 See [Alerting](../../reference/alerting/) for every event type and which ones alert.
@@ -202,11 +202,11 @@ Consumers subscribe to events by creating EventBridge rules that match on `sourc
 When a triggered job fails or times out (including a closed job poll window), the run's own CompleteTrigger step decides whether to retry. It is the only actor that does; the stream-router just publishes `JOB_FAILED` for the `fail` or `timeout` row.
 
 1. If the date is excluded by the calendar, publish `PIPELINE_EXCLUDED` and mark the trigger as `FAILED_FINAL`; an excluded date is never retried
-2. Read the number of retries so far from the execution name's `-r{N}` suffix (none means 0), and the failure category from the run's own job log row (`PERMANENT` uses `job.maxCodeRetries`, default 1; anything else, or no row, uses `job.maxRetries`)
-3. If at the limit, mark the trigger as `FAILED_FINAL` and publish a `RETRY_EXHAUSTED` event
+2. Read the number of retries so far from the execution name's `-r{N}` suffix (none means 0), and the failure category from the run's own job log row (`PERMANENT` uses `job.maxCodeRetries`, default 1; `OUTCOME_UNKNOWN` has no budget, see step 3; anything else, or no row, uses `job.maxRetries`)
+3. If the category is `OUTCOME_UNKNOWN` (a `lambda` job still running at the end of the orchestrator's wait), mark the trigger as `FAILED_FINAL` without a `RETRY_EXHAUSTED`; the row's `JOB_FAILED` is the alert. If at the limit, mark the trigger as `FAILED_FINAL` and publish a `RETRY_EXHAUSTED` event
 4. Otherwise write a re-run record, start the next execution (which keeps the SLA schedules and [waits](../../configuration/pipelines/#retry-budgets) 60 seconds, doubled per retry, at most 15 minutes, before it evaluates) and give the trigger row a fresh stale deadline (`staleAt`) while it is still `RUNNING`. If the execution cannot be started, mark the trigger as `FAILED_FINAL` and publish `INFRA_FAILURE`
 
-A dry-run pipeline, or one without a valid config, is never retried: the trigger goes to `FAILED_FINAL`.
+A dry-run pipeline, one without a valid config, or a job whose outcome is unknown (`OUTCOME_UNKNOWN`) is never retried: the trigger goes to `FAILED_FINAL`.
 
 The budget belongs to one execution chain. A requested rerun or a reconciler start begins a new chain with a fresh `maxRetries`, and any execution whose name ends in `-r{N}` counts as attempt N, so do not end a hand-started execution's name that way.
 
@@ -227,17 +227,20 @@ postRun:
       check: gte
       field: count
       value: 1000
-  driftThreshold: 10     # minimum sensor count change to trigger rerun (default: 0)
+  driftField: count      # field compared with the baseline (default: sensor_count)
+  driftThreshold: 10     # a change larger than this is drift (default: 0, any change)
   sensorTimeout: "2h"    # watchdog alerts if sensor hasn't arrived after this long
 ```
 
+Set `driftField` to a field your post-run sensor carries: with the default, `sensor_count`, a sensor without that field never drifts.
+
 ### How It Works
 
-1. **Baseline capture**: When a job completes successfully, the orchestrator reads all sensors and writes a date-scoped baseline (`postrun-baseline#<date>`) to the control table. The row expires 31 days after its latest capture (or, for a row a seed created, 31 days after it was written), past the longest watch window (720h).
+1. **Baseline capture**: When a job completes successfully, the orchestrator reads the sensors that `postRun.rules` name and writes a date-scoped baseline (`postrun-baseline#<date>`) to the control table. The row expires 31 days after its latest capture (or, for a row a seed created, 31 days after it was written), past the longest watch window (720h).
 2. **Stream-based evaluation**: When a sensor matching a post-run rule arrives via DynamoDB Stream, the stream-router evaluates it:
-   - If the trigger is **RUNNING**, drift is logged as an informational `POST_RUN_DRIFT_INFLIGHT` event (no rerun).
-   - If the trigger is **COMPLETED** and the date is inside its watch window, the sensor count is compared against the baseline. Drift above `driftThreshold`, until `job.maxAutoRerunAge` has passed, publishes `POST_RUN_DRIFT` and writes a `data-drift` rerun request, which skips the circuit breaker; past the age it publishes `MANUAL_RERUN_REQUIRED` instead. A sensor first written after completion has no baseline value, so that first value becomes its baseline and later writes are compared with it.
-3. **Watchdog safety net**: If no post-run sensor arrives within `sensorTimeout` after job completion, the watchdog publishes a `POST_RUN_SENSOR_MISSING` event. A sensor has arrived when it exists and either differs from its baseline value or did not exist at completion.
+   - If the trigger is **RUNNING**, drift from the date's baseline is published as an informational `POST_RUN_DRIFT_INFLIGHT` event (no rerun). A running date rarely has a baseline: a first run and its retries have not completed, and an accepted rerun deletes the baseline when it starts. So it fires only while a baseline from an earlier completion is still present, for example when that delete failed.
+   - If the trigger is **COMPLETED** and the date is inside its watch window, the `driftField` value is compared against the baseline. Drift above `driftThreshold`, until `job.maxAutoRerunAge` has passed, publishes `POST_RUN_DRIFT` and writes a `data-drift` rerun request, which skips the circuit breaker; past the age it publishes `MANUAL_RERUN_REQUIRED` instead. A sensor first written after completion has no baseline value, so that first value becomes its baseline and later writes are compared with it.
+3. **Watchdog safety net**: If no post-run sensor arrives within `sensorTimeout` after job completion, the watchdog publishes a `POST_RUN_SENSOR_MISSING` event. It checks only the daily run date equal to the current UTC date, so an earlier date, an hourly run or a timeout that ends after UTC midnight gets none. A sensor has arrived when it exists and either differs from its baseline value or did not exist at completion.
 
 complete-trigger records the completion as `completedAt` on the trigger row. Late data, drift and the post-run checks are acted on only within `postRun.watchWindow` (default `4h`) of it. Automatic reruns (late data or drift) end separately, at the earlier of the window's end and `job.maxAutoRerunAge` (default `120h`): inside the window but past the age, late data is still published with no rerun request, and an automatic request handled past either limit is skipped. Late data and drift past the age or after the window, and a skipped automatic request, publish `MANUAL_RERUN_REQUIRED` once per completion and reason (`POST_RUN_DRIFT` only while a rerun can follow); after the window drift is still compared with the baseline, but nothing else is published or evaluated. The watchdog counts `sensorTimeout` from `completedAt` too. See [Watch window](../../configuration/pipelines/#watch-window).
 

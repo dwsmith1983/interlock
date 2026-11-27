@@ -1,6 +1,6 @@
 ---
 title: Reference
-weight: 5
+weight: 6
 description: EventBridge event types and alerting patterns.
 ---
 
