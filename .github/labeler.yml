@@ -7,7 +7,7 @@ docs:
       - any-glob-to-any-file:
           - "README.md"
           - "LICENSE"
-          - "*.md"
+          - "**/*.md"
           - "docs/**"
 
 tests:
@@ -16,7 +16,7 @@ tests:
 
 e2e:
   - changed-files:
-      - any-glob-to-any-file: "e2e/**"
+      - all-globs-to-any-file: ["e2e/**", "!e2e/**/*.md"]
 
 triggers:
   - changed-files:
