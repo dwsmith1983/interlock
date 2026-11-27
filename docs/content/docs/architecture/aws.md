@@ -308,7 +308,7 @@ Each Lambda function has its own IAM role with least-privilege policies:
 | event-sink | Write events table | -- | SQS SendMessage (its DLQ) |
 | alert-dispatcher | Read/write events table (thread storage) | -- | SQS ReceiveMessage/DeleteMessage/ChangeMessageVisibility, conditional `secretsmanager:GetSecretValue` |
 
-Trigger permissions for the orchestrator are opt-in via Terraform variables (`enable_glue_trigger`, `enable_emr_trigger`, etc.).
+Trigger permissions for the orchestrator are opt-in: each AWS job type has an `enable_*_trigger` flag and an ARN list that scopes it (`enable_glue_trigger` with `glue_job_arns`, `enable_emr_trigger` with `emr_cluster_arns`, and so on). A flag set with an empty list fails the plan.
 
 ## Terraform Module
 
@@ -337,24 +337,44 @@ deploy/
 |---|---|---|
 | `environment` | Environment prefix for all resource names | -- (required) |
 | `dist_path` | Path to Lambda zip files | -- (required) |
-| `lambda_memory_size` | Memory allocation for all Lambdas | `128` |
+| `pipelines_path` | Directory of pipeline YAML files, each named after its `pipeline.id` | -- (required) |
+| `lambda_memory_size` | Memory (MB) for stream-router, orchestrator, sla-monitor and watchdog; event-sink and alert-dispatcher stay at 128 | `128` |
 | `log_retention_days` | CloudWatch log retention | `30` |
 | `watchdog_schedule` | EventBridge schedule expression | `rate(5 minutes)` |
-| `enable_glue_trigger` | Add Glue + CloudWatch Logs RCA permissions to orchestrator | `false` |
-| `enable_emr_trigger` | Add EMR permissions to orchestrator | `false` |
-| `enable_emr_serverless_trigger` | Add EMR Serverless permissions | `false` |
-| `enable_sfn_trigger` | Add Step Functions permissions | `false` |
+| `enable_glue_trigger` | Add Glue + CloudWatch Logs RCA permissions to orchestrator; needs `glue_job_arns` | `false` |
+| `enable_emr_trigger` | Add EMR permissions to orchestrator; needs `emr_cluster_arns` | `false` |
+| `enable_emr_serverless_trigger` | Add EMR Serverless permissions; needs `emr_serverless_app_arns` and `emr_serverless_execution_role_arns` | `false` |
+| `enable_sfn_trigger` | Add Step Functions permissions; needs `sfn_trigger_arns` | `false` |
+| `enable_lambda_trigger` | Add Lambda invoke permissions; needs `lambda_trigger_arns` | `false` |
+
+Each `*_arns` list must be non-empty when its flag is `true`, or the plan fails. The full list, with Slack, encryption and concurrency settings, is in [Module Variables](../../deployment/terraform/#module-variables).
 
 ### Deployment
+
+Build the Lambda binaries, then use the module from your own Terraform configuration, which also configures the AWS provider (the module declares none):
 
 ```bash
 # Build Lambda binaries
 ./deploy/build.sh
-
-# Deploy infrastructure
-cd deploy/terraform
-terraform init
-terraform apply -var="environment=prod" -var="dist_path=../dist"
 ```
 
-Pipeline configs are loaded by the `config_loader.tf` module and written to the control table as `CONFIG` records.
+```hcl
+provider "aws" {
+  region = "us-east-1"
+}
+
+module "interlock" {
+  source = "path/to/interlock/deploy/terraform"
+
+  environment    = "prod"
+  dist_path      = "path/to/interlock/deploy/dist"
+  pipelines_path = "${path.module}/pipelines"
+}
+```
+
+```bash
+terraform init
+terraform apply
+```
+
+`config_loader.tf` reads the pipeline files in `pipelines_path` and writes each to the control table as a `CONFIG` record. See [Terraform](../../deployment/terraform/) for the full steps.
