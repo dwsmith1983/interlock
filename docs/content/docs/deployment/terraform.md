@@ -18,7 +18,10 @@ Interlock ships as a reusable Terraform module in `deploy/terraform/`. The modul
 
 ### 1. Build Lambda Binaries
 
+From a clone of the repository, checked out at the release you want to run:
+
 ```bash
+git checkout <release-tag>
 ./deploy/build.sh
 ```
 
@@ -26,7 +29,7 @@ This cross-compiles the 6 Lambda handlers (`stream-router`, `orchestrator`, `sla
 
 ### 2. Write Pipeline Configs
 
-Create YAML files in a `pipelines/` directory. Each file defines one pipeline:
+Create YAML files in a `pipelines/` directory. Each file defines one pipeline and is named after its pipeline ID (`gold-revenue.yaml` for `pipeline.id: gold-revenue`); `terraform plan` fails when the two differ:
 
 ```yaml
 # pipelines/gold-revenue.yaml
@@ -76,9 +79,13 @@ See [Pipeline Configuration](../../configuration/pipelines/) for the full YAML s
 
 ### 3. Use the Module
 
-Reference the Interlock module from your Terraform configuration:
+Reference the Interlock module from your Terraform configuration, using the clone you built from so the module and the binaries match. The module declares no provider, so configure the AWS provider yourself:
 
 ```hcl
+provider "aws" {
+  region = "us-east-1"
+}
+
 module "interlock" {
   source = "path/to/interlock/deploy/terraform"
 
@@ -86,12 +93,18 @@ module "interlock" {
   dist_path      = "path/to/interlock/deploy/dist"
   pipelines_path = "${path.module}/pipelines"
 
+  # gold-revenue is a glue job
+  enable_glue_trigger = true
+  glue_job_arns       = ["arn:aws:glue:us-east-1:123456789012:job/gold-revenue-etl"]
+
   tags = {
     Project     = "interlock"
     Environment = "production"
   }
 }
 ```
+
+Each AWS job type a pipeline uses needs its `enable_*_trigger` flag and its ARN list (see the table below); without them the orchestrator is not allowed to start the job.
 
 ### 4. Deploy
 
@@ -110,24 +123,27 @@ terraform apply
 | `pipelines_path` | string | -- | Path to directory containing pipeline YAML configuration files |
 | `calendars_path` | string | `""` | Accepted but not read (named calendars are not loaded) |
 | `tags` | map(string) | `{}` | Tags to apply to all resources |
-| `lambda_memory_size` | number | `128` | Memory size for Lambda functions (MB) |
+| `lambda_memory_size` | number | `128` | Memory (MB) for stream-router, orchestrator, sla-monitor and watchdog; event-sink and alert-dispatcher stay at 128 |
 | `log_retention_days` | number | `30` | CloudWatch log retention in days |
 | `watchdog_schedule` | string | `rate(5 minutes)` | EventBridge schedule expression for the watchdog Lambda. Keep the interval well under 6 hours: SLA schedules are created at most that long before a date's warning, and passes further apart can miss `SLA_WARNING` and `SLA_BREACH` (see [Deadline Evaluation](../../configuration/schedules/#deadline-evaluation)). The value is not checked |
 | `sfn_timeout_seconds` | number | `14400` | Step Functions global execution timeout in seconds (default 4h). A pipeline whose `schedule.evaluation.window` plus `job.jobPollWindowSeconds` plus the longest [retry delay](../../configuration/pipelines/#retry-budgets) it can reach (by the larger of `maxRetries` and `maxCodeRetries`, default 1: 1, 2, 4 or 8 minutes for 1 to 4 retries, 15 minutes from 5 up, nothing when both are 0) exceeds it is rejected as `CONFIG_INVALID`. The sum is a floor: evaluations, status polls, launch retries and throttle retries also take time, so leave headroom. Lowering it can reject existing pipelines on the next config refresh |
 | `trigger_max_attempts` | number | `3` | Retries the Trigger state makes after its first attempt when a job cannot be started (waits start at 30s and double: 30s, 60s, 120s at the default) |
 | `enable_glue_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Glue jobs |
+| `glue_job_arns` | list(string) | `[]` | Glue job ARNs the orchestrator may start and poll. Required, non-empty, when `enable_glue_trigger` is `true` |
 | `enable_emr_trigger` | bool | `false` | Grant orchestrator Lambda permission to submit EMR steps |
+| `emr_cluster_arns` | list(string) | `[]` | EMR cluster ARNs the orchestrator may submit steps to and poll. Required, non-empty, when `enable_emr_trigger` is `true` |
 | `enable_emr_serverless_trigger` | bool | `false` | Grant orchestrator Lambda permission to start EMR Serverless jobs |
 | `emr_serverless_app_arns` | list(string) | `[]` | EMR Serverless application ARNs the orchestrator may start job runs on and poll. Required, non-empty, when `enable_emr_serverless_trigger` is `true` |
 | `emr_serverless_execution_role_arns` | list(string) | `[]` | IAM role ARNs EMR Serverless job runs execute under; the orchestrator gets `iam:PassRole` on them, only for `emr-serverless.amazonaws.com`. Required, non-empty, when `enable_emr_serverless_trigger` is `true` |
 | `enable_sfn_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Step Functions executions |
+| `sfn_trigger_arns` | list(string) | `[]` | State machine ARNs the orchestrator may start and poll; alias and version ARNs are accepted, execution ARNs are not. Required, non-empty, when `enable_sfn_trigger` is `true` |
 | `enable_lambda_trigger` | bool | `false` | Grant orchestrator Lambda permission to invoke Lambda functions |
 | `lambda_trigger_arns` | list(string) | `[]` | Lambda function ARNs the orchestrator may invoke (scoped IAM). Required, non-empty, when `enable_lambda_trigger` is `true` |
-| `slack_bot_token` | string (sensitive) | `""` | Slack Bot API token with `chat:write` scope for alert-dispatcher |
+| `slack_bot_token` | string (sensitive) | `""` | Deprecated: every plan warns when it is set without `slack_secret_arn`; use `slack_secret_arn`. Slack Bot API token with `chat:write` scope for alert-dispatcher |
 | `slack_channel_id` | string | `""` | Slack channel ID for alert notifications (required when `slack_bot_token` or `slack_secret_arn` is set; all three empty = logging only) |
 | `slack_secret_arn` | string | `""` | AWS Secrets Manager ARN containing the Slack bot token. When set, alert-dispatcher reads the token from Secrets Manager instead of the `slack_bot_token` environment variable |
 | `trigger_secrets_arn` | string | `""` | Full Secrets Manager secret ARN, including its random 6-character suffix, in the deployment's region (no wildcards), holding a JSON object of `INTERLOCK_` variables for trigger auth. The orchestrator loads it at cold start and is granted `secretsmanager:GetSecretValue` on it; see [Setting `INTERLOCK_` values](../../configuration/triggers/#setting-interlock_-values) |
-| `orchestrator_env` | map(string) | `{}` | Extra orchestrator environment variables; every key must match `^INTERLOCK_[A-Z0-9_]+$`. Values are stored in Terraform state and shown in plans and the Lambda console, so put tokens in `trigger_secrets_arn` |
+| `orchestrator_env` | map(string) | `{}` | Extra orchestrator environment variables; every key must match `^INTERLOCK_[A-Z0-9_]+$` and may not be `INTERLOCK_PIPELINE_ID`, `INTERLOCK_SCHEDULE_ID`, `INTERLOCK_DATE` or `INTERLOCK_RUN_ID`, which each run sets itself. Values are stored in Terraform state and shown in plans and the Lambda console, so put tokens in `trigger_secrets_arn` |
 | `events_table_ttl_days` | number | `90` | TTL in days for events table records; must be at least 1 |
 | `lambda_concurrency` | object | See below | Reserved concurrent executions per Lambda function |
 | `sns_alarm_topic_arn` | string | `""` | SNS topic ARN for CloudWatch alarm notifications. When set, all alarms send to this topic |
@@ -177,7 +193,7 @@ The module grants every Lambda role `kms:Decrypt` and `kms:GenerateDataKey` on t
 
 ## Secrets Manager
 
-By default, alert-dispatcher reads the Slack bot token from the `SLACK_BOT_TOKEN` environment variable. For production deployments, store the token in AWS Secrets Manager and pass the ARN:
+Store the Slack bot token in AWS Secrets Manager and pass the ARN with the channel ID. The older `slack_bot_token` variable puts the token in the `SLACK_BOT_TOKEN` environment variable and Terraform state; it still works, but every plan warns about it:
 
 ```hcl
 module "interlock" {
@@ -189,7 +205,7 @@ module "interlock" {
 }
 ```
 
-When `slack_secret_arn` is set, the module automatically grants `secretsmanager:GetSecretValue` to the alert-dispatcher Lambda role. The token must have the `xoxb-` prefix (Bot token).
+When `slack_secret_arn` is set, the module automatically grants `secretsmanager:GetSecretValue` to the alert-dispatcher Lambda role. Store a bot token (`xoxb-`) or a rotating token (`xoxe-`); the alert-dispatcher logs a warning for any other prefix. With `slack_bot_token`, `slack_secret_arn` and `slack_channel_id` all empty, alerts are only logged.
 
 ## CloudWatch Alarms
 
@@ -203,7 +219,7 @@ The module creates CloudWatch alarms across five categories. All alarms conditio
 | Stream iterator age | One for the stream-router function (covers both the control and joblog streams) | `IteratorAge >= 300,000ms` (5 minutes) |
 | Alert rule delivery | One per rule that sends alerts to the alert queue (`alert_events`, `cw_alarm_alert`) | `FailedInvocations >= 1` per 5-minute period |
 
-CloudWatch alarm state changes are reshaped via EventBridge input transformers into `INFRA_ALARM` events and routed to both event-sink and alert-dispatcher. This means infrastructure alerts appear in the events table and Slack alongside pipeline lifecycle events — no additional Go code required.
+CloudWatch alarm state changes are reshaped via EventBridge input transformers into `INFRA_ALARM` events. Every state change is written to the events table; a change to `ALARM` is also sent to Slack. Infrastructure alerts appear alongside pipeline lifecycle events.
 
 ```hcl
 module "interlock" {
@@ -227,7 +243,7 @@ The module creates 4 tables, all using on-demand billing:
 | Rerun | `{env}-interlock-rerun` | Rerun requests and tracking |
 | Events | `{env}-interlock-events` | Centralized event log for dashboards and audit (GSI1: eventType → timestamp) |
 
-All tables have TTL enabled on the `ttl` attribute. The control and joblog tables have DynamoDB Streams enabled (`NEW_IMAGE`) to drive the stream-router Lambda.
+All tables have TTL enabled on the `ttl` attribute, point-in-time recovery on, and deletion protection on (see [Tear Down](#tear-down)). The control and joblog tables have DynamoDB Streams enabled (`NEW_IMAGE`) to drive the stream-router Lambda.
 
 ### Lambda Functions
 
@@ -244,7 +260,7 @@ All Lambdas run on `provided.al2023` (custom runtime) with `arm64` architecture.
 
 ### Pipeline Config Loader
 
-The module reads all `*.yaml` and `*.yml` files from `pipelines_path` and writes them as CONFIG rows to the control table. Each pipeline's YAML content is stored as a string attribute, keyed by `PIPELINE#{id}` / `CONFIG`.
+The module reads the `*.yaml` and `*.yml` files directly in `pipelines_path` (not subdirectories) and writes each as a CONFIG row in the control table: the config, converted to JSON, in the `config` attribute, keyed by `PIPELINE#<file name without extension>` / `CONFIG`. The file name must equal `pipeline.id`, or `terraform plan` fails.
 
 This means pipeline configuration is managed entirely through Terraform -- update a YAML file, run `terraform apply`, and the new config is live.
 
@@ -268,9 +284,15 @@ The ASL definition is at `deploy/statemachine.asl.json` and uses `templatefile()
 | Resource | Name Pattern | Purpose |
 |---|---|---|
 | Custom event bus | `{env}-interlock-events` | All Interlock events (SLA breaches, completions, failures, missed schedules) |
-| Watchdog schedule | `{env}-interlock-watchdog` | Invokes the watchdog Lambda on a recurring schedule |
+| Watchdog schedule | `{env}-interlock-watchdog` | Invokes the watchdog Lambda on a recurring schedule (default bus) |
+| All-events rule | `{env}-interlock-all-events` | Sends every Interlock event to the event-sink |
+| Alert-events rule | `{env}-interlock-alert-events` | Sends alert events to the alert queue |
+| Alarm log rule | `{env}-interlock-cw-alarm-log` | Sends every alarm state change to the event-sink (default bus) |
+| Alarm alert rule | `{env}-interlock-cw-alarm-alert` | Sends alarm changes to `ALARM` to the alert queue (default bus) |
+| Alert queue | `{env}-interlock-alerts` | SQS queue the alert-dispatcher reads to post to Slack |
+| Scheduler group | `{env}-interlock-sla` | EventBridge Scheduler group for the SLA warning and breach entries |
 
-All 4 Lambda functions publish events to the custom bus. Create EventBridge rules on this bus to route events to your alerting systems (SNS, Slack, PagerDuty, etc.).
+Four of the six functions (stream-router, orchestrator, sla-monitor, watchdog) publish events to the custom bus. The module already routes every event to the events table and, when `slack_secret_arn` and `slack_channel_id` are set, alert events to Slack; add your own rules on the bus for other targets (SNS, PagerDuty, etc.).
 
 ### IAM
 
@@ -278,10 +300,10 @@ Each Lambda gets its own execution role with least-privilege policies:
 
 | Role | Permissions |
 |---|---|
-| stream-router | DynamoDB read/write (all 3 tables), DynamoDB Streams (control + joblog), Step Functions `StartExecution`, EventBridge `PutEvents`, SQS `SendMessage` (DLQs) |
-| orchestrator | DynamoDB read/write (all 3 tables), Step Functions `StartExecution` (failure retries), EventBridge `PutEvents`, conditional trigger permissions |
+| stream-router | DynamoDB read/write (all 4 tables), DynamoDB Streams (control + joblog), Step Functions `StartExecution`, EventBridge `PutEvents`, SQS `SendMessage` (DLQs) |
+| orchestrator | DynamoDB read/write (all 4 tables), Step Functions `StartExecution` (failure retries), EventBridge `PutEvents`, conditional trigger permissions |
 | sla-monitor | DynamoDB read (control, joblog), EventBridge Scheduler create/delete, EventBridge `PutEvents` |
-| watchdog | DynamoDB read (all 3 tables), DynamoDB write and delete (control only), Step Functions `StartExecution` (reconciliation), EventBridge Scheduler create (SLA schedules), EventBridge `PutEvents` |
+| watchdog | DynamoDB read (all 4 tables), DynamoDB write and delete (control only), Step Functions `StartExecution` (reconciliation), EventBridge Scheduler create (SLA schedules), EventBridge `PutEvents` |
 | event-sink | DynamoDB `PutItem` (events), SQS `SendMessage` (its DLQ) |
 | alert-dispatcher | DynamoDB read/write (events, thread records), SQS `ReceiveMessage`, `DeleteMessage` and `ChangeMessageVisibility` (alert queue), conditional `secretsmanager:GetSecretValue` |
 
@@ -338,17 +360,25 @@ Replaying an event more than once is safe: its row's key comes from its content,
 | `control_table_arn` | ARN of the control DynamoDB table |
 | `joblog_table_name` | Name of the job log DynamoDB table |
 | `rerun_table_name` | Name of the rerun DynamoDB table |
+| `events_table_name` | Name of the events DynamoDB table |
+| `events_table_arn` | ARN of the events DynamoDB table |
 | `event_bus_name` | Name of the EventBridge event bus |
 | `event_bus_arn` | ARN of the EventBridge event bus |
 | `sfn_arn` | ARN of the pipeline state machine |
 | `sfn_name` | Name of the pipeline state machine |
+| `scheduler_group_name` | Name of the EventBridge Scheduler group for SLA alerts |
+| `sla_monitor_arn` | ARN of the SLA monitor Lambda function |
 
 Use these outputs to integrate Interlock with your existing infrastructure (e.g., create EventBridge rules, grant external services write access to the control table).
 
 ## Tear Down
 
+The four tables have deletion protection on, so `terraform destroy` stops at them. To remove a deployment, turn protection off on each table first, then destroy. This deletes the tables and their data, so back up anything you need:
+
 ```bash
+for t in control joblog rerun events; do
+  aws dynamodb update-table --table-name "production-interlock-$t" --no-deletion-protection-enabled
+  aws dynamodb wait table-exists --table-name "production-interlock-$t"
+done
 terraform destroy
 ```
-
-This removes all resources created by the module. DynamoDB tables with data will be deleted -- ensure you have backups if needed.
