@@ -43,6 +43,21 @@ variable "watchdog_schedule" {
   default     = "rate(5 minutes)"
 }
 
+variable "watchdog_heartbeat_minutes" {
+  description = "Minutes without a watchdog invocation before the watchdog-heartbeat alarm fires. A multiple of 5 from 10 to 1440. With a rate() watchdog_schedule it must be at least twice the interval, so a rate() interval above 12 hours cannot be used; a cron() schedule is not checked, so set it above the longest gap between cron runs"
+  type        = number
+  default     = 15
+
+  validation {
+    condition = (
+      var.watchdog_heartbeat_minutes >= 10 &&
+      var.watchdog_heartbeat_minutes <= 1440 &&
+      var.watchdog_heartbeat_minutes % 5 == 0
+    )
+    error_message = "watchdog_heartbeat_minutes must be a multiple of 5 from 10 to 1440."
+  }
+}
+
 variable "sfn_timeout_seconds" {
   description = "Step Functions execution timeout in seconds (default 4h)"
   type        = number

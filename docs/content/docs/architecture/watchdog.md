@@ -233,7 +233,9 @@ variable "watchdog_schedule" {
 }
 ```
 
-Keep the interval well under 6 hours. SLA schedules are created at most 6 hours before a run date's warning, so passes further apart than that can miss `SLA_WARNING` and `SLA_BREACH`; nothing checks the value (see [Deadline Evaluation](../../configuration/schedules/#deadline-evaluation)).
+Keep the interval well under 6 hours. SLA schedules are created at most 6 hours before a run date's warning, so passes further apart than that can miss `SLA_WARNING` and `SLA_BREACH`; nothing checks the value against that limit (see [Deadline Evaluation](../../configuration/schedules/#deadline-evaluation)).
+
+If the watchdog stops running (its rule is disabled or stalls, or invocations stop for any other reason), the `{env}-interlock-watchdog-heartbeat` alarm fires after about `watchdog_heartbeat_minutes` (default 15) with no invocation, and up to about 10 minutes more because of how CloudWatch evaluates missing data. Its `INFRA_ALARM` goes to Slack. With a `rate()` schedule the heartbeat must be at least twice the interval, or the plan fails; with `cron()`, set it above the longest gap between runs. See [CloudWatch Alarms](../../reference/alerting/#cloudwatch-alarms).
 
 ## Error Handling
 
