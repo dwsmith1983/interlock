@@ -1,6 +1,6 @@
 ---
 title: Documentation
-description: Interlock documentation -- architecture, configuration, deployment, and reference.
+description: Interlock documentation -- architecture, configuration, deployment, guides, and reference.
 toc: false
 ---
 
@@ -13,5 +13,6 @@ Interlock is a STAMP-based safety framework for data pipeline reliability. It va
   {{< card link="architecture" title="Architecture" subtitle="STAMP model, Step Functions state machine, DynamoDB tables." >}}
   {{< card link="configuration" title="Configuration" subtitle="Pipeline YAML configs, validation rules, and job triggers." >}}
   {{< card link="deployment" title="Deployment" subtitle="Deploy to AWS with the reusable Terraform module." >}}
+  {{< card link="guides" title="Guides" subtitle="Dry-run shadow mode, shared deployments, and the Step Functions state machine." >}}
   {{< card link="reference" title="Reference" subtitle="EventBridge event types and alerting patterns." >}}
 {{< /cards >}}

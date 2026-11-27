@@ -53,6 +53,12 @@ toc: false
     style="background: radial-gradient(ellipse at 50% 80%,rgba(139,92,246,0.15),hsla(0,0%,100%,0));"
   >}}
   {{< hextra/feature-card
+    title="Guides"
+    subtitle="Dry-run shadow mode, shared deployments, and the Step Functions state machine."
+    link="docs/guides"
+    style="background: radial-gradient(ellipse at 50% 80%,rgba(20,184,166,0.15),hsla(0,0%,100%,0));"
+  >}}
+  {{< hextra/feature-card
     title="Reference"
     subtitle="EventBridge event types, alerting patterns, and observability integration."
     link="docs/reference"

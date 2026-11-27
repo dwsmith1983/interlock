@@ -80,7 +80,7 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`.
 │    DynamoDB       │ ────────────────────►   │     stream-router         │
 │  4 tables:        │                         │  sensor → evaluate        │
 │  - control        │                         │  config → cache invalidate│
-│  - joblog         │                         │  job-log → rerun/success  │
+│  - joblog         │                         │  job-log → job events     │
 │  - rerun          │                         └───────┬───────────────────┘
 │  - events         │
 └───────────────────┘                                 │
@@ -91,12 +91,16 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`.
                                           │  Poll → SLA → Done       │
                                           └──────────┬───────────────┘
                                                      │
-                                    ┌────────────────┼────────────────┐
-                                    ▼                ▼                ▼
-                              orchestrator     sla-monitor       watchdog
-                              (evaluate,       (fire and cancel  (stale runs,
-                               trigger,         SLA alerts)       start-by, SLA
-                               check-job)                         schedules)
+                                            ┌────────┴────────┐
+                                            ▼                 ▼
+                                      orchestrator       sla-monitor
+                                      (evaluate,         (fire and cancel
+                                       trigger,           SLA alerts)
+                                       check-job)               ▲
+                                                                │ fires
+EventBridge rate rule ──► watchdog ──► EventBridge Scheduler ───┘
+                          (stale runs, start-by,
+                           SLA schedules, cutoffs)
 ```
 
 ### Lambda Functions
@@ -106,7 +110,7 @@ Supported checks: `exists`, `equals`, `gt`, `gte`, `lt`, `lte`, `age_lt`.
 | `stream-router` | Routes DynamoDB Stream events, starts Step Function executions, evaluates post-run drift |
 | `orchestrator` | Multi-mode handler: evaluate rules, trigger jobs, check status, complete triggers |
 | `sla-monitor` | Publishes SLA alerts when the watchdog's Scheduler entries fire; cancels unfired entries and records the verdict when a run ends |
-| `watchdog` | Detects stale triggers, missed start-by times, passed cutoffs and missing post-run sensors; schedules SLA alerts for `RUN#` dates |
+| `watchdog` | Runs on an EventBridge rate rule (every 5 minutes by default), outside Step Functions. Detects stale triggers, missed start-by times, passed cutoffs and missing post-run sensors; schedules SLA alerts for `RUN#` dates |
 | `event-sink` | Writes all EventBridge events to the events table for centralized logging |
 | `alert-dispatcher` | Delivers Slack notifications from SQS alert queue with message threading |
 
@@ -171,6 +175,8 @@ job:
 
 Evaluate Interlock against running pipelines without executing any jobs. Set `dryRun: true` in your pipeline config — the stream-router observes the real sensor stream and records what it *would* do as EventBridge events, while your existing orchestrator continues running as-is.
 
+A dry-run pipeline reads only the sensors written under its own key, `PIPELINE#gold-revenue-dryrun` here, so your sensor sources must write to it as well as to the live pipeline's key. See the [dry-run guide](https://dwsmith1983.github.io/interlock/docs/guides/dry-run/) for how it differs from a live pipeline.
+
 ```yaml
 pipeline:
   id: gold-revenue-dryrun
@@ -206,7 +212,7 @@ Dry-run publishes observation events, among them:
 | `DRY_RUN_LATE_DATA` | Sensor updated after the trigger point — would have triggered a re-run |
 | `DRY_RUN_SLA_PROJECTION` | Estimated completion vs. deadline — would the SLA be met or breached? |
 | `DRY_RUN_DRIFT` | Post-run sensor data changed — would have detected drift and re-run |
-| `DRY_RUN_COMPLETED` | Observation closed, with the SLA verdict |
+| `DRY_RUN_COMPLETED` | Last event of a would-trigger, with the SLA verdict |
 
 `DRY_RUN_WOULD_RERUN`, `DRY_RUN_RERUN_REJECTED`, `DRY_RUN_WOULD_RETRY` and `DRY_RUN_RETRY_EXHAUSTED` report what a rerun request or job failure would do; see the [alerting reference](https://dwsmith1983.github.io/interlock/docs/reference/alerting/).
 
@@ -349,7 +355,7 @@ Interlock ships as a **reusable Terraform module** — no framework code in your
 
 ```hcl
 module "interlock" {
-  source = "github.com/dwsmith1983/interlock//deploy/terraform"
+  source = "github.com/dwsmith1983/interlock//deploy/terraform?ref=v0.11.0"
 
   environment    = "prod"
   dist_path      = "path/to/interlock/deploy/dist"  # output of ./deploy/build.sh
@@ -357,11 +363,13 @@ module "interlock" {
 }
 ```
 
+`v0.11.0` is an example: set `ref` to the release tag you built `dist_path` from, so the module and the Lambda binaries match. The module declares no provider, so configure the AWS provider in your own Terraform.
+
 The module creates all required infrastructure: DynamoDB tables, Lambda functions, Step Functions state machine, EventBridge rules, CloudWatch alarms, and IAM roles. See the [deployment docs](https://dwsmith1983.github.io/interlock/docs/deployment/terraform/) for the full variable reference.
 
 ## Example
 
-See [interlock-aws-example](https://github.com/dwsmith1983/interlock-aws-example) for a complete telecom ETL deployment with 6 pipelines, bronze/silver medallion architecture, and a CloudFront dashboard.
+See [interlock-aws-example](https://github.com/dwsmith1983/interlock-aws-example) for a complete telecom ETL deployment with a bronze/silver medallion architecture.
 
 ## Project Structure
 
@@ -369,8 +377,8 @@ See [interlock-aws-example](https://github.com/dwsmith1983/interlock-aws-example
 interlock/
 ├── cmd/lambda/
 │   ├── stream-router/       # DynamoDB Stream → Step Functions
-│   ├── orchestrator/        # Evaluate, trigger, check-job, post-run
-│   ├── sla-monitor/         # SLA deadline calculations + alerts
+│   ├── orchestrator/        # Evaluate, trigger, check-job, complete-trigger
+│   ├── sla-monitor/         # Fires scheduled SLA alerts, cancels schedules at run end
 │   ├── watchdog/            # Missed schedule + stale run detection
 │   ├── event-sink/          # EventBridge → events table
 │   └── alert-dispatcher/    # SQS → Slack (Bot API with threading)
@@ -383,9 +391,10 @@ interlock/
 │   │   ├── orchestrator/    # Evaluate, trigger, check-job handlers
 │   │   ├── stream/          # DynamoDB stream routing, reruns, post-run
 │   │   ├── watchdog/        # Stale trigger + missed schedule detection
-│   │   ├── sla/             # SLA deadline calculation + alerts
+│   │   ├── sla/             # SLA fire-alert and cancel handlers
 │   │   ├── alert/           # Slack notification formatting
 │   │   └── sink/            # EventBridge event persistence
+│   ├── e2ehooks/            # Test clock and scheduler hooks, linked only into -tags e2e builds
 │   ├── telemetry/           # OpenTelemetry provider setup
 │   ├── client/              # Circuit breaker for external HTTP calls
 │   ├── resilience/          # Exponential backoff retry with jitter
@@ -402,13 +411,13 @@ interlock/
 ```bash
 make test            # Run all tests
 make build-lambda    # Build 6 Lambda handlers (linux/arm64)
-make lint            # golangci-lint + go test -race
-make audit           # Full quality gate (same as lint, CI blocking)
+make lint            # golangci-lint
+make audit           # lint, test, e2e-check and guards in one run
 ```
 
 ### Local Development with LocalStack
 
-Run the full Interlock stack locally against [LocalStack](https://localstack.cloud/) Community (real Lambdas, DynamoDB streams, Step Functions and EventBridge) without an AWS account. EventBridge Scheduler is skipped (Pro-only feature); the `sla-monitor` Lambda no-ops scheduler calls when `SKIP_SCHEDULER=true`, which the deploy sets by default. Prerequisites: Docker, Go 1.26+, Python 3.11+, and `boto3` (`pip install -r deploy/localstack/requirements.txt`).
+Run the full Interlock stack locally against [LocalStack](https://localstack.cloud/) Community (real Lambdas, DynamoDB streams, Step Functions and EventBridge) without an AWS account. LocalStack Community has no EventBridge Scheduler, so scheduled `SLA_WARNING` and `SLA_BREACH` alerts do not fire locally. The deploy sets `SKIP_SCHEDULER=true` on `sla-monitor` only, so for a pipeline with `sla.deadline` and a `RUN#` row the watchdog still tries to create the schedules, and those calls fail. The `SLA_MET` or `SLA_BREACH` that the cancel step publishes when a run ends still arrives. Prerequisites: Docker, Go 1.26+, `zip`, Python 3.11+ on the `PATH` as `python`, and `boto3` (`pip install -r deploy/localstack/requirements.txt`).
 
 ```bash
 make -f deploy/localstack/Makefile localstack-all
@@ -425,6 +434,8 @@ Interlock records no spans or metrics of its own. Logs are JSON through `slog`.
 ### Prerequisites
 
 - Go 1.26+
+- `zip` (used by `deploy/build.sh`)
+- Python 3.11+ on the `PATH` as `python`, with `boto3` (for LocalStack only)
 - AWS CLI v2 + Terraform >= 1.5 (for deployment)
 - Slack Bot token with `chat:write` scope (for alert notifications)
 

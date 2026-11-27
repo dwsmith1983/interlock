@@ -19,12 +19,8 @@ nothing else. The Lambdas run in containers LocalStack starts, outside compose,
 so when a test fails the harness prints the last 200 lines of each Lambda's
 CloudWatch log group.
 
-From the builder container, pass the Docker socket so compose can start
-sibling containers:
-
-```sh
-~/code/interlock-docker/ibuild.sh -C ~/code/interlock ~/code/interlock --docker-socket -- 'make e2e'
-```
+To run `make e2e` from inside a container, mount the host's Docker socket
+(`/var/run/docker.sock`) into it, so compose can start sibling containers.
 
 `make e2e` tears down on Ctrl-C too. If a run was killed harder than that,
 remove the Lambda containers LocalStack started (they are not compose members),
@@ -45,8 +41,9 @@ without repository activity.
 - One stack and one clock for the whole run. The clock only moves forward.
 - Each scenario uses its own pipeline ID and its own simulated day
   (`startDay` in `scenarios_test.go` moves to the next one).
-- Scenarios run serially, never with `t.Parallel`, and must pass in any order
-  (`-shuffle=on`): read only your own pipeline's events, alerts and schedules.
+- Scenarios run serially, never with `t.Parallel`. `make e2e` and CI run
+  them in source order, without `-shuffle`, but do not depend on that order:
+  read only your own pipeline's events, alerts and schedules.
 - Assert the order of events only when one causes the other. Otherwise
   assert the set and the exact counts: events stamped in the same simulated
   millisecond sort by type, then by content hash, which says nothing about
@@ -84,13 +81,16 @@ code path first and assert the exact values it produces.
 
 - IAM. LocalStack Community does not enforce it: the missing watchdog
   `DeleteItem` permission fixed in #92 would have passed.
-- The real EventBridge Scheduler. A DynamoDB table stands in for it and only
-  records the schedules.
-- Glue, EMR and Databricks request shapes. Only the HTTP, `lambda` and
-  `step-function` triggers run; the `lambda` job is interlock's own
-  orchestrator called with a mode it rejects, so the function error path runs
-  but a successful function does not, and the `step-function` job is a
-  one-state Pass machine the scenario creates.
+- The real EventBridge Scheduler. LocalStack Community has none, so no
+  scheduled SLA alert fires on its own. A DynamoDB table stands in for it
+  and only records the schedules; `fireDueSchedules` invokes sla-monitor for
+  the due ones, so a scheduled `SLA_WARNING` or `SLA_BREACH` arrives only in
+  a scenario that calls it.
+- Glue, EMR, EMR Serverless, Airflow and Databricks request shapes. Only
+  the HTTP, `lambda` and `step-function` triggers run; the `lambda` job is
+  interlock's own orchestrator called with a mode it rejects, so the
+  function error path runs but a successful function does not, and the
+  `step-function` job is a one-state Pass machine the scenario creates.
 - Terraform. `deploy.py` deploys the stack.
 - Terraform's `filter_criteria` drifting from deploy.py's copy. The e2e deploy
   sets the stream mapping filters from that copy, so the filters themselves run.

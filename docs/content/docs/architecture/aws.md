@@ -19,15 +19,17 @@ External processes ──→ DynamoDB control table (SENSOR# writes)
                                                Sequential flow:
                                                Evaluate → Trigger
                                                      │
-                                               SLA Scheduling
-                                            (EventBridge Scheduler)
-                                                     │
                                                Poll job status
+                                                     │
+                                               CompleteTrigger
                                                      │
                                                SLA Cleanup → Done
 
 EventBridge schedule ──→ watchdog Lambda ──→ DynamoDB (scan for stale/missed)
+                                           ──→ EventBridge Scheduler (SLA entries)
                                            ──→ EventBridge (publish alerts)
+
+EventBridge Scheduler ──→ sla-monitor Lambda ──→ EventBridge (SLA_WARNING, SLA_BREACH)
 
 EventBridge rules ──→ event-sink Lambda ──→ events table (all events)
                   ──→ SQS alert queue ──→ alert-dispatcher Lambda ──→ Slack
@@ -48,6 +50,8 @@ The primary state table. Stores pipeline configs, sensor data, trigger locks, an
 | Trigger lock | `PIPELINE#{id}` | `TRIGGER#{schedule}#{date}` | Dedup lock for executions; `startedAt` and `completedAt` mark the job's launch and the run's completion |
 | Expected run date | `PIPELINE#{id}` | `RUN#{runKey}` | Written by the user; drives the SLA schedules, start-by and cutoff checks |
 | Rerun request | `PIPELINE#{id}` | `RERUN_REQUEST#{schedule}#{date}` | Written by the user (`manual`) or by Interlock (`late-data`, `data-drift`); the stream-router acts on it |
+| Dry-run marker | `PIPELINE#{id}` | `DRY_RUN#{schedule}#{date}` | Written by the stream-router when a [dry-run](../../guides/dry-run/) pipeline would have triggered; holds `triggeredAt`; `ttl` 7 days after it is written |
+| Invalid-config marker | `PIPELINE#{id}` (the rejected row's PK) | `CONFIG_INVALID#{hash}` | Written by the watchdog when it reports `CONFIG_INVALID`, so a broken config version is reported once a day; `ttl` 24 hours after it is written |
 
 Interlock's own bookkeeping rows expire: the `SENSOR#` rows it writes (the alert markers `schedule-missed-check#`, `irregular-missed-check#`, `postrun-check#`, `relative-sla-warning-check#`, `relative-sla-breach-check#` and `manual-rerun-alert-<reason>#`, plus `first-sensor-arrival#{date}` and `postrun-baseline#{date}`) and the `late-data` and `data-drift` rerun requests carry a `ttl` 31 days after their latest write. That is the longest post-run watch window (720h, counted from `completedAt`, during which the baseline is read) plus a day. Seeding one rule's entry into an existing baseline row keeps that row's `ttl`. Sensor rows and rerun requests the user writes, `CONFIG`, `TRIGGER#` and `RUN#` rows get no `ttl` from Interlock.
 
@@ -59,7 +63,9 @@ Append-only log of job execution events. Each record represents a lifecycle even
 
 | Entity | PK | SK | Purpose |
 |---|---|---|---|
-| Job event | `PIPELINE#{id}` | `JOB#{schedule}#{date}#{timestamp}` | success/fail/timeout record; `runId` names the run it belongs to |
+| Job event | `PIPELINE#{id}` | `JOB#{schedule}#{date}#{timestamp}` | One row per event, its kind in `event`; `runId` names the run it belongs to |
+
+`timestamp` is the write time in epoch milliseconds. The `event` values are `success`, `fail` and `timeout` (written by the job, by CheckJob after polling, or by the orchestrator for a `lambda` job and a closed job poll window), `infra-trigger-failure` and `infra-trigger-exhausted` (a job that could not be started, and the end of those retries), `validation-exhausted` and `evaluation-released` (the evaluation window closed), and `rerun-accepted`. Rows written by Interlock carry a `ttl` 30 days after they are written.
 
 DynamoDB Streams are enabled. The stream-router publishes `JOB_COMPLETED` and `JOB_FAILED` from `JOB#` records; retries are started by the run's CompleteTrigger.
 
@@ -69,7 +75,10 @@ Tracks retry attempts for failed job executions.
 
 | Entity | PK | SK | Purpose |
 |---|---|---|---|
-| Rerun record | `PIPELINE#{id}` | `RERUN#{schedule}#{date}#{attempt}` | Retry attempt metadata |
+| Rerun record | `PIPELINE#{id}` | `RERUN#{schedule}#{date}#{attempt}` | An accepted `RERUN_REQUEST`; `attempt` is the number of `RERUN#` rows the date already had, and `reason` is the request's |
+| Retry record | `PIPELINE#{id}` | `RERUN#{schedule}#{date}#{execution}` | A failure retry started by CompleteTrigger, keyed by the retry's execution name; `reason` is `job-fail-retry` |
+
+Both carry a `ttl` 30 days after they are written. The rerun budgets count these rows by `reason`: `job.maxManualReruns` the rows of the request's reason, `job.maxDriftReruns` the `late-data` and `data-drift` rows. Failure retries are counted from the execution name, not from this table.
 
 ### Events Table
 
@@ -96,7 +105,7 @@ Processes DynamoDB Stream events from the control and joblog tables. Routes reco
 | `CONFIG` | Invalidate the config cache |
 | `JOB#` | On success: publish `JOB_COMPLETED`. On fail/timeout: publish `JOB_FAILED` (retries belong to the run's CompleteTrigger). Dry-run pipelines: publish what a retry would do |
 | `RERUN_REQUEST#` | Check the calendar, the rerun budget, a `RUNNING` date and the circuit breaker; on acceptance, reset the trigger lock, write the rerun row and start the execution, then delete the post-run baseline and record `rerun-accepted` and `RERUN_ACCEPTED`. If the start fails, the rerun row is deleted and the date's earlier status restored, so no budget is spent and a stream retry (up to 3, then the dead-letter queue) can start it; a row that cannot be deleted still counts against the budget. A failed restore, a crash between the reset and the start, or a retry that finds the finished execution of a start that reported an error leaves the date `RUNNING` until the watchdog's stale-trigger check closes it with `SFN_TIMEOUT` (stale deadline `staleAt`: `sfn_timeout_seconds` plus 30 minutes from the latest attempt, 4h30m by default). Dry-run pipelines: publish what a rerun would do |
-| `SENSOR#` (post-run) | If sensor matches a `postRun.rules[].key` and trigger is COMPLETED: inside the date's post-run watch window (from `completedAt`), compare against baseline, publish drift/pass/fail events, and on drift publish `POST_RUN_DRIFT` and request a rerun while `job.maxAutoRerunAge` has not passed, or publish `MANUAL_RERUN_REQUIRED` once it has; after the window, drift from the baseline publishes only `MANUAL_RERUN_REQUIRED`, and the baseline is never seeded or rewritten. If trigger is RUNNING: publish informational `POST_RUN_DRIFT_INFLIGHT` event |
+| `SENSOR#` (post-run) | If sensor matches a `postRun.rules[].key` and trigger is COMPLETED: inside the date's post-run watch window (from `completedAt`), compare against baseline, publish drift/pass/fail events, and on drift publish `POST_RUN_DRIFT` and request a rerun while `job.maxAutoRerunAge` has not passed, or publish `MANUAL_RERUN_REQUIRED` once it has; after the window, drift from the baseline publishes only `MANUAL_RERUN_REQUIRED`, and the baseline is never seeded or rewritten. If trigger is RUNNING: publish informational `POST_RUN_DRIFT_INFLIGHT` on drift, only while a baseline from an earlier completion is still present (a first run, its retries and an accepted rerun have none) |
 
 The stream-router maintains a config cache to avoid redundant DynamoDB reads. Pipeline configs are parsed and validated at load time (`ValidatePipelineConfig`): a bad `CONFIG` row is skipped and logged as a warning (the watchdog also publishes `CONFIG_INVALID`), and every other pipeline keeps running.
 
@@ -114,6 +123,7 @@ Multi-mode dispatcher invoked by Step Functions. Each invocation specifies a `mo
 | `trigger` | Build trigger config from `job` section, execute trigger (Glue, EMR, HTTP, etc.), return run ID: the job API's run ID for polled types, otherwise the Step Functions execution name |
 | `check-job` | Query joblog table for the newest `success`, `fail` or `timeout` row of this run's `runId` (rows of earlier runs are ignored); otherwise poll the job API. Return the event, or empty (still running). Propagates `FailureCategory` to the joblog when a polled failure is detected |
 | `validation-exhausted` | When the evaluation window closes: before the cutoff, release a first run (`evaluation-released` row, trigger row deleted, `EVALUATION_RELEASED`, status `released`); for a rerun, publish `VALIDATION_EXHAUSTED` and set `FAILED_FINAL` (`exhausted`); at or after the cutoff, publish `SENSOR_DEADLINE_EXPIRED` and set `FAILED_FINAL` (`cutoff`) |
+| `trigger-exhausted` | After the Trigger state's retries run out: write an `infra-trigger-exhausted` joblog row, publish `RETRY_EXHAUSTED` and set the trigger row `FAILED_FINAL` (status `exhausted`). A row already `COMPLETED` or `FAILED_FINAL` is left alone |
 | `infra-failure` | After a failed `evaluate`, `validation-exhausted` or `check-job` step: publish `INFRA_FAILURE` and set a `RUNNING` trigger row `FAILED_FINAL`. A missing or finished row, or one a later execution holds because this one released its lock, is left alone |
 | `job-poll-exhausted` | Write a `timeout` joblog row for the run when the job poll window expires |
 | `complete-trigger` | On success set the trigger to `COMPLETED`. On fail/timeout start the next attempt (`status: retrying`), which waits in its own execution, while `maxRetries` lasts, else set `FAILED_FINAL` and publish `RETRY_EXHAUSTED` (`PIPELINE_EXCLUDED` for an excluded date, `INFRA_FAILURE` when the next execution cannot start) |
@@ -146,7 +156,9 @@ Invoked by an EventBridge scheduled rule (default: every 5 minutes). Runs nine i
 8. **Relative SLA** -- for pipelines with `maxDuration` SLA config, checks each run date (daily or hourly) with a first sensor arrival, from 8 days before to 2 days after the current UTC date. While the run has not finished, publishes `RELATIVE_SLA_WARNING` once at first sensor arrival + `maxDuration` - `expectedDuration` (75% of `maxDuration` without `expectedDuration`), then `RELATIVE_SLA_BREACH` once at arrival + `maxDuration`. Each is deduplicated per date by a marker written only after a successful publish, so a failed publish is retried on the next pass. Nothing is sent once the breach time is more than 24 hours past, so a date whose breach was not published by then (a watchdog outage that long, say) never gets its `RELATIVE_SLA_BREACH`.
 9. **Invalid configs** -- publishes `CONFIG_INVALID` for each `CONFIG` row the config cache rejected, once per broken config version and day, at most 20 per pass.
 
-If any check fails, the watchdog publishes a `WATCHDOG_DEGRADED` event listing the failed checks and returns an aggregate error. Individual check failures do not prevent the remaining checks from running.
+A dry-run pipeline is skipped by every check except stale triggers and invalid configs.
+
+If any check fails, the watchdog publishes a `WATCHDOG_DEGRADED` event whose message lists the failed checks, and returns an aggregate error. Individual check failures do not prevent the remaining checks from running.
 
 See [Watchdog](../watchdog) for the full algorithm.
 
@@ -274,13 +286,13 @@ The Terraform module creates CloudWatch alarms across five categories to monitor
 | Stream iterator age | 1 (stream-router, covers the control and joblog streams) | `IteratorAge` | `>= 300,000ms` (5 min) |
 | Alert rule delivery | 2 (`alert_events` and `cw_alarm_alert` rules to the alert queue) | `FailedInvocations` | `>= 1` per 5-minute period |
 
-Alarm state changes are reshaped into `INFRA_ALARM` events via EventBridge input transformers and routed to event-sink and alert-dispatcher. Optionally, alarms also publish to an SNS topic via the `sns_alarm_topic_arn` variable.
+Alarm state changes are reshaped into `INFRA_ALARM` events via EventBridge input transformers. Every state change goes to event-sink; only a change to `ALARM` goes to the alert queue and alert-dispatcher. Optionally, alarms also notify an SNS topic, on `ALARM` and on `OK`, via the `sns_alarm_topic_arn` variable.
 
 See [Alerting](../../reference/alerting/#cloudwatch-alarms) for details on the event flow and consumer patterns.
 
 ## EventBridge
 
-A custom event bus (`{environment}-interlock-events`) receives all framework events. All four Lambda functions have `events:PutEvents` permission on this bus.
+A custom event bus (`{environment}-interlock-events`) receives all framework events. Four of the six functions publish to it: stream-router, orchestrator, sla-monitor and watchdog have `events:PutEvents` on the bus. The bus policy allows all six roles.
 
 The watchdog Lambda is invoked by a scheduled rule on the default event bus (EventBridge scheduled rules require the default bus).
 
@@ -293,7 +305,7 @@ Consumers create rules on the custom bus to route events to their targets. Examp
 }
 ```
 
-This replaces the previous SNS topic approach. EventBridge provides native filtering, fan-out to multiple targets, and cross-account delivery without framework changes.
+EventBridge provides native filtering, fan-out to multiple targets, and cross-account delivery without framework changes.
 
 ## IAM
 
@@ -321,14 +333,17 @@ deploy/
 ├── statemachine.asl.json    # Step Functions ASL definition
 ├── build.sh                 # Lambda build script (Go → zip)
 └── terraform/
-    ├── main.tf              # Provider, module-level config
+    ├── main.tf              # Terraform and provider version requirements (no provider block)
     ├── dynamodb.tf          # 4 tables (control, joblog, rerun, events)
     ├── lambda.tf            # 6 functions, IAM, DLQs, event source mappings
     ├── stepfunctions.tf     # State machine + execution role
-    ├── eventbridge.tf       # Custom bus + watchdog schedule
+    ├── eventbridge.tf       # Custom bus, watchdog schedule, event-sink, alert and alarm rules
+    ├── alerting.tf          # SQS alert queue, its DLQ and the alert-dispatcher mapping
+    ├── cloudwatch.tf        # CloudWatch alarms
+    ├── scheduler.tf         # SLA schedule group, Scheduler role, schedule permissions
     ├── config_loader.tf     # Pipeline YAML loading
     ├── variables.tf         # Input variables
-    └── outputs.tf           # Table names, function ARNs, bus name
+    └── outputs.tf           # Table names and ARNs, bus, state machine, schedule group, sla-monitor ARN
 ```
 
 ### Key Variables
