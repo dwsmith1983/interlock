@@ -18,6 +18,7 @@ CheckRetryBackoff
 
 InitEvalLoop → Evaluate → IsReady
   → (passed) Trigger → HasTriggerResult
+      → (no trigger result) FailValidationExhausted
       → InitJobPollLoop → WaitForJob → CheckJob → IsJobDone
           → (terminal) CompleteTrigger → IsRetrying
               → (retrying) Done
@@ -30,9 +31,14 @@ InitEvalLoop → Evaluate → IsReady
       → (window exhausted) ValidationExhausted (release, end or cutoff) → Done
   → (cutoff) ValidationExhausted → Done
 
+Trigger fails after its retries
+  → TriggerRetryExhausted → CheckCancelSLA → CancelSLASchedules → Done
+
 Evaluate, ValidationExhausted or CheckJob fails after its retries
   → RecordInfraFailure → InfraFailure
 ```
+
+`FailValidationExhausted` is a guard: a Trigger state that succeeds always writes `$.triggerResult`, so it is not reached in normal runs.
 
 SLA monitoring uses EventBridge Scheduler instead of a parallel branch. The watchdog creates one-time Scheduler entries for each run date with a `RUN#` row, at most 6 hours before its warning; at their exact timestamps they invoke the sla-monitor Lambda, which fires the alert. When the job completes, unfired entries are cancelled.
 
@@ -113,9 +119,9 @@ The evaluation loop calls the **orchestrator** Lambda with `mode=evaluate` to ch
 
 1. **Evaluate** calls the orchestrator with `mode: evaluate`. The orchestrator reads sensor data from DynamoDB and evaluates all validation rules defined in the pipeline config.
 2. **IsReady** branches on the result: if `passed`, proceed to trigger; if `cutoff` (the run date's cutoff passed and it is not a rerun), go to **ValidationExhausted**, which sets `FAILED_FINAL`, publishes `SENSOR_DEADLINE_EXPIRED` and ends the execution; otherwise, wait and re-evaluate.
-3. **WaitInterval** uses `SecondsPath` for configurable poll intervals (set via `evaluation.interval` in the pipeline config).
+3. **WaitInterval** uses `SecondsPath` for configurable poll intervals (`evaluationIntervalSeconds`, from `schedule.evaluation.interval` in the pipeline config, default `5m`).
 4. **IncrementElapsed** tracks total elapsed time using `States.MathAdd`.
-5. **CheckWindowExhausted** compares elapsed time against `evaluationWindowSeconds`. If the window is exhausted, **ValidationExhausted** ends the execution, skipping the SLA cleanup since no job ran. Before the run date's cutoff, a first run is released: the orchestrator writes an `evaluation-released` job row, deletes the trigger row and publishes `EVALUATION_RELEASED` (not an alert), so the next trigger sensor write or watchdog pass can start evaluation again until the cutoff, and the date's SLA schedules still fire. For a rerun it publishes `VALIDATION_EXHAUSTED` and sets `FAILED_FINAL`, and the run's unfired SLA schedules fire and are suppressed because the run is finished. At or after the cutoff, a first run publishes `SENSOR_DEADLINE_EXPIRED` and then sets `FAILED_FINAL`.
+5. **CheckWindowExhausted** compares elapsed time against `evaluationWindowSeconds` (from `schedule.evaluation.window`, default `1h`). If the window is exhausted, **ValidationExhausted** ends the execution, skipping the SLA cleanup since no job ran. Before the run date's cutoff, a first run is released: the orchestrator writes an `evaluation-released` job row, deletes the trigger row and publishes `EVALUATION_RELEASED` (not an alert), so the next trigger sensor write or watchdog pass can start evaluation again until the cutoff, and the date's SLA schedules still fire. For a rerun it publishes `VALIDATION_EXHAUSTED` and sets `FAILED_FINAL`, and the run's unfired SLA schedules fire and are suppressed because the run is finished. At or after the cutoff, a first run publishes `SENSOR_DEADLINE_EXPIRED` and then sets `FAILED_FINAL`.
 
 ## Trigger and Job Polling
 
@@ -322,4 +328,4 @@ The ASL is a template file (`deploy/statemachine.asl.json`) processed by Terrafo
 | `${sfn_timeout_seconds}` | `var.sfn_timeout_seconds` |
 | `${trigger_max_attempts}` | `var.trigger_max_attempts` |
 
-The evaluation interval, window duration, and job check interval are driven by pipeline config values passed in the Step Functions input (`$.config`), not hardcoded in the ASL.
+The evaluation interval, the evaluation window and the job poll window come from the pipeline config (`schedule.evaluation.interval`, `schedule.evaluation.window` and `job.jobPollWindowSeconds`), passed in the Step Functions input (`$.config`) rather than written into the ASL. The job check interval travels the same way (`$.config.jobCheckIntervalSeconds`, read by **WaitForJob**), but it is fixed at 60 seconds: no pipeline field or module variable sets it.
