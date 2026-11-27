@@ -128,5 +128,7 @@ code path first and assert the exact values it produces.
   `MANUAL_RERUN_STILL_REQUIRED`, no rerun request and no second launch; a
   manual `RERUN_REQUEST` then launches run 2. Not run: drift past the age,
   and an automatic request written before the age but handled after it (the
-  stream-router's re-check). Unit tests cover both.
+  stream-router's re-check, which publishes `MANUAL_RERUN_REQUIRED` with
+  `source: rerun-request`): placing a request between the age and its
+  handling would need another clock hook. Unit tests cover both.
 - Slack delivery. The dispatcher's queue mapping is off in e2e.

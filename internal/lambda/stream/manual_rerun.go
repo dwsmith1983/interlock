@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
+
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/trigger"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -20,25 +22,27 @@ const maxManualRerunSensorData = 32 * 1024
 
 // manualRerunInput is what the place that stopped an automatic rerun knows
 // about it: the request reason (late-data or data-drift), where it came from
-// (sensor), the bound that stopped it (the endedBy label of
-// logAutoRerunEnded), the late sensor write, and now.
+// (sensor or rerun-request), the bound that stopped it (the endedBy label of
+// logAutoRerunEnded), the late sensor write or the request's time, and now.
 type manualRerunInput struct {
 	reason, source, blockedBy string
 	sensorKey                 string
 	sensorData                map[string]interface{}
 	arrivedAt                 time.Time
+	requestedAt               string
 	now                       time.Time
 }
 
 // recordManualRerunRequired publishes MANUAL_RERUN_REQUIRED the first time an
 // automatic rerun of the date's completion tr is stopped for in.reason, and
 // MANUAL_RERUN_STILL_REQUIRED each later time. A date whose latest job outcome
-// is not a success, or tr without a completion time, gets neither. The marker
+// is not a success, tr without a completion time, or a calendar-excluded date
+// (a manual rerun of it is refused) gets neither. The marker
 // manual-rerun-alert-<reason>#<date> keeps the completion alerted for and is
 // written only after a REQUIRED publish succeeds. Failures are logged.
 func recordManualRerunRequired(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string,
 	tr *types.ControlRecord, job *types.JobLogRecord, in manualRerunInput) {
-	if lambda.AutoRerunEnd(cfg, tr).IsZero() || job == nil || job.Event != types.JobEventSuccess {
+	if lambda.AutoRerunEnd(cfg, tr).IsZero() || job == nil || job.Event != types.JobEventSuccess || lambda.IsExcludedDate(cfg, date) {
 		return
 	}
 	markerKey := "manual-rerun-alert-" + in.reason + "#" + date
@@ -67,9 +71,9 @@ func recordManualRerunRequired(ctx context.Context, d *lambda.Deps, cfg *types.P
 }
 
 // manualRerunDetail is the detail of a manual-rerun event: why and how the
-// automatic rerun stopped, the job and its last run, the late data, and the
-// request row a person writes to rerun. A value that is unknown is left out,
-// and so is sensor data over maxManualRerunSensorData.
+// automatic rerun stopped, the job and its last run, the late data or the
+// request, and the request row a person writes to rerun. A value that is
+// unknown is left out, and so is sensor data over maxManualRerunSensorData.
 func manualRerunDetail(d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string,
 	tr *types.ControlRecord, job *types.JobLogRecord, in manualRerunInput) map[string]interface{} {
 	completed, _ := time.Parse(time.RFC3339, tr.CompletedAt) // parseable: AutoRerunEnd is not zero
@@ -85,7 +89,7 @@ func manualRerunDetail(d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, sc
 	if ids := jobIdentifiers(cfg); len(ids) > 0 {
 		detail["job"] = ids
 	}
-	for k, v := range map[string]string{"lastRunId": job.RunID, "startedAt": tr.StartedAt, "sensorKey": in.sensorKey} {
+	for k, v := range map[string]string{"lastRunId": job.RunID, "startedAt": tr.StartedAt, "requestedAt": in.requestedAt, "sensorKey": in.sensorKey} {
 		if v != "" {
 			detail[k] = v
 		}
@@ -101,6 +105,24 @@ func manualRerunDetail(d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, sc
 		}
 	}
 	return detail
+}
+
+// requireManualRerunOnRequest records a manual rerun for an automatic
+// request that was skipped because automatic reruns ended (endedBy), reading
+// the date's latest job outcome for it. A failed read is returned so the
+// stream retries the request.
+func requireManualRerunOnRequest(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string,
+	tr *types.ControlRecord, reason, endedBy string, record events.DynamoDBEventRecord) error {
+	job, err := d.Store.GetLatestJobOutcome(ctx, pipelineID, schedule, date)
+	if err != nil {
+		return fmt.Errorf("get latest job outcome for %q/%s/%s: %w", pipelineID, schedule, date, err)
+	}
+	in := manualRerunInput{reason: reason, source: "rerun-request", blockedBy: endedBy, now: d.Now()}
+	if r, ok := record.Change.NewImage["requestedAt"]; ok && r.DataType() == events.DataTypeString {
+		in.requestedAt = r.String()
+	}
+	recordManualRerunRequired(ctx, d, cfg, pipelineID, schedule, date, tr, job, in)
+	return nil
 }
 
 // jobIdentifiers names the job a pipeline launches with an allowlist of its

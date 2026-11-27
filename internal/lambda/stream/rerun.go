@@ -71,8 +71,8 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 	// was written.
 	automatic := reason == "late-data" || reason == "data-drift"
 	if automatic && tr != nil && tr.Status == types.TriggerStatusCompleted && !lambda.AutoRerunAllowed(cfg, tr, d.Now()) {
-		logAutoRerunEnded(ctx, d, cfg, tr, "rerun request skipped: automatic reruns have ended", pipelineID, schedule, date, reason)
-		return nil
+		endedBy := logAutoRerunEnded(ctx, d, cfg, tr, "rerun request skipped: automatic reruns have ended", pipelineID, schedule, date, reason)
+		return requireManualRerunOnRequest(ctx, d, cfg, pipelineID, schedule, date, tr, reason, endedBy, record)
 	}
 
 	// Calendar exclusion check (execution date).
