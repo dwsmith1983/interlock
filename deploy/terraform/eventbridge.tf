@@ -13,7 +13,7 @@ resource "aws_cloudwatch_event_bus_policy" "interlock_bus" {
         Sid    = "AllowInterlockLambdas"
         Effect = "Allow"
         Principal = {
-          AWS = [for name in local.lambda_names : aws_iam_role.lambda[name].arn]
+          AWS = [for name in local.event_publisher_names : aws_iam_role.lambda[name].arn]
         }
         Action   = "events:PutEvents"
         Resource = aws_cloudwatch_event_bus.interlock.arn

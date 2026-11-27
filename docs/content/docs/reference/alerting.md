@@ -8,7 +8,7 @@ Interlock publishes all lifecycle and alert events to a custom EventBridge event
 
 ## EventBridge Event Bus
 
-The Terraform module creates a custom event bus named `{environment}-interlock-events`. Four of the six Lambda functions publish events to this bus using `events:PutEvents`: stream-router, orchestrator, sla-monitor and watchdog.
+The Terraform module creates a custom event bus named `{environment}-interlock-events`. Four of the six Lambda functions publish events to this bus using `events:PutEvents`: stream-router, orchestrator, sla-monitor and watchdog. The bus policy lets only their roles put events on it.
 
 The bus name is available as a Terraform output:
 
