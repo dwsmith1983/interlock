@@ -116,6 +116,7 @@ type JobConfig struct {
 	MaxRetries           int                    `yaml:"maxRetries,omitempty" json:"maxRetries,omitempty"`
 	JobPollWindowSeconds *int                   `yaml:"jobPollWindowSeconds,omitempty" json:"jobPollWindowSeconds,omitempty"`
 	MaxDriftReruns       *int                   `yaml:"maxDriftReruns,omitempty" json:"maxDriftReruns,omitempty"`
+	MaxAutoRerunAge      string                 `yaml:"maxAutoRerunAge,omitempty" json:"maxAutoRerunAge,omitempty"`
 	MaxManualReruns      *int                   `yaml:"maxManualReruns,omitempty" json:"maxManualReruns,omitempty"`
 	MaxCodeRetries       *int                   `yaml:"maxCodeRetries,omitempty" json:"maxCodeRetries,omitempty"`
 }
@@ -143,6 +144,10 @@ const DefaultJobPollWindowSeconds = 3600
 // DefaultPostRunWatchWindow is how long a completed date is watched when
 // postRun.watchWindow is unset.
 const DefaultPostRunWatchWindow = 4 * time.Hour
+
+// DefaultMaxAutoRerunAge is how long after completedAt a date may still be
+// rerun automatically (late data or drift) when job.maxAutoRerunAge is unset.
+const DefaultMaxAutoRerunAge = 120 * time.Hour
 
 // DefaultPostRunSensorTimeout is the watchdog's grace period for post-run
 // sensors when postRun.sensorTimeout is unset.

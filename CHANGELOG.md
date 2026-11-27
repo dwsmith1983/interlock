@@ -10,10 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Trigger auth tokens from Secrets Manager.** The Terraform module's `trigger_secrets_arn` names a secret holding a JSON object of `INTERLOCK_` variables; the orchestrator reads it at cold start (env `TRIGGER_SECRETS_ARN`) and sets each pair in its environment, and a secret it cannot use stops the cold start. Its role gets `secretsmanager:GetSecretValue` on that secret only. `orchestrator_env` sets plain `INTERLOCK_` variables for non-secret values; the secret wins on a shared name.
+- **`job.maxAutoRerunAge` limits automatic reruns by age.** A `late-data` or `data-drift` rerun is requested only before `completedAt` plus this Go duration (default `120h`, at most `720h`). It may be shorter than `postRun.watchWindow`: the watch goes on for the whole window, so late data and drift past the age still publish `LATE_DATA_ARRIVAL` and `POST_RUN_DRIFT`, but the stream-router only logs them and writes no request, leaving a pending manual request in place. Write a manual `RERUN_REQUEST` to rerun such a date. Job-failure retries and manual requests are not limited.
 - **The `airflow` trigger supports Airflow 3.** `apiVersion: 3` starts and polls DAG runs on the `/api/v2` REST API, sending `"logical_date": null` with the `conf`. Unset or `2` keeps the `/api/v1` calls. Validation rejects any other value. Runs started before this change keep polling `/api/v1`.
 
 ### Changed (BREAKING)
 
+- **A `postRun.watchWindow` over `120h` no longer reruns automatically after `120h`.** Late data and drift past `job.maxAutoRerunAge` (default `120h`) are published but write no rerun request. Set `maxAutoRerunAge` up to the window to keep the old behaviour.
 - **A `lambda` job with no `payload` now receives a JSON event** (the run object below) instead of an empty one, and an `airflow` job with no `body` a DAG run `conf`.
 - **Step function input and EMR step arguments gain the date keys**, replacing a configured key of the same name. EMR step arguments are now sent in key order.
 - **`${INTERLOCK_PIPELINE_ID}`, `${INTERLOCK_SCHEDULE_ID}`, `${INTERLOCK_DATE}` and `${INTERLOCK_RUN_ID}` in a `lambda` payload or `airflow` body** expand to the run's values, JSON-escaped, instead of environment variables of those names.

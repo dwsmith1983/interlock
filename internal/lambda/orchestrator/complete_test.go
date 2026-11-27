@@ -190,6 +190,7 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 		maxRetries    int
 		tweak         func(*types.PipelineConfig)
 		row           string // TRIGGER# status before the calls: "" is RUNNING, "none" no row
+		completedAt   string // TRIGGER# completedAt left by an earlier run; "" is none
 		prior         bool   // r1 was already started and recorded (a Task retry after it)
 		startErr      error
 		rows          []map[string]ddbtypes.AttributeValue // job log, newest first
@@ -323,6 +324,14 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 			wantOps: []string{"rerun " + r1, "start " + r1}, wantTrigger: types.TriggerStatusCompleted, wantReruns: []string{r1},
 		},
 		{
+			// Only late-data and drift reruns stop at job.maxAutoRerunAge: a
+			// failed rerun of a date that first completed days ago still retries.
+			name: "RetryPastMaxAutoRerunAge", maxRetries: 1, completedAt: "2026-02-20T12:00:00Z",
+			tweak:   func(c *types.PipelineConfig) { c.Job.MaxAutoRerunAge = "24h" },
+			calls:   []ctCall{failCall(ctExec, retrying, r1)},
+			wantOps: []string{"rerun " + r1, "start " + r1}, wantTrigger: running, wantStaleAt: true, wantReruns: []string{r1},
+		},
+		{
 			name: "EmptyExecutionNameIsAnError", maxRetries: 1,
 			calls:       []ctCall{{types.JobEventFail, "", ctExec, "", "", "executionName is required"}},
 			wantTrigger: running,
@@ -337,7 +346,11 @@ func TestCompleteTrigger_Failure(t *testing.T) {
 			d, mem, rec := memDeps(t, cfg)
 			trigger := []string{"PK", types.PipelinePK("p"), "SK", types.TriggerSK("s", ctDate)}
 			if row := cmp.Or(tt.row, running); row != "none" {
-				mem.Put("control", strItem(append(trigger, "status", row)...))
+				item := strItem(append(trigger, "status", row)...)
+				if tt.completedAt != "" {
+					item["completedAt"] = &ddbtypes.AttributeValueMemberS{Value: tt.completedAt}
+				}
+				mem.Put("control", item)
 			}
 			if tt.prior {
 				rec.started = []string{r1}

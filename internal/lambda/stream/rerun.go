@@ -66,12 +66,12 @@ func handleRerunRequest(ctx context.Context, d *lambda.Deps, pk, sk string, reco
 		return fmt.Errorf("read trigger for rerun request of %q: %w", pipelineID, err)
 	}
 
-	// An automatic request is re-checked: the post-run watch window may have
-	// ended since it was written.
+	// An automatic request is re-checked: automatic reruns (bounded by the
+	// post-run watch window and job.maxAutoRerunAge) may have ended since it
+	// was written.
 	automatic := reason == "late-data" || reason == "data-drift"
-	if automatic && tr != nil && tr.Status == types.TriggerStatusCompleted && !lambda.PostRunWatched(cfg, tr, d.Now()) {
-		d.Logger.InfoContext(ctx, "rerun request skipped: post-run watch window has ended",
-			"pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason, "completedAt", tr.CompletedAt)
+	if automatic && tr != nil && tr.Status == types.TriggerStatusCompleted && !lambda.AutoRerunAllowed(cfg, tr, d.Now()) {
+		logAutoRerunEnded(ctx, d, cfg, tr, "rerun request skipped: automatic reruns have ended", pipelineID, schedule, date, reason)
 		return nil
 	}
 
@@ -343,7 +343,8 @@ func checkSensorFreshness(ctx context.Context, d *lambda.Deps, pipelineID, jobSK
 
 // checkLateDataArrival detects sensor updates after a pipeline has completed.
 // Only a date inside its post-run watch window at now is acted on; after the
-// window the sensor is ignored.
+// window the sensor is ignored. Inside it LATE_DATA_ARRIVAL is published, and
+// a late-data rerun is requested only while automatic reruns are allowed.
 func checkLateDataArrival(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, schedule, date string, now time.Time) error {
 	trigger, err := d.Store.GetTrigger(ctx, pipelineID, schedule, date)
 	if err != nil || trigger == nil {
@@ -374,9 +375,34 @@ func checkLateDataArrival(ctx context.Context, d *lambda.Deps, cfg *types.Pipeli
 		d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventLateDataArrival, "error", err)
 	}
 
+	// Past the automatic rerun end no request is written, so a pending manual
+	// request is not replaced by one that would be skipped.
+	if !lambda.AutoRerunAllowed(cfg, trigger, now) {
+		logAutoRerunEnded(ctx, d, cfg, trigger, "late data rerun not requested: automatic reruns have ended", pipelineID, schedule, date, "late-data")
+		return nil
+	}
 	if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, schedule, date, "late-data"); writeErr != nil {
 		d.Logger.WarnContext(ctx, "failed to write rerun request on late data", "pipelineId", pipelineID, "error", writeErr)
 	}
 
 	return nil
+}
+
+// logAutoRerunEnded logs that an automatic rerun of a completed date was not
+// requested or started because its automatic reruns have ended, naming the
+// bound that ended them: postRun.watchWindow, job.maxAutoRerunAge, or
+// no-completion-time for a row without a parseable completedAt.
+func logAutoRerunEnded(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, tr *types.ControlRecord, msg, pipelineID, schedule, date, reason string) {
+	end := lambda.AutoRerunEnd(cfg, tr)
+	var endedBy string
+	switch {
+	case end.IsZero():
+		endedBy = "no-completion-time"
+	case end.Equal(lambda.PostRunWatchEnd(cfg, tr)):
+		endedBy = "postRun.watchWindow"
+	default:
+		endedBy = "job.maxAutoRerunAge"
+	}
+	d.Logger.InfoContext(ctx, msg, "pipelineId", pipelineID, "schedule", schedule, "date", date, "reason", reason,
+		"completedAt", tr.CompletedAt, "maxAutoRerunAge", lambda.MaxAutoRerunAge(cfg).String(), "endedBy", endedBy)
 }

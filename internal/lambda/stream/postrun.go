@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/pkg/types"
@@ -41,7 +42,7 @@ func handlePostRunSensorEvent(ctx context.Context, d *lambda.Deps, cfg *types.Pi
 				"completedAt", trigger.CompletedAt)
 			return nil
 		}
-		return handlePostRunCompleted(ctx, d, cfg, pipelineID, scheduleID, date, sensorKey, sensorData)
+		return handlePostRunCompleted(ctx, d, cfg, trigger, now, pipelineID, scheduleID, date, sensorKey, sensorData)
 	default:
 		return nil
 	}
@@ -96,7 +97,10 @@ func handlePostRunInflight(ctx context.Context, d *lambda.Deps, cfg *types.Pipel
 }
 
 // handlePostRunCompleted evaluates post-run rules after the job has completed.
-func handlePostRunCompleted(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, sensorKey string, sensorData map[string]interface{}) error {
+// Drift is always published; a data-drift rerun is requested only while the
+// trigger row tr still allows automatic reruns at now, the time the caller
+// judged the watch window by.
+func handlePostRunCompleted(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, tr *types.ControlRecord, now time.Time, pipelineID, scheduleID, date, sensorKey string, sensorData map[string]interface{}) error {
 	baselineKey := "postrun-baseline#" + date
 	baseline, err := d.Store.GetSensorData(ctx, pipelineID, baselineKey)
 	if err != nil {
@@ -133,14 +137,18 @@ func handlePostRunCompleted(ctx context.Context, d *lambda.Deps, cfg *types.Pipe
 					d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDrift, "error", err)
 				}
 
-				if lambda.IsExcludedDate(cfg, date) {
+				switch {
+				case lambda.IsExcludedDate(cfg, date):
 					if pubErr := lambda.PublishEvent(ctx, d, string(types.EventPipelineExcluded), pipelineID, scheduleID, date,
 						fmt.Sprintf("post-run drift rerun skipped for %s: execution date %s excluded by calendar", pipelineID, date)); pubErr != nil {
 						d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPipelineExcluded, "error", pubErr)
 					}
 					d.Logger.InfoContext(ctx, "post-run drift rerun skipped: execution date excluded by calendar",
 						"pipelineId", pipelineID, "date", date)
-				} else {
+				case !lambda.AutoRerunAllowed(cfg, tr, now):
+					logAutoRerunEnded(ctx, d, cfg, tr, "post-run drift rerun not requested: automatic reruns have ended",
+						pipelineID, scheduleID, date, "data-drift")
+				default:
 					if writeErr := d.Store.WriteRerunRequest(ctx, pipelineID, scheduleID, date, "data-drift"); writeErr != nil {
 						d.Logger.WarnContext(ctx, "failed to write rerun request on post-run drift",
 							"pipelineId", pipelineID, "error", writeErr)

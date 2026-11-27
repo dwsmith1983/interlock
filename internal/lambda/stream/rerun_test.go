@@ -531,6 +531,83 @@ func rerunRequestRecord(reason, requestedAt string) events.DynamoDBEventRecord {
 	}}
 }
 
+// TestRerunRequest_MaxAutoRerunAge: with job.maxAutoRerunAge 24h and a 200h
+// watch window unless a row says otherwise, an automatic request handled 25h
+// after completedAt starts nothing, publishes nothing and logs that the age
+// ended it. A manual request at that time still starts, and so does an
+// automatic one inside the age. With a 6h window the log names the window, and
+// a COMPLETED row with no completedAt is logged as having no completion time.
+func TestRerunRequest_MaxAutoRerunAge(t *testing.T) {
+	const date = "2026-03-10"
+	tests := []struct {
+		name, reason, now string
+		window            string // empty means 200h
+		noCompletedAt     bool
+		wantEndedBy       string // the logged endedBy; empty means the request starts
+	}{
+		{name: "late-data past the age", reason: "late-data", now: "2026-03-11T13:00:00Z", wantEndedBy: "job.maxAutoRerunAge"},
+		{name: "data-drift past the age", reason: "data-drift", now: "2026-03-11T13:00:00Z", wantEndedBy: "job.maxAutoRerunAge"},
+		{name: "manual past the age (guard)", reason: "manual", now: "2026-03-11T13:00:00Z"},
+		{name: "late-data inside the age (guard)", reason: "late-data", now: "2026-03-11T11:59:59Z"},
+		{name: "late-data past a shorter window", reason: "late-data", now: "2026-03-10T19:00:00Z", window: "6h", wantEndedBy: "postRun.watchWindow"},
+		{name: "late-data, no completedAt", reason: "late-data", now: "2026-03-10T13:00:00Z", noCompletedAt: true, wantEndedBy: "no-completion-time"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "p"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig, MaxAutoRerunAge: "24h"},
+				PostRun:  &types.PostRunConfig{WatchWindow: cmp.Or(tt.window, "200h")},
+			})
+			completedAt := "2026-03-10T12:00:00Z"
+			if tt.noCompletedAt {
+				completedAt = ""
+			}
+			mem.Put("control", completedRow(date, completedAt))
+			mem.Put("joblog", map[string]ddbtypes.AttributeValue{
+				"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
+				"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
+				"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess}})
+			rerunCountQuery(d.Store.Client.(*storetest.FakeDynamo), mem)
+			logs := &bytes.Buffer{}
+			d.Logger = slog.New(slog.NewTextHandler(logs, nil))
+			now := mustTime(t, tt.now)
+			d.NowFunc = func() time.Time { return now }
+			d.Store.Now = func() time.Time { return now }
+
+			if err := handleRecord(context.Background(), d, rerunRequestRecord(tt.reason, tt.now)); err != nil {
+				t.Fatalf("handleRecord: %v", err)
+			}
+
+			var gotEvents []string
+			for _, e := range eb.events {
+				gotEvents = append(gotEvents, e.Type)
+			}
+			wantStarts, wantEvents, wantStatus := 0, []string(nil), types.TriggerStatusCompleted
+			if tt.wantEndedBy == "" {
+				wantStarts, wantEvents, wantStatus = 1, []string{string(types.EventRerunAccepted)}, types.TriggerStatusRunning
+			}
+			if sfnFake.calls != wantStarts || !slices.Equal(gotEvents, wantEvents) {
+				t.Errorf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, gotEvents, wantStarts, wantEvents)
+			}
+			if got := len(mem.Items("rerun")); got != wantStarts {
+				t.Errorf("rerun rows = %d, want %d", got, wantStarts)
+			}
+			status := mem.Get("control", types.PipelinePK("p"), types.TriggerSK("stream", date))["status"].(*ddbtypes.AttributeValueMemberS).Value
+			if status != wantStatus {
+				t.Errorf("trigger status = %q, want %q", status, wantStatus)
+			}
+			if tt.wantEndedBy == "" && strings.Contains(logs.String(), "endedBy=") {
+				t.Errorf("logged %q, want no endedBy line", logs.String())
+			}
+			if want := "endedBy=" + tt.wantEndedBy; tt.wantEndedBy != "" && !slices.Contains(strings.Fields(logs.String()), want) {
+				t.Errorf("logged %q, want %q", logs.String(), want)
+			}
+		})
+	}
+}
+
 // TestRerunRequest_RepeatedAfterBreakerRejection: the circuit breaker judges
 // by the last run, not by a rerun-rejected row an earlier version stored
 // above it, so a request is refused, asking again is refused again, and

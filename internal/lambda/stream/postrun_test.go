@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -158,6 +159,77 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 			}
 			if got := baselineEntries(t, d, date); !reflect.DeepEqual(got, wantBaseline) {
 				t.Errorf("baseline = %v, want %v", got, wantBaseline)
+			}
+		})
+	}
+}
+
+// TestPostRunSensor_MaxAutoRerunAge: with a 200h watch window and
+// job.maxAutoRerunAge 24h, drift 25h after completedAt still publishes
+// POST_RUN_DRIFT but writes no data-drift request, and a pending manual
+// request is left as it was. Inside the age the request is written.
+func TestPostRunSensor_MaxAutoRerunAge(t *testing.T) {
+	const date = "2026-03-10"
+	pk := types.PipelinePK("p")
+	manual := map[string]ddbtypes.AttributeValue{
+		"PK":          &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":          &ddbtypes.AttributeValueMemberS{Value: types.RerunRequestSK("stream", date)},
+		"reason":      &ddbtypes.AttributeValueMemberS{Value: "manual"},
+		"requestedAt": &ddbtypes.AttributeValueMemberS{Value: "2026-03-11T12:30:00Z"},
+	}
+	tests := []struct {
+		name       string
+		now        string
+		manualRow  bool
+		wantReason string // the request row's reason; empty means none
+	}{
+		{name: "past the age", now: "2026-03-11T13:00:00Z"},
+		{name: "past the age, manual request pending", now: "2026-03-11T13:00:00Z", manualRow: true, wantReason: "manual"},
+		{name: "inside the age (guard)", now: "2026-03-11T11:59:59Z", wantReason: "data-drift"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			threshold := 0.0
+			d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "p"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig, MaxAutoRerunAge: "24h"},
+				PostRun: &types.PostRunConfig{
+					Rules:      []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}},
+					DriftField: "count", DriftThreshold: &threshold, WatchWindow: "200h",
+				},
+			})
+			mem.Put("control", completedRow(date, "2026-03-10T12:00:00Z"))
+			if tt.manualRow {
+				mem.Put("control", maps.Clone(manual))
+			}
+			ctx := context.Background()
+			if err := d.Store.WriteSensor(ctx, "p", "postrun-baseline#"+date, map[string]interface{}{
+				"row-count": map[string]interface{}{"count": 100},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			now := mustTime(t, tt.now)
+			d.NowFunc = func() time.Time { return now }
+			d.Store.Now = func() time.Time { return now }
+
+			if err := handleRecord(ctx, d, postRunRecord("count", "120")); err != nil {
+				t.Fatalf("handleRecord: %v", err)
+			}
+
+			var gotEvents []string
+			for _, e := range eb.events {
+				gotEvents = append(gotEvents, e.Type)
+			}
+			if want := []string{string(types.EventPostRunDrift)}; sfnFake.calls != 0 || !slices.Equal(gotEvents, want) {
+				t.Errorf("StartExecution calls %d, events %v; want 0 and %v", sfnFake.calls, gotEvents, want)
+			}
+			req := mem.Get("control", pk, types.RerunRequestSK("stream", date))
+			if got := strAttr(req["reason"]); got != tt.wantReason {
+				t.Errorf("rerun request reason = %q, want %q", got, tt.wantReason)
+			}
+			if tt.manualRow && !reflect.DeepEqual(req, manual) {
+				t.Errorf("manual request = %v, want it unchanged: %v", req, manual)
 			}
 		})
 	}

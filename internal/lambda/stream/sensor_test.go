@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"reflect"
 	"slices"
 	"strconv"
 	"testing"
@@ -491,6 +492,73 @@ func TestLateData_WatchWindow(t *testing.T) {
 			}
 			if got := jobEvents(mem); !slices.Equal(got, wantJobs) {
 				t.Errorf("job rows = %v, want %v", got, wantJobs)
+			}
+		})
+	}
+}
+
+// TestLateData_MaxAutoRerunAge: with a 200h watch window and
+// job.maxAutoRerunAge 24h, a trigger sensor 25h after completedAt still
+// publishes LATE_DATA_ARRIVAL but writes no late-data request, so a pending
+// manual request is left as it was. Inside the age the request is written.
+func TestLateData_MaxAutoRerunAge(t *testing.T) {
+	const date = "2026-03-10"
+	pk := types.PipelinePK("p")
+	manual := map[string]ddbtypes.AttributeValue{
+		"PK":          &ddbtypes.AttributeValueMemberS{Value: pk},
+		"SK":          &ddbtypes.AttributeValueMemberS{Value: types.RerunRequestSK("stream", date)},
+		"reason":      &ddbtypes.AttributeValueMemberS{Value: "manual"},
+		"requestedAt": &ddbtypes.AttributeValueMemberS{Value: "2026-03-11T12:30:00Z"},
+	}
+	tests := []struct {
+		name       string
+		now        string
+		manualRow  bool
+		wantReason string // the request row's reason; empty means none
+	}{
+		{name: "past the age", now: "2026-03-11T13:00:00Z"},
+		{name: "past the age, manual request pending", now: "2026-03-11T13:00:00Z", manualRow: true, wantReason: "manual"},
+		{name: "inside the age (guard)", now: "2026-03-11T11:59:59Z", wantReason: "late-data"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
+				Pipeline: types.PipelineIdentity{ID: "p"},
+				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
+				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig, MaxAutoRerunAge: "24h"},
+				PostRun:  &types.PostRunConfig{WatchWindow: "200h"},
+			})
+			mem.Put("control", completedRow(date, "2026-03-10T12:00:00Z"))
+			mem.Put("joblog", map[string]ddbtypes.AttributeValue{"PK": &ddbtypes.AttributeValueMemberS{Value: pk},
+				"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
+				"event": &ddbtypes.AttributeValueMemberS{Value: types.JobEventSuccess}})
+			if tt.manualRow {
+				mem.Put("control", maps.Clone(manual))
+			}
+			now := mustTime(t, tt.now)
+			d.NowFunc = func() time.Time { return now }
+			d.Store.Now = func() time.Time { return now }
+
+			if err := handleRecord(context.Background(), d, sensorRecord(date)); err != nil {
+				t.Fatalf("handleRecord: %v", err)
+			}
+
+			var gotEvents []string
+			for _, e := range eb.events {
+				gotEvents = append(gotEvents, e.Type)
+			}
+			if want := []string{string(types.EventLateDataArrival)}; sfnFake.calls != 0 || !slices.Equal(gotEvents, want) {
+				t.Errorf("StartExecution calls %d, events %v; want 0 and %v", sfnFake.calls, gotEvents, want)
+			}
+			req := mem.Get("control", pk, types.RerunRequestSK("stream", date))
+			if got := strAttr(req["reason"]); got != tt.wantReason {
+				t.Errorf("rerun request reason = %q, want %q", got, tt.wantReason)
+			}
+			if tt.manualRow && !reflect.DeepEqual(req, manual) {
+				t.Errorf("manual request = %v, want it unchanged: %v", req, manual)
+			}
+			if got := mem.Get("control", pk, types.TriggerSK("stream", date))["status"].(*ddbtypes.AttributeValueMemberS).Value; got != types.TriggerStatusCompleted {
+				t.Errorf("trigger status = %q, want COMPLETED", got)
 			}
 		})
 	}

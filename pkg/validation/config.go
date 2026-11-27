@@ -113,6 +113,14 @@ func ValidatePipelineConfig(cfg *types.PipelineConfig) []string {
 		errs = append(errs, fmt.Sprintf("job.maxDriftReruns %d out of range [0,5]", *p))
 	}
 
+	if age := cfg.Job.MaxAutoRerunAge; age != "" {
+		if d, err := time.ParseDuration(age); err != nil {
+			errs = append(errs, fmt.Sprintf("job.maxAutoRerunAge invalid Go duration %q", age))
+		} else if d <= 0 || d > MaxPostRunWatchWindow {
+			errs = append(errs, fmt.Sprintf("job.maxAutoRerunAge %q out of range (0s,720h]", age))
+		}
+	}
+
 	if p := cfg.Job.MaxManualReruns; p != nil && (*p < 0 || *p > 5) {
 		errs = append(errs, fmt.Sprintf("job.maxManualReruns %d out of range [0,5]", *p))
 	}
