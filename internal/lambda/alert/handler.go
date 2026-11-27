@@ -127,9 +127,10 @@ func processAlertMessage(ctx context.Context, d *lambda.Deps, record events.SQSM
 			},
 		},
 		ThreadTs: threadTs,
-		// A day thread collects unrelated alerts, so its replies also go to
-		// the channel.
-		ReplyBroadcast: threadTs != "" && detail.Date == "",
+		// A day thread collects unrelated alerts, and a manual rerun alert may
+		// land in a days-old date thread, so their replies also go to the
+		// channel.
+		ReplyBroadcast: threadTs != "" && (detail.Date == "" || envelope.DetailType == string(types.EventManualRerunRequired)),
 	})
 	if err != nil {
 		return err

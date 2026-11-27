@@ -66,4 +66,6 @@ func TestScenarioManualRerunRequired(t *testing.T) {
 	reportJob(t, id, date, run2, types.JobEventSuccess)
 	waitEvents(t, id, date, map[string]int{jt: 3, vp: 2, jc: 2, late: 2, manual: 1, still: 1, accepted: 1})
 	waitCompleted(t, id, date)
+	waitAlerts(t, id, alert{id, date, jc}, alert{id, date, jc}, alert{id, date, late}, alert{id, date, late},
+		alert{id, date, manual}, alert{id, date, accepted})
 }

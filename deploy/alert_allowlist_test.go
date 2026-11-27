@@ -82,3 +82,22 @@ func TestAlertAllowlistMatchesTerraform(t *testing.T) {
 			onlyTF, onlyPy)
 	}
 }
+
+// TestAlertRuleManualRerun: the first manual-rerun event of a completion is
+// sent to Slack; later ones for the same completion are only recorded.
+func TestAlertRuleManualRerun(t *testing.T) {
+	tfMatch := tfDetailTypes.FindStringSubmatch(alertRuleBlock.FindString(readFile(t, "terraform/eventbridge.tf")))
+	pyMatch := pyAlertTypes.FindStringSubmatch(readFile(t, "localstack/deploy.py"))
+	if tfMatch == nil || pyMatch == nil {
+		t.Fatal("alert detail-type lists not found")
+	}
+	for name, set := range map[string]map[string]bool{
+		"eventbridge.tf": extractSet(t, "eventbridge.tf", tfMatch[1]),
+		"deploy.py":      extractSet(t, "deploy.py", pyMatch[1]),
+	} {
+		if !set["MANUAL_RERUN_REQUIRED"] || set["MANUAL_RERUN_STILL_REQUIRED"] {
+			t.Errorf("%s: MANUAL_RERUN_REQUIRED listed %v, MANUAL_RERUN_STILL_REQUIRED listed %v; want true and false",
+				name, set["MANUAL_RERUN_REQUIRED"], set["MANUAL_RERUN_STILL_REQUIRED"])
+		}
+	}
+}

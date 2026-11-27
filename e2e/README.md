@@ -130,5 +130,10 @@ code path first and assert the exact values it produces.
   and an automatic request written before the age but handled after it (the
   stream-router's re-check, which publishes `MANUAL_RERUN_REQUIRED` with
   `source: rerun-request`): placing a request between the age and its
-  handling would need another clock hook. Unit tests cover both.
+  handling would need another clock hook. Unit tests cover both. The
+  scenario also checks that `MANUAL_RERUN_REQUIRED` reaches the alert queue
+  once and `MANUAL_RERUN_STILL_REQUIRED` adds nothing to it. Not run: the
+  alert's Slack text and its broadcast into the date's thread (see Slack
+  delivery below), and the Terraform alert rule itself (`deploy.py` keeps its
+  own copy of the list). Unit tests cover these.
 - Slack delivery. The dispatcher's queue mapping is off in e2e.
