@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,12 +45,15 @@ func postRunRecord(field, count string) events.DynamoDBEventRecord {
 
 // TestPostRunSensor_WatchWindow: drift and the post-run verdicts for a
 // COMPLETED date are published only inside its post-run watch window (6h from
-// completedAt here). A RUNNING date's inflight drift is not bounded by it, and
-// a RUNNING date with no drift or no baseline publishes nothing. The baseline
-// count is 100 unless a row has none, in DriftField "count" unless a row
-// says otherwise. Calendar exclusion is checked on the sensor's date, not the
-// wall-clock date. A baseline entry is left as it was, and no baseline row is
-// written outside the window or for a RUNNING date.
+// completedAt here). After it, drift from the baseline entry of a date whose
+// run succeeded publishes only MANUAL_RERUN_REQUIRED (data-drift, blocked by
+// the window), and no drift or no baseline publishes nothing. A RUNNING
+// date's inflight drift is not bounded by it, and a RUNNING date with no
+// drift or no baseline publishes nothing. The baseline count is 100 unless a
+// row has none, in DriftField "count" unless a row says otherwise. Calendar
+// exclusion is checked on the sensor's date, not the wall-clock date. A
+// baseline entry is left as it was, and no baseline row is written outside
+// the window or for a RUNNING date.
 func TestPostRunSensor_WatchWindow(t *testing.T) {
 	const date = "2026-03-10"
 	drift := []string{string(types.EventPostRunDrift)}
@@ -62,17 +66,21 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 		noBaseline  bool
 		noRow       bool   // no trigger row
 		field       string // the drift field; empty means count
+		jobEvent    string // the run's job row; empty means success
 		tweak       func(*types.PipelineConfig)
 		wantEvents  []string
 		wantRerun   bool
 	}{
 		{name: "inside, drift (guard)", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T17:59:59Z", count: "120",
 			wantEvents: drift, wantRerun: true},
-		{name: "at the limit", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T18:00:00Z", count: "120"},
+		{name: "at the limit", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T18:00:00Z", count: "120",
+			wantEvents: []string{evManual}},
+		{name: "after, drift, job failed", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T19:00:00Z", count: "120",
+			jobEvent: types.JobEventFail},
 		{name: "inside, no drift (guard)", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T13:00:00Z", count: "100",
 			wantEvents: []string{string(types.EventPostRunPassed)}},
 		{name: "after, no drift", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T19:00:00Z", count: "100"},
-		{name: "after, no baseline", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T19:00:00Z", count: "100", noBaseline: true},
+		{name: "after, no baseline", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T19:00:00Z", count: "120", noBaseline: true},
 		{name: "no completedAt", now: "2026-03-10T13:00:00Z", count: "120"},
 		{name: "RUNNING row (inflight, guard)", status: types.TriggerStatusRunning, now: "2026-03-10T13:00:00Z", count: "120",
 			wantEvents: []string{string(types.EventPostRunDriftInflight)}},
@@ -114,6 +122,7 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 			if !tt.noRow {
 				mem.Put("control", row)
 			}
+			mem.Put("joblog", jobRow(date, cmp.Or(tt.jobEvent, types.JobEventSuccess)))
 			ctx := context.Background()
 			if !tt.noBaseline {
 				if err := d.Store.WriteSensor(ctx, "p", "postrun-baseline#"+date, map[string]interface{}{
@@ -143,6 +152,9 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 				if e.Type == string(types.EventPostRunDrift) && e.Detail["driftField"] != field {
 					t.Errorf("POST_RUN_DRIFT driftField = %v, want %s", e.Detail["driftField"], field)
 				}
+				if e.Type == evManual {
+					assertDriftDetail(t, e.Detail, "postRun.watchWindow", field, false)
+				}
 			}
 			req := mem.Get("control", types.PipelinePK("p"), types.RerunRequestSK("stream", date))
 			if (req != nil) != tt.wantRerun {
@@ -164,10 +176,43 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 	}
 }
 
+// jobRow is pipeline p's job row for date's run, with event.
+func jobRow(date, event string) map[string]ddbtypes.AttributeValue {
+	return map[string]ddbtypes.AttributeValue{
+		"PK":    &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK("p")},
+		"SK":    &ddbtypes.AttributeValueMemberS{Value: types.JobSK("stream", date, "1773129600000")},
+		"event": &ddbtypes.AttributeValueMemberS{Value: event}}
+}
+
+// assertDriftDetail checks a MANUAL_RERUN_REQUIRED detail for a row-count
+// write of 120 against a baseline of 100 in field (threshold 0), stopped by
+// blockedBy. With omitted the baseline must be left out and flagged.
+func assertDriftDetail(t *testing.T, got map[string]interface{}, blockedBy, field string, omitted bool) {
+	t.Helper()
+	want := map[string]interface{}{"reason": "data-drift", "source": "sensor", "blockedBy": blockedBy, "sensorKey": "row-count",
+		"driftField": field, "previousCount": 100.0, "currentCount": 120.0, "delta": 20.0, "driftThreshold": 0.0}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("detail %s = %v, want %v", k, got[k], v)
+		}
+	}
+	if _, ok := got["baseline"]; omitted && (ok || got["baselineOmitted"] != true) {
+		t.Errorf("detail baseline present %v, baselineOmitted %v; want absent and true", ok, got["baselineOmitted"])
+	}
+	if b := map[string]interface{}{field: 100.0}; !omitted && !reflect.DeepEqual(got["baseline"], b) {
+		t.Errorf("detail baseline = %v, want %v", got["baseline"], b)
+	}
+}
+
 // TestPostRunSensor_MaxAutoRerunAge: with a 200h watch window and
-// job.maxAutoRerunAge 24h, drift 25h after completedAt still publishes
-// POST_RUN_DRIFT but writes no data-drift request, and a pending manual
-// request is left as it was. Inside the age the request is written.
+// job.maxAutoRerunAge 24h, drift 25h after completedAt publishes
+// MANUAL_RERUN_REQUIRED with the drift and its baseline, not POST_RUN_DRIFT,
+// and writes no data-drift request, so a pending manual request is left as it
+// was; a second drifted write publishes MANUAL_RERUN_STILL_REQUIRED. A failed
+// run or an excluded date publishes nothing, and a failed job log read
+// returns the error for the stream to retry. A baseline entry over 32 KB is
+// left out of the event and flagged. Inside the age POST_RUN_DRIFT is
+// published and the request is written.
 func TestPostRunSensor_MaxAutoRerunAge(t *testing.T) {
 	const date = "2026-03-10"
 	pk := types.PipelinePK("p")
@@ -177,20 +222,32 @@ func TestPostRunSensor_MaxAutoRerunAge(t *testing.T) {
 		"reason":      &ddbtypes.AttributeValueMemberS{Value: "manual"},
 		"requestedAt": &ddbtypes.AttributeValueMemberS{Value: "2026-03-11T12:30:00Z"},
 	}
+	const past = "2026-03-11T13:00:00Z"
 	tests := []struct {
 		name       string
 		now        string
 		manualRow  bool
+		excluded   bool
+		jobEvent   string // the run's job row; empty means success
+		writes     int    // drifted writes; 0 means 1
+		bigEntry   bool   // the baseline entry is over 32 KB
+		failJobLog bool   // the job log read fails
+		wantEvents []string
 		wantReason string // the request row's reason; empty means none
 	}{
-		{name: "past the age", now: "2026-03-11T13:00:00Z"},
-		{name: "past the age, manual request pending", now: "2026-03-11T13:00:00Z", manualRow: true, wantReason: "manual"},
-		{name: "inside the age (guard)", now: "2026-03-11T11:59:59Z", wantReason: "data-drift"},
+		{name: "past the age", now: past, wantEvents: []string{evManual}},
+		{name: "past the age, second write", now: past, writes: 2, wantEvents: []string{evManual, evStill}},
+		{name: "past the age, manual request pending", now: past, manualRow: true, wantEvents: []string{evManual}, wantReason: "manual"},
+		{name: "past the age, excluded date", now: past, excluded: true},
+		{name: "past the age, job failed", now: past, jobEvent: types.JobEventFail},
+		{name: "past the age, large baseline", now: past, bigEntry: true, wantEvents: []string{evManual}},
+		{name: "past the age, job log read fails", now: past, failJobLog: true},
+		{name: "inside the age (guard)", now: "2026-03-11T11:59:59Z", wantEvents: []string{string(types.EventPostRunDrift)}, wantReason: "data-drift"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			threshold := 0.0
-			d, mem, sfnFake, eb := jobWorld(t, types.PipelineConfig{
+			cfg := types.PipelineConfig{
 				Pipeline: types.PipelineIdentity{ID: "p"},
 				Schedule: types.ScheduleConfig{Trigger: &types.TriggerCondition{Key: "upstream", Check: types.CheckExists, Cutoff: "23:59", CutoffDayOffset: 7}},
 				Job:      types.JobConfig{Type: types.TriggerHTTP, Config: httpJobConfig, MaxAutoRerunAge: "24h"},
@@ -198,31 +255,54 @@ func TestPostRunSensor_MaxAutoRerunAge(t *testing.T) {
 					Rules:      []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}},
 					DriftField: "count", DriftThreshold: &threshold, WatchWindow: "200h",
 				},
-			})
+			}
+			if tt.excluded {
+				cfg.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{date}}
+			}
+			d, mem, sfnFake, eb := jobWorld(t, cfg)
 			mem.Put("control", completedRow(date, "2026-03-10T12:00:00Z"))
+			mem.Put("joblog", jobRow(date, cmp.Or(tt.jobEvent, types.JobEventSuccess)))
 			if tt.manualRow {
 				mem.Put("control", maps.Clone(manual))
 			}
 			ctx := context.Background()
-			if err := d.Store.WriteSensor(ctx, "p", "postrun-baseline#"+date, map[string]interface{}{
-				"row-count": map[string]interface{}{"count": 100},
-			}); err != nil {
+			entry := map[string]interface{}{"count": 100}
+			if tt.bigEntry {
+				entry["blob"] = strings.Repeat("x", 32*1024)
+			}
+			if err := d.Store.WriteSensor(ctx, "p", "postrun-baseline#"+date, map[string]interface{}{"row-count": entry}); err != nil {
 				t.Fatal(err)
+			}
+			if tt.failJobLog {
+				fake := d.Store.Client.(*storetest.FakeDynamo)
+				query := fake.QueryFn
+				fake.QueryFn = func(ctx context.Context, in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+					if *in.TableName == "joblog" {
+						return nil, errors.New("query failed")
+					}
+					return query(ctx, in)
+				}
 			}
 			now := mustTime(t, tt.now)
 			d.NowFunc = func() time.Time { return now }
 			d.Store.Now = func() time.Time { return now }
 
-			if err := handleRecord(ctx, d, postRunRecord("count", "120")); err != nil {
-				t.Fatalf("handleRecord: %v", err)
+			for range max(tt.writes, 1) {
+				if err := handleRecord(ctx, d, postRunRecord("count", "120")); (err != nil) != tt.failJobLog {
+					t.Fatalf("handleRecord = %v, want an error: %v", err, tt.failJobLog)
+				}
 			}
 
-			var gotEvents []string
-			for _, e := range eb.events {
-				gotEvents = append(gotEvents, e.Type)
+			if got := publishedTypes(eb); sfnFake.calls != 0 || !slices.Equal(got, tt.wantEvents) {
+				t.Errorf("StartExecution calls %d, events %v; want 0 and %v", sfnFake.calls, got, tt.wantEvents)
 			}
-			if want := []string{string(types.EventPostRunDrift)}; sfnFake.calls != 0 || !slices.Equal(gotEvents, want) {
-				t.Errorf("StartExecution calls %d, events %v; want 0 and %v", sfnFake.calls, gotEvents, want)
+			for _, e := range eb.events {
+				if e.Type == evManual || e.Type == evStill {
+					assertDriftDetail(t, e.Detail, "job.maxAutoRerunAge", "count", tt.bigEntry)
+					if e.Detail["arrivedAt"] != past {
+						t.Errorf("detail arrivedAt = %v, want %s", e.Detail["arrivedAt"], past)
+					}
+				}
 			}
 			req := mem.Get("control", pk, types.RerunRequestSK("stream", date))
 			if got := strAttr(req["reason"]); got != tt.wantReason {

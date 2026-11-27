@@ -39,7 +39,7 @@ func handleSensorEvent(ctx context.Context, d *lambda.Deps, pk, sk string, recor
 		// Trigger key doesn't match — check if this sensor matches a post-run rule.
 		if cfg.PostRun != nil && lambda.MatchesPostRunRule(sensorKey, cfg.PostRun.Rules) {
 			sensorData := lambda.ExtractSensorData(record.Change.NewImage)
-			return handlePostRunSensorEvent(ctx, d, cfg, pipelineID, sensorKey, sensorData)
+			return handlePostRunSensorEvent(ctx, d, cfg, pipelineID, sensorKey, sensorData, record.Change.ApproximateCreationDateTime.Time)
 		}
 		return nil
 	}
