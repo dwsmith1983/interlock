@@ -90,7 +90,9 @@ func TestHandleRerunRequest_SkipsBadRows(t *testing.T) {
 // TestRerunRequest_WatchWindow: an automatic (late-data or data-drift) rerun
 // request for a COMPLETED date is re-checked against the post-run watch
 // window (6h from completedAt) when it is handled; outside it, it is skipped
-// with no start, event or row. A manual request is never checked.
+// with no start or row and publishes only MANUAL_RERUN_REQUIRED (nothing
+// without a completedAt or for an excluded date). A manual request is never
+// checked.
 func TestRerunRequest_WatchWindow(t *testing.T) {
 	const date = "2026-03-10"
 	tests := []struct {
@@ -181,6 +183,9 @@ func TestRerunRequest_WatchWindow(t *testing.T) {
 			if tt.wantStart {
 				wantStarts, wantEvents = 1, []string{string(types.EventRerunAccepted)}
 				wantJobs, wantStatus = append(wantJobs, types.JobEventRerunAccepted), types.TriggerStatusRunning
+			}
+			if !tt.wantStart && tt.completedAt != "" && !tt.failLookup && !tt.excluded {
+				wantEvents = []string{string(types.EventManualRerunRequired)}
 			}
 			if sfnFake.calls != wantStarts || !slices.Equal(gotEvents, wantEvents) {
 				t.Errorf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, gotEvents, wantStarts, wantEvents)
@@ -533,10 +538,11 @@ func rerunRequestRecord(reason, requestedAt string) events.DynamoDBEventRecord {
 
 // TestRerunRequest_MaxAutoRerunAge: with job.maxAutoRerunAge 24h and a 200h
 // watch window unless a row says otherwise, an automatic request handled 25h
-// after completedAt starts nothing, publishes nothing and logs that the age
-// ended it. A manual request at that time still starts, and so does an
-// automatic one inside the age. With a 6h window the log names the window, and
-// a COMPLETED row with no completedAt is logged as having no completion time.
+// after completedAt starts nothing, publishes only MANUAL_RERUN_REQUIRED and
+// logs that the age ended it. A manual request at that time still starts, and
+// so does an automatic one inside the age. With a 6h window the log names the
+// window, and a COMPLETED row with no completedAt is logged as having no
+// completion time and publishes nothing.
 func TestRerunRequest_MaxAutoRerunAge(t *testing.T) {
 	const date = "2026-03-10"
 	tests := []struct {
@@ -587,6 +593,9 @@ func TestRerunRequest_MaxAutoRerunAge(t *testing.T) {
 			wantStarts, wantEvents, wantStatus := 0, []string(nil), types.TriggerStatusCompleted
 			if tt.wantEndedBy == "" {
 				wantStarts, wantEvents, wantStatus = 1, []string{string(types.EventRerunAccepted)}, types.TriggerStatusRunning
+			}
+			if tt.wantEndedBy != "" && !tt.noCompletedAt {
+				wantEvents = []string{string(types.EventManualRerunRequired)}
 			}
 			if sfnFake.calls != wantStarts || !slices.Equal(gotEvents, wantEvents) {
 				t.Errorf("StartExecution calls %d, events %v; want %d and %v", sfnFake.calls, gotEvents, wantStarts, wantEvents)
