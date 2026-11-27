@@ -39,7 +39,9 @@ func handlePostRunSensorEvent(ctx context.Context, d *lambda.Deps, cfg *types.Pi
 	}
 	switch trigger.Status {
 	case types.TriggerStatusRunning:
-		return handlePostRunInflight(ctx, d, cfg, pipelineID, scheduleID, date, sensorKey, sensorData)
+		// A write while the job runs is not compared: the baseline is captured
+		// when the run completes, and later writes are compared with it.
+		return nil
 	case types.TriggerStatusCompleted:
 		if !lambda.PostRunWatched(cfg, trigger, now) {
 			d.Logger.InfoContext(ctx, "post-run sensor after the post-run watch window: no automatic rerun or post-run check",
@@ -51,42 +53,6 @@ func handlePostRunSensorEvent(ctx context.Context, d *lambda.Deps, cfg *types.Pi
 	default:
 		return nil
 	}
-}
-
-// handlePostRunInflight evaluates post-run rules while the job is still running.
-func handlePostRunInflight(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, scheduleID, date, sensorKey string, sensorData map[string]interface{}) error {
-	baselineKey := "postrun-baseline#" + date
-	baseline, err := d.Store.GetSensorData(ctx, pipelineID, baselineKey)
-	if err != nil {
-		return fmt.Errorf("get baseline for inflight check: %w", err)
-	}
-	if baseline == nil {
-		return nil
-	}
-
-	var ruleBaseline map[string]interface{}
-	for _, rule := range cfg.PostRun.Rules {
-		if lambda.SensorKeyMatches(sensorKey, rule.Key) {
-			if nested, ok := baseline[rule.Key].(map[string]interface{}); ok {
-				ruleBaseline = nested
-			}
-			break
-		}
-	}
-	if ruleBaseline == nil {
-		return nil
-	}
-
-	dr, detail := postRunDrift(cfg.PostRun, ruleBaseline, sensorData)
-	if dr.Drifted {
-		detail["sensorKey"], detail["source"] = sensorKey, "post-run-stream"
-		if err := lambda.PublishEvent(ctx, d, string(types.EventPostRunDriftInflight), pipelineID, scheduleID, date,
-			fmt.Sprintf("inflight drift detected for %s: %.0f → %.0f (informational)", pipelineID, dr.Previous, dr.Current),
-			detail); err != nil {
-			d.Logger.WarnContext(ctx, "failed to publish event", "type", types.EventPostRunDriftInflight, "error", err)
-		}
-	}
-	return nil
 }
 
 // handlePostRunCompleted evaluates post-run rules after the job has completed,

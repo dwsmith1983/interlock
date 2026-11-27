@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`schedule.calendar` is gone.** It was never read; list the dates in `exclude.dates`. A config that still sets it loads, and the key is ignored.
 - **The README no longer lists six application metrics or a `correlation_id` log field.** Neither was ever emitted. The unused correlation-ID logger, the metric name constants and the `Tracer` and `Meter` accessors behind them are gone too.
 - **The orchestrator no longer reads `STAGE_TIMEOUT`, `SHUTDOWN_BUFFER`, `WORKERS_PER_STAGE`, `DLQ_QUEUE_URL`, `DLQ_MAX_RETRIES`, `CB_TRIP_AFTER` or `CB_TIMEOUT`.** Nothing used them, and an invalid value no longer stops it at cold start.
+- **BREAKING: `POST_RUN_DRIFT_INFLIGHT` and the during-run drift check are gone.** A post-run sensor written while the date's trigger is `RUNNING` is no longer compared. The baseline is captured when the run completes, and later writes are compared with it. The check needed a baseline from an earlier completion, which a first run, its retries and an accepted rerun do not have, and while it runs the job is usually rewriting that data anyway. Remove any EventBridge rule or alert routing that matches it.
 
 ### Fixed
 

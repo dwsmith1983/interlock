@@ -170,7 +170,6 @@ All lifecycle events are published to a custom EventBridge event bus.
 | `POST_RUN_PASSED` | Post-run rules pass after job completion, inside the watch window |
 | `POST_RUN_FAILED` | Post-run rules fail (no drift detected), inside the watch window |
 | `POST_RUN_DRIFT` | A post-run sensor's `driftField` drifted from the baseline after completion, inside the watch window, while automatic reruns are allowed → `data-drift` rerun requested. Past `job.maxAutoRerunAge` drift publishes `MANUAL_RERUN_REQUIRED` instead |
-| `POST_RUN_DRIFT_INFLIGHT` | A post-run sensor drifted from the date's baseline while the date is `RUNNING` (informational). Only while a baseline from an earlier completion is still there: a first run, its retries and an accepted rerun have none |
 | `POST_RUN_BASELINE_CAPTURED` | Baseline sensor snapshot captured on job success |
 | `POST_RUN_SENSOR_MISSING` | Post-run sensor not received within `sensorTimeout` of completion (watchdog; only for the daily run date equal to the current UTC date) |
 | `INFRA_FAILURE` | Unrecoverable infrastructure error |
@@ -238,7 +237,7 @@ Set `driftField` to a field your post-run sensor carries: with the default, `sen
 
 1. **Baseline capture**: When a job completes successfully, the orchestrator reads the sensors that `postRun.rules` name and writes a date-scoped baseline (`postrun-baseline#<date>`) to the control table. The row expires 31 days after its latest capture (or, for a row a seed created, 31 days after it was written), past the longest watch window (720h).
 2. **Stream-based evaluation**: When a sensor matching a post-run rule arrives via DynamoDB Stream, the stream-router evaluates it:
-   - If the trigger is **RUNNING**, drift from the date's baseline is published as an informational `POST_RUN_DRIFT_INFLIGHT` event (no rerun). A running date rarely has a baseline: a first run and its retries have not completed, and an accepted rerun deletes the baseline when it starts. So it fires only while a baseline from an earlier completion is still present, for example when that delete failed.
+   - If the trigger is **RUNNING**, a write while the job runs is not compared. The baseline is captured when the run completes, and later writes are compared with it.
    - If the trigger is **COMPLETED** and the date is inside its watch window, the `driftField` value is compared against the baseline. Drift above `driftThreshold`, until `job.maxAutoRerunAge` has passed, publishes `POST_RUN_DRIFT` and writes a `data-drift` rerun request, which skips the circuit breaker; past the age it publishes `MANUAL_RERUN_REQUIRED` instead. A sensor first written after completion has no baseline value, so that first value becomes its baseline and later writes are compared with it.
 3. **Watchdog safety net**: If no post-run sensor arrives within `sensorTimeout` after job completion, the watchdog publishes a `POST_RUN_SENSOR_MISSING` event. It checks only the daily run date equal to the current UTC date, so an earlier date, an hourly run or a timeout that ends after UTC midnight gets none. A sensor has arrived when it exists and either differs from its baseline value or did not exist at completion.
 

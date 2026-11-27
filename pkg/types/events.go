@@ -29,7 +29,6 @@ const (
 	EventPostRunPassed           EventDetailType = "POST_RUN_PASSED"
 	EventPostRunFailed           EventDetailType = "POST_RUN_FAILED"
 	EventPostRunDrift            EventDetailType = "POST_RUN_DRIFT"
-	EventPostRunDriftInflight    EventDetailType = "POST_RUN_DRIFT_INFLIGHT"
 	EventPostRunSensorMissing    EventDetailType = "POST_RUN_SENSOR_MISSING"
 	EventRerunAccepted           EventDetailType = "RERUN_ACCEPTED"
 	EventInfraAlarm              EventDetailType = "INFRA_ALARM"

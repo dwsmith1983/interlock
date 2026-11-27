@@ -273,7 +273,7 @@ func TestAlertEmoji(t *testing.T) {
 		"\xf0\x9f\x9f\xa1": {"SLA_WARNING", "RELATIVE_SLA_WARNING"},
 		"\xe2\x9c\x85":     {"SLA_MET"},
 		"\xe2\x84\xb9\xef\xb8\x8f": {"UNKNOWN_TYPE", "JOB_TRIGGERED", "JOB_COMPLETED", "TRIGGER_RECOVERED",
-			"POST_RUN_DRIFT_INFLIGHT", "POST_RUN_SENSOR_MISSING", "RERUN_REJECTED", "DRY_RUN_DRIFT"},
+			"POST_RUN_SENSOR_MISSING", "RERUN_REJECTED", "DRY_RUN_DRIFT"},
 	} {
 		for _, detailType := range detailTypes {
 			t.Run(detailType, func(t *testing.T) {

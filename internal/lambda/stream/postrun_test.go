@@ -48,12 +48,12 @@ func postRunRecord(field, count string) events.DynamoDBEventRecord {
 // completedAt here). After it, drift from the baseline entry of a date whose
 // run succeeded publishes only MANUAL_RERUN_REQUIRED (data-drift, blocked by
 // the window), and no drift or no baseline publishes nothing. A RUNNING
-// date's inflight drift is not bounded by it, and a RUNNING date with no
-// drift or no baseline publishes nothing. The baseline count is 100 unless a
-// row has none, in DriftField "count" unless a row says otherwise. Calendar
-// exclusion is checked on the sensor's date, not the wall-clock date. A
-// baseline entry is left as it was, and no baseline row is written outside
-// the window or for a RUNNING date.
+// date publishes nothing, drift or not: the baseline is captured when the
+// run completes, and only later writes are compared. The baseline count is
+// 100 unless a row has none, in DriftField "count" unless a row says
+// otherwise. Calendar exclusion is checked on the sensor's date, not the
+// wall-clock date. A baseline entry is left as it was, and no baseline row is
+// written outside the window or for a RUNNING date.
 func TestPostRunSensor_WatchWindow(t *testing.T) {
 	const date = "2026-03-10"
 	drift := []string{string(types.EventPostRunDrift)}
@@ -82,8 +82,7 @@ func TestPostRunSensor_WatchWindow(t *testing.T) {
 		{name: "after, no drift", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T19:00:00Z", count: "100"},
 		{name: "after, no baseline", completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T19:00:00Z", count: "120", noBaseline: true},
 		{name: "no completedAt", now: "2026-03-10T13:00:00Z", count: "120"},
-		{name: "RUNNING row (inflight, guard)", status: types.TriggerStatusRunning, now: "2026-03-10T13:00:00Z", count: "120",
-			wantEvents: []string{string(types.EventPostRunDriftInflight)}},
+		{name: "RUNNING, drift", status: types.TriggerStatusRunning, now: "2026-03-10T13:00:00Z", count: "120"},
 		{name: "RUNNING, no drift", status: types.TriggerStatusRunning, now: "2026-03-10T13:00:00Z", count: "100"},
 		{name: "RUNNING, no baseline", status: types.TriggerStatusRunning, now: "2026-03-10T13:00:00Z", count: "500", noBaseline: true},
 		{name: "FAILED_FINAL", status: types.TriggerStatusFailedFinal, completedAt: "2026-03-10T12:00:00Z", now: "2026-03-10T13:00:00Z", count: "120"},
@@ -568,7 +567,7 @@ func TestPostRunSensor_SeedLosesRace(t *testing.T) {
 // own rule's baseline entry, not with an earlier rule whose key it merely
 // begins with. Rules orders and orders-count, in that order, have baseline
 // entries of 100 and 500; an unchanged orders-count write of 500 is no drift
-// on a COMPLETED date inside the window and no inflight drift on a RUNNING one.
+// on a COMPLETED date inside the window.
 func TestPostRunSensor_RuleKeyBoundary(t *testing.T) {
 	const date = "2026-03-10"
 	tests := []struct {
@@ -577,7 +576,6 @@ func TestPostRunSensor_RuleKeyBoundary(t *testing.T) {
 		wantEvents []string
 	}{
 		{name: "COMPLETED", status: types.TriggerStatusCompleted, wantEvents: []string{string(types.EventPostRunPassed)}},
-		{name: "RUNNING", status: types.TriggerStatusRunning},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
