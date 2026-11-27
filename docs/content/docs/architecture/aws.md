@@ -361,6 +361,7 @@ deploy/
 | `enable_emr_serverless_trigger` | Add EMR Serverless permissions; needs `emr_serverless_app_arns` and `emr_serverless_execution_role_arns` | `false` |
 | `enable_sfn_trigger` | Add Step Functions permissions; needs `sfn_trigger_arns` | `false` |
 | `enable_lambda_trigger` | Add Lambda invoke permissions; needs `lambda_trigger_arns` | `false` |
+| `deletion_protection` | Deletion protection on all four tables; set to `false` and apply before `terraform destroy` | `true` |
 
 Each `*_arns` list must be non-empty when its flag is `true`, or the plan fails. The full list, with Slack, encryption and concurrency settings, is in [Module Variables](../../deployment/terraform/#module-variables).
 

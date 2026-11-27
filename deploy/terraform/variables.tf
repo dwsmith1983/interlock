@@ -66,6 +66,12 @@ variable "events_table_ttl_days" {
   }
 }
 
+variable "deletion_protection" {
+  description = "Turns on deletion protection for all four DynamoDB tables (control, joblog, rerun, events). terraform destroy cannot remove a protected table: set this to false and apply before destroying."
+  type        = bool
+  default     = true
+}
+
 variable "slack_bot_token" {
   description = "Slack Bot API token for alert notifications (empty = logging only)"
   type        = string

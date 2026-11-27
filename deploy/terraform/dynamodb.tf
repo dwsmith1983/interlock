@@ -4,7 +4,7 @@ resource "aws_dynamodb_table" "control" {
   hash_key     = "PK"
   range_key    = "SK"
 
-  deletion_protection_enabled = true
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "PK"
@@ -42,7 +42,7 @@ resource "aws_dynamodb_table" "joblog" {
   hash_key     = "PK"
   range_key    = "SK"
 
-  deletion_protection_enabled = true
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "PK"
@@ -80,7 +80,7 @@ resource "aws_dynamodb_table" "events" {
   hash_key     = "PK"
   range_key    = "SK"
 
-  deletion_protection_enabled = true
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "PK"
@@ -132,7 +132,7 @@ resource "aws_dynamodb_table" "rerun" {
   hash_key     = "PK"
   range_key    = "SK"
 
-  deletion_protection_enabled = true
+  deletion_protection_enabled = var.deletion_protection
 
   attribute {
     name = "PK"
