@@ -143,7 +143,7 @@ Load all pipeline configs (via config cache)
 For each pipeline with postRun rules that is not a dry run:
   Find TRIGGER# record for today's UTC date with status=COMPLETED
   If no completed trigger, or it has no completedAt → skip
-  Marker SENSOR#postrun-check#<date> present → already alerted (skip)
+  Marker SENSOR#postrun-check#<date> present → already alerted, or a post-run sensor arrived (skip)
 
   Calculate elapsed time since completedAt
   If elapsed < sensorTimeout → skip (still within grace period)
@@ -157,9 +157,9 @@ For each pipeline with postRun rules that is not a dry run:
   On success, write the marker SENSOR#postrun-check#<date>
 ```
 
-A post-run sensor has arrived when it exists and either differs from what it was when the run completed or did not exist then. The whole stored record is compared, so a change in any of its fields, a timestamp such as `updatedAt` included, counts as a change; when the write happened is not otherwise used. A sensor rewritten with identical values has not arrived. A sensor present at completion whose baseline capture failed (`BASELINE_CAPTURE_FAILED`) has no entry, so it counts as arrived. A post-run sensor written between the run completing and the baseline capture counts as present at completion. An entry the stream-router seeded from a first write after completion carries `_seededAfterCompletion`, so it differs from the sensor and counts as arrived.
+A post-run sensor has arrived when it exists and either differs from what it was when the run completed or did not exist then. The whole stored record is compared, so a change in any of its fields, a timestamp such as `updatedAt` included, counts as a change; when the write happened is not otherwise used. A sensor rewritten with identical values has not arrived. A sensor present at completion whose baseline capture failed (`BASELINE_CAPTURE_FAILED`) has no entry, so it counts as arrived. An entry the stream-router seeded from a first write after completion carries `_seededAfterCompletion`, so it differs from the sensor and counts as arrived. This comparison is reached only for a date with no marker: a post-run write the stream-router handles after the trigger row is `COMPLETED`, under the rule's key or that key for the date or hour, counts as arrived, as it writes the `arrived` marker.
 
-The marker makes the alert once per date. It is written only after the publish succeeds, so a failed publish is retried on the next pass. It expires 31 days after it is written, long after its date stops being checked.
+The marker makes the alert once per date. The watchdog writes it with `alerted` only after the publish succeeds, so a failed publish is retried on the next pass. The stream-router writes the same marker with `arrived` when a post-run rule's sensor is written for a `COMPLETED` date (inside the watch window or after it) under the rule's own key or its key with that date or hour, unless a marker is already there; a date with either marker is skipped. It expires 31 days after it is written, long after its date stops being checked.
 
 ### Configuration
 

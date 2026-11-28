@@ -43,6 +43,9 @@ func handlePostRunSensorEvent(ctx context.Context, d *lambda.Deps, cfg *types.Pi
 		// when the run completes, and later writes are compared with it.
 		return nil
 	case types.TriggerStatusCompleted:
+		if err := recordPostRunArrival(ctx, d, cfg, pipelineID, sensorKey, date); err != nil {
+			return err
+		}
 		if !lambda.PostRunWatched(cfg, trigger, now) {
 			d.Logger.InfoContext(ctx, "post-run sensor after the post-run watch window: no automatic rerun or post-run check",
 				"pipelineId", pipelineID, "schedule", scheduleID, "date", date, "sensor", sensorKey,
@@ -53,6 +56,27 @@ func handlePostRunSensorEvent(ctx context.Context, d *lambda.Deps, cfg *types.Pi
 	default:
 		return nil
 	}
+}
+
+// recordPostRunArrival records that a post-run sensor was written for date
+// after its run completed: postrun-check#<date> with arrived, the marker the
+// watchdog's POST_RUN_SENSOR_MISSING check skips. A sensorKey naming another
+// period than date (keyNamesDate) records nothing. It is written before any
+// rerun request, so a drift rerun's later completion finds it, and never
+// replaces a marker already there (the watchdog's alerted one). A failed
+// write is returned, failing the record before anything else is done, so
+// its redelivery retries the marker: without it the watchdog would report
+// the sensor as missing.
+func recordPostRunArrival(ctx context.Context, d *lambda.Deps, cfg *types.PipelineConfig, pipelineID, sensorKey, date string) error {
+	if ruleKey, _ := postRunBaselineEntry(cfg.PostRun.Rules, sensorKey, nil); !keyNamesDate(ruleKey, sensorKey, date) {
+		d.Logger.InfoContext(ctx, "post-run arrival not recorded: the sensor key names another period",
+			"pipelineId", pipelineID, "date", date, "sensor", sensorKey)
+		return nil
+	}
+	if _, err := d.Store.WriteSensorIfAbsent(ctx, pipelineID, "postrun-check#"+date, map[string]interface{}{"arrived": "true"}); err != nil {
+		return fmt.Errorf("record post-run arrival for %q on %s: %w", pipelineID, date, err)
+	}
+	return nil
 }
 
 // handlePostRunCompleted evaluates post-run rules after the job has completed,
@@ -189,20 +213,28 @@ func postRunBaselineEntry(rules []types.ValidationRule, sensorKey string, baseli
 }
 
 // seedsPostRunBaseline reports whether a write of sensorKey for date may
-// seed ruleKey's baseline entry: the key is one the baseline capture stores
-// under ruleKey (ruleKey itself, or ruleKey#<date> dashed or compact), and the
-// write carries the drift field as a number.
+// seed ruleKey's baseline entry: keyNamesDate, and the write carries the
+// drift field as a number.
 func seedsPostRunBaseline(cfg *types.PostRunConfig, ruleKey, sensorKey, date string, sensorData map[string]interface{}) bool {
+	if !keyNamesDate(ruleKey, sensorKey, date) {
+		return false
+	}
+	_, ok := lambda.ExtractFloatOk(sensorData, lambda.ResolveDriftField(cfg))
+	return ok
+}
+
+// keyNamesDate reports whether sensorKey is a key the baseline capture
+// stores under ruleKey for date: ruleKey itself, or ruleKey#<date> dashed or
+// compact. An empty ruleKey (no rule matches) is false.
+func keyNamesDate(ruleKey, sensorKey, date string) bool {
 	if ruleKey == "" {
 		return false
 	}
 	switch sensorKey {
 	case ruleKey, ruleKey + "#" + date, ruleKey + "#" + strings.ReplaceAll(date, "-", ""):
-	default:
-		return false
+		return true
 	}
-	_, ok := lambda.ExtractFloatOk(sensorData, lambda.ResolveDriftField(cfg))
-	return ok
+	return false
 }
 
 // seedPostRunBaseline stores sensorData, marked with lambda.PostRunSeededField,

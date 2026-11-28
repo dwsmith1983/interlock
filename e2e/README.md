@@ -96,11 +96,18 @@ code path first and assert the exact values it produces.
   sets the stream mapping filters from that copy, so the filters themselves run.
 - DynamoDB TTL. It is off, and would run on the real clock rather than the
   simulated one. The watch-window scenarios check that Interlock's own rows
-  (`first-sensor-arrival#`, `postrun-baseline#`, the `data-drift` rerun
-  request) carry a `ttl` 31 days past the simulated write time, but e2e does
-  not show DynamoDB deleting them, the stream router skipping the REMOVE
-  record an expiry sends, or that Terraform turns TTL on for the control
-  table.
+  (`first-sensor-arrival#`, `postrun-baseline#`, the `postrun-check#`
+  arrival marker, the `data-drift` rerun request) carry a `ttl` 31 days past
+  the simulated write time, but e2e does not show DynamoDB deleting them, the
+  stream router skipping the REMOVE record an expiry sends, or that Terraform
+  turns TTL on for the control table.
+- Part of the post-run arrival marker. `TestScenarioDriftWatchWindow` checks
+  that the first post-run write after completion (inside the window, with
+  drift) leaves `postrun-check#<date>` with `arrived`, and that the write
+  before the run left none. Not run: the marker from a write after the window,
+  from a first write that seeds the baseline, for an hourly date, an
+  `alerted` marker left in place, and a key naming another period writing no
+  marker. Unit tests cover these.
 - Part of `job.maxRetries`. `TestScenarioRerunIgnoresPreviousFailure` covers
   one CompleteTrigger retry (a reported `fail`, `maxRetries: 1`, a `-r1`
   retry that then succeeds) and `TestScenarioRetriesExhausted` the

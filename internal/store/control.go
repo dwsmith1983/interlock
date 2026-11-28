@@ -333,6 +333,40 @@ func (s *Store) ListRunKeys(ctx context.Context, pipelineID, fromDate, toDate st
 	return keys, nil
 }
 
+// ListTriggers returns the pipeline's TRIGGER# rows for schedule from
+// fromDate through toDate, hourly keys on toDate included, in SK order, as
+// stored and unvalidated (a malformed date in the SK is returned as is). The
+// read is eventually consistent, so a row written moments ago can be missing
+// or show its previous status.
+func (s *Store) ListTriggers(ctx context.Context, pipelineID, schedule, fromDate, toDate string) ([]types.ControlRecord, error) {
+	var recs []types.ControlRecord
+	err := QueryAll(ctx, s.Client, func(startKey map[string]ddbtypes.AttributeValue) *dynamodb.QueryInput {
+		return &dynamodb.QueryInput{
+			TableName:              &s.ControlTable,
+			KeyConditionExpression: aws.String("PK = :pk AND SK BETWEEN :from AND :to"),
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":pk":   &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipelineID)},
+				":from": &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, fromDate)},
+				":to":   &ddbtypes.AttributeValueMemberS{Value: types.TriggerSK(schedule, toDate) + "~"},
+			},
+			ExclusiveStartKey: startKey,
+		}
+	}, func(items []map[string]ddbtypes.AttributeValue) error {
+		for _, item := range items {
+			var rec types.ControlRecord
+			if err := attributevalue.UnmarshalMap(item, &rec); err != nil {
+				return fmt.Errorf("unmarshal trigger row: %w", err)
+			}
+			recs = append(recs, rec)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query triggers %s %q to %q for %q: %w", schedule, fromDate, toDate, pipelineID, err)
+	}
+	return recs, nil
+}
+
 // ownRowTTL is how long Interlock's own control rows (SENSOR# markers and
 // baselines, the RERUN_REQUEST# rows it writes) live. The longest reader is
 // the post-run baseline, written at completion and read until the watch
