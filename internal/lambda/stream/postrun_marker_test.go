@@ -54,9 +54,10 @@ func markerWorld(t *testing.T, runDate, status, now string, dryRun bool) (*lambd
 // COMPLETED date records its arrival as SENSOR#postrun-check#<date> with
 // {"arrived":"true"} and the own-row ttl, inside the watch window (no drift,
 // drift, the first write that seeds the baseline) and after it, before any
-// rerun request. The date is the one the write resolves to, and a period key
-// (dashed, compact or hourly) must name it; a key naming another period
-// records nothing and the rest of the record goes on. A marker already there
+// rerun request. The date is the one the write resolves to (the current UTC
+// date without a date field, so a write for yesterday's completed row needs
+// one), and a period key (dashed, compact or hourly) must name it; a key
+// naming another period records nothing and the rest of the record goes on. A marker already there
 // (alerted) is left as it was. A RUNNING or FAILED_FINAL date, a dry-run
 // pipeline, the trigger sensor and a sensor no rule names record nothing.
 func TestPostRunSensor_ArrivalMarker(t *testing.T) {
@@ -66,6 +67,7 @@ func TestPostRunSensor_ArrivalMarker(t *testing.T) {
 		key        string // the sensor written; empty means row-count
 		hour       string // the write's hour; empty means a daily write
 		noDate     bool   // the write has no date field
+		runDate    string // the completed row's date; empty means 2026-03-10 (with hour)
 		status     string // the trigger row; empty means COMPLETED
 		now        string // empty means 13:00, inside the window
 		count      string // empty means 100, the baseline's count
@@ -91,12 +93,13 @@ func TestPostRunSensor_ArrivalMarker(t *testing.T) {
 		{name: "other day's key, no date field", key: "row-count#2026-03-09", noDate: true, wantEvent: string(types.EventPostRunFailed)},
 		{name: "hourly key, no hour field", key: "row-count#2026-03-10T05", wantEvent: string(types.EventPostRunFailed)},
 		{name: "trigger sensor (guard)", key: "upstream", wantRerun: true},
+		{name: "yesterday's row, rule key, no date field", runDate: "2026-03-09", noDate: true},
 		{name: "FAILED_FINAL (guard)", status: types.TriggerStatusFailedFinal},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			const date = "2026-03-10"
-			runDate := date
+			runDate := cmp.Or(tt.runDate, date)
 			if tt.hour != "" {
 				runDate += "T" + tt.hour
 			}

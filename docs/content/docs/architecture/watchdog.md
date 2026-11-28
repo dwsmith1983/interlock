@@ -133,7 +133,7 @@ The orchestrator writes `startedAt` on the trigger row just before it launches t
 
 ## Missing Post-Run Sensor Detection
 
-For pipelines with `postRun` config, the watchdog checks whether post-run sensors have arrived within a configurable grace period after job completion.
+For pipelines with `postRun` rules, the watchdog checks every completed run date, daily (`YYYY-MM-DD`) or hourly (`YYYY-MM-DDThh`), for a post-run sensor within a configurable grace period after job completion.
 
 ### Algorithm
 
@@ -141,29 +141,28 @@ For pipelines with `postRun` config, the watchdog checks whether post-run sensor
 Load all pipeline configs (via config cache)
 
 For each pipeline with postRun rules that is not a dry run:
-  Find TRIGGER# record for today's UTC date with status=COMPLETED
-  If no completed trigger, or it has no completedAt → skip
-  Marker SENSOR#postrun-check#<date> present → already alerted, or a post-run sensor arrived (skip)
-
-  Calculate elapsed time since completedAt
-  If elapsed < sensorTimeout → skip (still within grace period)
-
-  Read the baseline SENSOR#postrun-baseline#<date> (none if no rule's sensor existed at completion and none has been seeded inside the watch window since)
-  For each postRun rule key:
-    Look up SENSOR#{key}, or SENSOR#{key}#YYYY-MM-DD or SENSOR#{key}#YYYYMMDD for the date
-    If it exists and its value differs from its baseline entry, or it has no entry → arrived (skip)
-
-  Publish POST_RUN_SENSOR_MISSING event to EventBridge
-  On success, write the marker SENSOR#postrun-check#<date>
+  Query its TRIGGER#<schedule>#<date> rows from 8 days before today's UTC date
+  through 2 days after it, hourly keys included
+  For each row:
+    Key not a valid execution date → skip (logged)
+    Status not COMPLETED, or the date excluded by the calendar → skip
+    No parseable completedAt → skip
+    deadline = completedAt + sensorTimeout
+    Before the deadline, or more than 24h after it → skip
+    Marker SENSOR#postrun-check#<date> present → a post-run sensor arrived, or already alerted (skip)
+    Publish POST_RUN_SENSOR_MISSING for the date
+    On success, write the marker SENSOR#postrun-check#<date> with alerted
 ```
 
-A post-run sensor has arrived when it exists and either differs from what it was when the run completed or did not exist then. The whole stored record is compared, so a change in any of its fields, a timestamp such as `updatedAt` included, counts as a change; when the write happened is not otherwise used. A sensor rewritten with identical values has not arrived. A sensor present at completion whose baseline capture failed (`BASELINE_CAPTURE_FAILED`) has no entry, so it counts as arrived. An entry the stream-router seeded from a first write after completion carries `_seededAfterCompletion`, so it differs from the sensor and counts as arrived. This comparison is reached only for a date with no marker: a post-run write the stream-router handles after the trigger row is `COMPLETED`, under the rule's key or that key for the date or hour, counts as arrived, as it writes the `arrived` marker.
+Arrival is the marker alone: the watchdog reads no sensors. The stream-router writes it when it handles a post-run rule's sensor for a `COMPLETED` date, so a rerun of that date (a drift rerun that resets `completedAt` included) gets no `POST_RUN_SENSOR_MISSING`. The date is the one the write's data names (`date`, and `hour` for an hourly run), the current UTC date without `date`: a post-run sensor for any other run date (T+1, hourly, or a schedule timezone that puts the run date on another day) must carry them, plain rule key included, or the run date gets no marker and alerts. A write while the trigger row is `RUNNING` records nothing, so a sensor written only before completion alerts.
+
+What is not checked: a date more than 8 days before or 2 days after the current UTC date, so neither a `sensorTimeout` long enough to put the deadline past that lookback nor a rerun or backfill of a date older than 8 days is checked (raise an issue if you need one); a date whose deadline passed more than 24 hours ago, so after a watchdog outage, dates whose deadline is more than 24 hours old at the first pass after recovery are skipped; trigger rows under the other schedule ID (a pipeline that changed between `cron` and `stream`); calendar-excluded dates and dry-run pipelines. The watch window does not suppress the alert: it can come after the window has ended.
 
 The marker makes the alert once per date. The watchdog writes it with `alerted` only after the publish succeeds, so a failed publish is retried on the next pass. The stream-router writes the same marker with `arrived` when a post-run rule's sensor is written for a `COMPLETED` date (inside the watch window or after it) under the rule's own key or its key with that date or hour, unless a marker is already there; a date with either marker is skipped. It expires 31 days after it is written, long after its date stops being checked.
 
 ### Configuration
 
-The `sensorTimeout` field on `postRun` controls the grace period, counted from the trigger row's `completedAt`. Defaults to `"2h"` (2 hours). Only today's UTC daily trigger key is checked, so hourly keys and dates past UTC midnight get no `POST_RUN_SENSOR_MISSING`.
+The `sensorTimeout` field on `postRun` controls the grace period, counted from the trigger row's `completedAt`. Defaults to `"2h"` (2 hours).
 
 ```yaml
 postRun:
@@ -192,13 +191,14 @@ postRun:
       "source": "watchdog",
       "sensorTimeout": "2h",
       "ruleKeys": "output-row-count",
+      "completedAt": "2026-03-01T12:20:00Z",
       "actionHint": "post-run sensor data has not arrived within the expected timeout"
     }
   }
 }
 ```
 
-`sensorTimeout` is the configured value, empty when it is unset (the 2-hour default applies). `ruleKeys` lists the `postRun.rules` keys, separated by a comma and a space.
+`sensorTimeout` is the configured value, empty when it is unset (the 2-hour default applies). `ruleKeys` lists the `postRun.rules` keys, separated by a comma and a space. `completedAt` is the trigger row's completion the timeout was counted from. The event's `date` is the trigger key, `YYYY-MM-DDThh` for an hourly run.
 
 ## Deployment
 

@@ -4,167 +4,138 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	lambda "github.com/dwsmith1983/interlock/internal/lambda"
 	"github.com/dwsmith1983/interlock/internal/lambda/stream"
+	"github.com/dwsmith1983/interlock/internal/store/storetest"
 	"github.com/dwsmith1983/interlock/pkg/types"
 )
 
-// TestDetectMissingPostRunSensors: POST_RUN_SENSOR_MISSING fires once
-// postRun.sensorTimeout (2h by default) has passed since the trigger row's
-// completedAt and no post-run sensor has arrived. A sensor has arrived when
-// it is present now and its value differs from its entry in the baseline
-// captured at completion, or the baseline has no entry for it. The job rows
-// do not set the anchor. Completion 12:00 on slaTestDate unless a row says
-// otherwise. An alert writes the postrun-check marker for the date.
+// TestDetectMissingPostRunSensors: every trigger row on the pipeline's
+// schedule from runKeysDaysBack days before now's UTC date through
+// runKeysDaysAhead after it is read. A COMPLETED date whose completedAt plus
+// postRun.sensorTimeout (2h by default) passed at most postRunMissingLookback
+// ago, with no postrun-check marker, gets one POST_RUN_SENSOR_MISSING for its
+// key, with completedAt in the detail, and the alerted marker. Each case runs
+// two passes; the second adds nothing. The clock is 14:30 on slaTestDate
+// unless a case says otherwise.
 func TestDetectMissingPostRunSensors(t *testing.T) {
-	type sensors = map[string]map[string]interface{}
-	at := func(hour, minute int) time.Time { return time.Date(2026, 3, 10, hour, minute, 0, 0, time.UTC) }
-	ms := func(tm time.Time) string { return strconv.FormatInt(tm.UnixMilli(), 10) }
-	missing := []string{string(types.EventPostRunSensorMissing)}
-	rows := func(n int) map[string]interface{} {
-		return map[string]interface{}{"count": n, "tags": []string{"a", "b"}}
+	type row struct{ key, status, completedAt, schedule string }
+	at := func(day, hour, minute int) time.Time { return time.Date(2026, 3, day, hour, minute, 0, 0, time.UTC) }
+	const noon, yesterdayNoon = "2026-03-10T12:00:00Z", "2026-03-09T12:00:00Z"
+	done := func(key, completedAt string) []row { return []row{{key: key, completedAt: completedAt}} }
+	excludeToday := func(c *types.PipelineConfig) {
+		c.Schedule.Exclude = &types.ExclusionConfig{Dates: []string{slaTestDate}}
 	}
-	same := sensors{"row-count": rows(100)}
-	changed := sensors{"row-count": rows(120)}
-	twoRules := []string{"row-count", "freshness"}
-	fresh := map[string]interface{}{"lagMinutes": 5}
+	marker := func(field string) map[string]map[string]interface{} {
+		return map[string]map[string]interface{}{slaTestDate: {field: "true"}}
+	}
 	tests := []struct {
-		name         string
-		completedAt  string
-		jobAt        time.Time // a success job row at this time; zero means none
-		atCompletion sensors   // sensors when the baseline is captured
-		current      sensors   // sensors when the watchdog runs
-		rules        []string  // post-run rule keys; nil means row-count
-		now          time.Time
-		marked       bool // the postrun-check marker is already there
-		setSensor    bool // a row-count sensor with a string set, put raw and never changed
-		noPostRun    bool
-		dryRun       bool
-		status       string // of the trigger row; "" means COMPLETED
-		timeout      string // postRun.sensorTimeout
-		wantEvents   []string
-		wantMarker   bool
-		wantWarn     bool // a warning about completedAt
+		name     string
+		rows     []row
+		now      time.Time // zero means 14:30 on slaTestDate
+		timeout  string    // postRun.sensorTimeout
+		markers  map[string]map[string]interface{}
+		tweak    func(*types.PipelineConfig)
+		want     []string // the dates alerted, in key order
+		wantWarn bool
 	}{
-		{name: "past the timeout (guard)", completedAt: "2026-03-10T12:00:00Z", jobAt: at(12, 0), atCompletion: same, current: same, now: at(14, 30), wantEvents: missing, wantMarker: true},
-		{name: "within the timeout (guard)", completedAt: "2026-03-10T12:00:00Z", jobAt: at(12, 0), atCompletion: same, current: same, now: at(13, 30)},
-		{name: "sensor changed after completion (guard)", completedAt: "2026-03-10T12:00:00Z", jobAt: at(12, 0), atCompletion: same, current: changed, now: at(14, 30)},
-		{name: "completedAt set, no success job row", completedAt: "2026-03-10T12:00:00Z", atCompletion: same, current: same, now: at(14, 0), wantEvents: missing, wantMarker: true},
-		{name: "anchor is completedAt, not the job row", completedAt: "2026-03-10T12:00:00Z", jobAt: at(8, 0), atCompletion: same, current: same, now: at(13, 0)},
-		{name: "no completedAt", jobAt: at(12, 0), atCompletion: same, current: same, now: at(14, 30)},
-		{name: "completedAt does not parse", completedAt: "yesterday", jobAt: at(12, 0), atCompletion: same, current: same, now: at(14, 30), wantWarn: true},
-		{name: "already alerted", completedAt: "2026-03-10T12:00:00Z", atCompletion: same, current: same, marked: true, now: at(14, 30)},
-		{name: "no sensor then or now, no baseline", completedAt: "2026-03-10T12:00:00Z", now: at(14, 30), wantEvents: missing, wantMarker: true},
-		{name: "trigger RUNNING", completedAt: "2026-03-10T12:00:00Z", status: types.TriggerStatusRunning, atCompletion: same, current: same, now: at(14, 30)},
-		{name: "timeout 1h", completedAt: "2026-03-10T12:00:00Z", timeout: "1h", atCompletion: same, current: same, now: at(13, 30), wantEvents: missing, wantMarker: true},
-		{name: "no postRun", completedAt: "2026-03-10T12:00:00Z", noPostRun: true, atCompletion: same, current: same, now: at(14, 30)},
-		{name: "dry run", completedAt: "2026-03-10T12:00:00Z", dryRun: true, atCompletion: same, current: same, now: at(14, 30)},
-		{name: "per-period sensor unchanged", completedAt: "2026-03-10T12:00:00Z", atCompletion: sensors{"row-count#2026-03-10": rows(100)}, current: sensors{"row-count#2026-03-10": rows(100)}, now: at(14, 30), wantEvents: missing, wantMarker: true},
-		{name: "only yesterday's per-period sensor now", completedAt: "2026-03-10T12:00:00Z", current: sensors{"row-count#2026-03-09": rows(100)}, now: at(14, 30), wantEvents: missing, wantMarker: true},
-		{name: "only updatedAt differs", completedAt: "2026-03-10T12:00:00Z",
-			atCompletion: sensors{"row-count": {"count": 100, "updatedAt": ms(at(11, 0))}},
-			current:      sensors{"row-count": {"count": 100, "updatedAt": ms(at(13, 0))}}, now: at(14, 30)},
-		{name: "a field added", completedAt: "2026-03-10T12:00:00Z", atCompletion: same,
-			current: sensors{"row-count": {"count": 100, "tags": []string{"a", "b"}, "status": "final"}}, now: at(14, 30)},
-		{name: "absent at completion, present now, no baseline", completedAt: "2026-03-10T12:00:00Z", current: same, now: at(14, 30)},
-		{name: "absent at completion, baseline holds another rule", completedAt: "2026-03-10T12:00:00Z", rules: twoRules,
-			atCompletion: sensors{"freshness": fresh}, current: sensors{"freshness": fresh, "row-count": rows(100)}, now: at(14, 30)},
-		{name: "per-period sensor arrives after completion", completedAt: "2026-03-10T12:00:00Z", current: sensors{"row-count#2026-03-10": rows(100)}, now: at(14, 30)},
-		{name: "compact per-period sensor arrives after completion", completedAt: "2026-03-10T12:00:00Z", current: sensors{"row-count#20260310": rows(100)}, now: at(14, 30)},
-		{name: "two rules, one unchanged, one changed", completedAt: "2026-03-10T12:00:00Z", rules: twoRules,
-			atCompletion: sensors{"row-count": rows(100), "freshness": fresh},
-			current:      sensors{"row-count": rows(100), "freshness": {"lagMinutes": 7}}, now: at(14, 30)},
-		{name: "string-set sensor unchanged", completedAt: "2026-03-10T12:00:00Z", setSensor: true, now: at(14, 30), wantEvents: missing, wantMarker: true},
+		{name: "past the timeout (guard)", rows: done(slaTestDate, noon), want: []string{slaTestDate}},
+		{name: "within the timeout", rows: done(slaTestDate, noon), now: at(10, 13, 30)},
+		{name: "at the deadline", rows: done(slaTestDate, noon), now: at(10, 14, 0), want: []string{slaTestDate}},
+		{name: "timeout 1h", rows: done(slaTestDate, noon), now: at(10, 13, 30), timeout: "1h", want: []string{slaTestDate}},
+		{name: "T+1 daily key", rows: done("2026-03-09", noon), want: []string{"2026-03-09"}},
+		{name: "hourly key", rows: done("2026-03-10T11", noon), want: []string{"2026-03-10T11"}},
+		{name: "timeout ends after UTC midnight", rows: done("2026-03-09", "2026-03-09T23:00:00Z"), now: at(10, 1, 30), want: []string{"2026-03-09"}},
+		{name: "oldest date read", rows: done("2026-03-02", noon), want: []string{"2026-03-02"}},
+		{name: "a day older is not read", rows: done("2026-03-01", noon)},
+		{name: "hourly key on the oldest date read", rows: done("2026-03-02T00", noon), want: []string{"2026-03-02T00"}},
+		{name: "last hour 2 days ahead read", rows: done("2026-03-12T23", noon), want: []string{"2026-03-12T23"}},
+		{name: "3 days ahead is not read", rows: done("2026-03-13", noon)},
+		{name: "24h after the deadline", rows: done("2026-03-09", yesterdayNoon), now: at(10, 14, 0), want: []string{"2026-03-09"}},
+		{name: "over 24h after the deadline", rows: done("2026-03-09", yesterdayNoon), now: at(10, 14, 1)},
+		{name: "arrived marker", rows: done(slaTestDate, noon), markers: marker("arrived")},
+		{name: "alerted marker", rows: done(slaTestDate, noon), markers: marker("alerted")},
+		{name: "two due dates", rows: append(done("2026-03-09", noon), done(slaTestDate, noon)...), want: []string{"2026-03-09", slaTestDate}},
+		{name: "RUNNING", rows: []row{{key: slaTestDate, status: types.TriggerStatusRunning, completedAt: noon}}},
+		{name: "FAILED_FINAL", rows: []row{{key: slaTestDate, status: types.TriggerStatusFailedFinal, completedAt: noon}}},
+		{name: "malformed key", rows: done("2026-03-10T24", noon), wantWarn: true},
+		{name: "no completedAt", rows: done(slaTestDate, "")},
+		{name: "completedAt does not parse", rows: done(slaTestDate, "yesterday"), wantWarn: true},
+		{name: "excluded dates", rows: append(done("2026-03-10T11", noon), done(slaTestDate, noon)...), tweak: excludeToday},
+		{name: "dry run", rows: done(slaTestDate, noon), tweak: dryRunHTTP},
+		{name: "no post-run rules", rows: done(slaTestDate, noon), tweak: func(c *types.PipelineConfig) { c.PostRun.Rules = nil }},
+		{name: "other schedule ID", rows: []row{{key: slaTestDate, completedAt: noon, schedule: "cron"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ruleKeys := tt.rules
-			if ruleKeys == nil {
-				ruleKeys = []string{"row-count"}
-			}
 			d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
 				c.SLA = nil
-				c.PostRun = &types.PostRunConfig{SensorTimeout: tt.timeout}
-				for _, k := range ruleKeys {
-					c.PostRun.Rules = append(c.PostRun.Rules, types.ValidationRule{Key: k, Check: types.CheckExists})
-				}
-				if tt.noPostRun {
-					c.PostRun = nil
-				}
-				if tt.dryRun {
-					c.DryRun, c.Job.Type, c.Job.Config = true, types.TriggerHTTP, httpJobConfig
+				c.PostRun = &types.PostRunConfig{SensorTimeout: tt.timeout, Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}}
+				if tt.tweak != nil {
+					tt.tweak(c)
 				}
 			})
 			pk := types.PipelinePK("p")
-			trigger := []string{"PK", pk, "SK", types.TriggerSK("stream", slaTestDate), "status", cmp.Or(tt.status, types.TriggerStatusCompleted)}
-			if tt.completedAt != "" {
-				trigger = append(trigger, "completedAt", tt.completedAt)
-			}
-			mem.Put("control", sItem(trigger...))
-			if !tt.jobAt.IsZero() {
-				mem.Put("joblog", sItem("PK", pk, "SK", types.JobSK("stream", slaTestDate, ms(tt.jobAt)), "event", types.JobEventSuccess))
+			completedAt := map[string]string{}
+			for _, r := range tt.rows {
+				item := []string{"PK", pk, "SK", types.TriggerSK(cmp.Or(r.schedule, "stream"), r.key), "status", cmp.Or(r.status, types.TriggerStatusCompleted)}
+				if r.completedAt != "" {
+					item = append(item, "completedAt", r.completedAt)
+				}
+				mem.Put("control", sItem(item...))
+				completedAt[r.key] = r.completedAt
 			}
 			ctx := context.Background()
-			if tt.setSensor {
-				mem.Put("control", map[string]ddbtypes.AttributeValue{
-					"PK": &ddbtypes.AttributeValueMemberS{Value: pk},
-					"SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK("row-count")},
-					"data": &ddbtypes.AttributeValueMemberM{Value: map[string]ddbtypes.AttributeValue{
-						"tags": &ddbtypes.AttributeValueMemberSS{Value: []string{"a", "b"}},
-					}},
-				})
-			}
-			for k, v := range tt.atCompletion {
-				if err := d.Store.WriteSensor(ctx, "p", k, v); err != nil {
+			for date, m := range tt.markers {
+				if err := d.Store.WriteSensor(ctx, "p", "postrun-check#"+date, m); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := lambda.CapturePostRunBaseline(ctx, d, "p", "stream", slaTestDate); err != nil {
-				t.Fatalf("CapturePostRunBaseline: %v", err)
-			}
-			rec.events = nil
-			for k := range tt.atCompletion {
-				if err := d.Store.DeleteSensor(ctx, "p", k); err != nil {
-					t.Fatal(err)
-				}
-			}
-			for k, v := range tt.current {
-				if err := d.Store.WriteSensor(ctx, "p", k, v); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if tt.marked {
-				if err := d.Store.WriteSensor(ctx, "p", "postrun-check#"+slaTestDate, map[string]interface{}{"alerted": "true"}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			d.NowFunc = func() time.Time { return tt.now }
+			now := cmp.Or(tt.now, at(10, 14, 30))
+			d.NowFunc = func() time.Time { return now }
 			logs := &bytes.Buffer{}
 			d.Logger = slog.New(slog.NewTextHandler(logs, nil))
 
-			if err := detectMissingPostRunSensors(ctx, d); err != nil {
-				t.Fatalf("detectMissingPostRunSensors: %v", err)
+			for pass := 0; pass < 2; pass++ {
+				if err := detectMissingPostRunSensors(ctx, d); err != nil {
+					t.Fatalf("pass %d: %v", pass, err)
+				}
 			}
-			if !slices.Equal(rec.events, tt.wantEvents) {
-				t.Errorf("events = %v, want %v", rec.events, tt.wantEvents)
+			var dates []string
+			for i, e := range rec.details {
+				dates = append(dates, e.Date)
+				if rec.events[i] != string(types.EventPostRunSensorMissing) || e.Detail["completedAt"] != completedAt[e.Date] {
+					t.Errorf("event %d = %s with completedAt %v, want POST_RUN_SENSOR_MISSING with %q", i, rec.events[i], e.Detail["completedAt"], completedAt[e.Date])
+				}
 			}
-			marker, err := d.Store.GetSensorData(ctx, "p", "postrun-check#"+slaTestDate)
-			if err != nil {
-				t.Fatal(err)
+			if !slices.Equal(dates, tt.want) {
+				t.Errorf("event dates = %v, want %v", dates, tt.want)
 			}
-			if wantMarker := tt.wantMarker || tt.marked; (marker != nil) != wantMarker || (marker != nil && marker["alerted"] != "true") {
-				t.Errorf("postrun-check marker = %v, want present %v with alerted true", marker, wantMarker)
+			for key := range completedAt {
+				got, err := d.Store.GetSensorData(ctx, "p", "postrun-check#"+key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := tt.markers[key]
+				if slices.Contains(tt.want, key) {
+					want = map[string]interface{}{"alerted": "true"}
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("postrun-check marker for %s = %v, want %v", key, got, want)
+				}
 			}
 			if warned := strings.Contains(logs.String(), "level=WARN"); warned != tt.wantWarn {
 				t.Errorf("warned = %v, want %v; logs: %s", warned, tt.wantWarn, logs)
@@ -183,9 +154,6 @@ func TestDetectMissingPostRunSensors_PublishFailureRetries(t *testing.T) {
 	mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("stream", slaTestDate),
 		"status", types.TriggerStatusCompleted, "completedAt", "2026-03-10T12:00:00Z"))
 	ctx := context.Background()
-	if err := d.Store.WriteSensor(ctx, "p", "postrun-baseline#"+slaTestDate, map[string]interface{}{"row-count": map[string]interface{}{"count": 1}}); err != nil {
-		t.Fatal(err)
-	}
 	d.NowFunc = func() time.Time { return time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC) }
 	rec.failEvents = 1
 	for pass, want := range []int{0, 1, 1} {
@@ -203,43 +171,137 @@ func TestDetectMissingPostRunSensors_PublishFailureRetries(t *testing.T) {
 	}
 }
 
-// TestPostRunSensorArrived_UncomparableSensor: a sensor that cannot be
-// encoded again (an empty field name) counts as arrived, with a warning
-// naming the pipeline and sensor.
-func TestPostRunSensorArrived_UncomparableSensor(t *testing.T) {
-	logs := &bytes.Buffer{}
-	rules := []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}
-	sensors := map[string]map[string]interface{}{"row-count": {"": "x"}}
-	baseline := map[string]interface{}{"row-count": map[string]interface{}{"count": float64(100)}}
-
-	if !postRunSensorArrived(slog.New(slog.NewTextHandler(logs, nil)), "p", rules, sensors, baseline) {
-		t.Error("arrived = false, want true")
-	}
-	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "pipelineId=p") || !strings.Contains(out, "sensor=row-count") {
-		t.Errorf("want a warning naming pipeline p and sensor row-count; logs: %s", out)
-	}
-}
-
-// TestDetectMissingPostRunSensors_SeededBaseline: a post-run sensor first
-// written after completion, with no baseline row, is seeded as the baseline
-// entry by the stream-router, which also writes the postrun-check marker
-// with arrived. A pass past the sensor timeout publishes no
-// POST_RUN_SENSOR_MISSING and leaves the marker as it was.
-func TestDetectMissingPostRunSensors_SeededBaseline(t *testing.T) {
+// postRunDeps is slaDeps with a post-run rule on row-count, no SLA and the
+// clock at 14:30 on slaTestDate, and a COMPLETED trigger row completed at
+// 12:00 that day for each of the pipelines and dates given.
+func postRunDeps(t *testing.T, pipelines, dates []string) (*lambda.Deps, *storetest.FakeDynamo, *slaRecorder, *bytes.Buffer) {
+	t.Helper()
 	d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
 		c.SLA = nil
 		c.PostRun = &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}}
 	})
-	mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("stream", slaTestDate),
-		"status", types.TriggerStatusCompleted, "completedAt", "2026-03-10T12:00:00Z"))
+	var cfg types.PipelineConfig
+	if err := json.Unmarshal([]byte(mem.Get("control", types.PipelinePK("p"), types.ConfigSK)["config"].(*ddbtypes.AttributeValueMemberS).Value), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range pipelines {
+		cfg.Pipeline.ID = id
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mem.Put("control", sItem("PK", types.PipelinePK(id), "SK", types.ConfigSK, "config", string(data)))
+		for _, date := range dates {
+			mem.Put("control", sItem("PK", types.PipelinePK(id), "SK", types.TriggerSK("stream", date),
+				"status", types.TriggerStatusCompleted, "completedAt", "2026-03-10T12:00:00Z"))
+		}
+	}
+	d.NowFunc = func() time.Time { return time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC) }
+	logs := &bytes.Buffer{}
+	d.Logger = slog.New(slog.NewTextHandler(logs, nil))
+	return d, d.Store.Client.(*storetest.FakeDynamo), rec, logs
+}
+
+// TestDetectMissingPostRunSensors_TriggerQueryFails: when the first
+// pipeline's trigger query fails, the error is logged for it and the pass
+// goes on: the other pipeline is alerted and the pass returns no error.
+func TestDetectMissingPostRunSensors_TriggerQueryFails(t *testing.T) {
+	d, fake, rec, logs := postRunDeps(t, []string{"p", "q"}, []string{slaTestDate})
+	query, failed := fake.QueryFn, ""
+	fake.QueryFn = func(ctx context.Context, in *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+		if from, ok := in.ExpressionAttributeValues[":from"].(*ddbtypes.AttributeValueMemberS); ok && failed == "" &&
+			strings.HasPrefix(from.Value, types.TriggerSK("stream", "")) {
+			failed = strings.TrimPrefix(in.ExpressionAttributeValues[":pk"].(*ddbtypes.AttributeValueMemberS).Value, types.PipelinePK(""))
+			return nil, errors.New("query failed")
+		}
+		return query(ctx, in)
+	}
+
+	if err := detectMissingPostRunSensors(context.Background(), d); err != nil {
+		t.Fatalf("detectMissingPostRunSensors: %v", err)
+	}
+	other := map[string]string{"p": "q", "q": "p"}[failed]
+	if len(rec.details) != 1 || rec.details[0].PipelineID != other {
+		t.Errorf("events %+v; want one POST_RUN_SENSOR_MISSING for %q (the query failed for %q)", rec.details, other, failed)
+	}
+	if out := logs.String(); !strings.Contains(out, "level=ERROR msg=\"trigger lookup failed in post-run sensor check\" pipelineId="+failed) {
+		t.Errorf("want the trigger lookup error logged for %q; logs: %s", failed, out)
+	}
+}
+
+// TestDetectMissingPostRunSensors_MarkerErrors: two due dates. The first's
+// marker read fails: the error is logged and that date publishes nothing.
+// The second publishes, and its marker write fails: a warning is logged and
+// the alert is not logged as recorded.
+func TestDetectMissingPostRunSensors_MarkerErrors(t *testing.T) {
+	d, fake, rec, logs := postRunDeps(t, []string{"p"}, []string{"2026-03-09", slaTestDate})
+	get, put := fake.GetItemFn, fake.PutItemFn
+	fake.GetItemFn = func(ctx context.Context, in *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {
+		if in.Key["SK"].(*ddbtypes.AttributeValueMemberS).Value == types.SensorSK("postrun-check#2026-03-09") {
+			return nil, errors.New("get failed")
+		}
+		return get(ctx, in)
+	}
+	fake.PutItemFn = func(ctx context.Context, in *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+		if in.Item["SK"].(*ddbtypes.AttributeValueMemberS).Value == types.SensorSK("postrun-check#"+slaTestDate) {
+			return nil, errors.New("put failed")
+		}
+		return put(ctx, in)
+	}
+
+	if err := detectMissingPostRunSensors(context.Background(), d); err != nil {
+		t.Fatalf("detectMissingPostRunSensors: %v", err)
+	}
+	if len(rec.details) != 1 || rec.details[0].Date != slaTestDate {
+		t.Errorf("events %+v; want one POST_RUN_SENSOR_MISSING for %s", rec.details, slaTestDate)
+	}
+	out := logs.String()
+	for _, want := range []string{
+		`level=ERROR msg="dedup marker lookup failed in post-run sensor check" pipelineId=p date=2026-03-09`,
+		`level=WARN msg="failed to write post-run dedup marker"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q logged; logs: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "detected missing post-run sensor") {
+		t.Errorf("the alert whose marker write failed is logged as recorded; logs: %s", out)
+	}
+}
+
+// TestDetectMissingPostRunSensors_DriftRerun: a post-run sensor written with
+// drift before the first deadline leaves the stream-router's arrived marker
+// and a data-drift rerun. The rerun's completion resets completedAt and
+// recaptures the baseline with the drifted value, and no post-run write
+// follows. A pass past the rerun's deadline publishes no
+// POST_RUN_SENSOR_MISSING and leaves the marker as it was.
+func TestDetectMissingPostRunSensors_DriftRerun(t *testing.T) {
+	d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+		c.SLA = nil
+		c.PostRun = &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}}
+	})
 	ctx := context.Background()
-	now := time.Date(2026, 3, 10, 13, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 	d.NowFunc = func() time.Time { return now }
+	complete := func() {
+		t.Helper()
+		mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("stream", slaTestDate),
+			"status", types.TriggerStatusCompleted, "completedAt", now.Format(time.RFC3339)))
+		if err := lambda.CapturePostRunBaseline(ctx, d, "p", "stream", slaTestDate); err != nil {
+			t.Fatalf("CapturePostRunBaseline: %v", err)
+		}
+	}
+	if err := d.Store.WriteSensor(ctx, "p", "row-count", map[string]interface{}{"date": slaTestDate, "sensor_count": 100}); err != nil {
+		t.Fatal(err)
+	}
+	complete()
+
+	now = time.Date(2026, 3, 10, 13, 0, 0, 0, time.UTC)
 	if err := d.Store.WriteSensor(ctx, "p", "row-count", map[string]interface{}{"date": slaTestDate, "sensor_count": 5000}); err != nil {
 		t.Fatal(err)
 	}
 	record := events.DynamoDBEventRecord{
-		EventName: "INSERT",
+		EventName: "MODIFY",
 		Change: events.DynamoDBStreamRecord{
 			SequenceNumber: "1",
 			Keys: map[string]events.DynamoDBAttributeValue{
@@ -256,16 +318,14 @@ func TestDetectMissingPostRunSensors_SeededBaseline(t *testing.T) {
 	if err != nil || len(resp.BatchItemFailures) != 0 {
 		t.Fatalf("HandleStreamEvent = %+v, %v; want no failures", resp, err)
 	}
-	baseline, err := d.Store.GetSensorData(ctx, "p", "postrun-baseline#"+slaTestDate)
-	if err != nil {
-		t.Fatal(err)
+	if !slices.Contains(rec.events, string(types.EventPostRunDrift)) {
+		t.Fatalf("events = %v, want POST_RUN_DRIFT", rec.events)
 	}
-	if _, ok := baseline["row-count"]; !ok {
-		t.Fatalf("baseline = %v, want a seeded row-count entry", baseline)
-	}
-	rec.events = nil
 
-	now = time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC)
+	now = time.Date(2026, 3, 10, 13, 30, 0, 0, time.UTC)
+	complete()
+	rec.events = nil
+	now = time.Date(2026, 3, 10, 15, 45, 0, 0, time.UTC)
 	if err := detectMissingPostRunSensors(ctx, d); err != nil {
 		t.Fatalf("detectMissingPostRunSensors: %v", err)
 	}
@@ -275,55 +335,5 @@ func TestDetectMissingPostRunSensors_SeededBaseline(t *testing.T) {
 	}
 	if len(rec.events) != 0 || !reflect.DeepEqual(marker, map[string]interface{}{"arrived": "true"}) {
 		t.Errorf("events %v, postrun-check marker %v; want none and arrived", rec.events, marker)
-	}
-}
-
-// TestDetectMissingPostRunSensors_ArrivedMarker: with no post-run sensor and
-// the sensor timeout passed, the arrival marker the stream-router writes for
-// today's date stops POST_RUN_SENSOR_MISSING and is left as it was; without
-// it the pass alerts.
-func TestDetectMissingPostRunSensors_ArrivedMarker(t *testing.T) {
-	arrived := map[string]interface{}{"arrived": "true"}
-	tests := []struct {
-		name       string
-		marker     map[string]interface{}
-		wantEvents []string
-	}{
-		{name: "arrived marker", marker: arrived},
-		{name: "no marker (guard)", wantEvents: []string{string(types.EventPostRunSensorMissing)}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
-				c.SLA = nil
-				c.PostRun = &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}}
-			})
-			mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("stream", slaTestDate),
-				"status", types.TriggerStatusCompleted, "completedAt", "2026-03-10T12:00:00Z"))
-			ctx := context.Background()
-			if tt.marker != nil {
-				if err := d.Store.WriteSensor(ctx, "p", "postrun-check#"+slaTestDate, tt.marker); err != nil {
-					t.Fatal(err)
-				}
-			}
-			d.NowFunc = func() time.Time { return time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC) }
-
-			if err := detectMissingPostRunSensors(ctx, d); err != nil {
-				t.Fatalf("detectMissingPostRunSensors: %v", err)
-			}
-			if !slices.Equal(rec.events, tt.wantEvents) {
-				t.Errorf("events = %v, want %v", rec.events, tt.wantEvents)
-			}
-			if tt.marker == nil {
-				return
-			}
-			marker, err := d.Store.GetSensorData(ctx, "p", "postrun-check#"+slaTestDate)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(marker, arrived) {
-				t.Errorf("postrun-check marker = %v, want %v", marker, arrived)
-			}
-		})
 	}
 }

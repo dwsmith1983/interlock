@@ -108,6 +108,16 @@ code path first and assert the exact values it produces.
   from a first write that seeds the baseline, for an hourly date, an
   `alerted` marker left in place, and a key naming another period writing no
   marker. Unit tests cover these.
+- Part of `POST_RUN_SENSOR_MISSING`. `TestScenarioPostRunSensorMissing`
+  completes a T+1 daily pipeline and an hourly one with no post-run sensor,
+  and a T+1 one whose per-period post-run sensor (with `date`) is written
+  after completion. A watchdog pass before the 2h deadline alerts nothing;
+  past it, one pass publishes one `POST_RUN_SENSOR_MISSING` for each of the
+  first two, for its trigger key, with the `alerted` marker and the own-row
+  `ttl`, none for the third, and a second pass adds nothing. Not run: the
+  24-hour limit after the deadline, the 8-day lookback, calendar-excluded
+  dates, a drift rerun after the arrival, and a failed publish being
+  retried. Unit tests cover these.
 - Part of `job.maxRetries`. `TestScenarioRerunIgnoresPreviousFailure` covers
   one CompleteTrigger retry (a reported `fail`, `maxRetries: 1`, a `-r1`
   retry that then succeeds) and `TestScenarioRetriesExhausted` the
