@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -221,8 +222,9 @@ func TestPostRunSensorArrived_UncomparableSensor(t *testing.T) {
 
 // TestDetectMissingPostRunSensors_SeededBaseline: a post-run sensor first
 // written after completion, with no baseline row, is seeded as the baseline
-// entry by the stream-router. That entry still reads as arrived, so a pass
-// past the sensor timeout publishes no POST_RUN_SENSOR_MISSING.
+// entry by the stream-router, which also writes the postrun-check marker
+// with arrived. A pass past the sensor timeout publishes no
+// POST_RUN_SENSOR_MISSING and leaves the marker as it was.
 func TestDetectMissingPostRunSensors_SeededBaseline(t *testing.T) {
 	d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
 		c.SLA = nil
@@ -271,7 +273,57 @@ func TestDetectMissingPostRunSensors_SeededBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.events) != 0 || marker != nil {
-		t.Errorf("events %v, postrun-check marker %v; want none and none", rec.events, marker)
+	if len(rec.events) != 0 || !reflect.DeepEqual(marker, map[string]interface{}{"arrived": "true"}) {
+		t.Errorf("events %v, postrun-check marker %v; want none and arrived", rec.events, marker)
+	}
+}
+
+// TestDetectMissingPostRunSensors_ArrivedMarker: with no post-run sensor and
+// the sensor timeout passed, the arrival marker the stream-router writes for
+// today's date stops POST_RUN_SENSOR_MISSING and is left as it was; without
+// it the pass alerts.
+func TestDetectMissingPostRunSensors_ArrivedMarker(t *testing.T) {
+	arrived := map[string]interface{}{"arrived": "true"}
+	tests := []struct {
+		name       string
+		marker     map[string]interface{}
+		wantEvents []string
+	}{
+		{name: "arrived marker", marker: arrived},
+		{name: "no marker (guard)", wantEvents: []string{string(types.EventPostRunSensorMissing)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, mem, rec := slaDeps(t, "", "", func(c *types.PipelineConfig) {
+				c.SLA = nil
+				c.PostRun = &types.PostRunConfig{Rules: []types.ValidationRule{{Key: "row-count", Check: types.CheckExists}}}
+			})
+			mem.Put("control", sItem("PK", types.PipelinePK("p"), "SK", types.TriggerSK("stream", slaTestDate),
+				"status", types.TriggerStatusCompleted, "completedAt", "2026-03-10T12:00:00Z"))
+			ctx := context.Background()
+			if tt.marker != nil {
+				if err := d.Store.WriteSensor(ctx, "p", "postrun-check#"+slaTestDate, tt.marker); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d.NowFunc = func() time.Time { return time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC) }
+
+			if err := detectMissingPostRunSensors(ctx, d); err != nil {
+				t.Fatalf("detectMissingPostRunSensors: %v", err)
+			}
+			if !slices.Equal(rec.events, tt.wantEvents) {
+				t.Errorf("events = %v, want %v", rec.events, tt.wantEvents)
+			}
+			if tt.marker == nil {
+				return
+			}
+			marker, err := d.Store.GetSensorData(ctx, "p", "postrun-check#"+slaTestDate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(marker, arrived) {
+				t.Errorf("postrun-check marker = %v, want %v", marker, arrived)
+			}
+		})
 	}
 }

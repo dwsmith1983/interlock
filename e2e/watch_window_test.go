@@ -147,12 +147,41 @@ func rerunRequestRow(t *testing.T, pipeline, date string) map[string]ddbtypes.At
 	return out.Item
 }
 
+// arrivalMarker is the data of the pipeline's postrun-check marker for date,
+// nil when there is none.
+func arrivalMarker(t *testing.T, pipeline, date string) map[string]ddbtypes.AttributeValue {
+	t.Helper()
+	ctx, cancel := callCtx()
+	defer cancel()
+	out, err := ddb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(controlTable),
+		ConsistentRead: aws.Bool(true),
+		Key: map[string]ddbtypes.AttributeValue{
+			"PK": &ddbtypes.AttributeValueMemberS{Value: types.PipelinePK(pipeline)},
+			"SK": &ddbtypes.AttributeValueMemberS{Value: types.SensorSK("postrun-check#" + date)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("get postrun-check marker for %s: %v", pipeline, err)
+	}
+	if out.Item == nil {
+		return nil
+	}
+	data, _ := out.Item["data"].(*ddbtypes.AttributeValueMemberM)
+	if data == nil {
+		t.Fatalf("postrun-check marker for %s: data = %#v, want a map", pipeline, out.Item["data"])
+	}
+	return data.Value
+}
+
 // Drift on a completed date is acted on only inside its post-run watch window
 // (2h). The post-run sensor's count is 100 when the run completes near 06:00,
 // and complete-trigger captures it as the baseline (POST_RUN_BASELINE_CAPTURED,
 // not an alert). At 07:00 it is 120, which publishes POST_RUN_DRIFT and a
 // data-drift rerun request, rejected because maxDriftReruns is 0, so the
-// baseline stays 100. At 08:15, after the window, a count of 130 publishes
+// baseline stays 100. That 07:00 write, the first after completion, leaves
+// the postrun-check marker with arrived and the own-row ttl, which the write
+// before the run did not. At 08:15, after the window, a count of 130 publishes
 // only MANUAL_RERUN_REQUIRED (data-drift, blocked by the window) and writes no
 // request; a count of 140 then publishes only MANUAL_RERUN_STILL_REQUIRED,
 // which is not alerted. A manual RERUN_REQUEST written after them is rejected
@@ -184,12 +213,20 @@ func TestScenarioDriftWatchWindow(t *testing.T) {
 	waitCompleted(t, id, date)
 	waitExecutionDone(t, run)
 	assertOwnRowTTL(t, id, types.SensorSK("postrun-baseline#"+date), reported)
+	if m := arrivalMarker(t, id, date); m != nil {
+		t.Fatalf("postrun-check marker before any post-run write = %v, want none", m)
+	}
 
 	advanceTo(t, at(7, 0))
 	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 120, "date": date})
 	waitEvents(t, id, date, map[string]int{jt: 2, vp: 1, jc: 1, base: 1, drift: 1, rejected: 1})
 	// Read before the manual request below overwrites the row.
 	assertOwnRowTTL(t, id, types.RerunRequestSK(streamSchedule, date), at(7, 0))
+	m := arrivalMarker(t, id, date)
+	if v, ok := m["arrived"].(*ddbtypes.AttributeValueMemberS); !ok || v.Value != "true" {
+		t.Fatalf("postrun-check marker = %#v, want arrived true", m)
+	}
+	assertOwnRowTTL(t, id, types.SensorSK("postrun-check#"+date), at(7, 0))
 
 	advanceTo(t, at(8, 15))
 	writeSensor(t, id, postRunSensor, map[string]interface{}{"count": 130, "date": date})
