@@ -125,7 +125,8 @@ terraform apply
 | `tags` | map(string) | `{}` | Tags to apply to all resources |
 | `lambda_memory_size` | number | `128` | Memory (MB) for stream-router, orchestrator, sla-monitor and watchdog; event-sink and alert-dispatcher stay at 128 |
 | `log_retention_days` | number | `30` | CloudWatch log retention in days |
-| `watchdog_schedule` | string | `rate(5 minutes)` | EventBridge schedule expression for the watchdog Lambda. Keep the interval well under 6 hours: SLA schedules are created at most that long before a date's warning, and passes further apart can miss `SLA_WARNING` and `SLA_BREACH` (see [Deadline Evaluation](../../configuration/schedules/#deadline-evaluation)). The value is not checked |
+| `watchdog_schedule` | string | `rate(5 minutes)` | EventBridge schedule expression for the watchdog Lambda. Keep the interval well under 6 hours: SLA schedules are created at most that long before a date's warning, and passes further apart can miss `SLA_WARNING` and `SLA_BREACH` (see [Deadline Evaluation](../../configuration/schedules/#deadline-evaluation)). The value is checked only against `watchdog_heartbeat_minutes` |
+| `watchdog_heartbeat_minutes` | number | `15` | Minutes without a watchdog invocation before the `{env}-interlock-watchdog-heartbeat` alarm fires; a multiple of 5 from 10 to 1440. With a `rate()` schedule the plan fails unless it is at least twice the interval. A `cron()` schedule is not checked: set it above the longest gap between cron runs |
 | `sfn_timeout_seconds` | number | `14400` | Step Functions global execution timeout in seconds (default 4h). A pipeline whose `schedule.evaluation.window` plus `job.jobPollWindowSeconds` plus the longest [retry delay](../../configuration/pipelines/#retry-budgets) it can reach (by the larger of `maxRetries` and `maxCodeRetries`, default 1: 1, 2, 4 or 8 minutes for 1 to 4 retries, 15 minutes from 5 up, nothing when both are 0) exceeds it is rejected as `CONFIG_INVALID`. The sum is a floor: evaluations, status polls, launch retries and throttle retries also take time, so leave headroom. Lowering it can reject existing pipelines on the next config refresh |
 | `trigger_max_attempts` | number | `3` | Retries the Trigger state makes after its first attempt when a job cannot be started (waits start at 30s and double: 30s, 60s, 120s at the default) |
 | `enable_glue_trigger` | bool | `false` | Grant orchestrator Lambda permission to start Glue jobs |
@@ -210,7 +211,7 @@ When `slack_secret_arn` is set, the module automatically grants `secretsmanager:
 
 ## CloudWatch Alarms
 
-The module creates CloudWatch alarms across five categories. All alarms conditionally route to an SNS topic when `sns_alarm_topic_arn` is set.
+The module creates CloudWatch alarms across six categories. All alarms conditionally route to an SNS topic when `sns_alarm_topic_arn` is set.
 
 | Category | Alarms | Threshold |
 |---|---|---|
@@ -219,6 +220,11 @@ The module creates CloudWatch alarms across five categories. All alarms conditio
 | DLQ depth | One per dead-letter queue (4 total) | `ApproximateNumberOfMessagesVisible >= 1` |
 | Stream iterator age | One for the stream-router function (covers both the control and joblog streams) | `IteratorAge >= 300,000ms` (5 minutes) |
 | Alert rule delivery | One per rule that sends alerts to the alert queue (`alert_events`, `cw_alarm_alert`) | `FailedInvocations >= 1` per 5-minute period |
+| Watchdog heartbeat | One for the watchdog function | `Invocations < 1` in every 5-minute period for `watchdog_heartbeat_minutes` (default 15); no data counts as breaching |
+
+The heartbeat alarm fires when the watchdog stops running, for example when its schedule rule is disabled or stalls after an apply. Its `Errors` alarm cannot show that, since a function that is not invoked has no errors. It fires after about `watchdog_heartbeat_minutes` without an invocation, and up to about 10 minutes more because of how CloudWatch evaluates missing data. To check it on a deployed stack, disable the `{env}-interlock-watchdog` rule: the alarm goes to `ALARM` and its Slack message arrives within that time.
+
+A first deploy raises one heartbeat `ALARM` before the watchdog's first run, since the new function has no invocations yet. It clears on that run; the change to `OK` goes to the events table and the SNS topic, not to Slack.
 
 CloudWatch alarm state changes are reshaped via EventBridge input transformers into `INFRA_ALARM` events. Every state change is written to the events table; a change to `ALARM` is also sent to Slack. Infrastructure alerts appear alongside pipeline lifecycle events.
 

@@ -360,6 +360,9 @@ The Terraform module creates CloudWatch alarms that monitor infrastructure healt
 | DLQ depth | 4 (control, joblog, alert, event-sink) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
 | Stream iterator age | 1 (stream-router, covers the control and joblog streams) | `IteratorAge` | `>= 300,000ms` (5 minutes) |
 | Alert rule delivery | 2 (the `alert_events` and `cw_alarm_alert` rules, which send alerts to the alert queue) | `FailedInvocations` | `>= 1` per 5-minute period |
+| Watchdog heartbeat | 1 (`{environment}-interlock-watchdog-heartbeat`) | watchdog `Invocations` | `< 1` in every 5-minute period for `watchdog_heartbeat_minutes` (default 15); no data counts as breaching |
+
+The heartbeat alarm is the one that fires when something stops: if the watchdog's schedule rule is disabled or stalls, or the function is never invoked, its `Errors` alarm stays `OK` while missed-schedule, SLA, cutoff, stale-run and post-run checks stop. Its name has the `{environment}-interlock-` prefix, so its change to `ALARM` reaches Slack as an `INFRA_ALARM` like the others, and the SNS topic when one is set. It returns to `OK` once the watchdog runs again.
 
 ### How It Works
 

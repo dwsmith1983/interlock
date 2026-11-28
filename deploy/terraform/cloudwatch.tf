@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------------
 # CloudWatch alarms: Lambda errors, SFN failures, DLQ depth, stream lag,
-# alert rule delivery failures
+# alert rule delivery failures, watchdog heartbeat
 # -----------------------------------------------------------------------------
 
 locals {
@@ -36,6 +36,15 @@ locals {
   }
 
   alarm_actions = var.sns_alarm_topic_arn != "" ? [var.sns_alarm_topic_arn] : []
+
+  # Watchdog interval in minutes for a rate() schedule; null for cron(), which
+  # the heartbeat precondition does not check.
+  watchdog_rate = regexall("^rate\\(([0-9]+) (minutes?|hours?|days?)\\)$", var.watchdog_schedule)
+  watchdog_interval_minutes = length(local.watchdog_rate) == 0 ? null : (
+    tonumber(local.watchdog_rate[0][0]) * {
+      minute = 1, minutes = 1, hour = 60, hours = 60, day = 1440, days = 1440
+    }[local.watchdog_rate[0][1]]
+  )
 }
 
 # =============================================================================
@@ -168,4 +177,42 @@ resource "aws_cloudwatch_metric_alarm" "alert_rule_failed_invocations" {
   alarm_actions = local.alarm_actions
   ok_actions    = local.alarm_actions
   tags          = var.tags
+}
+
+# =============================================================================
+# 6. Watchdog Heartbeat Alarm: the watchdog has stopped running
+# =============================================================================
+
+# The Errors alarm stays OK when the watchdog is not invoked at all, so this
+# alarm counts its invocations and treats periods with no data as breaching.
+resource "aws_cloudwatch_metric_alarm" "watchdog_heartbeat" {
+  alarm_name          = "${var.environment}-interlock-watchdog-heartbeat"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = var.watchdog_heartbeat_minutes / 5
+  datapoints_to_alarm = var.watchdog_heartbeat_minutes / 5
+  metric_name         = "Invocations"
+  namespace           = "AWS/Lambda"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 1
+  alarm_description   = "Watchdog has not run for about ${var.watchdog_heartbeat_minutes} minutes (up to about 10 more, from how CloudWatch evaluates missing data); check that the ${aws_cloudwatch_event_rule.watchdog.name} schedule rule is enabled and can invoke the watchdog Lambda. Missed-schedule, SLA, cutoff, stale-run and post-run checks are not running."
+  treat_missing_data  = "breaching"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.watchdog.function_name
+  }
+
+  alarm_actions = local.alarm_actions
+  ok_actions    = local.alarm_actions
+  tags          = var.tags
+
+  lifecycle {
+    precondition {
+      condition = (
+        local.watchdog_interval_minutes == null ? true :
+        var.watchdog_heartbeat_minutes >= 2 * local.watchdog_interval_minutes
+      )
+      error_message = "watchdog_heartbeat_minutes must be at least twice the watchdog_schedule interval, or one late run raises the alarm."
+    }
+  }
 }

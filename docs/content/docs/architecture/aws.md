@@ -276,7 +276,7 @@ The ASL template at `deploy/statemachine.asl.json` uses substitution variables r
 
 ## CloudWatch Alarms
 
-The Terraform module creates CloudWatch alarms across five categories to monitor infrastructure health:
+The Terraform module creates CloudWatch alarms across six categories to monitor infrastructure health:
 
 | Category | Alarms | Metric | Threshold |
 |---|---|---|---|
@@ -285,6 +285,7 @@ The Terraform module creates CloudWatch alarms across five categories to monitor
 | DLQ depth | 4 (control, joblog, alert and event-sink queues) | `ApproximateNumberOfMessagesVisible` | `>= 1` |
 | Stream iterator age | 1 (stream-router, covers the control and joblog streams) | `IteratorAge` | `>= 300,000ms` (5 min) |
 | Alert rule delivery | 2 (`alert_events` and `cw_alarm_alert` rules to the alert queue) | `FailedInvocations` | `>= 1` per 5-minute period |
+| Watchdog heartbeat | 1 (watchdog function, fires when it stops running) | `Invocations` | `< 1` per 5-minute period for `watchdog_heartbeat_minutes` (default 15); no data counts as breaching |
 
 Alarm state changes are reshaped into `INFRA_ALARM` events via EventBridge input transformers. Every state change goes to event-sink; only a change to `ALARM` goes to the alert queue and alert-dispatcher. Optionally, alarms also notify an SNS topic, on `ALARM` and on `OK`, via the `sns_alarm_topic_arn` variable.
 
@@ -356,6 +357,7 @@ deploy/
 | `lambda_memory_size` | Memory (MB) for stream-router, orchestrator, sla-monitor and watchdog; event-sink and alert-dispatcher stay at 128 | `128` |
 | `log_retention_days` | CloudWatch log retention | `30` |
 | `watchdog_schedule` | EventBridge schedule expression | `rate(5 minutes)` |
+| `watchdog_heartbeat_minutes` | Minutes without a watchdog run before the heartbeat alarm fires; at least twice a `rate()` interval | `15` |
 | `enable_glue_trigger` | Add Glue + CloudWatch Logs RCA permissions to orchestrator; needs `glue_job_arns` | `false` |
 | `enable_emr_trigger` | Add EMR permissions to orchestrator; needs `emr_cluster_arns` | `false` |
 | `enable_emr_serverless_trigger` | Add EMR Serverless permissions; needs `emr_serverless_app_arns` and `emr_serverless_execution_role_arns` | `false` |
